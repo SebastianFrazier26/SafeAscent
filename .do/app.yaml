@@ -1,0 +1,146 @@
+# DigitalOcean App Platform Specification
+# Deploy with: doctl apps create --spec .do/app.yaml
+# Or connect your GitHub repo to App Platform for automatic deploys
+
+name: safeascent
+
+# =============================================================================
+# Region Configuration
+# =============================================================================
+region: nyc
+
+# =============================================================================
+# Backend API Service
+# =============================================================================
+services:
+  - name: backend
+    dockerfile_path: backend/Dockerfile
+    source_dir: backend
+    github:
+      repo: ${GITHUB_REPO}
+      branch: main
+      deploy_on_push: true
+    http_port: 8000
+    instance_count: 1
+    instance_size_slug: basic-xs  # 512MB RAM, 1 vCPU ($5/month)
+
+    # Health checks
+    health_check:
+      http_path: /health
+      initial_delay_seconds: 30
+      period_seconds: 10
+      timeout_seconds: 5
+      success_threshold: 1
+      failure_threshold: 3
+
+    # Environment variables
+    envs:
+      - key: DEBUG
+        value: "false"
+      - key: USE_VECTORIZED_ALGORITHM
+        value: "true"
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        value: ${db.DATABASE_URL}
+      - key: REDIS_URL
+        scope: RUN_TIME
+        value: ${redis.REDIS_URL}
+      - key: CORS_ORIGINS
+        value: ${APP_URL}
+      - key: OPENWEATHER_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+
+    # Routes
+    routes:
+      - path: /api
+      - path: /health
+      - path: /docs
+      - path: /openapi.json
+
+  # ===========================================================================
+  # Frontend Static Site
+  # ===========================================================================
+  - name: frontend
+    dockerfile_path: frontend/Dockerfile
+    source_dir: frontend
+    github:
+      repo: ${GITHUB_REPO}
+      branch: main
+      deploy_on_push: true
+    http_port: 80
+    instance_count: 1
+    instance_size_slug: basic-xxs  # 256MB RAM, 1 vCPU ($2.50/month)
+
+    # Build-time arguments
+    build_command: |
+      npm ci && npm run build
+
+    envs:
+      - key: VITE_API_BASE_URL
+        scope: BUILD_TIME
+        value: ${APP_URL}/api/v1
+      - key: VITE_MAPBOX_TOKEN
+        scope: BUILD_TIME
+        type: SECRET
+
+    # Catch-all route for SPA
+    routes:
+      - path: /
+
+  # ===========================================================================
+  # Celery Worker (Background Tasks)
+  # ===========================================================================
+  - name: celery-worker
+    dockerfile_path: backend/Dockerfile
+    source_dir: backend
+    github:
+      repo: ${GITHUB_REPO}
+      branch: main
+      deploy_on_push: true
+    instance_count: 1
+    instance_size_slug: basic-xs
+
+    # Override entrypoint for Celery
+    run_command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2
+
+    envs:
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        value: ${db.DATABASE_URL}
+      - key: REDIS_URL
+        scope: RUN_TIME
+        value: ${redis.REDIS_URL}
+      - key: OPENWEATHER_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+
+# =============================================================================
+# Database (Managed PostgreSQL with PostGIS)
+# =============================================================================
+databases:
+  - name: db
+    engine: PG
+    version: "16"
+    size: db-s-1vcpu-1gb  # $15/month
+    num_nodes: 1
+
+    # Production settings
+    production: true
+
+# =============================================================================
+# Redis (Managed)
+# Note: DigitalOcean App Platform doesn't have native Redis
+# You'll need to use a DigitalOcean Managed Redis cluster separately
+# or use an external Redis provider like Upstash or Redis Cloud
+# =============================================================================
+# For now, you can use Upstash (free tier available) or provision
+# a DigitalOcean Managed Redis database separately
+
+# =============================================================================
+# Alerts
+# =============================================================================
+alerts:
+  - rule: DEPLOYMENT_FAILED
+  - rule: DOMAIN_FAILED
+  - rule: DEPLOYMENT_LIVE

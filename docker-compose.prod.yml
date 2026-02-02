@@ -1,0 +1,103 @@
+# SafeAscent Production Docker Compose Override
+# Use with: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+services:
+  # ==========================================================================
+  # Backend - Production Configuration
+  # ==========================================================================
+  backend:
+    restart: always
+    environment:
+      - DEBUG=false
+      - USE_VECTORIZED_ALGORITHM=true
+    # Remove development volume mount
+    volumes: []
+    # Production command with more workers
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0
+      --port 8000
+      --workers 4
+      --no-access-log
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  # ==========================================================================
+  # Frontend - Production Configuration
+  # ==========================================================================
+  frontend:
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+
+  # ==========================================================================
+  # Database - Production Configuration
+  # ==========================================================================
+  db:
+    restart: always
+    # Production: don't expose port externally
+    ports: []
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+
+  # ==========================================================================
+  # Redis - Production Configuration
+  # ==========================================================================
+  redis:
+    restart: always
+    # Production: don't expose port externally
+    ports: []
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+
+  # ==========================================================================
+  # Celery Workers - Production (enabled by default in prod)
+  # ==========================================================================
+  celery-worker:
+    restart: always
+    profiles: []  # Enable by default (remove profile restriction)
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  celery-beat:
+    restart: always
+    profiles: []  # Enable by default
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M

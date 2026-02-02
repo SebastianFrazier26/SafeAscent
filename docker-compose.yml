@@ -1,0 +1,146 @@
+# SafeAscent Docker Compose Configuration
+# For local development and production deployment
+
+services:
+  # ==========================================================================
+  # PostgreSQL with PostGIS
+  # ==========================================================================
+  db:
+    image: postgis/postgis:16-3.4-alpine
+    container_name: safeascent-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-safeascent}
+      POSTGRES_USER: ${POSTGRES_USER:-safeascent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Database password required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-safeascent} -d ${POSTGRES_DB:-safeascent}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================================================
+  # Redis (for caching and Celery)
+  # ==========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: safeascent-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================================================
+  # Backend API (FastAPI)
+  # ==========================================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: safeascent-backend
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-safeascent}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-safeascent}
+      - REDIS_URL=redis://redis:6379/0
+      - OPEN_METEO_API_KEY=${OPEN_METEO_API_KEY:-}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173}
+      - USE_VECTORIZED_ALGORITHM=true
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    volumes:
+      # Mount for development hot-reload (remove in production)
+      - ./backend/app:/app/app:ro
+
+  # ==========================================================================
+  # Frontend (React + Nginx)
+  # ==========================================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - VITE_API_BASE_URL=${VITE_API_BASE_URL:-http://localhost:8000/api/v1}
+        - VITE_MAPBOX_TOKEN=${VITE_MAPBOX_TOKEN:?Mapbox token required}
+    container_name: safeascent-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      - backend
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:80/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ==========================================================================
+  # Celery Worker (for background tasks)
+  # ==========================================================================
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: safeascent-celery-worker
+    restart: unless-stopped
+    command: celery -A app.tasks.celery_app worker --loglevel=info
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-safeascent}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-safeascent}
+      - REDIS_URL=redis://redis:6379/0
+      - OPEN_METEO_API_KEY=${OPEN_METEO_API_KEY:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    profiles:
+      - full  # Only run with: docker compose --profile full up
+
+  # ==========================================================================
+  # Celery Beat (for scheduled tasks)
+  # ==========================================================================
+  celery-beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: safeascent-celery-beat
+    restart: unless-stopped
+    command: celery -A app.tasks.celery_app beat --loglevel=info
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-safeascent}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-safeascent}
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - celery-worker
+    profiles:
+      - full  # Only run with: docker compose --profile full up
+
+volumes:
+  postgres_data:
+    name: safeascent_postgres_data
+  redis_data:
+    name: safeascent_redis_data
+
+networks:
+  default:
+    name: safeascent_network

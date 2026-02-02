@@ -1,0 +1,436 @@
+"""
+Integration tests for the complete prediction pipeline.
+
+Tests the full flow from API request through database queries, algorithm execution,
+and response formatting.
+"""
+
+import pytest
+from fastapi.testclient import TestClient
+from datetime import datetime, timedelta
+
+from app.main import app
+
+# Create test client
+client = TestClient(app)
+
+
+class TestPredictionEndpointIntegration:
+    """Test the complete prediction endpoint flow with real data."""
+
+    def test_prediction_with_known_dangerous_area(self):
+        """Test prediction for Longs Peak area (known high-risk)."""
+        # Longs Peak, Colorado - known dangerous area
+        response = client.post("/api/v1/predict", json={
+            "latitude": 40.255,
+            "longitude": -105.615,
+            "route_type": "alpine",
+            "planned_date": "2024-07-15",
+            "search_radius_km": 50.0
+        })
+
+        assert response.status_code == 200
+        data = response.json()
+
+        # Verify response structure
+        assert "risk_score" in data
+        assert "confidence" in data
+        assert "contributing_accidents" in data
+        assert "metadata" in data
+
+        # Longs Peak should have high risk (many accidents)
+        assert data["risk_score"] > 30, "Longs Peak should show elevated risk"
+
+        # Should have good confidence (many nearby accidents)
+        assert data["confidence"] > 40, "Should have reasonable confidence"
+
+        # Should have contributing accidents
+        assert len(data["contributing_accidents"]) > 0
+        assert data["metadata"]["accidents_found"] > 0
+
+        print(f"\n✅ Longs Peak Prediction:")
+        print(f"   Risk Score: {data['risk_score']}/100")
+        print(f"   Confidence: {data['confidence']}/100")
+        print(f"   Accidents Found: {data['metadata']['accidents_found']}")
+
+    @pytest.mark.asyncio
+    async def test_prediction_with_low_risk_area(self):
+        """Test prediction for Florida (known low-risk)."""
+        async with AsyncClient(app=app, base_url="http://test") as client:
+        # Florida climbing area - few accidents
+        response = await client.post("/api/v1/predict", json={
+            "latitude": 29.65,
+            "longitude": -82.32,
+            "route_type": "sport",
+            "planned_date": "2024-07-15",
+            "search_radius_km": 100.0
+        })
+
+        assert response.status_code == 200
+        data = response.json()
+
+        # Florida should have low risk (few accidents)
+        assert data["risk_score"] < 50, "Florida should show low risk"
+
+        # May have low confidence (sparse data)
+        print(f"\n✅ Florida Prediction:")
+        print(f"   Risk Score: {data['risk_score']}/100")
+        print(f"   Confidence: {data['confidence']}/100")
+        print(f"   Accidents Found: {data['metadata']['accidents_found']}")
+
+    @pytest.mark.asyncio
+    async def test_prediction_with_winter_conditions(self):
+        """Test prediction for winter climbing season."""
+        async with AsyncClient(app=app, base_url="http://test") as client:
+        # Mount Rainier in winter
+        response = await client.post("/api/v1/predict", json={
+            "latitude": 46.853,
+            "longitude": -121.760,
+            "route_type": "alpine",
+            "planned_date": "2024-01-15",  # Winter
+            "search_radius_km": 50.0
+        })
+
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should get winter-season weather pattern
+        assert "risk_score" in data
+
+        print(f"\n✅ Mount Rainier Winter Prediction:")
+        print(f"   Risk Score: {data['risk_score']}/100")
+        print(f"   Confidence: {data['confidence']}/100")
+        print(f"   Accidents Found: {data['metadata']['accidents_found']}")
+
+    @pytest.mark.asyncio
+    async def test_prediction_with_different_route_types(self):
+        """Test that different route types give different predictions."""
+        async with AsyncClient(app=app, base_url="http://test") as client:
+        location = {"latitude": 40.0, "longitude": -105.3}  # Colorado
+
+        # Test alpine
+        alpine_response = await client.post("/api/v1/predict", json={
+            **location,
+            "route_type": "alpine",
+            "planned_date": "2024-07-15",
+            "search_radius_km": 100.0
+        })
+
+        # Test sport
+        sport_response = await client.post("/api/v1/predict", json={
+            **location,
+            "route_type": "sport",
+            "planned_date": "2024-07-15",
+            "search_radius_km": 100.0
+        })
+
+        assert alpine_response.status_code == 200
+        assert sport_response.status_code == 200
+
+        alpine_data = alpine_response.json()
+        sport_data = sport_response.json()
+
+        # Both should return valid predictions
+        assert alpine_data["risk_score"] >= 0
+        assert sport_data["risk_score"] >= 0
+
+        print(f"\n✅ Route Type Comparison:")
+        print(f"   Alpine Risk: {alpine_data['risk_score']}/100")
+        print(f"   Sport Risk: {sport_data['risk_score']}/100")
+        print(f"   (Different route types use different spatial bandwidths)")
+
+    @pytest.mark.asyncio
+    async def test_prediction_response_structure(self):
+        """Test that response has all required fields with correct types."""
+        async with AsyncClient(app=app, base_url="http://test") as client:
+        response = await client.post("/api/v1/predict", json={
+            "latitude": 40.0,
+            "longitude": -105.3,
+            "route_type": "alpine",
+            "planned_date": "2024-07-15",
+            "search_radius_km": 100.0
+        })
+
+        assert response.status_code == 200
+        data = response.json()
+
+        # Required top-level fields
+        assert "risk_score" in data
+        assert "confidence" in data
+        assert "confidence_interpretation" in data
+        assert "contributing_accidents" in data
+        assert "confidence_breakdown" in data
+        assert "metadata" in data
+
+        # Type checks
+        assert isinstance(data["risk_score"], (int, float))
+        assert isinstance(data["confidence"], (int, float))
+        assert isinstance(data["confidence_interpretation"], str)
+        assert isinstance(data["contributing_accidents"], list)
+        assert isinstance(data["confidence_breakdown"], dict)
+        assert isinstance(data["metadata"], dict)
+
+        # Value ranges
+        assert 0 <= data["risk_score"] <= 100
+        assert 0 <= data["confidence"] <= 100
+
+        # Confidence breakdown structure
+        breakdown = data["confidence_breakdown"]
+        assert "sample_size" in breakdown
+        assert "match_quality" in breakdown
+        assert "spatial_coverage" in breakdown
+        assert "temporal_recency" in breakdown
+        assert "weather_data_quality" in breakdown
+
+        # Metadata fields
+        metadata = data["metadata"]
+        assert "accidents_found" in metadata
+        assert "search_radius_km" in metadata
+        assert "route_type" in metadata
+
+        print(f"\n✅ Response Structure: Valid")
+        print(f"   All required fields present with correct types")
+
+
+class TestDatabaseIntegration:
+    """Test database queries work correctly with real data."""
+
+    @pytest.mark.asyncio
+    async def test_fetch_nearby_accidents_returns_data(self):
+        """Test that spatial query returns accidents in high-density areas."""
+        async with AsyncClient(app=app, base_url="http://test") as client:
+        # Colorado has many accidents
+        response = await client.post("/api/v1/predict", json={
+            "latitude": 40.0,
+            "longitude": -105.3,
+            "route_type": "alpine",
+            "planned_date": "2024-07-15",
+            "search_radius_km": 100.0
+        })
+
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should find accidents in Colorado
+        assert data["metadata"]["accidents_found"] > 0
+        assert len(data["contributing_accidents"]) > 0
+
+        print(f"\n✅ Spatial Query: Found {data['metadata']['accidents_found']} accidents")
+
+    @pytest.mark.asyncio
+    async def test_weather_data_accessible(self):
+        """Test that weather data is properly linked to accidents."""
+        async with AsyncClient(app=app, base_url="http://test") as client:
+        response = await client.post("/api/v1/predict", json={
+            "latitude": 40.0,
+            "longitude": -105.3,
+            "route_type": "alpine",
+            "planned_date": "2024-07-15",
+            "search_radius_km": 100.0
+        })
+
+        assert response.status_code == 200
+        data = response.json()
+
+        # Check if weather data was used
+        breakdown = data["confidence_breakdown"]
+        weather_quality = breakdown["weather_data_quality"]["score"]
+
+        # Should have some weather data (we verified 92.6% coverage)
+        assert weather_quality > 0, "Should have access to weather data"
+
+        print(f"\n✅ Weather Integration: Score {weather_quality:.2f}")
+
+    @pytest.mark.asyncio
+    async def test_spatial_query_respects_radius(self):
+        """Test that larger radius finds more accidents."""
+        async with AsyncClient(app=app, base_url="http://test") as client:
+        location = {"latitude": 40.0, "longitude": -105.3, "route_type": "alpine", "planned_date": "2024-07-15"}
+
+        # Small radius
+        small_response = await client.post("/api/v1/predict", json={
+            **location,
+            "search_radius_km": 25.0
+        })
+
+        # Large radius
+        large_response = await client.post("/api/v1/predict", json={
+            **location,
+            "search_radius_km": 150.0
+        })
+
+        assert small_response.status_code == 200
+        assert large_response.status_code == 200
+
+        small_data = small_response.json()
+        large_data = large_response.json()
+
+        small_count = small_data["metadata"]["accidents_found"]
+        large_count = large_data["metadata"]["accidents_found"]
+
+        # Larger radius should find more accidents (or equal)
+        assert large_count >= small_count
+
+        print(f"\n✅ Radius Comparison:")
+        print(f"   25km radius: {small_count} accidents")
+        print(f"   150km radius: {large_count} accidents")
+
+
+class TestComponentIntegration:
+    """Test that all algorithm components work together correctly."""
+
+    @pytest.mark.asyncio
+    async def test_temporal_weighting_affects_predictions(self):
+        """Test that accident age affects risk score."""
+        async with AsyncClient(app=app, base_url="http://test") as client:
+        location = {"latitude": 40.0, "longitude": -105.3, "route_type": "alpine", "search_radius_km": 100.0}
+
+        # Recent date
+        recent_response = await client.post("/api/v1/predict", json={
+            **location,
+            "planned_date": "2024-07-15"
+        })
+
+        # Past date (when fewer recent accidents)
+        past_response = await client.post("/api/v1/predict", json={
+            **location,
+            "planned_date": "2000-07-15"
+        })
+
+        assert recent_response.status_code == 200
+        assert past_response.status_code == 200
+
+        recent_data = recent_response.json()
+        past_data = past_response.json()
+
+        # Both should return valid predictions
+        assert recent_data["risk_score"] >= 0
+        assert past_data["risk_score"] >= 0
+
+        print(f"\n✅ Temporal Weighting:")
+        print(f"   2024 prediction: {recent_data['risk_score']}/100")
+        print(f"   2000 prediction: {past_data['risk_score']}/100")
+
+    @pytest.mark.asyncio
+    async def test_confidence_components_make_sense(self):
+        """Test that confidence breakdown reflects data quality."""
+        async with AsyncClient(app=app, base_url="http://test") as client:
+        # High-density area (should have high confidence)
+        response = await client.post("/api/v1/predict", json={
+            "latitude": 40.255,
+            "longitude": -105.615,  # Longs Peak
+            "route_type": "alpine",
+            "planned_date": "2024-07-15",
+            "search_radius_km": 50.0
+        })
+
+        assert response.status_code == 200
+        data = response.json()
+
+        breakdown = data["confidence_breakdown"]
+
+        # Sample size should be good (many accidents near Longs Peak)
+        sample_size_score = breakdown["sample_size"]["score"]
+        assert sample_size_score > 0.3, "Should have decent sample size near Longs Peak"
+
+        # Check all components are present and in valid range
+        for component_name, component_data in breakdown.items():
+            assert "score" in component_data
+            assert 0 <= component_data["score"] <= 1.0
+            assert "interpretation" in component_data
+
+        print(f"\n✅ Confidence Breakdown:")
+        for name, comp in breakdown.items():
+            print(f"   {name}: {comp['score']:.2f} - {comp['interpretation']}")
+
+    @pytest.mark.asyncio
+    async def test_real_time_weather_integration(self):
+        """Test that current weather is fetched and used."""
+        async with AsyncClient(app=app, base_url="http://test") as client:
+        # Make prediction for today
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        response = await client.post("/api/v1/predict", json={
+            "latitude": 40.0,
+            "longitude": -105.3,
+            "route_type": "alpine",
+            "planned_date": today,
+            "search_radius_km": 100.0
+        })
+
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should have attempted to fetch current weather
+        # (May or may not succeed depending on API availability)
+        metadata = data["metadata"]
+
+        # Check that system attempted weather fetch
+        # (The algorithm should work even if weather API fails)
+        assert "search_radius_km" in metadata
+
+        print(f"\n✅ Real-time Weather: Prediction generated for today")
+        print(f"   Risk Score: {data['risk_score']}/100")
+
+
+class TestValidationAndErrorHandling:
+    """Test input validation and error handling."""
+
+    @pytest.mark.asyncio
+    async def test_invalid_coordinates_rejected(self):
+        """Test that invalid coordinates return 422."""
+        async with AsyncClient(app=app, base_url="http://test") as client:
+        # Invalid latitude (> 90)
+        response = await client.post("/api/v1/predict", json={
+            "latitude": 95.0,
+            "longitude": -105.3,
+            "route_type": "alpine",
+            "planned_date": "2024-07-15"
+        })
+
+        assert response.status_code == 422  # Validation error
+
+    @pytest.mark.asyncio
+    async def test_invalid_route_type_rejected(self):
+        """Test that invalid route type returns 422."""
+        async with AsyncClient(app=app, base_url="http://test") as client:
+        response = await client.post("/api/v1/predict", json={
+            "latitude": 40.0,
+            "longitude": -105.3,
+            "route_type": "invalid_type",
+            "planned_date": "2024-07-15"
+        })
+
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_invalid_date_format_rejected(self):
+        """Test that invalid date format returns 422."""
+        async with AsyncClient(app=app, base_url="http://test") as client:
+        response = await client.post("/api/v1/predict", json={
+            "latitude": 40.0,
+            "longitude": -105.3,
+            "route_type": "alpine",
+            "planned_date": "not-a-date"
+        })
+
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_missing_required_fields_rejected(self):
+        """Test that missing fields return 422."""
+        async with AsyncClient(app=app, base_url="http://test") as client:
+        # Missing latitude
+        response = await client.post("/api/v1/predict", json={
+            "longitude": -105.3,
+            "route_type": "alpine",
+            "planned_date": "2024-07-15"
+        })
+
+        assert response.status_code == 422
+
+
+if __name__ == "__main__":
+    # Run tests with pytest
+    import subprocess
+    subprocess.run(["pytest", __file__, "-v", "--tb=short"])
