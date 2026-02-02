@@ -1,0 +1,12 @@
+# Railway Configuration for SafeAscent
+# This file configures build and deploy settings for Railway
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "backend/Dockerfile"
+
+[deploy]
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3

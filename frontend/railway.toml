@@ -1,0 +1,13 @@
+# Railway Configuration for SafeAscent Frontend
+# Deployed as a Docker service with Nginx
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+healthcheckPath = "/"
+healthcheckTimeout = 10
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
+numReplicas = 1
