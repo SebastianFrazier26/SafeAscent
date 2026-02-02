@@ -15,6 +15,7 @@ celery[redis]==5.4.0
 
 # HTTP client
 httpx==0.28.1
+requests==2.32.3
 
 # Scientific computing
 numpy==2.2.1
