@@ -1,0 +1,41 @@
+/**
+ * SafeAscent Global Styles
+ *
+ * Material Design baseline styles are handled by MUI CssBaseline
+ * This file contains only Mapbox-specific customizations
+ */
+
+/* Mapbox GL styles - required */
+.mapboxgl-canvas {
+  outline: none;
+}
+
+/* Hide Mapbox logo (we have attribution elsewhere) */
+.mapboxgl-ctrl-logo {
+  display: none !important;
+}
+
+/* Marker pulse animation */
+@keyframes pulse-marker {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.marker-pulse {
+  animation: pulse-marker 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Mapbox popup customization */
+.mapboxgl-popup-content {
+  border-radius: 8px;
+  box-shadow: 0px 2px 4px rgba(0,0,0,0.1), 0px 8px 16px rgba(0,0,0,0.1);
+}
+
+.mapboxgl-popup-close-button {
+  font-size: 20px;
+  padding: 4px 8px;
+}

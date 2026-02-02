@@ -1,0 +1,443 @@
+mountain_id,name,alt_names,elevation_ft,prominence_ft,type,range,state,latitude,longitude,location,accident_count
+1,McKinley,Denali,20310.0,20156.0,peak,Alaska Range,Alaska,63.0695,-151.0074,Austrian Mountain,197
+2,Rainier,,14411.0,13211.0,peak,Cascade Range,Washington,46.8523,-121.7603,Mount Rainier National Park,102
+3,Hood,,11250.0,7706.0,peak,Cascade Range,Oregon,45.3736,-121.696,Portland Mountain,70
+4,Shasta,,14179.0,9832.0,peak,Cascade Range,California,41.4093,-122.1949,Bay Area Mountain,61
+5,Longs,,14259.0,2942.0,peak,Front Range,Colorado,40.2549,-105.6151,Rocky Mountain National Park,41
+6,Washington,,6288.0,6148.0,peak,Presidential Range,New Hampshire,44.2705,-71.3033,New Hampshire Mountain,41
+7,Temple,,11627.0,2090.0,peak,Canadian Rockies,Alberta,51.35,-116.2167,Rocky Mountain,24
+8,Redgarden,,7000.0,,crag,Front Range,Colorado,39.9311,-105.2928,Eldorado Canyon State Park,16
+9,Robson,,12972.0,9908.0,peak,Canadian Rockies,British Columbia,53.1097,-119.1564,Rocky Mountain,12
+10,Athabasca,,11453.0,2979.0,peak,Canadian Rockies,Alberta,52.6942,-117.2133,Rocky Mountain,12
+11,Jefferson,,10502.0,4810.0,peak,Cascade Range,Oregon,44.6744,-121.799,I have been compiling and editing Accidents in North American Mountain,12
+12,Rundle,,9675.0,2775.0,peak,Canadian Rockies,Alberta,51.1333,-115.4333,Rocky Mountain,12
+13,Baker,,10781.0,8812.0,peak,North Cascades,Washington,48.7767,-121.8144,a party of 11 was on three ropes descending the Roman Wall,11
+14,Teewinot,,12330.0,1230.0,peak,Teton Range,Wyoming,43.7763,-110.8219,Grand Teton National Park,11
+15,Yamnuska,,7903.0,1079.0,peak,Canadian Rockies,Alberta,51.13,-114.98,Rocky Mountain,11
+16,Cathedral,,,,unknown,,California,37.8651,-119.5383,Yosemite National Park,10
+17,Cascade,,,,unknown,,Alberta,40.3428,-105.6836,Rocky Mountain,10
+18,Moran,,,,unknown,,Wyoming,43.7904,-110.6818,Grand Teton National Park,10
+19,Whitney,,14505.0,10080.0,peak,Sierra Nevada,California,36.5785,-118.2923,China Lake Mountain,10
+20,Pilot,,,,unknown,,North Carolina,36.3378,-80.4697,Pilot Mountain State Park,10
+21,Crowders,,,,unknown,,North Carolina,35.2095,-81.2981,Crowders Mountain State Park,9
+22,Hunter,,14573.0,3966.0,peak,Alaska Range,Alaska,62.9804,-151.0984,Andy Carson and Charles Crag,9
+23,Red Garden,,,,unknown,,Colorado,39.9311,-105.2928,Eldorado Canyon State Park,8
+24,Back of the Lake,,,,unknown,,Alberta,40.3428,-105.6836,Rocky Mountain,8
+25,Andromeda,,11319.0,1460.0,peak,Canadian Rockies,Alberta,52.2,-117.2833,Rocky Mountains,8
+26,Hallett,,,,unknown,,Colorado,40.3428,-105.6836,Rocky Mountain National Park,8
+27,Logan,,,,unknown,,Washington,41.7369,-111.8225,the Kluane National Park,8
+28,Moore's,,,,unknown,,North Carolina,36.3956,-80.2628,s Wall,7
+29,Tunnel,,,,unknown,,Alberta,40.3428,-105.6836,Rocky Mountain,7
+30,Shuksan,,9131.0,4426.0,peak,North Cascades,Washington,48.8098,-121.6065,A North Cascade National Park,7
+31,Foraker,,17400.0,7250.0,peak,Alaska Range,Alaska,62.9604,-151.3998,Mountain,7
+32,Wilson,,,,unknown,,Alberta,51.45,-116.0667,Banff National Park,7
+33,Lefroy,,,,unknown,,Alberta,51.3667,-116.3333,Rocky Mountain,7
+34,Edith,,,,unknown,,Alberta,40.3428,-105.6836,Rocky Mountain,7
+35,Disappointment,,,,unknown,,Wyoming,43.076,-107.2903,Disappointment Peak,7
+36,Stuart,,9415.0,5330.0,peak,Cascade Range,Washington,47.4753,-120.9025,,6
+37,Adams,,12281.0,8116.0,peak,Cascade Range,Washington,46.2024,-121.4909,Mount Adams,6
+38,Olympus,,7980.0,7818.0,peak,Olympic Mountains,Washington,47.8013,-123.7108,Olympic National Park,6
+39,Owen,,12928.0,648.0,peak,Teton Range,Wyoming,43.7429,-110.7958,They treated his injuries and sent other climbers in the area for assistance from Grand Teton National Park,6
+40,Sir,,,,unknown,,British Columbia,50.2667,-117.2833,Selkirk Mountain,5
+41,Aberdeen,,,,unknown,,Alberta,40.3428,-105.6836,Rocky Mountain,5
+42,Victoria,,,,unknown,,Alberta,51.3994,-116.3186,Rocky Mountain,5
+43,Thompson,,,,unknown,,Washington,47.7511,-120.7401,five climbers left base camp between Mount Thompson and Bumblebee Pass at 0500 for a Mountain,5
+44,John,,,,unknown,,Alberta,,,CMC Wall,5
+45,Minsi,,,,unknown,,Delaware,,,,5
+46,Camelback,,,,unknown,,Arizona,34.0489,-111.0937,Camelback Mountain,5
+47,Happy Hour,,,,unknown,,Colorado,40.015,-105.405,Boulder Canyon,5
+48,Table Rock,,,,unknown,,North Carolina,35.98,-81.88,Table Rock Mountain,4
+49,Barber,,,,unknown,,New Hampshire,43.1939,-71.5724,Barber Wall,4
+50,Stone,,,,unknown,,North Carolina,36.4,-81.0333,Stone Mountain,4
+51,Crestone,,14300.0,1920.0,peak,Sangre de Cristo,Colorado,37.9669,-105.5853,Crestone Peak,4
+52,Storm,,,,unknown,,Utah,39.321,-111.0937,Wasatch Mountain,4
+53,Mckinley,,,,unknown,,Alaska,40.3428,-105.6836,Mountain,4
+54,Dennis,,,,unknown,,British Columbia,40.3428,-105.6836,Rocky Mountain,4
+55,Ragged,,,,unknown,,Connecticut,41.6333,-72.7833,Ragged Mountain,4
+56,Capitol,,14137.0,2331.0,peak,Elk Mountains,Colorado,39.1502,-107.0831,Capitol Peak,4
+57,Castle,,,,unknown,,Alberta,51.4968,-115.9281,Castle Mountain,4
+58,Endless,,,,unknown,,Virginia,38.0667,-81.0667,Endless Wall,4
+59,Ha Ling,,,,unknown,,Alberta,40.3428,-105.6836,Rocky Mountain,4
+60,Chair,,,,unknown,,Washington,47.7511,-120.7401,Chair Peak,3
+61,Tennessee,,,,unknown,,Tennessee,35.05,-85.35,Tennessee Wall,3
+62,Weeping,,,,unknown,,Alberta,40.3428,-105.6836,Rocky Mountain,3
+63,Tammany,,,,unknown,,Delaware,,,A climber from another group contacted National Park,3
+64,Cory,,,,unknown,,Alberta,51.4968,-115.9281,Banff National Park,3
+65,Conness,,,,unknown,,California,37.8651,-119.5383,Yosemite National Park,3
+66,Rainbow,,,,unknown,,Nevada,36.1357,-115.4274,Red Rocks Canyon,3
+67,Buffalo,,,,unknown,,Ontario,45.3333,-76.1667,Buffalo Crag,3
+68,Highlander,,,,unknown,,Colorado,39.7528,-105.3614,Clear Creek Canyon,3
+69,Goat,,,,unknown,,Alberta,40.3428,-105.6836,Rocky Mountain,3
+70,Meeker,,,,unknown,,Colorado,40.3428,-105.6836,Rocky Mountain National Park,3
+71,Dana,,,,unknown,,California,37.8651,-119.5383,Yosemite National Park,3
+72,San,,,,unknown,,California,36.7783,-119.4179,Fatal Falls on Unusually Icy Peak,3
+73,Shortoff,,,,unknown,,North Carolina,35.9517,-81.8517,Shortoff Mountain,3
+74,Salathe,,,,unknown,,California,36.7783,-119.4179,was leading the 6th pitch of the Salathe Wall,3
+75,Salathé,,,,unknown,,California,36.7783,-119.4179,Salathé Wall,3
+76,Forbidden,,,,unknown,,Utah,37.2982,-113.0263,Zion National Park,3
+77,Whyte,,,,unknown,,,40.3428,-105.6836,Rocky Mountain,3
+78,Indefatigable,,,,unknown,,Alberta,40.3428,-105.6836,Rocky Mountain,3
+79,Johnson,,,,unknown,,Alaska,64.2008,-149.4937,Denali National Park,3
+80,Exum,,,,unknown,,Wyoming,43.076,-107.2903,Exum Mountain,3
+81,Assiniboine,,11870.0,4941.0,peak,Canadian Rockies,British Columbia,50.8667,-115.65,Rocky Mountains,3
+82,Flattop,,,,unknown,,Colorado,40.3428,-105.6836,Rocky Mountain National Park,3
+83,Snowdome,,,,unknown,,Alberta,52.8734,-117.9543,Jasper National Park,2
+84,Rincon,,,,unknown,,Colorado,39.9311,-105.2928,Eldorado Canyon State Park,2
+85,Ritter,,,,unknown,,California,36.7783,-119.4179,Inyo National Forest,2
+86,Silver,,,,unknown,,Washington,47.7511,-120.7401,Silver Peak,2
+87,Stoneworks,,,,unknown,,Alberta,40.3428,-105.6836,Rocky Mountain,2
+88,Star Trek,,,,unknown,,,,,Star Trek Wall,2
+89,White,,,,unknown,,Alberta,40.3428,-105.6836,Rocky Mountain,2
+90,Chinaman's,,,,unknown,,Alberta,,,s Peak,2
+91,Thunderbolt,,,,unknown,,California,36.7783,-119.4179,Kings Canyon National Park,2
+92,Tenaya,,,,unknown,,California,37.8651,-119.5383,Yosemite National Park,2
+93,Thor,,,,unknown,,Wyoming,43.076,-107.2903,Thor Peak,2
+94,Split,,,,unknown,,California,36.7783,-119.4179,Split Mountain,2
+95,Stanley,,,,unknown,,British Columbia,40.3428,-105.6836,Rocky Mountain,2
+96,Black,,,,unknown,,Washington,48.7718,-121.2985,North Cascades National Park,2
+97,Uto,,,,unknown,,British Columbia,48.7596,-113.787,Glacier National Park,2
+98,Wake,,,,unknown,,Alaska,63.1148,-151.1926,Denali National Park,2
+99,Tupper,,,,unknown,,,48.7596,-113.787,Glacier National Park,2
+100,Crandell,,,,unknown,,Alberta,,,Waterton Lakes National Park,2
+101,Stephen,,,,unknown,,British Columbia,51.3167,-116.45,Yoho National Park,2
+102,Chancellor,,,,unknown,,,51.45,-116.5,Yoho National Park,2
+103,Borah,,,,unknown,,Idaho,39.5501,-105.7821,Borah Peak,2
+104,Old Rag,,,,unknown,,Virginia,,,Shenandoah National Park,2
+105,Brock,,,,unknown,,Alberta,40.3428,-105.6836,Rocky Mountain,2
+106,Pingora,,,,unknown,,Wyoming,43.076,-107.2903,while ascending Pingora Peak,2
+107,Rattlesnake,,,,unknown,,New Hampshire,43.1939,-71.5724,Rattlesnake Mountain,2
+108,Columbia,,12294.0,8806.0,peak,Canadian Rockies,Alberta,52.1472,-117.4411,Rocky Mountain,2
+109,Sandia,,,,unknown,,New Mexico,35.205,-106.4792,Sandia Mountain Wilderness,2
+110,Collier,,,,unknown,,Alberta,40.3428,-105.6836,Rocky Mountain,2
+111,Pitchoff,,,,unknown,,New York,43.2994,-74.2179,Pitchoff Mountain,2
+112,Lady,,,,unknown,,Alberta,40.3428,-105.6836,Rocky Mountain National Park,2
+113,Maroon Bells,,,,unknown,,Colorado,39.5501,-105.7821,Maroon Bells Mountain,2
+114,Louis,,,,unknown,,Alberta,40.3428,-105.6836,Rocky Mountain,2
+115,Lower Peanuts,,,,unknown,,Colorado,39.9311,-105.2928,Eldorado Canyon,2
+116,Lorette,,,,unknown,,Alberta,,,,2
+117,Murchison,,,,unknown,,Alberta,51.9167,-116.7833,Rocky Mountain,2
+118,Deltaform,,,,unknown,,Alberta,51.3167,-116.2,Rocky Mountain,2
+119,Muir,,,,unknown,,California,37.2151,-118.5437,Muir Wall,2
+120,Moores,,,,unknown,,North Carolina,36.3956,-80.2628,Hanging Rock State Park,2
+121,Neptuak,,,,unknown,,Alberta,51.3167,-116.2333,a party of seven set out on a club outing to traverse some of the ten peaks from west to east in the Valley of the Ten Peak,2
+122,Dragontail,,,,unknown,,Washington,47.7511,-120.7401,Dragontail Peak,2
+123,Eagle Cliff,,,,unknown,,Colorado,40.3428,-105.6836,Rocky Mountain National Park,2
+124,Pinnacle,,,,unknown,,Arizona,34.0489,-111.0937,Pinnacle Peak,2
+125,Fay,,,,unknown,,Alberta,51.3333,-116.2667,Rocky Mountain,2
+126,Joffre,,,,unknown,,Alberta,40.3428,-105.6836,Rocky Mountain,2
+127,Lemmon,,,,unknown,,Arizona,34.0489,-111.0937,,2
+128,Goode,,,,unknown,,Washington,47.7511,-120.7401,Goode Mountain,2
+129,Glacier,,,,unknown,,Washington,47.7511,-120.7401,Glacier Peak,2
+130,Haddo,,,,unknown,,Alberta,40.3428,-105.6836,Rocky Mountain,2
+131,Hawksbill,,,,unknown,,Washington,47.7511,-120.7401,Buffalo National River Wilderness,2
+132,Katahdin,,,,unknown,,Maine,45.9187,-68.8597,Baxter State Park,2
+133,Jackson,,,,unknown,,Montana,48.7596,-113.787,Glacier National Park,2
+134,Canyon Spring,,,,unknown,,Arizona,34.0489,-111.0937,Canyon Spring Wall,2
+135,Guye,,,,unknown,,Washington,47.7511,-120.7401,Guye Peak,2
+136,Eldorado,,,,unknown,,Washington,47.7511,-120.7401,Eldorado Peak,2
+137,Granite,,,,unknown,,Arizona,46.8306,-113.4051,Granite Mountain,2
+138,Woolley,,,,unknown,,Alberta,52.8734,-117.9543,Jasper National Park,2
+139,Yellow,,,,unknown,,Alberta,43.2994,-74.2179,on the Yellow Wall,2
+140,Bihedral,,,,unknown,,Colorado,40.015,-105.405,Boulder Canyon,2
+141,Ypsilon,,,,unknown,,Colorado,40.3428,-105.6836,Rocky Mountain,2
+142,Wiwaxy,,,,unknown,,British Columbia,40.3428,-105.6836,Rocky Mountain,2
+143,Baldy,,,,unknown,,California,36.7783,-119.4179,Cimmaron Mountain,2
+144,Vice,,,,unknown,,British Columbia,51.45,-116.5,Yoho National Park,1
+145,Yukla,,,,unknown,,Alaska,64.2008,-149.4937,Chugach State Park,1
+146,Aces High on Casino,,,,unknown,,,,,Cougar Creek Canyon,1
+147,Alber-Edward,,,,unknown,,British Columbia,,,,1
+148,Alice,,,,unknown,,Colorado,40.3428,-105.6836,Rocky Mountain National Park,1
+149,An Exum,,,,unknown,,Wyoming,43.076,-107.2903,An Exum Mountain,1
+150,Augusta,,,,unknown,,Alaska,64.2008,-149.4937,Elias National Park and in Canada by Kluane National Park,1
+151,Avalanche,,,,unknown,,British Columbia,50.2667,-117.2833,Selkirk Mountain,1
+152,Cave,,,,unknown,,New Hampshire,43.1939,-71.5724,two climbers were going up Standard on Cathedral when the leader fell from Cave Wall,1
+153,Wolf's Head,,,,unknown,,Alaska,64.2008,-149.4937,s Head Peak,1
+154,Tinkham,,,,unknown,,Washington,47.7511,-120.7401,Tinkham Peak,1
+155,Touchstone,,,,unknown,,Utah,37.2982,-113.0263,Zion National Park,1
+156,Town,,,,unknown,,Washington,47.7511,-120.7401,Town Wall,1
+157,Transformer,,,,unknown,,Idaho,,,10c on Transformer Wall,1
+158,Troopers notified the Alaska,,,,unknown,,Alaska,64.2008,-149.4937,Alaska State Troopers notified the Alaska Mountain,1
+159,Tuolumne,,,,unknown,,California,37.8651,-119.5383,Yosemite National Park,1
+160,China,,,,unknown,,California,36.7783,-119.4179,China Wall,1
+161,Church,,,,unknown,,Idaho,,,one thousand foot climb through the forested bottom of the Jones Creek Canyon,1
+162,Cirrus,,,,unknown,,,51.4968,-115.9281,Banff National Park,1
+163,Cleaver,,,,unknown,,California,36.7783,-119.4179,Cleaver Peak,1
+164,Colchuck,,,,unknown,,Washington,47.7511,-120.7401,Colchuck Peak,1
+165,Colin,,,,unknown,,Alberta,52.8734,-117.9543,Jasper National Park,1
+166,Back-of-the-Lake,,,,unknown,,Alberta,40.3428,-105.6836,Rocky Mountain,1
+167,Watchtower,,,,unknown,,,,,Watchtower Peak,1
+168,West Face of the North,,,,unknown,,Virginia,,,started soloing a chimney on the West Face of the North Peak,1
+169,West Kahiltna,,,,unknown,,,63.1148,-151.1926,LEADER FALL ON ICE Denali National Park,1
+170,Fisher,,,,unknown,,,40.3428,-105.6836,Rocky Mountain,1
+171,Flagstaff,,,,unknown,,Colorado,39.5501,-105.7821,Flagstaff Mountain,1
+172,Flat Top,,,,unknown,,Alaska,64.2008,-149.4937,Chugach State Park,1
+173,Foothill,,,,unknown,,California,36.7783,-119.4179,Foothill Crag,1
+174,Foreplay,,,,unknown,,,,,Foreplay Wall,1
+175,Frances,,,,unknown,,Alaska,63.1148,-151.1926,Denali National Park,1
+176,Fryatt,,,,unknown,,Alberta,52.8734,-117.9543,Jasper National Park,1
+177,Gannet,,,,unknown,,Wyoming,43.076,-107.2903,Gannet Peak,1
+178,Gannett,,13810.0,7076.0,peak,Wind River Range,Wyoming,43.1842,-109.6542,Gannett Peak,1
+179,Garfield,,,,unknown,,Washington,47.7511,-120.7401,,1
+180,Gates,,,,unknown,,British Columbia,51.5,-118.5,Monashee Mountain,1
+181,Geraldine,,,,unknown,,Alberta,40.3428,-105.6836,Rocky Mountain,1
+182,Easy Day,,,,unknown,,Wyoming,43.076,-107.2903,Easy Day Peak,1
+183,Eaton,,,,unknown,,Alaska,64.2008,-149.4937,Kluane National Park,1
+184,El Diente,,,,unknown,,Colorado,39.5501,-105.7821,El Diente Peak,1
+185,Emerson,,,,unknown,,California,36.7783,-119.4179,Sierra Nevada,1
+186,Huntington,,,,unknown,,Alaska,64.2008,-149.4937,Alaska Mountain,1
+187,I received a call from Exum,,,,unknown,,Wyoming,43.7904,-110.6818,Grand Teton National Park,1
+188,Idems,,,,unknown,,Alaska,64.2008,-149.4937,Idems Peak,1
+189,Inadequate Belay Pilot,,,,unknown,,,36.3378,-80.4697,Inadequate Belay Pilot Mountain State Park,1
+190,Grandfather,,,,unknown,,North Carolina,,,Grandfather Mountain,1
+191,Grandjean,,,,unknown,,Idaho,,,Sawtooth Wilderness,1
+192,Grays,,,,unknown,,British Columbia,50.2667,-117.2833,Selkirk Mountain,1
+193,Great Smokey,,,,unknown,,North Carolina,,,Great Smokey Mountain National Park,1
+194,Green,,,,unknown,,Vermont,44.5588,-72.5778,Green Peak,1
+195,Guide's,,,,unknown,,Wyoming,43.076,-107.2903,s Wall,1
+196,Guides,,,,unknown,,Wyoming,43.7904,-110.6818,Grand Teton National Park,1
+197,Guides',,,,unknown,,Wyoming,43.7904,-110.6818,Grand Teton National Park,1
+198,Gus Fruh,,,,unknown,,,,,Gus Fruh Wall,1
+199,Guy,,,,unknown,,Washington,47.7511,-120.7401,Guy Peak,1
+200,Field,,,,unknown,,British Columbia,40.3428,-105.6836,Rocky Mountain,1
+201,Fire and Rocky,,,,unknown,,Colorado,39.9311,-105.2928,Eldorado Canyon State Park,1
+202,Carson,,,,unknown,,California,36.7783,-119.4179,Carson Peak,1
+203,Cat,,,,unknown,,Utah,39.321,-111.0937,Cat Wall,1
+204,Junkyard,,,,unknown,,,38.0731,-81.0779,New River Gorge National Park,1
+205,Keelhaul,,,,unknown,,,,,Keelhaul Wall,1
+206,Kerkeslin,,,,unknown,,Alberta,52.8734,-117.9543,Jasper National Park,1
+207,Kidd's,,,,unknown,,,,,,1
+208,King,,,,unknown,,,,,Quebec Mountain,1
+209,Haig,,,,unknown,,,,,,1
+210,Hayes,,,,unknown,,Alaska,48.7596,-113.787,Glacier,1
+211,Haystack,,,,unknown,,New York,43.2994,-74.2179,,1
+212,Henley,,,,unknown,,Missouri,,,Henley Wall,1
+213,Heyburn,,,,unknown,,Idaho,,,route on Sturs Chimney on Mount Heyburn in the Sawtooth Wilderness,1
+214,High Wire,,,,unknown,,Colorado,39.7528,-105.3614,Clear Creek Canyon,1
+215,Hudson Bay,,,,unknown,,British Columbia,,,Coast Mountain,1
+216,Humboldt,,,,unknown,,Colorado,39.5501,-105.7821,San de Cristo Mountain,1
+217,Hungabee,,,,unknown,,,51.3167,-116.2667,Yoho National Park,1
+218,Index,,5979.0,3179.0,peak,Cascade Range,Washington,47.8215,-121.5562,Everett Mountain,1
+219,Index Town,,,,unknown,,Washington,47.7511,-120.7401,Index Town Wall,1
+220,International,,,,unknown,,British Columbia,50.5,-116.5,Purcell Mountain,1
+221,Ishbel,,,,unknown,,Alberta,40.3428,-105.6836,Rocky Mountain,1
+222,Itso,,,,unknown,,Alaska,64.2008,-149.4937,,1
+223,Jackson Hole,,,,unknown,,Wyoming,43.7904,-110.6818,Grand Teton National Park,1
+224,Fable,,,,unknown,,Alberta,,,,1
+225,Face of Petit Grepon in Rocky,,,,unknown,,Colorado,40.3428,-105.6836,Rocky Mountain National Park,1
+226,Fall From Artificial,,,,unknown,,Washington,47.7511,-120.7401,Fall From Artificial Wall,1
+227,Fall on Artificial Rock,,,,unknown,,Colorado,39.5501,-105.7821,Fall on Artificial Rock Wall,1
+228,Fern Creek Party,,,,unknown,,Virginia,,,trad route located on the Fern Creek Party Wall,1
+229,Feudal,,,,unknown,,California,36.7783,-119.4179,Feudal Wall,1
+230,Canon,,,,unknown,,New Hampshire,43.1939,-71.5724,Canon Mountain,1
+231,Cantata,,,,unknown,,Alaska,64.2008,-149.4937,Cantata Peak,1
+232,Capital,,,,unknown,,Colorado,39.5501,-105.7821,Capital Peak,1
+233,Carmel,,,,unknown,,Utah,39.321,-111.0937,Pine Creek Canyon,1
+234,McKinely,,,,unknown,,Alaska,64.2008,-149.4937,a client of a guided Rainier Mountain,1
+235,Meader,,,,unknown,,New Hampshire,43.1939,-71.5724,,1
+236,Lake Drainage of Red Slate,,,,unknown,,California,36.7783,-119.4179,The third involved a couple climbing in the Convict Lake Drainage of Red Slate Mountain,1
+237,Laurel,,,,unknown,,California,36.7783,-119.4179,Laurel Mountain,1
+238,Laurie,,,,unknown,,Alberta,,,,1
+239,Lawson,,,,unknown,,Alberta,40.3428,-105.6836,Rocky Mountain,1
+240,Leda,,,,unknown,,British Columbia,50.2667,-117.2833,Selkirk Mountain,1
+241,Lemon,,,,unknown,,Arizona,34.0489,-111.0937,,1
+242,Little,,,,unknown,,Alberta,51.4968,-115.9281,Banff National Park,1
+243,Little Bear,,,,unknown,,Alaska,64.2008,-149.4937,Little Bear Peak,1
+244,Little Blue,,,,unknown,,,,,Little Blue Mountain,1
+245,Lone,,,,unknown,,Utah,39.321,-111.0937,Lone Peak,1
+246,Long,,,,unknown,,Utah,39.321,-111.0937,Long Wall,1
+247,Long Ledge on the Salathe,,,,unknown,,California,36.7783,-119.4179,reached Long Ledge on the Salathe Wall,1
+248,Long's,,,,unknown,,Colorado,40.3428,-105.6836,Rocky Mountain National Park,1
+249,Lookout,,,,unknown,,Colorado,39.5501,-105.7821,San Juan Mountain,1
+250,Devil's,,,,unknown,,California,36.4864,-118.5658,Sequoia National Park,1
+251,Dickey,,,,unknown,,Alaska,63.1148,-151.1926,Denali National Park,1
+252,Dione,,,,unknown,,British Columbia,,,,1
+253,Morning Glory,,,,unknown,,Oregon,43.8041,-120.5542,Morning Glory Wall,1
+254,Morrow,,,,unknown,,Alberta,52.8734,-117.9543,Jasper National Park,1
+255,Murray,,,,unknown,,Alberta,,,,1
+256,Narao,,,,unknown,,British Columbia,40.3428,-105.6836,Rocky Mountain,1
+257,Near Security Risk,,,,unknown,,Colorado,40.015,-105.405,Boulder Canyon,1
+258,Lost,,,,unknown,,Arizona,34.0489,-111.0937,Queen Creek Canyon,1
+259,Lower Town,,,,unknown,,Washington,47.7511,-120.7401,Lower Town Wall,1
+260,Lundin,,,,unknown,,Washington,47.7511,-120.7401,Lundin Peak,1
+261,Main,,,,unknown,,California,36.7783,-119.4179,Lee Vining Canyon,1
+262,Manchester,,,,unknown,,,,,Manchester Wall,1
+263,Matterhorn,,,,unknown,,California,36.7783,-119.4179,Matterhorn Peak,1
+264,McArthur,,,,unknown,,,,,Elias Mountain,1
+265,McGillivray,,,,unknown,,Alberta,,,,1
+266,Megunticook,,,,unknown,,,,,Camden Hills State Park,1
+267,Merritt,,,,unknown,,Montana,48.7596,-113.787,Glacier National Park,1
+268,Middle,,,,unknown,,Alaska,64.2008,-149.4937,Middle Peak,1
+269,Midnight Surf,,,,unknown,,Kentucky,,,Midnight Surf Wall,1
+270,Military,,,,unknown,,,,,A large group was gathered at Military Wall,1
+271,Minimum,,,,unknown,,Utah,39.321,-111.0937,Maple Canyon,1
+272,Mix Up,,,,unknown,,Washington,47.7511,-120.7401,Mix Up Peak,1
+273,Mixup,,,,unknown,,Washington,47.7511,-120.7401,Mixup Peak,1
+274,Caubvick,,,,unknown,,,,,Kluane National Park,1
+275,Dougie,,,,unknown,,British Columbia,,,,1
+276,Drive-by,,,,unknown,,,,,by Crag,1
+277,Dunderberg,,,,unknown,,California,36.7783,-119.4179,Dunderberg Peak,1
+278,East Face of Longs,,,,unknown,,Colorado,40.3428,-105.6836,Rocky Mountain National Park,1
+279,Daly,,,,unknown,,,51.45,-116.5,Yoho National Park,1
+280,Dead Cat's,,,,unknown,,Texas,,,s Wall,1
+281,Deception,,,,unknown,,Alaska,63.1148,-151.1926,he arrived at Chulitna River Lodge where he called Denali National Park,1
+282,Open Space and,,,,unknown,,Colorado,39.5501,-105.7821,s Open Space and Mountain,1
+283,Nez Perce,,,,unknown,,Wyoming,43.7904,-110.6818,Grand Teton National Park,1
+284,Niblock,,,,unknown,,Alberta,40.3428,-105.6836,Rocky Mountain,1
+285,No Helmet Pilot,,,,unknown,,,36.3378,-80.4697,No Helmet Pilot Mountain State Park,1
+286,Norman Clyde,,,,unknown,,California,36.7783,-119.4179,Norman Clyde Peak,1
+287,Norquay,,,,unknown,,Alberta,51.4968,-115.9281,two scramblers started up a difficult scramble on Mount Norquay in Banff National Park,1
+288,North America,,,,unknown,,California,36.7783,-119.4179,North America Wall,1
+289,North Arapaho,,,,unknown,,Colorado,39.5501,-105.7821,Indian Peaks Wilderness,1
+290,North Carolina,,,,unknown,,North Carolina,,,North Carolina Wall,1
+291,North Maroon,,,,unknown,,Colorado,39.5501,-105.7821,North Maroon Peak,1
+292,North of the Crystal,,,,unknown,,Colorado,39.5501,-105.7821,Poudre Canyon,1
+293,Blakiston,,,,unknown,,Alberta,40.3428,-105.6836,Rocky Mountain,1
+294,Bold,,,,unknown,,Alaska,64.2008,-149.4937,Bold Peak,1
+295,Bona,,,,unknown,,Alaska,64.2008,-149.4937,Wrangell Mountain,1
+296,Boneyard,,,,unknown,,,,,at the Boneyard Wall,1
+297,Bonneville,,,,unknown,,Wyoming,43.076,-107.2903,,1
+298,Parks Canada and Canadian,,,,unknown,,British Columbia,50.5,-116.5,Purcell Mountain,1
+299,Patterson,,,,unknown,,Alberta,51.4968,-115.9281,Banff National Park,1
+300,Picnic Lunch,,,,unknown,,Oregon,44.3672,-121.1406,Smith Rock State Park,1
+301,Pigeon,,,,unknown,,,50.7167,-116.7667,Pigeon Mountain,1
+302,Pikes,,,,unknown,,Colorado,39.5501,-105.7821,Pikes Peak,1
+303,Boulderado,,,,unknown,,Colorado,40.015,-105.405,Boulder Canyon,1
+304,Bourgeau,,,,unknown,,Alberta,51.4968,-115.9281,Banff National Park,1
+305,Breidablik,,,,unknown,,,,,Auyuittuq National Park,1
+306,Brooks,,,,unknown,,Alaska,63.1148,-151.1926,were visiting Denali National Park,1
+307,Buller,,,,unknown,,Alberta,53.9333,-116.5765,Rocky Mountains,1
+308,Bumblebee,,,,unknown,,Utah,39.321,-111.0937,Big Cottonwood Canyon,1
+309,Bunk Bed,,,,unknown,,,,,6 route on the Bunk Bed Wall,1
+310,Burgess,,,,unknown,,British Columbia,51.45,-116.5,Yoho National Park,1
+311,Nublock,,,,unknown,,Alberta,53.9333,-116.5765,Rocky Mountains,1
+312,Oceanic,,,,unknown,,,,,Dream Canyon,1
+313,Office,,,,unknown,,Arizona,34.0489,-111.0937,s Office Mountain,1
+314,Condor,,,,unknown,,California,36.7783,-119.4179,Condor Crag,1
+315,Corvallis,,,,unknown,,Washington,47.7511,-120.7401,a graduate student at Oregon State University and member of Corvallis Mountain,1
+316,Cosmology,,,,unknown,,,40.3428,-105.6836,Rocky Mountain,1
+317,Rambler,,,,unknown,,,,,Rambler Peak,1
+318,Redoubt,,,,unknown,,,52.8734,-117.9543,Jasper National Park,1
+319,Revelstoke,,,,unknown,,British Columbia,,,Mount Revelstoke National Park,1
+320,Ridge between Little Pawnee,,,,unknown,,Colorado,39.5501,-105.7821,Indian Peak,1
+321,Ophir,,,,unknown,,Colorado,39.5501,-105.7821,Ophir Wall,1
+322,Orange Sunshine,,,,unknown,,,,,Orange Sunshine Wall,1
+323,Orville,,,,unknown,,Alaska,64.2008,-149.4937,Glacier Bay National Park,1
+324,Oubliette,,,,unknown,,Alberta,52.8734,-117.9543,Jasper National Park,1
+325,Ouray,,,,unknown,,Colorado,39.5501,-105.7821,the Ouray Mountain,1
+326,Painted,,,,unknown,,Colorado,39.5501,-105.7821,Black Canyon of the Gunnison National Park,1
+327,Paintings,,,,unknown,,Alberta,51.4968,-115.9281,Banff National Park,1
+328,Palisade,,,,unknown,,British Columbia,50.2667,-117.2833,Selkirk Mountain,1
+329,Parking Lot,,,,unknown,,New Hampshire,43.1939,-71.5724,Parking Lot Wall,1
+330,Powell,,,,unknown,,Colorado,39.5501,-105.7821,,1
+331,Practice,,,,unknown,,Kentucky,,,located at the Practice Wall,1
+332,Primo,,,,unknown,,Colorado,39.7528,-105.3614,Clear Creek Canyon,1
+333,Protection Pulled Out Ragged,,,,unknown,,,41.6333,-72.7833,Protection Pulled Out Ragged Mountain,1
+334,Ptarmigan,,,,unknown,,Alaska,64.2008,-149.4937,Ptarmigan Peak,1
+335,Pyramid,,,,unknown,,Colorado,39.5501,-105.7821,Pyramid Peak,1
+336,Quandry,,,,unknown,,Colorado,39.5501,-105.7821,Quandry Mountain,1
+337,Discovery,,,,unknown,,California,36.7783,-119.4179,Discovery Wall,1
+338,Division,,,,unknown,,,51.4968,-115.9281,Banff National Park,1
+339,Dogwood,,,,unknown,,Utah,39.321,-111.0937,Big Cottonwood Canyon,1
+340,Dorr,,,,unknown,,Maine,44.3386,-68.2733,Acadia National Park,1
+341,Burstall,,,,unknown,,,,,,1
+342,Candian Border,,,,unknown,,British Columbia,,,Candian Border Peak,1
+343,Cannon,,,,unknown,,New Hampshire,43.1939,-71.5724,Cannon Mountain,1
+344,Colorado Longs,,,,unknown,,Colorado,39.5501,-105.7821,Colorado Longs Peak,1
+345,Colossal,,,,unknown,,British Columbia,,,Northern Selkirk Mountain,1
+346,Snow,,,,unknown,,Alberta,40.3428,-105.6836,Rocky Mountain,1
+347,Snow Creek,,,,unknown,,Washington,47.7511,-120.7401,Snow Creek Wall,1
+348,Snowmass,,,,unknown,,Colorado,39.5501,-105.7821,Snowmass Mountain,1
+349,Sorcerer,,,,unknown,,British Columbia,,,Northern Selkirk Mountain,1
+350,South,,,,unknown,,,44.3386,-68.2733,Acadia National Park,1
+351,Ripple,,,,unknown,,Colorado,36.1357,-115.4274,Red Rock Canyon,1
+352,Roadside,,,,unknown,,Kentucky,,,Roadside Crag,1
+353,Rodeo,,,,unknown,,Wyoming,43.076,-107.2903,Rodeo Wall,1
+354,Saco,,,,unknown,,New Hampshire,43.1939,-71.5724,Saco Crag,1
+355,Saddle,,,,unknown,,Alberta,40.3428,-105.6836,Rocky Mountain,1
+356,Sahale,,,,unknown,,Washington,48.7718,-121.2985,North Cascades National Park,1
+357,Saint,,,,unknown,,,,,,1
+358,Saska,,,,unknown,,Washington,47.7511,-120.7401,Saska Peak,1
+359,Sauartown,,,,unknown,,North Carolina,,,Sauartown Mountain,1
+360,Scud,,,,unknown,,Wyoming,43.076,-107.2903,Sinks Canyon,1
+361,Pisgah,,,,unknown,,Vermont,44.5588,-72.5778,,1
+362,Champlain,,,,unknown,,Maine,44.3386,-68.2733,Acadia National Park,1
+363,Charlton,,,,unknown,,Alberta,52.8734,-117.9543,Jasper National Park,1
+364,Cheops,,,,unknown,,British Columbia,48.7596,-113.787,Glacier National Park,1
+365,Chikamin,,,,unknown,,Washington,47.7511,-120.7401,Chikamin Peak,1
+366,Stewart,,,,unknown,,Washington,47.7511,-120.7401,,1
+367,Sun Devil,,,,unknown,,,,,Diablo Canyon,1
+368,Sunnyside,,,,unknown,,,,,was standing on a belay ledge at the Sunnyside Wall,1
+369,Sunshine,,,,unknown,,Washington,47.7511,-120.7401,on Sunshine Wall,1
+370,Sherpa,,,,unknown,,Washington,47.7511,-120.7401,Alpine Lakes Wilderness,1
+371,Sifton,,,,unknown,,,48.7596,-113.787,and a team from Glacier National Park,1
+372,Silent Pillar,,,,unknown,,California,36.7783,-119.4179,at Silent Pillar Wall,1
+373,Sill,,14159.0,597.0,peak,Sierra Nevada,California,36.7783,-119.4179,comprised of two Wilderness,1
+374,Silver Run,,,,unknown,,Montana,46.8797,-110.3626,Beartooth Wilderness,1
+375,Skarland,,,,unknown,,Alaska,64.2008,-149.4937,,1
+376,Sneffles,,,,unknown,,Colorado,39.5501,-105.7821,,1
+377,Snoqualmie,,,,unknown,,Washington,47.7511,-120.7401,Snoqualmie Mountain,1
+378,Thatchtop,,,,unknown,,Colorado,40.3428,-105.6836,Rocky Mountain National Park,1
+379,The Flank,,,,unknown,,,,,The Flank Wall,1
+380,Thielsen,,,,unknown,,Oregon,43.8041,-120.5542,,1
+381,South Maroon,,,,unknown,,Colorado,39.5501,-105.7821,South Maroon Peak,1
+382,Southwest Ridge of,,,,unknown,,Alaska,63.1148,-151.1926,Denali National Park,1
+383,Spring,,,,unknown,,Nevada,,,Spring Mountain,1
+384,Starbuck,,,,unknown,,New York,43.2994,-74.2179,Starbuck Mountain,1
+385,Starlight,,,,unknown,,California,36.7783,-119.4179,Starlight Peak,1
+386,Cowbell,,,,unknown,,Alberta,40.3428,-105.6836,Rocky Mountain,1
+387,Crowder,,,,unknown,,,,,Crowder Mountain State Park,1
+388,Crowder's,,,,unknown,,North Carolina,,,s Mountain State Park,1
+389,Crowfoot,,,,unknown,,Alberta,40.3428,-105.6836,Rocky Mountain,1
+390,Cutthroat,,,,unknown,,Washington,47.7511,-120.7401,Cutthroat Peak,1
+391,Cerberus,,,,unknown,,Utah,37.2982,-113.0263,Zion National Park,1
+392,Cesaire,,,,unknown,,Quebec,,,plus two instructors from the Quebec Mountain,1
+393,Chair in the Morning Glory,,,,unknown,,Oregon,44.3672,-121.1406,s Chair in the Morning Glory Wall area of Smith Rock State Park,1
+394,Whitehorse,,,,unknown,,Washington,47.7511,-120.7401,Whitehorse Mountain,1
+395,Whiteside,,,,unknown,,,,,Whiteside Mountain,1
+396,Whitesides,,,,unknown,,North Carolina,,,Whitesides Mountain,1
+397,Twin Owls,,,,unknown,,Colorado,40.3428,-105.6836,Rocky Mountain National Park,1
+398,Balfour,,,,unknown,,Alberta,51.5667,-116.4333,Banff National Park,1
+399,Bancroft,,,,unknown,,Colorado,39.5501,-105.7821,in the James Peak Wilderness,1
+400,Baron,,,,unknown,,Idaho,,,Sawtooth Mountain,1
+401,Barrier,,,,unknown,,Alberta,,,Barrier Mountain,1
+402,Table,,,,unknown,,Wyoming,43.7904,-110.6818,Grand Teton National Park,1
+403,Tammay,,,,unknown,,Delaware,,,Head Wall,1
+404,Tantalus,,8540.0,5810.0,peak,Coast Mountains,British Columbia,53.7267,-127.6476,Coast Mountains,1
+405,Tattoo,,,,unknown,,,,,Tattoo Wall,1
+406,Taylor,,,,unknown,,Colorado,40.3428,-105.6836,Rocky Mountain National Park,1
+407,Tectonic,,,,unknown,,,,,Tectonic Wall,1
+408,Terminal,,,,unknown,,British Columbia,50.2667,-117.2833,Selkirk Mountain,1
+409,Terror,,,,unknown,,Washington,47.7511,-120.7401,,1
+410,Willard,,,,unknown,,,,,and members of Mountain,1
+411,Victory,,,,unknown,,,,,Victory Wall,1
+412,Vittles,,,,unknown,,,,,Vittles Wall,1
+413,Waddington,,13186.0,9515.0,peak,Coast Mountains,British Columbia,51.3731,-125.2631,Coast Mountain,1
+414,Vesper,,,,unknown,,Washington,47.7511,-120.7401,Vesper Peak,1
+415,Warbonnet,,,,unknown,,Colorado,39.5501,-105.7821,Warbonnet Peak,1
+416,Wardle,,,,unknown,,British Columbia,40.3428,-105.6836,Rocky Mountain,1
+417,Warren,,,,unknown,,Wyoming,43.076,-107.2903,,1
+418,Wasington,,,,unknown,,Washington,47.7511,-120.7401,,1
+419,Billy,,,,unknown,,British Columbia,50.2667,-117.2833,Selkirk Mountain,1
+420,Two-Pitch,,,,unknown,,,35.2095,-81.2981,"Protection Pulled Out 
+Crowders Mountain State Park",1
+421,Tyndall Glacier in Rocky,,,,unknown,,Colorado,40.3428,-105.6836,Rocky Mountain National Park,1
+422,Upper Town,,,,unknown,,Washington,47.7511,-120.7401,Upper Town Wall,1
+423,Avalon,,,,unknown,,Colorado,40.015,-105.405,Boulder Canyon,1
+424,Throne,,,,unknown,,Alberta,52.8734,-117.9543,Jasper National Park,1
+425,Thunder Bolt,,,,unknown,,California,36.7783,-119.4179,Thunder Bolt Peak,1
+426,Engineer,,,,unknown,,Colorado,39.5501,-105.7821,Engineer Mountain,1
+427,Erie,,,,unknown,,Washington,47.7511,-120.7401,,1
+428,Wrangell-St,,,,unknown,,Alaska,64.2008,-149.4937,Fall into Crevasse while Ski Mountain,1
+429,Wright,,,,unknown,,Vermont,44.5588,-72.5778,Adirondack High Peak,1
+430,Abraham,,,,unknown,,Alberta,40.3428,-105.6836,Rocky Mountain,1
+431,Bald,,,,unknown,,Maine,,,Bald Mountain,1
+432,Barrill,,,,unknown,,Alaska,63.1148,-151.1926,Denali National Park,1
+433,Barrille,,,,unknown,,Alaska,63.1148,-151.1926,Denali National Park,1
+434,Batman Rock Rocky,,,,unknown,,Colorado,40.3428,-105.6836,Rocky Mountain National Park,1
+435,Beauty,,,,unknown,,Virginia,,,Beauty Mountain,1
+436,Beckey's,,,,unknown,,Utah,39.321,-111.0937,Little Cottonwood Canyon,1
+437,Belayer Pulled Into,,,,unknown,,,,,Belayer Pulled Into Wall,1
+438,Bell,,,,unknown,,,51.4968,-115.9281,Banff National Park,1
+439,Biddle,,,,unknown,,British Columbia,51.45,-116.5,Yoho National Park,1
+440,Whittle,,,,unknown,,Colorado,39.9311,-105.2928,Eldorado Canyon State Park,1
+441,Wicked Gravity,,,,unknown,,,,,Wicked Gravity Wall,1

@@ -1,0 +1,64 @@
+# DigitalOcean App Platform - Simple Template
+# This is a simplified version for quick deployment
+#
+# Usage:
+# 1. Install doctl: brew install doctl (macOS) or snap install doctl (Linux)
+# 2. Authenticate: doctl auth init
+# 3. Create app: doctl apps create --spec .do/deploy.template.yaml
+#
+# For production, use app.yaml with managed databases
+
+name: safeascent-simple
+
+region: nyc
+
+services:
+  # Backend API
+  - name: backend
+    github:
+      repo: YOUR_USERNAME/SafeAscent
+      branch: main
+      deploy_on_push: true
+    dockerfile_path: backend/Dockerfile
+    source_dir: backend
+    http_port: 8000
+    instance_size_slug: basic-xs
+    instance_count: 1
+    health_check:
+      http_path: /health
+    envs:
+      - key: DEBUG
+        value: "false"
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        type: SECRET
+      - key: REDIS_URL
+        scope: RUN_TIME
+        type: SECRET
+      - key: OPENWEATHER_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+    routes:
+      - path: /api
+      - path: /health
+
+  # Frontend
+  - name: frontend
+    github:
+      repo: YOUR_USERNAME/SafeAscent
+      branch: main
+      deploy_on_push: true
+    dockerfile_path: frontend/Dockerfile
+    source_dir: frontend
+    http_port: 80
+    instance_size_slug: basic-xxs
+    instance_count: 1
+    envs:
+      - key: VITE_API_BASE_URL
+        scope: BUILD_TIME
+        value: ${APP_URL}/api/v1
+      - key: VITE_MAPBOX_TOKEN
+        scope: BUILD_TIME
+        type: SECRET
+    routes:
+      - path: /
