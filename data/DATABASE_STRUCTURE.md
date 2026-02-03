@@ -1,6 +1,9 @@
 # SafeAscent Database Structure
 
-**Updated:** 2026-01-25
+**Updated:** 2026-02-03
+
+> **Note**: Data pipeline is being rebuilt. Current counts reflect tables in `data/tables/*.csv`.
+> Mountain Project scraper has collected 196,000+ routes (pending integration).
 
 ---
 
@@ -100,12 +103,11 @@ Ascents (366) → Climbers (178)
 | **mountain_id** | int | FK to mountains (nullable) |
 | **route_id** | int | FK to routes (nullable) |
 
-**Count:** 4,319 accidents
+**Count:** ~6,900 accidents (combined from AAC, Avalanche.org, NPS)
 **Linkage stats:**
-- mountain_id populated: 1,398 (32.4%)
-- route_id populated: 729 (16.9%)
-- Both linked: 592 (13.7%)
-- Date + coordinates: 3,955 (91.6%)
+- mountain_id populated: ~32%
+- route_id populated: ~17%
+- Date + coordinates: ~4,800 (weather-ready)
 
 **Why not 100% linked?**
 - Many accidents have text names that don't match mountains/routes tables exactly
@@ -134,7 +136,7 @@ Ascents (366) → Climbers (178)
 | visibility_avg | float | Average visibility (m) |
 | cloud_cover_avg | float | Average cloud cover (%) |
 
-**Expected Count:** ~25,564 records (collecting...)
+**Current Count:** ~71,600 records (backfill in progress)
 **Record Types:**
 - Accident weather: `accident_id` populated (links to specific accident)
 - Baseline weather: `accident_id` = NULL (other days in accident weeks)
@@ -489,5 +491,5 @@ python scripts/fix_accident_dates.py
 
 ---
 
-*Last Updated: 2026-01-25*
+*Last Updated: 2026-02-03*
 *SafeAscent Project - Climbing Safety Through Data*

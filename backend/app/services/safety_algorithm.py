@@ -24,9 +24,6 @@ Weather-Primary Risk Model (Updated 2026-01-30):
 - Weather is primary risk driver (creates 5-7× variation sunny → stormy)
 - Accident history acts as amplifier (distinguishes dangerous vs safe routes)
 - Risk scores are volatile day-to-day based on current conditions
-
-Author: SafeAscent Development Team
-Date: 2026-01-28, Updated: 2026-01-30
 """
 from datetime import date
 from typing import List, Dict, Optional, Tuple

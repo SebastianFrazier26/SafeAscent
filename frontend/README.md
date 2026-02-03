@@ -2,13 +2,15 @@
 
 React + Vite frontend for SafeAscent climbing safety predictions.
 
+*Last Updated: February 2026*
+
 ## Tech Stack
 
 - **React 18** - UI framework
 - **Vite** - Fast build tool and dev server
+- **Material-UI (MUI)** - Component library (Material Design 3)
 - **Mapbox GL JS** - Interactive 3D terrain maps
 - **React-Map-GL** - React wrapper for Mapbox
-- **Tailwind CSS** - Utility-first styling
 - **Axios** - HTTP client for API calls
 - **Date-fns** - Date utilities
 
@@ -63,29 +65,47 @@ Frontend will be available at http://localhost:5173
 frontend/
 ├── src/
 │   ├── components/       # React components
-│   │   ├── MapView.jsx          # Interactive Mapbox map
+│   │   ├── MapView.jsx          # Interactive Mapbox map (two-view system)
 │   │   ├── PredictionForm.jsx   # Route configuration form
 │   │   └── PredictionResult.jsx # Risk score display
 │   ├── services/         # API and external services
 │   │   └── api.js               # Backend API client
 │   ├── utils/            # Utility functions
 │   │   └── riskUtils.js         # Risk interpretation helpers
+│   ├── theme.js          # Material-UI custom theme
 │   ├── App.jsx           # Main application
-│   ├── main.jsx          # React entry point
-│   └── index.css         # Global styles (Tailwind)
+│   ├── main.jsx          # React entry point (ThemeProvider)
+│   └── index.css         # Global styles (Mapbox overrides)
 ├── .env                  # Environment variables
 ├── package.json          # Dependencies
-├── tailwind.config.js    # Tailwind configuration
 └── vite.config.js        # Vite configuration
 ```
 
 ## Features
 
+### Two-View Map System
+| View | Purpose | Implementation |
+|------|---------|----------------|
+| **Cluster View** | Navigation | Mapbox native clustering, color-coded by avg risk |
+| **Risk Coverage** | Safety Analysis | 5 stratified heatmap layers |
+
 ### Interactive Map
 - 3D terrain visualization
 - Click-to-select route locations
-- Risk score visualization
-- Smooth animations
+- Search by route/mountain name
+- Date picker for 7-day forecast
+- Hover tooltips with route details
+- Auto-spacing for overlapping coordinates
+- Progress bar during loading
+
+### Stratified Heatmap Layers
+1. Gray base - All routes (shows climbing area coverage)
+2. Green - Risk 0-32 (low)
+3. Yellow - Risk 28-52 (moderate)
+4. Orange - Risk 48-72 (elevated)
+5. Red - Risk 68+ (high)
+
+*Overlapping brackets create smooth color transitions*
 
 ### Prediction Form
 - Route type selection (alpine, trad, sport, ice, mixed, boulder)
@@ -151,19 +171,23 @@ The frontend communicates with the FastAPI backend at `/api/v1/predict`:
 
 ## Styling
 
-Uses Tailwind CSS with custom theme:
+Uses Material-UI with custom theme (`src/theme.js`):
 
 ```js
-// tailwind.config.js
-theme: {
-  extend: {
-    colors: {
-      'risk-low': '#10b981',      // green
-      'risk-moderate': '#f59e0b', // yellow
-      'risk-high': '#ef4444',     // red
-      'risk-extreme': '#7c2d12',  // dark red
-    },
-  },
+// Custom climbing theme colors
+palette: {
+  primary: { main: '#1976d2' },      // Blue - trust
+  secondary: { main: '#2e7d32' },    // Green - safety
+  error: { main: '#d32f2f' },        // Red
+  warning: { main: '#ed6c02' },      // Orange
+  success: { main: '#2e7d32' },      // Green
+  // Risk-specific colors
+  risk: {
+    low: '#10b981',       // green
+    moderate: '#f59e0b',  // yellow
+    high: '#ef4444',      // red
+    extreme: '#7c2d12',   // dark red
+  }
 }
 ```
 

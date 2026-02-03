@@ -248,4 +248,31 @@ Thumbs.db
 *.sqlite
 data/*.csv
 data/*.json
+data/*.xlsx
+data/tables/
+data/processed_*.csv
+data/mp_*.csv
 !data/.gitkeep
+
+# =============================================================================
+# Internal documentation (logs, plans, histories, design docs)
+# =============================================================================
+ALGORITHM_DESIGN.md
+DECISIONS_LOG.md
+DEPLOYMENT.md
+DEVELOPMENT_LOG.md
+PROJECT_PLAN.md
+SESSION_HISTORY.md
+*_LOG.md
+*_PLAN.md
+*_HISTORY.md
+*_COMPLETE.md
+*_SUMMARY.md
+
+# Claude Code local settings
+.claude/
+
+# Scraper progress/checkpoint files
+*.progress.json
+*_progress*.json
+*_checkpoint*
