@@ -3,8 +3,16 @@
 ## Overview
 This directory contains datasets of climbing, mountaineering, and avalanche incidents in the United States. The data is compiled from multiple authoritative sources to enable comprehensive analysis of incident patterns, risk factors, and safety trends.
 
-**Last Updated:** January 17, 2026
+**Last Updated:** February 3, 2026
 **Data Collection Period:** 1990-2026 (varies by source)
+
+### Current Data Summary
+| Source | Records | Geocoded | Weather-Ready |
+|--------|---------|----------|---------------|
+| **AAC** | 2,770 | 99.9% | 2,763 |
+| **Avalanche.org** | 1,372 | 100% | 1,372 |
+| **NPS** | 848 | 77% | 655 |
+| **Total** | **4,990** | **96%** | **4,790** |
 
 ---
 
@@ -85,10 +93,10 @@ Colorado Avalanche Information Center, U.S. Avalanche Accident Reports, https://
 
 ---
 
-### 2. AAC Climbing Accidents (`aac_accidents.xlsx`)
+### 2. AAC Climbing Accidents (`processed_aac_accidents.csv`)
 **Source:** American Alpine Club / GitHub Repository
 **URL:** https://github.com/ecaroom/climbing-accidents
-**Coverage:** 1990-2019 (2,724 climbing accidents)
+**Coverage:** 1990-2019 (2,770 climbing accidents after processing)
 
 **Scope:**
 - All climbing disciplines (alpine, trad, sport, ice, top-rope)
@@ -96,7 +104,12 @@ Colorado Avalanche Information Center, U.S. Avalanche Accident Reports, https://
 - Detailed narratives and accident analysis
 - Enhanced discipline tagging
 
-**Note:** This dataset predates the project and was obtained from an external source.
+**Processing Applied (Feb 2026):**
+- **Extraction:** Gemini 2.0 Flash API (structured field extraction)
+- **Geocoding:** Google Maps API (99% success) + Gemini fallback (14 records)
+- **Date Recovery:** Publication Year - 1 + Month + 15th (+1,656 records recovered)
+
+**Note:** Original dataset from external source; reprocessed with geocoding and date recovery.
 
 ---
 
@@ -232,41 +245,58 @@ Some incidents may appear in multiple datasets:
 
 ## File Inventory
 
-| Filename | Format | Size | Records | Status |
-|----------|--------|------|---------|--------|
-| `avalanche_accidents.csv` | CSV | ~800KB | 1,372 | ✅ Complete |
-| `aac_accidents.xlsx` | Excel | 7.5MB | 2,724+ | ✅ Pre-existing |
-| `nps_mortality.xlsx` | Excel | 235KB | Unknown | ✅ Pre-existing |
-| `avalanche_test.csv` | CSV | 31KB | 22 | 🧪 Test data |
+### Raw Data
+| Filename | Format | Records | Status |
+|----------|--------|---------|--------|
+| `avalanche_accidents.csv` | CSV | 1,372 | ✅ Complete |
+| `aac_accidents.xlsx` | Excel | 2,724 | ✅ Original source |
+| `nps_mortality.xlsx` | Excel | ~1,000 | ✅ Original source |
+
+### Processed Data
+| Filename | Format | Records | Status |
+|----------|--------|---------|--------|
+| `processed_aac_accidents.csv` | CSV | 2,770 | ✅ Geocoded + dates recovered |
+| `mp_routes_v2.csv` | CSV | 196,000+ | 🚧 Collection in progress |
+| `mp_ticks.csv` | CSV | Growing | 🚧 Collection in progress |
+
+### Database Tables (`tables/`)
+| Filename | Format | Records | Status |
+|----------|--------|---------|--------|
+| `accidents.csv` | CSV | ~6,900 | ✅ Combined from all sources |
+| `weather.csv` | CSV | ~71,600 | 🚧 Backfill in progress |
+| `routes.csv` | CSV | 622 | ✅ Base routes |
+| `mountains.csv` | CSV | 442 | ✅ Complete |
 
 ---
 
 ## Scripts & Tools
 
-### `/scripts/scrape_avalanche.py`
-Automated scraper for CAIC avalanche incident data.
+All scripts are in `/scripts/` directory. Core scripts for data pipeline:
 
-**Usage:**
-```bash
-python scrape_avalanche.py --start-year 1997 --end-year 2026 --output ../data/avalanche_accidents.csv
-```
+### Data Processing Scripts
+| Script | Purpose |
+|--------|---------|
+| `extract_aac_accidents.py` | Extract structured fields from AAC using Gemini |
+| `geocode_aac_accidents.py` | Geocode AAC with Google Maps + Gemini fallback |
+| `process_avalanche_accidents.py` | Process Avalanche.org data |
+| `process_nps_accidents.py` | Process NPS mortality data |
+| `enhance_accident_coordinates.py` | Enhance coordinate precision |
 
-**Options:**
-- `--start-year YEAR` - Starting year (default: 1950)
-- `--end-year YEAR` - Ending year (default: current year)
-- `--output FILE` - Output file path
-- `--format {csv,xlsx,json}` - Output format (default: csv)
+### Data Collection Scripts
+| Script | Purpose |
+|--------|---------|
+| `scrape_mp_routes_v2.py` | BFS traversal of Mountain Project (196k+ routes) |
+| `scrape_mp_ticks.py` | Collect tick/ascent data from MP |
+| `backfill_weather_7day_windows.py` | Collect 7-day weather for accidents |
+| `compute_weather_statistics.py` | Compute location/season weather stats |
 
-**Features:**
-- Automatic pagination handling
-- Rate limiting (2 requests/second)
-- Incremental saving (resumable)
-- Comprehensive error handling
+### Database Scripts
+| Script | Purpose |
+|--------|---------|
+| `load_data_to_postgres.py` | Load CSVs into PostgreSQL |
+| `integrate_mp_routes.py` | Integrate MP routes into database |
 
-### `/scripts/scrape_mountaineers.py`
-PDF report downloader for The Mountaineers incident data.
-
-**Status:** Created but requires manual PDF parsing
+**All scrapers support resume via checkpoint files.**
 
 ---
 
@@ -388,6 +418,7 @@ See CAIC classification guide: https://avalanche.state.co.us/
 
 ---
 
-**Document Version:** 1.0
+**Document Version:** 2.0
 **Created:** January 17, 2026
+**Updated:** February 3, 2026
 **Author:** SafeAscent Data Collection Project

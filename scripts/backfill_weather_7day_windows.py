@@ -8,9 +8,6 @@ Collects the proper 7-day weather window for each accident:
 - Only fetches missing dates to avoid duplicate work
 - Resume-able: Can restart if interrupted
 - Saves progress every 50 accidents
-
-Author: SafeAscent Development Team
-Date: 2026-01-29
 """
 
 import pandas as pd
@@ -258,11 +255,8 @@ def backfill_weather_7day_windows():
     print(f"  Estimated time: {estimated_minutes:.1f} minutes ({estimated_minutes/60:.1f} hours)")
     print(f"  Rate limit: 1 request per {RATE_LIMIT_SECONDS} seconds")
 
-    # Confirm
-    response = input("\nProceed with backfill? (y/n): ")
-    if response.lower() != 'y':
-        print("Aborted.")
-        return
+    # Auto-proceed (for background execution)
+    print("\nProceeding with backfill...")
 
     # Process accidents
     print("\n" + "=" * 80)

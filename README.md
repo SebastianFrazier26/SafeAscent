@@ -1,42 +1,148 @@
 # SafeAscent
 
+**Climbing safety predictions powered by historical accident analysis and real-time weather data.**
+
+*Last Updated: February 2026*
+
+---
+
 ## Project Overview
 
-Web application displaying climbing safety information based on past accident reports and current weather patterns. Based on previous data, makes predictive reports about the safety of particular routes/areas depending on the up-to-date (current day) weather reporting.
+SafeAscent is a web application that predicts climbing route safety by analyzing ~5,000 historical accidents weighted by:
+- **Spatial proximity** - Gaussian decay by distance (route-type-specific bandwidths)
+- **Weather similarity** - 7-day pattern matching with quadratic weighting
+- **Temporal relevance** - Year-scale decay with seasonal boosting
+- **Route type** - Asymmetric cross-type influence matrix
 
-Given limited amount of available data. Algorithm utilizes exponential weighting based on both proximity to the route (using lon/lat) calculations, similarity to weather patterns, and timeframe. Taking in all available information (which is somewhat limited) try to make the best predictions possible.
+The algorithm provides daily risk scores (0-100) with confidence metrics, helping climbers make informed decisions about route conditions.
 
-Further, project should include analytics relating to accident types, experience levels, weather conditions, proximity, etc. to improve understanding of climbing accidents across the US.
+For detailed algorithm documentation, see [ALGORITHM_DESIGN.md](./ALGORITHM_DESIGN.md).
 
-Additionally, we want to take into account weather reporting in the area of route on not only the day of an accident but in a substantial time period preceeding it (which will require additional data) as freeze-thaw cycles, slickness, rockfall, and other conditions are created by weather conditions extending far before the day a climber gets on the rock.
+---
 
-## Frontend Components
+## Current Status
 
-For most frontend design, we'll utilize [Material Design 3](https://m3.material.io) for clean appearances.
+| Component | Status | Notes |
+|-----------|--------|-------|
+| **Backend API** | ✅ Production-ready | FastAPI + PostgreSQL |
+| **Safety Algorithm** | ✅ Complete | 7 modular services, 50/50 tests passing |
+| **Frontend Map** | ✅ Complete | Two-view system with stratified heatmaps |
+| **Data Pipeline** | 🚧 Rebuilding | Routes/ticks/weather collection in progress |
 
-For display, we utilize a map-based system with climbing zones /broader areas highlighted based on danger/risk on a green (safe) --> red (dangerous). The map output will comprise our "homepage"
+---
 
-Further, we display a general analytics dashboard showcasing key statistics on accidents, successful ascents, etc. for all routes as well as for individual routes/climbing areas (as is discussed later on)
+## Tech Stack
 
-## Backend Components
+### Backend
+- **FastAPI** - Async Python API framework
+- **PostgreSQL** - Primary database with PostGIS
+- **Redis** - Weather caching (6-hour TTL)
+- **Open-Meteo** - Weather API (free, no key required)
 
-We utilize postgreSQL with postgis for coordinate mapping and search to advance our ability to link nearby routes/climbing areas and their weather reports.
+### Frontend
+- **React 18** + **Vite** - UI framework and build tool
+- **Material-UI** - Component library (Material Design 3)
+- **Mapbox GL JS** - Interactive 3D terrain maps
+- **React-Map-GL** - React wrapper for Mapbox
 
-Further, we want quick search functionality to look at analytics for any particular route or area in our database. Lookup will be available by route name or ID.
+### Data Pipeline
+- **Pandas** - Data processing
+- **Google Maps API** - Geocoding (primary)
+- **Gemini 2.0 Flash** - AAC extraction + geocoding fallback
 
-See earlier explanation of algorithm/strategy.
+---
 
-For more detailed descriptions of tables see modeling.md in ./data. Tables consist of:
+## Frontend Features
 
-* Ascents
-* Routes
-* Mountains
-* Climbers
-* Accidents
-* Weather Reports
+### Two-View Map System
+| View | Purpose | Implementation |
+|------|---------|----------------|
+| **Cluster View** | Navigation | Mapbox native clustering, color-coded by avg risk |
+| **Risk Coverage** | Safety Analysis | 5 stratified heatmap layers |
 
-## Third-party Services
+### Key Features
+- Search by route/mountain name
+- Date picker for 7-day forecast
+- Hover tooltips with route details
+- Progress bar during loading
 
-As mentioned we utilized PostgreSQL for the database.
+---
 
-We also will make use of a web-hosting service like Vercel or something similar for our frontend.
+## Backend Architecture
+
+### Algorithm Services (`backend/app/services/`)
+- `algorithm_config.py` - All tunable parameters
+- `spatial_weighting.py` - Gaussian decay by distance
+- `temporal_weighting.py` - Exponential decay + seasonal boost
+- `weather_similarity.py` - 7-day pattern matching
+- `route_type_weighting.py` - Asymmetric type matrix
+- `severity_weighting.py` - Fatality/injury weighting
+- `confidence_scoring.py` - Confidence calculation
+- `safety_algorithm.py` - Main orchestrator
+
+### API Endpoints
+- `POST /api/v1/predict` - Get safety prediction
+- `GET /api/v1/routes` - List routes
+- `GET /api/v1/mountains` - List mountains
+- `GET /api/v1/accidents` - Query accidents
+
+---
+
+## Database Schema
+
+For detailed database documentation, see [data/DATABASE_STRUCTURE.md](./data/DATABASE_STRUCTURE.md).
+
+### Core Tables
+| Table | Records | Description |
+|-------|---------|-------------|
+| **accidents** | ~6,900 | Combined from AAC, Avalanche.org, NPS |
+| **weather** | ~70,000+ | 7-day windows for each accident |
+| **routes** | 622 (base) | Mountain Project routes |
+| **mountains** | 442 | Peaks and crags |
+| **ascents** | Growing | MP tick data (being collected) |
+
+---
+
+## Data Sources
+
+| Source | Records | Coverage |
+|--------|---------|----------|
+| **AAC** (American Alpine Club) | 2,770 | 1990-2019 |
+| **Avalanche.org** | 1,372 | 1997-2026 |
+| **NPS** (National Park Service) | 848 | Various |
+| **Mountain Project** | 196,000+ routes | Ongoing scrape |
+
+---
+
+## Quick Start
+
+### Backend
+```bash
+cd backend
+pip install -r requirements.txt
+uvicorn app.main:app --reload
+```
+
+### Frontend
+```bash
+cd frontend
+npm install
+# Add VITE_MAPBOX_TOKEN to .env
+npm run dev
+```
+
+---
+
+## Documentation
+
+- [ALGORITHM_DESIGN.md](./ALGORITHM_DESIGN.md) - Detailed algorithm decisions
+- [DEVELOPMENT_LOG.md](./DEVELOPMENT_LOG.md) - Implementation details
+- [SESSION_HISTORY.md](./SESSION_HISTORY.md) - Development timeline
+- [data/DATABASE_STRUCTURE.md](./data/DATABASE_STRUCTURE.md) - Database schema
+- [data/README.md](./data/README.md) - Data sources and collection
+
+---
+
+## License
+
+MIT

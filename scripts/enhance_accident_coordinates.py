@@ -9,9 +9,6 @@ Uses multiple strategies in priority order:
   3. Fuzzy match to mountains (with manual review)
   4. Geocoding via OpenStreetMap Nominatim (free, no API key)
   5. Manual review for ambiguous cases
-
-Author: SafeAscent Development Team
-Date: 2026-01-29
 """
 
 import pandas as pd

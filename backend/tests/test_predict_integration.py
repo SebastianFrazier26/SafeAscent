@@ -6,9 +6,6 @@ These tests validate the full request-response cycle including:
 - Service layer integration (algorithm, weather, route type)
 - Response formatting and validation
 - Error handling and edge cases
-
-Author: SafeAscent Development Team
-Date: 2026-01-29
 """
 import pytest
 from datetime import date, timedelta

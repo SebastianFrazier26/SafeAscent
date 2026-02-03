@@ -5,9 +5,6 @@ Provides:
 - async_client: HTTP client for API integration tests
 - test_db: Test database session
 - sample_data: Reusable test data fixtures
-
-Author: SafeAscent Development Team
-Date: 2026-01-29
 """
 import pytest
 import pytest_asyncio

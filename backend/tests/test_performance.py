@@ -11,9 +11,6 @@ Performance Targets (MVP Baseline):
 - Concurrent requests: Complete 10 requests in < 15s (current: ~13s)
 
 See PERFORMANCE_BASELINE.md for optimization roadmap to production targets.
-
-Author: SafeAscent Development Team
-Date: 2026-01-29
 """
 import pytest
 import asyncio
