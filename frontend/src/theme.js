@@ -7,53 +7,53 @@ import { createTheme } from '@mui/material/styles';
 
 const theme = createTheme({
   palette: {
-    mode: 'light',
+    mode: 'dark',
     primary: {
-      main: '#1976d2',      // Blue - trust, reliability
-      light: '#42a5f5',
-      dark: '#1565c0',
-      contrastText: '#ffffff',
+      main: '#42a5f5',      // Lighter blue for dark mode
+      light: '#80d6ff',
+      dark: '#1976d2',
+      contrastText: '#000000',
     },
     secondary: {
-      main: '#2e7d32',      // Green - safety, nature
-      light: '#4caf50',
-      dark: '#1b5e20',
-      contrastText: '#ffffff',
+      main: '#4caf50',      // Green - safety, nature
+      light: '#80e27e',
+      dark: '#2e7d32',
+      contrastText: '#000000',
     },
     error: {
-      main: '#d32f2f',      // Red - danger
-      light: '#ef5350',
-      dark: '#c62828',
+      main: '#ef5350',      // Red - danger (lighter for dark mode)
+      light: '#ff867c',
+      dark: '#d32f2f',
     },
     warning: {
-      main: '#ed6c02',      // Orange - caution
-      light: '#ff9800',
-      dark: '#e65100',
+      main: '#ffa726',      // Orange - caution (lighter for dark mode)
+      light: '#ffb74d',
+      dark: '#f57c00',
     },
     info: {
-      main: '#0288d1',
-      light: '#03a9f4',
-      dark: '#01579b',
+      main: '#29b6f6',
+      light: '#4fc3f7',
+      dark: '#0288d1',
     },
     success: {
-      main: '#2e7d32',
-      light: '#4caf50',
-      dark: '#1b5e20',
+      main: '#66bb6a',
+      light: '#81c784',
+      dark: '#388e3c',
     },
-    // Custom risk colors
+    // Custom risk colors (adjusted for dark mode visibility)
     risk: {
-      low: '#10b981',       // Green
-      moderate: '#f59e0b',  // Yellow
-      high: '#ef4444',      // Red
-      extreme: '#7c2d12',   // Dark red
+      low: '#4ade80',       // Brighter green
+      moderate: '#fbbf24',  // Brighter yellow
+      high: '#f87171',      // Brighter red
+      extreme: '#dc2626',   // Brighter dark red
     },
     background: {
-      default: '#f5f5f5',
-      paper: '#ffffff',
+      default: '#121212',
+      paper: '#1e1e1e',
     },
     text: {
-      primary: '#212121',
-      secondary: '#757575',
+      primary: '#ffffff',
+      secondary: '#b0b0b0',
     },
   },
   typography: {

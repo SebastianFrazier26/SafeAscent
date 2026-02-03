@@ -144,6 +144,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
     seasonal: null,
     historical: null,
     timeOfDay: null,
+    ascents: null,
   });
   const [error, setError] = useState(null);
   const [exportMenuAnchor, setExportMenuAnchor] = useState(null);
@@ -167,6 +168,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
         seasonal: null,
         historical: null,
         timeOfDay: null,
+        ascents: null,
       });
       setError(null);
     }
@@ -265,6 +267,19 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
               const timeOfDayData = await response.json();
               setData(prev => ({ ...prev, timeOfDay: timeOfDayData }));
               setLoading(prev => ({ ...prev, timeOfDay: false }));
+            }
+            break;
+
+          case 7: // Ascent Analytics
+            if (!data.ascents) {
+              setLoading(prev => ({ ...prev, ascents: true }));
+              const response = await fetch(
+                `${API_BASE}/routes/${routeData.route_id}/ascent-analytics`
+              );
+              if (!response.ok) throw new Error('Failed to fetch ascent analytics');
+              const ascentsData = await response.json();
+              setData(prev => ({ ...prev, ascents: ascentsData }));
+              setLoading(prev => ({ ...prev, ascents: false }));
             }
             break;
 
@@ -449,6 +464,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
           <Tab label="Seasonal Patterns" />
           <Tab label="Historical Trends" />
           <Tab label="Time of Day" />
+          <Tab label="Ascents" />
         </Tabs>
       </Box>
 
@@ -521,6 +537,15 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
             loading={loading.timeOfDay}
             routeData={routeData}
             selectedDate={selectedDate}
+          />
+        </TabPanel>
+
+        {/* Tab 7: Ascent Analytics */}
+        <TabPanel value={currentTab} index={7}>
+          <AscentsTab
+            data={data.ascents}
+            loading={loading.ascents}
+            routeData={routeData}
           />
         </TabPanel>
       </DialogContent>
@@ -1457,6 +1482,237 @@ function TimeOfDayTab({ data, loading, routeData, selectedDate }) {
           </Card>
         </Grid>
       )}
+    </Grid>
+  );
+}
+
+function AscentsTab({ data, loading, routeData }) {
+  if (loading) {
+    return <LoadingState message="Loading ascent analytics..." />;
+  }
+
+  // Handle boulder routes (excluded from analytics)
+  if (data?.excluded_reason) {
+    return (
+      <Alert severity="warning">
+        <Typography variant="body2" fontWeight={600}>
+          Analytics Not Available
+        </Typography>
+        <Typography variant="body2">
+          {data.excluded_reason}. Boulder problems have different risk characteristics
+          than roped climbing routes.
+        </Typography>
+      </Alert>
+    );
+  }
+
+  if (!data || !data.has_data) {
+    return (
+      <Alert severity="info">
+        No ascent data available for this route. Ascent records help calculate accident rates
+        by comparing successful climbs to incidents.
+      </Alert>
+    );
+  }
+
+  return (
+    <Grid container spacing={3}>
+      {/* Summary Cards */}
+      <Grid size={12}>
+        <Card elevation={3}>
+          <CardContent>
+            <Typography variant="h6" gutterBottom fontWeight={600}>
+              🧗 Ascent Analytics for {routeData.name}
+            </Typography>
+            <Typography variant="body2" color="text.secondary" paragraph>
+              Monthly breakdown of recorded ascents and accident rates.
+            </Typography>
+            <Grid container spacing={3} sx={{ mt: 1 }}>
+              <Grid size={{ xs: 6, md: 2.4 }}>
+                <Paper sx={{ p: 2, bgcolor: 'primary.50', textAlign: 'center' }}>
+                  <Typography variant="body2" color="text.secondary">Total Ascents</Typography>
+                  <Typography variant="h4" fontWeight={700} color="primary.main">
+                    {data.total_ascents}
+                  </Typography>
+                </Paper>
+              </Grid>
+              <Grid size={{ xs: 6, md: 2.4 }}>
+                <Paper sx={{ p: 2, bgcolor: 'error.50', textAlign: 'center' }}>
+                  <Typography variant="body2" color="text.secondary">Total Accidents</Typography>
+                  <Typography variant="h4" fontWeight={700} color="error.main">
+                    {data.total_accidents}
+                  </Typography>
+                </Paper>
+              </Grid>
+              <Grid size={{ xs: 6, md: 2.4 }}>
+                <Paper sx={{ p: 2, bgcolor: 'warning.50', textAlign: 'center' }}>
+                  <Typography variant="body2" color="text.secondary">Accident Rate</Typography>
+                  <Typography variant="h4" fontWeight={700} color="warning.dark">
+                    {data.overall_accident_rate}%
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">per 100 ascents</Typography>
+                </Paper>
+              </Grid>
+              <Grid size={{ xs: 6, md: 2.4 }}>
+                <Paper sx={{ p: 2, bgcolor: 'success.50', textAlign: 'center' }}>
+                  <Typography variant="body2" color="text.secondary">Safest Month</Typography>
+                  <Typography variant="h5" fontWeight={700} color="success.main">
+                    {data.best_month || 'N/A'}
+                  </Typography>
+                </Paper>
+              </Grid>
+              <Grid size={{ xs: 6, md: 2.4 }}>
+                <Paper sx={{ p: 2, bgcolor: 'info.50', textAlign: 'center' }}>
+                  <Typography variant="body2" color="text.secondary">Peak Activity</Typography>
+                  <Typography variant="h5" fontWeight={700} color="info.main">
+                    {data.peak_month || 'N/A'}
+                  </Typography>
+                </Paper>
+              </Grid>
+            </Grid>
+          </CardContent>
+        </Card>
+      </Grid>
+
+      {/* Monthly Breakdown Chart */}
+      <Grid size={12}>
+        <Card>
+          <CardContent>
+            <Typography variant="h6" gutterBottom fontWeight={600}>
+              📊 Ascents & Accidents by Month
+            </Typography>
+            <ResponsiveContainer width="100%" height={350}>
+              <BarChart data={data.monthly_stats}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="month" />
+                <YAxis yAxisId="left" orientation="left" stroke="#1976d2" />
+                <YAxis yAxisId="right" orientation="right" stroke="#f44336" />
+                <Tooltip />
+                <Legend />
+                <Bar
+                  yAxisId="left"
+                  dataKey="ascent_count"
+                  fill="#1976d2"
+                  name="Ascents"
+                  radius={[4, 4, 0, 0]}
+                />
+                <Bar
+                  yAxisId="right"
+                  dataKey="accident_count"
+                  fill="#f44336"
+                  name="Accidents"
+                  radius={[4, 4, 0, 0]}
+                />
+              </BarChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
+      </Grid>
+
+      {/* Monthly Accident Rate List */}
+      <Grid size={{ xs: 12, md: 6 }}>
+        <Card>
+          <CardContent>
+            <Typography variant="h6" gutterBottom fontWeight={600}>
+              📈 Accident Rate by Month
+            </Typography>
+            <Box sx={{ maxHeight: 400, overflow: 'auto' }}>
+              <List dense>
+                {data.monthly_stats?.map((month, idx) => (
+                  <React.Fragment key={idx}>
+                    <ListItem>
+                      <ListItemText
+                        primary={
+                          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <Typography variant="body1" fontWeight={600}>
+                              {month.month}
+                            </Typography>
+                            <Chip
+                              label={month.ascent_count > 0 ? `${month.accident_rate}%` : 'No data'}
+                              size="small"
+                              sx={{
+                                bgcolor: month.ascent_count === 0 ? 'grey.400' :
+                                         month.accident_rate === 0 ? 'success.main' :
+                                         month.accident_rate < 5 ? 'success.light' :
+                                         month.accident_rate < 10 ? 'warning.main' : 'error.main',
+                                color: 'white',
+                                fontWeight: 600,
+                              }}
+                            />
+                          </Box>
+                        }
+                        secondary={`${month.ascent_count} ascents • ${month.accident_count} accidents`}
+                      />
+                    </ListItem>
+                    {idx < 11 && <Divider />}
+                  </React.Fragment>
+                ))}
+              </List>
+            </Box>
+          </CardContent>
+        </Card>
+      </Grid>
+
+      {/* Best/Worst Month Highlights */}
+      <Grid size={{ xs: 12, md: 6 }}>
+        <Grid container spacing={2}>
+          <Grid size={12}>
+            <Paper sx={{ p: 2, bgcolor: 'success.50', borderLeft: 4, borderColor: 'success.main' }}>
+              <Typography variant="subtitle2" fontWeight={600} color="success.dark">
+                ✅ Safest Month: {data.best_month || 'N/A'}
+              </Typography>
+              {data.best_month && (
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                  {data.monthly_stats?.find(m => m.month === data.best_month)?.ascent_count || 0} ascents
+                  with {data.monthly_stats?.find(m => m.month === data.best_month)?.accident_count || 0} accidents
+                  ({data.monthly_stats?.find(m => m.month === data.best_month)?.accident_rate || 0}% rate)
+                </Typography>
+              )}
+            </Paper>
+          </Grid>
+          <Grid size={12}>
+            <Paper sx={{ p: 2, bgcolor: 'error.50', borderLeft: 4, borderColor: 'error.main' }}>
+              <Typography variant="subtitle2" fontWeight={600} color="error.dark">
+                ⚠️ Highest Risk Month: {data.worst_month || 'N/A'}
+              </Typography>
+              {data.worst_month && (
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                  {data.monthly_stats?.find(m => m.month === data.worst_month)?.ascent_count || 0} ascents
+                  with {data.monthly_stats?.find(m => m.month === data.worst_month)?.accident_count || 0} accidents
+                  ({data.monthly_stats?.find(m => m.month === data.worst_month)?.accident_rate || 0}% rate)
+                </Typography>
+              )}
+            </Paper>
+          </Grid>
+          <Grid size={12}>
+            <Paper sx={{ p: 2, bgcolor: 'info.50', borderLeft: 4, borderColor: 'info.main' }}>
+              <Typography variant="subtitle2" fontWeight={600} color="info.dark">
+                📈 Peak Activity Month: {data.peak_month || 'N/A'}
+              </Typography>
+              {data.peak_month && (
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                  {data.monthly_stats?.find(m => m.month === data.peak_month)?.ascent_count || 0} recorded ascents
+                  — the most popular month for this route
+                </Typography>
+              )}
+            </Paper>
+          </Grid>
+        </Grid>
+      </Grid>
+
+      {/* Disclaimer */}
+      <Grid size={12}>
+        <Alert severity="info">
+          <Typography variant="body2" fontWeight={600}>
+            About Accident Rates
+          </Typography>
+          <Typography variant="body2">
+            Accident rate is calculated as (accidents ÷ ascents × 100). A lower rate indicates
+            safer conditions. Note that this data is based on reported ascents and accidents only,
+            and may not represent all climbing activity on this route.
+          </Typography>
+        </Alert>
+      </Grid>
     </Grid>
   );
 }

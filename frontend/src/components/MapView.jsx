@@ -4,7 +4,7 @@
  * Interactive Mapbox GL map displaying climbing routes and regional risk information.
  * Features: clickable route markers, safety scores, date-based filtering
  */
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { Map as MapGL, NavigationControl, ScaleControl, Source, Layer, Popup } from 'react-map-gl';
 import {
   Box, Paper, Typography, CircularProgress, Dialog, DialogTitle,
@@ -27,6 +27,13 @@ const INITIAL_VIEW_STATE = {
   zoom: 8,
   pitch: 45, // 3D tilt
   bearing: 0,
+};
+
+// Map styles for different seasons
+const MAP_STYLES = {
+  default: 'mapbox://styles/mapbox/outdoors-v12',      // Topographic - good for summer/all
+  summer: 'mapbox://styles/mapbox/outdoors-v12',       // Topographic with trails
+  winter: 'mapbox://styles/sebfrazi/cml76s6gt009s01s3aue5ghjk', // Custom Outdoors Winter theme
 };
 
 /**
@@ -62,6 +69,65 @@ export default function MapView({ selectedRouteForZoom }) {
 
   // Hover state for showing route names on hover
   const [hoveredRoute, setHoveredRoute] = useState(null);
+
+  // Season filter: 'all', 'summer' (rock routes), or 'winter' (ice/mixed routes)
+  const [seasonFilter, setSeasonFilter] = useState('all');
+
+  /**
+   * Filter routes by season (summer = rock, winter = ice/mixed)
+   * Also excludes boulder routes as they don't share the same safety risk factors.
+   * Memoized to avoid recalculating on every render
+   */
+  const filteredRoutes = useMemo(() => {
+    if (!routes) {
+      return routes;
+    }
+
+    const isBoulderRoute = (type) => {
+      const normalized = (type || '').toLowerCase();
+      return normalized === 'boulder' || normalized === 'bouldering';
+    };
+
+    const isWinterRoute = (type) => {
+      const normalized = (type || '').toLowerCase();
+      return normalized === 'ice' || normalized === 'mixed';
+    };
+
+    const filteredFeatures = routes.features.filter((feature) => {
+      const routeType = feature.properties.type;
+
+      // Always exclude boulder routes
+      if (isBoulderRoute(routeType)) {
+        return false;
+      }
+
+      // Apply season filter
+      if (seasonFilter === 'all') {
+        return true;
+      } else if (seasonFilter === 'winter') {
+        return isWinterRoute(routeType);
+      } else {
+        // summer: everything except ice/mixed (and boulders already filtered)
+        return !isWinterRoute(routeType);
+      }
+    });
+
+    return {
+      ...routes,
+      features: filteredFeatures,
+    };
+  }, [routes, seasonFilter]);
+
+  /**
+   * Compute map style based on season filter
+   * Winter uses satellite imagery to show actual snow coverage
+   */
+  const currentMapStyle = useMemo(() => {
+    if (seasonFilter === 'winter') {
+      return MAP_STYLES.winter;
+    }
+    return MAP_STYLES.default;
+  }, [seasonFilter]);
 
   /**
    * Fetch all routes from API on mount and group by coordinates
@@ -111,22 +177,30 @@ export default function MapView({ selectedRouteForZoom }) {
               },
             });
           } else {
-            // Multiple routes at same location - spread them out in a circle
+            // Multiple routes at same location - arrange in tight grid cluster
             overlappingRouteCount += routesAtLocation.length;
             const numRoutes = routesAtLocation.length;
 
-            // Offset radius in degrees (≈11 meters at equator)
-            // Scale radius based on number of routes for better spacing
-            const baseRadius = 0.0001;
-            const radius = baseRadius * Math.max(1, Math.log2(numRoutes));
+            // Tight grid-based clustering (≈4.4m spacing instead of ≈11m circular spread)
+            // This keeps routes as close to actual location and each other as possible
+            const baseOffset = 0.00004; // ~4.4 meters at equator
+            const cols = Math.ceil(Math.sqrt(numRoutes));
+            const rows = Math.ceil(numRoutes / cols);
+
+            // Center the grid on the actual coordinate
+            const gridWidth = (cols - 1) * baseOffset;
+            const gridHeight = (rows - 1) * baseOffset;
+            const startLon = routesAtLocation[0].longitude - gridWidth / 2;
+            const startLat = routesAtLocation[0].latitude - gridHeight / 2;
 
             routesAtLocation.forEach((route, index) => {
-              // Calculate angle for circular distribution
-              const angle = (2 * Math.PI * index) / numRoutes;
+              // Calculate grid position
+              const col = index % cols;
+              const row = Math.floor(index / cols);
 
-              // Apply offset
-              const offsetLat = route.latitude + (radius * Math.sin(angle));
-              const offsetLon = route.longitude + (radius * Math.cos(angle));
+              // Apply grid offset from center
+              const offsetLon = startLon + col * baseOffset;
+              const offsetLat = startLat + row * baseOffset;
 
               features.push({
                 type: 'Feature',
@@ -522,7 +596,7 @@ export default function MapView({ selectedRouteForZoom }) {
               : ['individual-routes']
           }
           mapboxAccessToken={MAPBOX_TOKEN}
-          mapStyle="mapbox://styles/mapbox/outdoors-v12" // Topographic style
+          mapStyle={currentMapStyle}
           style={{ width: '100%', height: '100%' }}
           cursor="pointer"
         >
@@ -535,7 +609,7 @@ export default function MapView({ selectedRouteForZoom }) {
             <Source
               id="routes"
               type="geojson"
-              data={routes}
+              data={filteredRoutes}
               cluster={true}
               clusterMaxZoom={16}
               clusterRadius={30}
@@ -645,7 +719,7 @@ export default function MapView({ selectedRouteForZoom }) {
             <Source
               id="routes"
               type="geojson"
-              data={routes}
+              data={filteredRoutes}
               cluster={false}  // NO clustering in risk view
             >
               {/* Layered Heatmap Approach - One heatmap per risk category */}
@@ -959,6 +1033,48 @@ export default function MapView({ selectedRouteForZoom }) {
               ? 'Cluster navigation mode'
               : 'Regional risk overlay mode'}
           </Typography>
+
+          <Divider sx={{ my: 1.25 }} />
+
+          <Typography variant="body2" fontWeight={600} gutterBottom sx={{ mb: 0.75, fontSize: '0.85rem' }}>
+            🧗 Route Season
+          </Typography>
+          <ToggleButtonGroup
+            value={seasonFilter}
+            exclusive
+            onChange={(event, newFilter) => {
+              if (newFilter !== null) {
+                setSeasonFilter(newFilter);
+              }
+            }}
+            size="small"
+            fullWidth
+            sx={{
+              mb: 0.5,
+              '& .MuiToggleButton-root': {
+                fontSize: '0.7rem',
+                py: 0.5,
+                px: 1,
+              }
+            }}
+          >
+            <ToggleButton value="all">
+              All
+            </ToggleButton>
+            <ToggleButton value="summer">
+              ☀️ Summer
+            </ToggleButton>
+            <ToggleButton value="winter">
+              ❄️ Winter
+            </ToggleButton>
+          </ToggleButtonGroup>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: '0.65rem', lineHeight: 1.25 }}>
+            {seasonFilter === 'all'
+              ? 'All roped routes (no boulders)'
+              : seasonFilter === 'summer'
+              ? 'Rock routes (alpine, trad, sport, aid)'
+              : 'Ice & mixed routes'}
+          </Typography>
         </Paper>
 
         {/* Safety Score Loading Progress */}
@@ -1069,7 +1185,10 @@ export default function MapView({ selectedRouteForZoom }) {
             }}
           >
             <Typography variant="caption" color="text.secondary">
-              📍 <Box component="span" fontWeight={600}>{routes.features.length}</Box> routes loaded
+              📍 <Box component="span" fontWeight={600}>
+                {filteredRoutes?.features?.length || 0}
+                {seasonFilter !== 'all' && routes && ` / ${routes.features.length}`}
+              </Box> routes {seasonFilter !== 'all' ? 'shown' : 'loaded'}
             </Typography>
           </Paper>
         )}

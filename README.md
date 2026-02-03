@@ -61,10 +61,16 @@ For detailed algorithm documentation, see [ALGORITHM_DESIGN.md](./ALGORITHM_DESI
 | **Risk Coverage** | Safety Analysis | 5 stratified heatmap layers |
 
 ### Key Features
+- **Dark mode UI** with Material Design 3
 - Search by route/mountain name
 - Date picker for 7-day forecast
+- **Season filter**: All / Summer (rock) / Winter (ice/mixed)
+- **Season-specific map styles**: Warm outdoors / Cool winter theme
 - Hover tooltips with route details
-- Progress bar during loading
+- Tight grid clustering for overlapping routes
+- 8-tab route analytics dashboard
+- Custom climbing-themed favicon
+- Boulder routes excluded (different risk profile)
 
 ---
 
@@ -81,10 +87,21 @@ For detailed algorithm documentation, see [ALGORITHM_DESIGN.md](./ALGORITHM_DESI
 - `safety_algorithm.py` - Main orchestrator
 
 ### API Endpoints
+
+**Core**
 - `POST /api/v1/predict` - Get safety prediction
-- `GET /api/v1/routes` - List routes
+- `GET /api/v1/routes` - List routes with filters
+- `GET /api/v1/routes/map` - Routes optimized for map display
 - `GET /api/v1/mountains` - List mountains
-- `GET /api/v1/accidents` - Query accidents
+
+**Route Analytics**
+- `GET /api/v1/routes/{id}/safety` - Safety score for date
+- `GET /api/v1/routes/{id}/forecast` - 7-day forecast
+- `GET /api/v1/routes/{id}/accidents` - Accident history
+- `GET /api/v1/routes/{id}/risk-breakdown` - Factor analysis
+- `GET /api/v1/routes/{id}/seasonal-patterns` - Monthly patterns
+- `GET /api/v1/routes/{id}/time-of-day` - Hourly analysis
+- `GET /api/v1/routes/{id}/ascent-analytics` - Monthly ascent/accident rates
 
 ---
 
