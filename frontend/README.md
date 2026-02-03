@@ -63,9 +63,12 @@ Frontend will be available at http://localhost:5173
 
 ```
 frontend/
+├── public/
+│   └── safeascent.svg           # Custom favicon (mountain + safety checkmark)
 ├── src/
 │   ├── components/       # React components
-│   │   ├── MapView.jsx          # Interactive Mapbox map (two-view system)
+│   │   ├── MapView.jsx          # Interactive map (cluster/risk views, season filter)
+│   │   ├── RouteAnalyticsModal.jsx  # 8-tab analytics dashboard
 │   │   ├── PredictionForm.jsx   # Route configuration form
 │   │   └── PredictionResult.jsx # Risk score display
 │   ├── services/         # API and external services
@@ -76,6 +79,7 @@ frontend/
 │   ├── App.jsx           # Main application
 │   ├── main.jsx          # React entry point (ThemeProvider)
 │   └── index.css         # Global styles (Mapbox overrides)
+├── index.html            # Entry HTML (favicon link)
 ├── .env                  # Environment variables
 ├── package.json          # Dependencies
 └── vite.config.js        # Vite configuration
@@ -95,8 +99,11 @@ frontend/
 - Search by route/mountain name
 - Date picker for 7-day forecast
 - Hover tooltips with route details
-- Auto-spacing for overlapping coordinates
-- Progress bar during loading
+- **Tight grid clustering** for overlapping coordinates (4.4m spacing)
+- **Season filter**: All / Summer (rock) / Winter (ice/mixed)
+- **Season-specific map styles**: Warm outdoors (summer) / Cool winter theme
+- Progress bar during safety score loading
+- Boulder routes excluded (different risk profile)
 
 ### Stratified Heatmap Layers
 1. Gray base - All routes (shows climbing area coverage)
@@ -107,9 +114,30 @@ frontend/
 
 *Overlapping brackets create smooth color transitions*
 
+### Route Analytics Modal
+8-tab analytics dashboard (click any route marker):
+
+| Tab | Content |
+|-----|---------|
+| 7-Day Forecast | Risk scores and weather for next week |
+| Route Details | Basic info, grade, location |
+| Accident Reports | Historical accidents on mountain |
+| Risk Breakdown | Factor contributions (spatial, temporal, weather) |
+| Seasonal Patterns | Monthly accident distribution |
+| Historical Trends | 30-day risk score history |
+| Time of Day | Hourly conditions and climbing windows |
+| **Ascents** | Monthly breakdown of ascents vs accidents |
+
+### Ascents Analytics Tab
+- Total ascents, accidents, and accident rate (per 100 ascents)
+- Monthly bar chart comparing ascent counts to accident counts
+- Best/worst months by accident rate
+- Peak activity month (most popular)
+- Boulder routes excluded with explanation
+
 ### Prediction Form
-- Route type selection (alpine, trad, sport, ice, mixed, boulder)
-- Date picker (next 14 days)
+- Route type selection (alpine, trad, sport, ice, mixed, aid)
+- Date picker (next 7 days)
 - Optional elevation input (auto-detected if omitted)
 - Real-time validation
 
@@ -171,25 +199,34 @@ The frontend communicates with the FastAPI backend at `/api/v1/predict`:
 
 ## Styling
 
-Uses Material-UI with custom theme (`src/theme.js`):
+Uses Material-UI with custom **dark mode** theme (`src/theme.js`):
 
 ```js
-// Custom climbing theme colors
+// Dark mode climbing theme
 palette: {
-  primary: { main: '#1976d2' },      // Blue - trust
-  secondary: { main: '#2e7d32' },    // Green - safety
-  error: { main: '#d32f2f' },        // Red
-  warning: { main: '#ed6c02' },      // Orange
-  success: { main: '#2e7d32' },      // Green
-  // Risk-specific colors
+  mode: 'dark',
+  primary: { main: '#42a5f5' },      // Lighter blue for dark mode
+  secondary: { main: '#4caf50' },    // Green - safety
+  background: {
+    default: '#121212',
+    paper: '#1e1e1e',
+  },
+  // Risk-specific colors (adjusted for dark mode visibility)
   risk: {
-    low: '#10b981',       // green
-    moderate: '#f59e0b',  // yellow
-    high: '#ef4444',      // red
-    extreme: '#7c2d12',   // dark red
+    low: '#4ade80',       // brighter green
+    moderate: '#fbbf24',  // brighter yellow
+    high: '#f87171',      // brighter red
+    extreme: '#dc2626',   // brighter dark red
   }
 }
 ```
+
+### Season-Specific Map Styles
+
+| Season | Mapbox Style | Description |
+|--------|--------------|-------------|
+| All/Summer | `outdoors-v12` | Warm greens, standard topographic |
+| Winter | Custom Outdoors Winter | Cool grays/blues, muted winter aesthetic |
 
 ## Browser Support
 

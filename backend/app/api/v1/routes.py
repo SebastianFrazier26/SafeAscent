@@ -13,6 +13,7 @@ from app.db.session import get_db
 from app.models.route import Route
 from app.models.mountain import Mountain
 from app.models.accident import Accident
+from app.models.ascent import Ascent
 from app.schemas.route import RouteResponse, RouteListResponse, RouteDetail, RouteMapMarker, RouteMapResponse, RouteSafetyResponse
 from app.schemas.prediction import PredictionRequest
 from app.api.v1.predict import predict_route_safety
@@ -1121,3 +1122,130 @@ async def get_historical_trends(
             "trend": None,
             "error": "Historical predictions table may not exist. Run backfill script first."
         }
+
+
+@router.get("/routes/{route_id}/ascent-analytics")
+async def get_ascent_analytics(
+    route_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get ascent analytics for a route including monthly breakdown and accident rate.
+
+    Returns:
+    - Total ascents and accidents for the route
+    - Overall accident rate (accidents per 100 ascents)
+    - Monthly breakdown with ascent counts and accident rates
+
+    Note: Boulder routes are excluded from analytics as they don't share
+    the same safety risk factors as roped climbing routes.
+    """
+    # Fetch route
+    route_query = select(Route).where(Route.route_id == route_id)
+    route_result = await db.execute(route_query)
+    route = route_result.scalar_one_or_none()
+
+    if not route:
+        raise HTTPException(status_code=404, detail="Route not found")
+
+    # Check if route is a boulder problem (excluded from analytics)
+    route_type = (route.type or '').lower()
+    if route_type in ['boulder', 'bouldering']:
+        return {
+            "route_id": route_id,
+            "route_name": route.name,
+            "route_type": route.type,
+            "total_ascents": 0,
+            "total_accidents": 0,
+            "overall_accident_rate": 0.0,
+            "monthly_stats": [],
+            "best_month": None,
+            "worst_month": None,
+            "has_data": False,
+            "excluded_reason": "Boulder problems are excluded from safety analytics",
+        }
+
+    # Get total ascents for this route
+    ascent_count_query = select(func.count()).select_from(Ascent).where(Ascent.route_id == route_id)
+    ascent_count_result = await db.execute(ascent_count_query)
+    total_ascents = ascent_count_result.scalar() or 0
+
+    # Get total accidents for this route
+    accident_count_query = select(func.count()).select_from(Accident).where(Accident.route_id == route_id)
+    accident_count_result = await db.execute(accident_count_query)
+    total_accidents = accident_count_result.scalar() or 0
+
+    # Calculate overall accident rate (per 100 ascents)
+    overall_accident_rate = (total_accidents / total_ascents * 100) if total_ascents > 0 else 0.0
+
+    # Get monthly ascent counts
+    monthly_ascent_query = text("""
+        SELECT
+            EXTRACT(MONTH FROM date)::integer as month_num,
+            COUNT(*) as ascent_count
+        FROM ascents
+        WHERE route_id = :route_id AND date IS NOT NULL
+        GROUP BY month_num
+        ORDER BY month_num
+    """)
+
+    monthly_ascent_result = await db.execute(monthly_ascent_query, {"route_id": route_id})
+    monthly_ascents_raw = monthly_ascent_result.fetchall()
+
+    # Get monthly accident counts
+    monthly_accident_query = text("""
+        SELECT
+            EXTRACT(MONTH FROM date)::integer as month_num,
+            COUNT(*) as accident_count
+        FROM accidents
+        WHERE route_id = :route_id AND date IS NOT NULL
+        GROUP BY month_num
+        ORDER BY month_num
+    """)
+
+    monthly_accident_result = await db.execute(monthly_accident_query, {"route_id": route_id})
+    monthly_accidents_raw = monthly_accident_result.fetchall()
+
+    # Build monthly data lookup
+    ascent_by_month = {int(row[0]): int(row[1]) for row in monthly_ascents_raw}
+    accident_by_month = {int(row[0]): int(row[1]) for row in monthly_accidents_raw}
+
+    # Build monthly stats array (all 12 months)
+    month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    monthly_stats = []
+
+    for month_num in range(1, 13):
+        ascent_count = ascent_by_month.get(month_num, 0)
+        accident_count = accident_by_month.get(month_num, 0)
+        accident_rate = (accident_count / ascent_count * 100) if ascent_count > 0 else 0.0
+
+        monthly_stats.append({
+            "month": month_names[month_num - 1],
+            "month_num": month_num,
+            "ascent_count": ascent_count,
+            "accident_count": accident_count,
+            "accident_rate": round(accident_rate, 2),
+        })
+
+    # Find best and worst months based on accident rate (only months with ascents)
+    months_with_ascents = [m for m in monthly_stats if m["ascent_count"] > 0]
+    best_month = min(months_with_ascents, key=lambda x: x["accident_rate"]) if months_with_ascents else None
+    worst_month = max(months_with_ascents, key=lambda x: x["accident_rate"]) if months_with_ascents else None
+
+    # Find peak activity month (most ascents)
+    peak_month = max(months_with_ascents, key=lambda x: x["ascent_count"]) if months_with_ascents else None
+
+    return {
+        "route_id": route_id,
+        "route_name": route.name,
+        "route_type": route.type,
+        "total_ascents": total_ascents,
+        "total_accidents": total_accidents,
+        "overall_accident_rate": round(overall_accident_rate, 2),
+        "monthly_stats": monthly_stats,
+        "best_month": best_month["month"] if best_month else None,
+        "worst_month": worst_month["month"] if worst_month else None,
+        "peak_month": peak_month["month"] if peak_month else None,
+        "has_data": total_ascents > 0,
+    }

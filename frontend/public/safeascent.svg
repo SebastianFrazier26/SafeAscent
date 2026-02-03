@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Mountain peak - main shape -->
+  <path d="M16 3 L29 28 H3 Z" fill="#1976d2"/>
+  <!-- Snow cap -->
+  <path d="M16 3 L21 11 H11 Z" fill="#ffffff"/>
+  <!-- Secondary peak (background) -->
+  <path d="M24 10 L30 28 H18 Z" fill="#42a5f5" opacity="0.7"/>
+  <!-- Safety indicator circle (green for safe) -->
+  <circle cx="16" cy="21" r="4" fill="#2e7d32"/>
+  <!-- Checkmark inside circle -->
+  <path d="M13.5 21 L15 22.5 L18.5 19" stroke="#ffffff" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
