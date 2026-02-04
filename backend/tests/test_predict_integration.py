@@ -36,11 +36,8 @@ class TestPredictEndpointBasics:
 
         # Verify response structure
         assert "risk_score" in data
-        assert "confidence" in data
-        assert "confidence_interpretation" in data
         assert "num_contributing_accidents" in data
         assert "top_contributing_accidents" in data
-        assert "confidence_breakdown" in data
         assert "metadata" in data
 
     async def test_predict_risk_score_in_valid_range(self, async_client: AsyncClient):
@@ -56,20 +53,6 @@ class TestPredictEndpointBasics:
         data = response.json()
 
         assert 0.0 <= data["risk_score"] <= 100.0
-
-    async def test_predict_confidence_in_valid_range(self, async_client: AsyncClient):
-        """Confidence should be between 0 and 100."""
-        payload = {
-            "latitude": 40.0150,
-            "longitude": -105.2705,
-            "route_type": "alpine",
-            "planned_date": "2024-07-15",
-        }
-
-        response = await async_client.post("/api/v1/predict", json=payload)
-        data = response.json()
-
-        assert 0.0 <= data["confidence"] <= 100.0
 
     async def test_predict_contributing_accidents_structure(self, async_client: AsyncClient):
         """Contributing accidents should have proper structure."""
@@ -95,33 +78,10 @@ class TestPredictEndpointBasics:
             assert "days_ago" in acc
             assert "spatial_weight" in acc
             assert "temporal_weight" in acc
+            assert "elevation_weight" in acc
             assert "weather_weight" in acc
             assert "route_type_weight" in acc
             assert "severity_weight" in acc
-
-    async def test_predict_confidence_breakdown_structure(self, async_client: AsyncClient):
-        """Confidence breakdown should have all required fields."""
-        payload = {
-            "latitude": 40.0150,
-            "longitude": -105.2705,
-            "route_type": "alpine",
-            "planned_date": "2024-07-15",
-        }
-
-        response = await async_client.post("/api/v1/predict", json=payload)
-        data = response.json()
-
-        breakdown = data["confidence_breakdown"]
-        assert "overall_confidence" in breakdown
-        assert "sample_size_score" in breakdown
-        assert "match_quality_score" in breakdown
-        assert "spatial_coverage_score" in breakdown
-        assert "temporal_recency_score" in breakdown
-        assert "weather_quality_score" in breakdown
-        assert "num_accidents" in breakdown
-        assert "num_significant" in breakdown
-        assert "median_days_ago" in breakdown
-        assert "weather_data_pct" in breakdown
 
     async def test_predict_metadata_includes_search_info(self, async_client: AsyncClient):
         """Metadata should include search parameters."""
@@ -285,7 +245,7 @@ class TestPredictEdgeCases:
     """Test edge cases and boundary conditions."""
 
     async def test_predict_with_no_nearby_accidents(self, async_client: AsyncClient):
-        """Request in area with no accidents should return zero risk, low confidence."""
+        """Request in area with no accidents should return zero risk."""
         # Use coordinates in middle of ocean (no accidents)
         payload = {
             "latitude": 0.0,
@@ -299,8 +259,6 @@ class TestPredictEdgeCases:
 
         assert response.status_code == 200
         assert data["risk_score"] == 0.0
-        assert data["confidence"] == 0.0
-        assert data["confidence_interpretation"] == "No Data"
         assert data["num_contributing_accidents"] == 0
         assert len(data["top_contributing_accidents"]) == 0
 
@@ -496,71 +454,6 @@ class TestPredictDatabaseIntegration:
 
 
 @pytest.mark.asyncio
-class TestPredictConfidenceCalculation:
-    """Test confidence score calculation logic."""
-
-    async def test_predict_high_accident_count_increases_confidence(self, async_client: AsyncClient):
-        """More accidents should generally increase confidence."""
-        payload = {
-            "latitude": 40.0150,
-            "longitude": -105.2705,
-            "route_type": "alpine",
-            "planned_date": "2024-07-15",
-            "search_radius_km": 200.0,  # Large radius = more accidents
-        }
-
-        response = await async_client.post("/api/v1/predict", json=payload)
-        data = response.json()
-
-        breakdown = data["confidence_breakdown"]
-
-        # If we have many accidents, sample size score should be high
-        if breakdown["num_accidents"] > 30:
-            assert breakdown["sample_size_score"] > 0.7
-
-    async def test_predict_no_accidents_zero_confidence(self, async_client: AsyncClient):
-        """Zero accidents should result in zero confidence."""
-        # Middle of ocean
-        payload = {
-            "latitude": 0.0,
-            "longitude": -160.0,
-            "route_type": "alpine",
-            "planned_date": "2024-07-15",
-        }
-
-        response = await async_client.post("/api/v1/predict", json=payload)
-        data = response.json()
-
-        breakdown = data["confidence_breakdown"]
-        assert breakdown["num_accidents"] == 0
-        assert breakdown["overall_confidence"] == 0.0
-
-    async def test_predict_confidence_components_sum_correctly(self, async_client: AsyncClient):
-        """Confidence breakdown components should be internally consistent."""
-        payload = {
-            "latitude": 40.0150,
-            "longitude": -105.2705,
-            "route_type": "alpine",
-            "planned_date": "2024-07-15",
-        }
-
-        response = await async_client.post("/api/v1/predict", json=payload)
-        data = response.json()
-
-        breakdown = data["confidence_breakdown"]
-
-        # All component scores should be 0-1 range
-        assert 0.0 <= breakdown["sample_size_score"] <= 1.0
-        assert 0.0 <= breakdown["match_quality_score"] <= 1.0
-        assert 0.0 <= breakdown["spatial_coverage_score"] <= 1.0
-        assert 0.0 <= breakdown["temporal_recency_score"] <= 1.0
-        assert 0.0 <= breakdown["weather_quality_score"] <= 1.0
-
-        # Weather data percentage should be 0-100
-        assert 0.0 <= breakdown["weather_data_pct"] <= 100.0
-
-
-@pytest.mark.asyncio
 class TestPredictResponseConsistency:
     """Test response consistency and data integrity."""
 
@@ -582,7 +475,6 @@ class TestPredictResponseConsistency:
 
         # Results should be deterministic
         assert data1["risk_score"] == data2["risk_score"]
-        assert data1["confidence"] == data2["confidence"]
         assert data1["num_contributing_accidents"] == data2["num_contributing_accidents"]
 
     async def test_predict_num_contributing_matches_list_length(self, async_client: AsyncClient):
