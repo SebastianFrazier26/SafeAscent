@@ -136,7 +136,7 @@ export default function MapView({ selectedRouteForZoom }) {
     const fetchRoutes = async () => {
       try {
         setLoading(true);
-        const response = await fetch(`${API_BASE_URL}/routes/map`);
+        const response = await fetch(`${API_BASE_URL}/mp-routes/map`);
         if (!response.ok) {
           throw new Error(`Failed to fetch routes: ${response.statusText}`);
         }
@@ -169,11 +169,12 @@ export default function MapView({ selectedRouteForZoom }) {
                 coordinates: [route.longitude, route.latitude],
               },
               properties: {
-                id: route.route_id,
+                id: route.mp_route_id,  // Use mp_route_id as the primary ID
                 name: route.name,
-                grade: route.grade_yds || 'N/A',
+                grade: route.grade || 'N/A',  // mp_routes uses 'grade' not 'grade_yds'
                 type: normalizeRouteTypeForDisplay(route.type),
                 mp_route_id: route.mp_route_id,
+                location_id: route.location_id,
               },
             });
           } else {
@@ -209,11 +210,12 @@ export default function MapView({ selectedRouteForZoom }) {
                   coordinates: [offsetLon, offsetLat],
                 },
                 properties: {
-                  id: route.route_id,
+                  id: route.mp_route_id,  // Use mp_route_id as the primary ID
                   name: route.name,
-                  grade: route.grade_yds || 'N/A',
+                  grade: route.grade || 'N/A',  // mp_routes uses 'grade' not 'grade_yds'
                   type: normalizeRouteTypeForDisplay(route.type),
                   mp_route_id: route.mp_route_id,
+                  location_id: route.location_id,
                 },
               });
             });
@@ -274,7 +276,7 @@ export default function MapView({ selectedRouteForZoom }) {
           batch.map(async (feature) => {
             try {
               const response = await fetch(
-                `${API_BASE_URL}/routes/${feature.properties.id}/safety?target_date=${dateStr}`,
+                `${API_BASE_URL}/mp-routes/${feature.properties.id}/safety?target_date=${dateStr}`,
                 { method: 'POST' }
               );
 
@@ -360,7 +362,7 @@ export default function MapView({ selectedRouteForZoom }) {
               try {
                 const featureId = routes.features[index].properties.id;
                 const response = await fetch(
-                  `${API_BASE_URL}/routes/${featureId}/safety?target_date=${dateStr}`,
+                  `${API_BASE_URL}/mp-routes/${featureId}/safety?target_date=${dateStr}`,
                   { method: 'POST' }
                 );
 
@@ -465,7 +467,7 @@ export default function MapView({ selectedRouteForZoom }) {
         setLoadingSafety(true);
         const dateStr = format(selectedDate, 'yyyy-MM-dd');
         const response = await fetch(
-          `${API_BASE_URL}/routes/${selectedRoute.properties.id}/safety?target_date=${dateStr}`,
+          `${API_BASE_URL}/mp-routes/${selectedRoute.properties.id}/safety?target_date=${dateStr}`,
           { method: 'POST' }
         );
 

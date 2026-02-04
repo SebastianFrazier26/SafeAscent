@@ -62,28 +62,32 @@ export default function PredictionForm({ onSubmit, isLoading, onRouteSelect }) {
     const fetchOptions = async () => {
       setLoadingRoutes(true);
       try {
-        // Fetch both routes and mountains in parallel
-        const [routesResponse, mountainsResponse] = await Promise.all([
-          fetch(`${API_BASE_URL}/routes?search=${encodeURIComponent(routeSearch)}&limit=8`),
-          fetch(`${API_BASE_URL}/mountains?search=${encodeURIComponent(routeSearch)}&limit=5`)
+        // Fetch both MP routes and locations in parallel
+        const [routesResponse, locationsResponse] = await Promise.all([
+          fetch(`${API_BASE_URL}/mp-routes?search=${encodeURIComponent(routeSearch)}&limit=8`),
+          fetch(`${API_BASE_URL}/locations?search=${encodeURIComponent(routeSearch)}&limit=5`)
         ]);
 
         const routesData = await routesResponse.json();
-        const mountainsData = await mountainsResponse.json();
+        const locationsData = await locationsResponse.json();
 
-        // Combine results - mountains first (marked as type: 'mountain'), then routes
-        const mountains = (mountainsData.data || []).map(m => ({
-          ...m,
-          type: 'mountain',
-          route_count: m.route_count || 0
+        // Combine results - locations first (marked as type: 'location'), then routes
+        const locations = (locationsData.data || []).map(loc => ({
+          ...loc,
+          type: 'location',
+          route_count: loc.route_count || 0,
+          // Map mp_id to mountain_id for backwards compatibility
+          mountain_id: loc.mp_id
         }));
 
         const routes = (routesData.data || []).map(r => ({
           ...r,
-          type: 'route'
+          type: 'route',
+          // Map mp_route_id to route_id for backwards compatibility
+          route_id: r.mp_route_id
         }));
 
-        setRouteOptions([...mountains, ...routes]);
+        setRouteOptions([...locations, ...routes]);
       } catch (err) {
         console.error('Error fetching options:', err);
         setRouteOptions([]);
@@ -113,9 +117,9 @@ export default function PredictionForm({ onSubmit, isLoading, onRouteSelect }) {
       return;
     }
 
-    // If mountain is selected, don't submit prediction - just zoom to it
-    if (selectedRoute.type === 'mountain') {
-      alert('Mountain selected. Click on a route marker to get its safety prediction.');
+    // If location is selected, don't submit prediction - just zoom to it
+    if (selectedRoute.type === 'location') {
+      alert('Location selected. Click on a route marker to get its safety prediction.');
       return;
     }
 
@@ -152,7 +156,7 @@ export default function PredictionForm({ onSubmit, isLoading, onRouteSelect }) {
               getOptionLabel={(option) => option.name || ''}
               loading={loadingRoutes}
               disabled={isLoading}
-              groupBy={(option) => option.type === 'mountain' ? 'Mountains' : 'Routes'}
+              groupBy={(option) => option.type === 'location' ? 'Locations' : 'Routes'}
               renderInput={(params) => (
                 <TextField
                   {...params}
@@ -182,10 +186,10 @@ export default function PredictionForm({ onSubmit, isLoading, onRouteSelect }) {
                   <Box sx={{ flexGrow: 1 }}>
                     <Typography
                       variant="body2"
-                      sx={{ fontWeight: option.type === 'mountain' ? 600 : 400 }}
+                      sx={{ fontWeight: option.type === 'location' ? 600 : 400 }}
                     >
                       {option.name}
-                      {option.type === 'mountain' && option.route_count > 0 && (
+                      {option.type === 'location' && option.route_count > 0 && (
                         <Typography component="span" variant="caption" sx={{ ml: 1, color: 'primary.main' }}>
                           ({option.route_count} routes)
                         </Typography>
@@ -193,21 +197,23 @@ export default function PredictionForm({ onSubmit, isLoading, onRouteSelect }) {
                     </Typography>
                     {option.type === 'route' && (
                       <Typography variant="caption" color="text.secondary">
-                        {option.grade_yds || 'N/A'} • {option.mountain_name || 'Unknown location'}
+                        {option.grade || 'N/A'} • {option.type || 'Unknown type'}
                       </Typography>
                     )}
-                    {option.type === 'mountain' && (
+                    {option.type === 'location' && (
                       <Typography variant="caption" color="text.secondary">
-                        {option.state || 'Unknown state'} • {option.elevation_ft ? `${Math.round(option.elevation_ft)} ft` : 'Elevation unknown'}
+                        {option.latitude && option.longitude
+                          ? `${option.latitude.toFixed(2)}°, ${option.longitude.toFixed(2)}°`
+                          : 'Coordinates unknown'}
                       </Typography>
                     )}
                   </Box>
                 </Box>
               )}
-              noOptionsText={routeSearch.length < 2 ? 'Type to search routes or mountains...' : 'No results found'}
+              noOptionsText={routeSearch.length < 2 ? 'Type to search routes or locations...' : 'No results found'}
             />
             <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
-              Search by route name or mountain (case-insensitive) • Click route markers for details
+              Search by route name or climbing area (case-insensitive) • Click route markers for details
             </Typography>
           </Box>
 

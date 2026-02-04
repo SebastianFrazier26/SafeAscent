@@ -19,14 +19,29 @@ from app.schemas.accident import (
     AccidentListResponse,
     AccidentDetail,
 )
+from app.schemas.mp_location import (
+    MpLocationBase,
+    MpLocationResponse,
+    MpLocationListResponse,
+    MpLocationDetail,
+)
+from app.schemas.mp_route import (
+    MpRouteBase,
+    MpRouteResponse,
+    MpRouteListResponse,
+    MpRouteDetail,
+    MpRouteMapMarker,
+    MpRouteMapResponse,
+    MpRouteSafetyResponse,
+)
 
 __all__ = [
-    # Mountains
+    # Mountains (legacy)
     "MountainBase",
     "MountainResponse",
     "MountainListResponse",
     "MountainDetail",
-    # Routes
+    # Routes (legacy)
     "RouteBase",
     "RouteResponse",
     "RouteListResponse",
@@ -36,4 +51,17 @@ __all__ = [
     "AccidentResponse",
     "AccidentListResponse",
     "AccidentDetail",
+    # MP Locations
+    "MpLocationBase",
+    "MpLocationResponse",
+    "MpLocationListResponse",
+    "MpLocationDetail",
+    # MP Routes
+    "MpRouteBase",
+    "MpRouteResponse",
+    "MpRouteListResponse",
+    "MpRouteDetail",
+    "MpRouteMapMarker",
+    "MpRouteMapResponse",
+    "MpRouteSafetyResponse",
 ]

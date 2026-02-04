@@ -12,12 +12,11 @@ from sqlalchemy.orm import selectinload
 
 from app.celery_app import celery_app
 from app.db.session import AsyncSessionLocal
-from app.models.route import Route
-from app.models.mountain import Mountain
+from app.models.mp_route import MpRoute
 from app.schemas.prediction import PredictionRequest
 from app.api.v1.predict import predict_route_safety
-from app.api.v1.routes import normalize_route_type, get_safety_color_code
-from app.schemas.route import RouteSafetyResponse
+from app.api.v1.mp_routes import normalize_route_type, get_safety_color_code
+from app.schemas.mp_route import MpRouteSafetyResponse
 from app.utils.cache import cache_set, build_safety_score_key
 
 logger = logging.getLogger(__name__)
@@ -29,7 +28,7 @@ def warm_popular_routes_cache():
     Pre-calculate safety scores for popular routes for the next 7 days.
 
     This task:
-    1. Queries the top 200 routes on mountains with highest accident counts
+    1. Queries the top 200 MP routes with valid coordinates
     2. Calculates safety scores for each route for the next 7 days
     3. Stores results in Redis with 6-hour TTL
 
@@ -54,23 +53,22 @@ async def _warm_cache_async() -> dict:
     Returns:
         dict: Statistics about the warming process
     """
-    # Get popular routes (routes on mountains with high accident counts)
+    # Get popular routes (routes with valid coordinates)
     async with AsyncSessionLocal() as db:
-        # Query routes on mountains with highest accident counts
+        # Query mp_routes with valid coordinates
         # Limit to 200 routes to avoid excessive computation
         query = (
-            select(Route)
-            .join(Mountain, Route.mountain_id == Mountain.mountain_id)
+            select(MpRoute)
             .where(
-                Route.latitude.isnot(None),
-                Route.longitude.isnot(None),
+                MpRoute.latitude.isnot(None),
+                MpRoute.longitude.isnot(None),
             )
-            .order_by(Mountain.accident_count.desc())
+            .order_by(MpRoute.mp_route_id)
             .limit(200)
         )
 
         result = await db.execute(query)
-        routes: List[Route] = result.scalars().all()
+        routes: List[MpRoute] = result.scalars().all()
 
         if not routes:
             logger.warning("No routes found for cache warming")
@@ -96,7 +94,7 @@ async def _warm_cache_async() -> dict:
                 for target_date in dates_to_warm:
                     try:
                         # Check if already cached (skip if so)
-                        cache_key = build_safety_score_key(route.route_id, target_date.isoformat())
+                        cache_key = build_safety_score_key(route.mp_route_id, target_date.isoformat())
 
                         # Normalize route type
                         normalized_type = normalize_route_type(route.type)
@@ -117,8 +115,8 @@ async def _warm_cache_async() -> dict:
                         color_code = get_safety_color_code(prediction.risk_score)
 
                         # Build response
-                        safety_response = RouteSafetyResponse(
-                            route_id=route.route_id,
+                        safety_response = MpRouteSafetyResponse(
+                            route_id=route.mp_route_id,
                             route_name=route.name,
                             target_date=target_date.isoformat(),
                             risk_score=round(prediction.risk_score, 1),
@@ -136,7 +134,7 @@ async def _warm_cache_async() -> dict:
 
                     except Exception as e:
                         logger.error(
-                            f"Failed to warm cache for route {route.route_id} "
+                            f"Failed to warm cache for route {route.mp_route_id} "
                             f"on {target_date}: {e}"
                         )
                         failed_count += 1

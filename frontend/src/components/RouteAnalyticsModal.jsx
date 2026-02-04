@@ -185,7 +185,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
             if (!data.forecast) {
               setLoading(prev => ({ ...prev, forecast: true }));
               const response = await fetch(
-                `${API_BASE}/routes/${routeData.route_id}/forecast?start_date=${selectedDate}`
+                `${API_BASE}/mp-routes/${routeData.route_id}/forecast?start_date=${selectedDate}`
               );
               if (!response.ok) throw new Error('Failed to fetch forecast data');
               const forecastData = await response.json();
@@ -197,7 +197,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
           case 1: // Route Characteristics
             if (!data.routeDetails) {
               setLoading(prev => ({ ...prev, routeDetails: true }));
-              const response = await fetch(`${API_BASE}/routes/${routeData.route_id}`);
+              const response = await fetch(`${API_BASE}/mp-routes/${routeData.route_id}`);
               if (!response.ok) throw new Error('Failed to fetch route details');
               const routeDetails = await response.json();
               setData(prev => ({ ...prev, routeDetails }));
@@ -209,7 +209,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
             if (!data.accidents) {
               setLoading(prev => ({ ...prev, accidents: true }));
               const response = await fetch(
-                `${API_BASE}/routes/${routeData.route_id}/accidents`
+                `${API_BASE}/mp-routes/${routeData.route_id}/accidents`
               );
               if (!response.ok) throw new Error('Failed to fetch accident data');
               const accidentData = await response.json();
@@ -222,7 +222,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
             if (!data.breakdown) {
               setLoading(prev => ({ ...prev, breakdown: true }));
               const response = await fetch(
-                `${API_BASE}/routes/${routeData.route_id}/risk-breakdown?target_date=${selectedDate}`
+                `${API_BASE}/mp-routes/${routeData.route_id}/risk-breakdown?target_date=${selectedDate}`
               );
               if (!response.ok) throw new Error('Failed to fetch risk breakdown');
               const breakdownData = await response.json();
@@ -235,7 +235,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
             if (!data.seasonal) {
               setLoading(prev => ({ ...prev, seasonal: true }));
               const response = await fetch(
-                `${API_BASE}/routes/${routeData.route_id}/seasonal-patterns`
+                `${API_BASE}/mp-routes/${routeData.route_id}/seasonal-patterns`
               );
               if (!response.ok) throw new Error('Failed to fetch seasonal data');
               const seasonalData = await response.json();
@@ -248,7 +248,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
             if (!data.historical) {
               setLoading(prev => ({ ...prev, historical: true }));
               const response = await fetch(
-                `${API_BASE}/routes/${routeData.route_id}/historical-trends?days=30`
+                `${API_BASE}/mp-routes/${routeData.route_id}/historical-trends?days=30`
               );
               if (!response.ok) throw new Error('Failed to fetch historical data');
               const historicalData = await response.json();
@@ -261,7 +261,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
             if (!data.timeOfDay) {
               setLoading(prev => ({ ...prev, timeOfDay: true }));
               const response = await fetch(
-                `${API_BASE}/routes/${routeData.route_id}/time-of-day?target_date=${selectedDate}`
+                `${API_BASE}/mp-routes/${routeData.route_id}/time-of-day?target_date=${selectedDate}`
               );
               if (!response.ok) throw new Error('Failed to fetch time-of-day data');
               const timeOfDayData = await response.json();
@@ -274,7 +274,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
             if (!data.ascents) {
               setLoading(prev => ({ ...prev, ascents: true }));
               const response = await fetch(
-                `${API_BASE}/routes/${routeData.route_id}/ascent-analytics`
+                `${API_BASE}/mp-routes/${routeData.route_id}/ascent-analytics`
               );
               if (!response.ok) throw new Error('Failed to fetch ascent analytics');
               const ascentsData = await response.json();

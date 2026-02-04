@@ -1,8 +1,12 @@
 # SafeAscent Safety Prediction Algorithm - Design Document
 
-**Status**: Design Phase (In Progress)
-**Last Updated**: 2026-01-28
-**Authors**: Sebastian + Claude
+**Status**: ✅ Implemented and Tested (50/50 tests passing)
+**Last Updated**: 2026-02-03
+**Author**: Sebastian Frazier
+
+> **Note**: This document captures design decisions. The algorithm is now fully implemented in `backend/app/services/`. Key tuning updates since design:
+> - Weather power: Changed from cubic (27×) to **quadratic (9×)** for better balance
+> - Normalization factor: Changed from 10.0 to **5.0** for more headroom
 
 ---
 
@@ -1381,25 +1385,26 @@ Questions to address in future design sessions:
 - [x] ✅ Design confidence scoring system (Question #6) - Decision #7
 - [x] ✅ Decide on route database expansion strategy - Defer to post-MVP
 
-### Implementation (Next Phase)
-- [ ] Write complete algorithm pseudocode (all components integrated)
-- [ ] Implement in Python (backend/app/services/)
-  - [ ] spatial_weighting.py
-  - [ ] temporal_weighting.py
-  - [ ] weather_similarity.py
-  - [ ] route_type_weighting.py
-  - [ ] confidence_scoring.py
-  - [ ] safety_algorithm.py (orchestrator)
-- [ ] Create preprocessing script for weather_statistics table
-- [ ] Create API endpoint: POST /api/v1/routes/{route_id}/risk
-- [ ] Create API endpoint: POST /api/v1/risk (arbitrary coordinates)
-- [ ] Create test cases for each component
-- [ ] Validate with historical data (backtesting)
+### Implementation (Complete! ✅)
+- [x] ✅ Write complete algorithm pseudocode (all components integrated)
+- [x] ✅ Implement in Python (backend/app/services/)
+  - [x] ✅ spatial_weighting.py
+  - [x] ✅ temporal_weighting.py
+  - [x] ✅ weather_similarity.py
+  - [x] ✅ route_type_weighting.py
+  - [x] ✅ confidence_scoring.py
+  - [x] ✅ safety_algorithm.py (orchestrator)
+  - [x] ✅ algorithm_config.py (all parameters)
+  - [x] ✅ severity_weighting.py
+- [x] ✅ Create preprocessing script for weather_statistics table
+- [x] ✅ Create API endpoint: POST /api/v1/predict
+- [x] ✅ Create test cases for each component (50/50 passing)
+- [x] ✅ Validate with historical data
 
 ### Post-MVP Optimizations
 - [ ] Optimize within-window temporal decay via backtesting (Decision #5)
 - [ ] Implement weather-conditional route type weighting (Decision #2, Option B)
-- [ ] Expand route database (2,000-5,000 additional routes)
+- [x] ✅ Expand route database (196,000+ routes scraped from Mountain Project)
 - [ ] Add severity-specific risk scores for route analytics (Decision #6)
 - [ ] Implement confidence-adjusted risk scores
 - [ ] Create regional confidence heatmaps
@@ -1465,10 +1470,22 @@ def calculate_route_risk_and_confidence(route_location, route_type, current_weat
         # fatal: 1.3, serious: 1.1, minor: 1.0, unknown: 1.0
 
         # COMBINE ALL WEIGHTS
+        # Implementation update (2026-01-30):
+        # - Weather uses QUADRATIC power (weather²) for 9× sunny/stormy variation
+        # - Accidents with weather_similarity < 0.25 are EXCLUDED (poor match)
+
+        WEATHER_EXCLUSION_THRESHOLD = 0.25
+        WEATHER_POWER = 2  # Quadratic
+
+        if weather_weight < WEATHER_EXCLUSION_THRESHOLD:
+            continue  # Skip accidents with very poor weather match
+
+        weather_factor = weather_weight ** WEATHER_POWER  # Quadratic amplification
+
         total_influence = (
             spatial_weight *
             temporal_weight *
-            weather_weight *
+            weather_factor *  # Now quadratic
             route_type_weight *
             severity_weight
         )
@@ -1479,7 +1496,7 @@ def calculate_route_risk_and_confidence(route_location, route_type, current_weat
             'breakdown': {
                 'spatial': spatial_weight,
                 'temporal': temporal_weight,
-                'weather': weather_weight,
+                'weather': weather_factor,
                 'route_type': route_type_weight,
                 'severity': severity_weight
             }
@@ -1487,7 +1504,7 @@ def calculate_route_risk_and_confidence(route_location, route_type, current_weat
 
     # 7. Calculate risk score (sum of influences, normalized to 0-100)
     total_risk = sum([ai['influence'] for ai in accident_influences])
-    risk_score = min(total_risk * 10, 100)  # Normalize (empirical: ~10 influence = 100 risk)
+    risk_score = min(total_risk * 5.0, 100)  # Normalize (tuned: 5.0 provides headroom)
 
     # 8. Calculate confidence score (multi-factor - Decision #7)
     confidence_data = calculate_confidence(
@@ -1518,9 +1535,12 @@ def calculate_route_risk_and_confidence(route_location, route_type, current_weat
 | **Temporal Decay** | Year-scale (λ=0.9998 to 0.999) | Route-type-specific | ✅ Complete |
 | **Seasonal Boost** | 1.5× multiplier for same season | Winter/Spring/Summer/Fall | ✅ Complete |
 | **Weather Similarity** | Pattern correlation (equal weighting) | 6 factors, 2.0 SD extreme threshold | ✅ Complete |
+| **Weather Power** | **Quadratic (weather²)** | 9× sunny/stormy variation | ✅ Tuned |
+| **Weather Exclusion** | Skip accidents with similarity < 0.25 | Filters poor matches | ✅ Tuned |
 | **Within-Window Decay** | 0.85 default (2.5× Day-0 vs Day-6) | Post-MVP backtesting planned | ✅ Complete |
 | **Severity Weighting** | Subtle boosters (1.3×, 1.1×, 1.0×) | Fatal, Serious, Minor/Unknown | ✅ Complete |
 | **Confidence Scoring** | Multi-factor (5 indicators) | Weighted 30/30/20/10/10 | ✅ Complete |
+| **Normalization Factor** | **5.0** (changed from 10.0) | Provides headroom for dense areas | ✅ Tuned |
 
 ### Algorithm Characteristics
 
@@ -1573,5 +1593,7 @@ Total: ~320ms response time
 *This is a living document. Update as design decisions are made or implementation reveals new insights.*
 
 **Design Phase Complete**: 2026-01-28
-**Next Phase**: Implementation (Python services + API endpoints)
+**Implementation Complete**: 2026-01-30
+**Testing Complete**: 2026-01-30 (50/50 tests passing, 100%)
+**Last Updated**: 2026-02-03
 

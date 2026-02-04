@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.api.v1 import mountains, routes, accidents, predict
+from app.api.v1 import accidents, predict, locations, mp_routes
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -48,8 +48,11 @@ async def health_check():
 
 
 # Include API routers
-app.include_router(mountains.router, prefix=settings.API_V1_PREFIX, tags=["mountains"])
-app.include_router(routes.router, prefix=settings.API_V1_PREFIX, tags=["routes"])
+# MP-based endpoints (273K routes, 61K locations)
+app.include_router(locations.router, prefix=settings.API_V1_PREFIX, tags=["locations"])
+app.include_router(mp_routes.router, prefix=settings.API_V1_PREFIX, tags=["routes"])
+
+# Core endpoints
 app.include_router(accidents.router, prefix=settings.API_V1_PREFIX, tags=["accidents"])
 app.include_router(predict.router, prefix=settings.API_V1_PREFIX, tags=["predictions"])
 

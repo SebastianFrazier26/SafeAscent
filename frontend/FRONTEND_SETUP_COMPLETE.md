@@ -4,6 +4,10 @@
 **Status**: ✅ Homepage with Interactive Map Ready
 **Next Step**: Get Mapbox token and test!
 
+> **Historical Note**: This document records the initial frontend setup with Tailwind CSS.
+> The frontend was subsequently migrated to **Material-UI** (see `MATERIAL_DESIGN_MIGRATION_COMPLETE.md`)
+> and enhanced with a **two-view map system** with stratified heatmaps.
+
 ---
 
 ## What We Built
