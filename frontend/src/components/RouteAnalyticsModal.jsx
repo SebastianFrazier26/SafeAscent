@@ -97,6 +97,118 @@ function LoadingState({ message = 'Loading data...' }) {
     </Box>
   );
 }
+
+// Fun "Data on its way" component for routes without data yet
+const roadblockBounce = keyframes`
+  0%, 100% { transform: translateY(0) rotate(-5deg); }
+  50% { transform: translateY(-8px) rotate(5deg); }
+`;
+
+const progressPulse = keyframes`
+  0% { width: 15%; left: 0; }
+  50% { width: 35%; left: 30%; }
+  100% { width: 15%; left: 85%; }
+`;
+
+function DataOnTheWay({ title = "Data on its way!", message }) {
+  return (
+    <Box
+      sx={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        minHeight: 350,
+        textAlign: 'center',
+        py: 4,
+      }}
+    >
+      {/* Animated roadblock emojis */}
+      <Box sx={{ display: 'flex', gap: 2, mb: 3 }}>
+        <Typography
+          variant="h2"
+          sx={{
+            animation: `${roadblockBounce} 1.2s ease-in-out infinite`,
+            animationDelay: '0s',
+          }}
+        >
+          🚧
+        </Typography>
+        <Typography
+          variant="h2"
+          sx={{
+            animation: `${roadblockBounce} 1.2s ease-in-out infinite`,
+            animationDelay: '0.2s',
+          }}
+        >
+          🏔️
+        </Typography>
+        <Typography
+          variant="h2"
+          sx={{
+            animation: `${roadblockBounce} 1.2s ease-in-out infinite`,
+            animationDelay: '0.4s',
+          }}
+        >
+          🚧
+        </Typography>
+      </Box>
+
+      {/* Title */}
+      <Typography
+        variant="h5"
+        fontWeight={600}
+        color="primary.main"
+        gutterBottom
+      >
+        {title}
+      </Typography>
+
+      {/* Custom message */}
+      {message && (
+        <Typography
+          variant="body1"
+          color="text.secondary"
+          sx={{ maxWidth: 400, mb: 3 }}
+        >
+          {message}
+        </Typography>
+      )}
+
+      {/* Kinetic progress bar */}
+      <Box
+        sx={{
+          width: 280,
+          height: 8,
+          bgcolor: 'grey.200',
+          borderRadius: 4,
+          overflow: 'hidden',
+          position: 'relative',
+        }}
+      >
+        <Box
+          sx={{
+            position: 'absolute',
+            height: '100%',
+            background: 'linear-gradient(90deg, #ff9800, #ffc107, #ff9800)',
+            borderRadius: 4,
+            animation: `${progressPulse} 2s ease-in-out infinite`,
+          }}
+        />
+      </Box>
+
+      {/* Check back later */}
+      <Typography
+        variant="body2"
+        color="text.secondary"
+        sx={{ mt: 2, fontStyle: 'italic' }}
+      >
+        🕐 Check back later for updates!
+      </Typography>
+    </Box>
+  );
+}
+
 import {
   LineChart,
   Line,
@@ -1177,11 +1289,12 @@ function HistoricalTab({ data, loading, routeData: _routeData }) {
     return <LoadingState message="Loading historical trends..." />;
   }
 
-  if (!data || !data.historical_predictions) {
+  if (!data || !data.historical_predictions || data.historical_predictions.length === 0) {
     return (
-      <Alert severity="info">
-        Historical trend data is not yet available for this route. Data collection started recently.
-      </Alert>
+      <DataOnTheWay
+        title="Historical Data on its way!"
+        message="We're building up historical trends for this route. Our prediction models improve as we collect more data over time."
+      />
     );
   }
 
@@ -1508,10 +1621,10 @@ function AscentsTab({ data, loading, routeData }) {
 
   if (!data || !data.has_data) {
     return (
-      <Alert severity="info">
-        No ascent data available for this route. Ascent records help calculate accident rates
-        by comparing successful climbs to incidents.
-      </Alert>
+      <DataOnTheWay
+        title="Ascent Data on its way!"
+        message="We're collecting tick data for this route. Ascent records help calculate accident rates by comparing successful climbs to incidents."
+      />
     );
   }
 
