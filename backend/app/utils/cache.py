@@ -13,7 +13,6 @@ import redis
 import json
 import logging
 from typing import Optional, Any
-from datetime import timedelta
 
 # Configure logging
 logger = logging.getLogger(__name__)

@@ -16,7 +16,7 @@ Caching (Phase 8):
 """
 import requests
 from datetime import date, timedelta
-from typing import Optional, Tuple, List, Dict, Any
+from typing import Optional, Dict, Any
 import logging
 
 from app.services.weather_similarity import WeatherPattern
@@ -113,7 +113,7 @@ def fetch_current_weather_pattern(
         logger.info(f"Weather pattern cache HIT for {latitude}, {longitude}, {target_date}")
         return _dict_to_weather_pattern(cached)
 
-    logger.info(f"Weather pattern cache MISS, fetching from Open-Meteo API")
+    logger.info("Weather pattern cache MISS, fetching from Open-Meteo API")
 
     try:
         # Calculate date range (6 days before target, up to target)
@@ -180,7 +180,7 @@ def fetch_current_weather_pattern(
         # Cache the result
         pattern_dict = _weather_pattern_to_dict(pattern)
         cache_set(cache_key, pattern_dict, ttl_seconds=WEATHER_PATTERN_TTL)
-        logger.info(f"Weather pattern cached for 6 hours")
+        logger.info("Weather pattern cached for 6 hours")
 
         return pattern
 
@@ -227,7 +227,7 @@ def fetch_weather_statistics(
         logger.info(f"Weather stats cache HIT for {latitude}, {longitude}, {elevation_meters}m, {season}")
         return cached
 
-    logger.info(f"Weather stats cache MISS, querying database")
+    logger.info("Weather stats cache MISS, querying database")
 
     # Round lat/lon to 0.1° bucket
     lat_bucket = round(latitude, 1)
@@ -299,7 +299,7 @@ def fetch_weather_statistics(
             }
             # Cache the result
             cache_set(cache_key, stats_dict, ttl_seconds=WEATHER_STATS_TTL)
-            logger.info(f"Weather stats cached for 24 hours")
+            logger.info("Weather stats cached for 24 hours")
             return stats_dict
         else:
             logger.info(f"No statistics found for bucket: {lat_bucket}, {lon_bucket}, {elev_min}-{elev_max}m, {season}")

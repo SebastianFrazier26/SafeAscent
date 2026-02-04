@@ -3,7 +3,7 @@ Time and date utility functions for SafeAscent algorithm.
 
 Provides seasonal calculations and temporal analysis functions.
 """
-from datetime import date, datetime
+from datetime import date
 from typing import List, Tuple
 
 from app.services.algorithm_config import SEASONS, WITHIN_WINDOW_TEMPORAL_DECAY

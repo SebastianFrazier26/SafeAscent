@@ -12,9 +12,8 @@ Expected speedup: 2.0s → 0.4-0.7s per prediction
 """
 import numpy as np
 import math
-from datetime import date, timedelta
+from datetime import date
 from typing import List, Dict, Optional, Tuple
-from dataclasses import dataclass
 
 from app.services.safety_algorithm import AccidentData, SafetyPrediction
 from app.services.weather_similarity import WeatherPattern

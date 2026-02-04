@@ -14,9 +14,7 @@ Six factors weighted equally:
 
 Mathematical basis: Pearson correlation + extreme weather amplification
 """
-import math
 from typing import List, Tuple, Optional, Dict
-from datetime import date
 
 from app.services.algorithm_config import (
     WEATHER_FACTOR_WEIGHTS,
@@ -349,7 +347,7 @@ def calculate_weather_similarity_detailed(
             weights,
         )
         factor_scores["temperature"] = (temp_corr + 1) / 2
-    except:
+    except Exception:
         factor_scores["temperature"] = 0.0
 
     # Precipitation
@@ -360,7 +358,7 @@ def calculate_weather_similarity_detailed(
             weights,
         )
         factor_scores["precipitation"] = (precip_corr + 1) / 2
-    except:
+    except Exception:
         factor_scores["precipitation"] = 0.0
 
     # Wind
@@ -371,7 +369,7 @@ def calculate_weather_similarity_detailed(
             weights,
         )
         factor_scores["wind_speed"] = (wind_corr + 1) / 2
-    except:
+    except Exception:
         factor_scores["wind_speed"] = 0.0
 
     # Visibility
@@ -382,7 +380,7 @@ def calculate_weather_similarity_detailed(
             weights,
         )
         factor_scores["visibility"] = (vis_corr + 1) / 2
-    except:
+    except Exception:
         factor_scores["visibility"] = 0.0
 
     # Cloud cover
@@ -393,7 +391,7 @@ def calculate_weather_similarity_detailed(
             weights,
         )
         factor_scores["cloud_cover"] = (cloud_corr + 1) / 2
-    except:
+    except Exception:
         factor_scores["cloud_cover"] = 0.0
 
     # Freeze-thaw

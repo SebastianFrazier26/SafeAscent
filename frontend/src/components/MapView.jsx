@@ -56,7 +56,7 @@ export default function MapView({ selectedRouteForZoom }) {
   // Selected route for detail popup
   const [selectedRoute, setSelectedRoute] = useState(null);
   const [safetyData, setSafetyData] = useState(null);
-  const [loadingSafety, setLoadingSafety] = useState(false);
+  const [_loadingSafety, setLoadingSafety] = useState(false);
 
   // Track if we've fetched initial safety scores
   const hasInitialScoresRef = useRef(false);
@@ -158,7 +158,7 @@ export default function MapView({ selectedRouteForZoom }) {
         const features = [];
         let overlappingRouteCount = 0;
 
-        coordMap.forEach((routesAtLocation, coordKey) => {
+        coordMap.forEach((routesAtLocation, _coordKey) => {
           if (routesAtLocation.length === 1) {
             // Single route - use original coordinates
             const route = routesAtLocation[0];
@@ -1378,8 +1378,9 @@ export default function MapView({ selectedRouteForZoom }) {
 
 /**
  * Get background color for safety score display
+ * @deprecated Kept for potential future use
  */
-function getSafetyBackgroundColor(colorCode) {
+function _getSafetyBackgroundColor(colorCode) {
   const colors = {
     green: '#4caf50',
     yellow: '#ffeb3b',
@@ -1392,8 +1393,9 @@ function getSafetyBackgroundColor(colorCode) {
 
 /**
  * Get human-readable safety interpretation
+ * @deprecated Kept for potential future use
  */
-function getSafetyInterpretation(riskScore) {
+function _getSafetyInterpretation(riskScore) {
   if (riskScore < 30) {
     return '✅ Conditions appear favorable for climbing. Standard precautions apply.';
   } else if (riskScore < 50) {

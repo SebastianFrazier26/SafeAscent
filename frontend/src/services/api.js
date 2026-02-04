@@ -107,7 +107,7 @@ export const healthCheck = async () => {
   try {
     const response = await api.get('/health');
     return response.status === 200;
-  } catch (error) {
+  } catch {
     return false;
   }
 };

@@ -8,7 +8,6 @@ from typing import List
 import logging
 
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
 
 from app.celery_app import celery_app
 from app.db.session import AsyncSessionLocal

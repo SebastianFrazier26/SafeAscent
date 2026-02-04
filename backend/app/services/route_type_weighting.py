@@ -7,7 +7,6 @@ Key insight: Alpine climbers care about sport accidents in bad weather (canary e
 Example: If planning alpine route, sport accident with bad weather → 0.9× weight
          If planning sport route, alpine accident → 0.3× weight (less relevant)
 """
-from typing import Optional
 
 from app.services.algorithm_config import (
     ROUTE_TYPE_WEIGHTS,

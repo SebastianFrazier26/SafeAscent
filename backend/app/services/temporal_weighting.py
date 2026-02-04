@@ -9,7 +9,6 @@ Formula: weight = lambda^days × seasonal_boost
 where lambda is route-type-specific (alpine = 0.9998, sport = 0.999, etc.)
 """
 from datetime import date
-from typing import Optional
 
 from app.services.algorithm_config import (
     TEMPORAL_LAMBDA,

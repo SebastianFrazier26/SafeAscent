@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, type_coerce
 from geoalchemy2 import Geography
-from geoalchemy2.functions import ST_DWithin, ST_MakePoint
+from geoalchemy2.functions import ST_MakePoint
 
 from app.db.session import get_db
 from app.models.accident import Accident

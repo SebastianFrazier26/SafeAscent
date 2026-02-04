@@ -4,7 +4,7 @@ Statistical utility functions for SafeAscent algorithm.
 Provides statistical calculations for weather similarity and confidence scoring.
 """
 import math
-from typing import List, Optional
+from typing import List
 
 
 def mean(values: List[float]) -> float:
