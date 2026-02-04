@@ -420,9 +420,9 @@ export default function MapView({ selectedRouteForZoom }) {
     const map = mapRef.current?.getMap();
     if (!map) return;
 
-    // Handle mountain selection
-    if (selectedRouteForZoom.type === 'mountain') {
-      // Zoom to mountain location
+    // Handle location/area selection (previously called 'mountain')
+    if (selectedRouteForZoom.type === 'location') {
+      // Zoom to location
       if (selectedRouteForZoom.latitude && selectedRouteForZoom.longitude) {
         map.easeTo({
           center: [selectedRouteForZoom.longitude, selectedRouteForZoom.latitude],
