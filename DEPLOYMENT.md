@@ -44,14 +44,14 @@ Before starting, you'll need:
 3. Fill in details and verify email
 
 ### 1.2 Search and Purchase
-1. Search for `safeascent.app`
+1. Search for `safeascent.us`
 2. Click **Add to Cart** (~$10.87/year)
 3. Checkout with credit card
 4. **Skip DNS setup for now** - we'll configure it after Railway
 
 ### 1.3 Verify Purchase
 - Go to **Domain Management**
-- You should see `safeascent.app` listed
+- You should see `safeascent.us` listed
 - Status should be "Active"
 
 > 📝 **Note:** Keep this tab open - you'll return to add DNS records later.
@@ -160,7 +160,7 @@ REDIS_URL=${{Redis.REDIS_URL}}
 OPENWEATHER_API_KEY=your_openweather_api_key_here
 
 # CORS (we'll update this after getting the domain)
-CORS_ORIGINS=https://safeascent.app,https://www.safeascent.app
+CORS_ORIGINS=https://safeascent.us,https://www.safeascent.us
 
 # App Settings
 DEBUG=false
@@ -185,7 +185,7 @@ API_V1_PREFIX=/api/v1
 
 ```bash
 # API URL (will be your custom domain)
-VITE_API_BASE_URL=https://api.safeascent.app/api/v1
+VITE_API_BASE_URL=https://api.safeascent.us/api/v1
 
 # Mapbox (replace with your token)
 VITE_MAPBOX_TOKEN=pk.your_mapbox_token_here
@@ -218,22 +218,22 @@ VITE_MAPBOX_TOKEN=pk.your_mapbox_token_here
 **For Frontend (main site):**
 1. Click `frontend` service → **Settings** → **Networking**
 2. Under **Custom Domain**, click **+ Custom Domain**
-3. Enter: `safeascent.app`
+3. Enter: `safeascent.us`
 4. Click **Add**
 5. Railway shows you a CNAME target (e.g., `frontend-production-xxxx.up.railway.app`)
-6. Repeat for `www.safeascent.app`
+6. Repeat for `www.safeascent.us`
 
 **For Backend (API):**
 1. Click `backend` service → **Settings** → **Networking**
 2. Under **Custom Domain**, click **+ Custom Domain**
-3. Enter: `api.safeascent.app`
+3. Enter: `api.safeascent.us`
 4. Click **Add**
 5. Railway shows you a CNAME target
 
 ### 4.2 Configure DNS in Porkbun
 
 1. Go to [porkbun.com](https://porkbun.com) → **Domain Management**
-2. Click **DNS** next to `safeascent.app`
+2. Click **DNS** next to `safeascent.us`
 3. Delete any existing A or CNAME records for `@` or `www`
 4. Add these records:
 
@@ -250,12 +250,12 @@ VITE_MAPBOX_TOKEN=pk.your_mapbox_token_here
 ### 4.3 Wait for DNS Propagation
 - DNS changes take 5-30 minutes to propagate
 - Check status at [dnschecker.org](https://dnschecker.org)
-- Search for `safeascent.app` and verify CNAME records appear
+- Search for `safeascent.us` and verify CNAME records appear
 
 ### 4.4 Verify SSL Certificates
 Railway automatically provisions SSL certificates. After DNS propagates:
-1. Visit `https://safeascent.app` - should load frontend
-2. Visit `https://api.safeascent.app/health` - should return `{"status": "healthy"}`
+1. Visit `https://safeascent.us` - should load frontend
+2. Visit `https://api.safeascent.us/health` - should return `{"status": "healthy"}`
 
 ---
 
@@ -307,26 +307,26 @@ SELECT PostGIS_Version();
 ### 6.1 Test All Endpoints
 ```bash
 # Health check
-curl https://api.safeascent.app/health
+curl https://api.safeascent.us/health
 
 # API info
-curl https://api.safeascent.app/
+curl https://api.safeascent.us/
 
 # List mountains
-curl https://api.safeascent.app/api/v1/mountains?limit=5
+curl https://api.safeascent.us/api/v1/mountains?limit=5
 
 # List routes
-curl https://api.safeascent.app/api/v1/routes?limit=5
+curl https://api.safeascent.us/api/v1/routes?limit=5
 ```
 
 ### 6.2 Test Frontend
-1. Open `https://safeascent.app` in browser
+1. Open `https://safeascent.us` in browser
 2. Verify map loads
 3. Try selecting a route and getting a prediction
 
 ### 6.3 Test Prediction (PostGIS)
 ```bash
-curl -X POST https://api.safeascent.app/api/v1/predict \
+curl -X POST https://api.safeascent.us/api/v1/predict \
   -H "Content-Type: application/json" \
   -d '{"route_id": 1, "date": "2026-02-15"}'
 ```
@@ -367,7 +367,7 @@ SELECT PostGIS_Version();  -- Should return version
 
 **Fix:** Update `CORS_ORIGINS` in backend environment:
 ```
-CORS_ORIGINS=https://safeascent.app,https://www.safeascent.app,http://localhost:5173
+CORS_ORIGINS=https://safeascent.us,https://www.safeascent.us,http://localhost:5173
 ```
 
 ### SSL Certificate Pending
@@ -392,14 +392,14 @@ The `${{...}}` syntax auto-injects the value from the Redis service.
 | `DATABASE_URL` | `postgresql+asyncpg://user:pass@host/db?ssl=require` | Yes |
 | `REDIS_URL` | `${{Redis.REDIS_URL}}` | Yes |
 | `OPENWEATHER_API_KEY` | `abc123...` | Yes |
-| `CORS_ORIGINS` | `https://safeascent.app,https://www.safeascent.app` | Yes |
+| `CORS_ORIGINS` | `https://safeascent.us,https://www.safeascent.us` | Yes |
 | `DEBUG` | `false` | No (default: false) |
 | `USE_VECTORIZED_ALGORITHM` | `true` | No (default: false) |
 
 ### Frontend (Railway)
 | Variable | Example | Required |
 |----------|---------|----------|
-| `VITE_API_BASE_URL` | `https://api.safeascent.app/api/v1` | Yes |
+| `VITE_API_BASE_URL` | `https://api.safeascent.us/api/v1` | Yes |
 | `VITE_MAPBOX_TOKEN` | `pk.eyJ1Ijoi...` | Yes |
 
 ---
@@ -414,8 +414,8 @@ The `${{...}}` syntax auto-injects the value from the Redis service.
                           ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                    PORKBUN DNS                                  │
-│  safeascent.app     → frontend.railway.app                     │
-│  api.safeascent.app → backend.railway.app                      │
+│  safeascent.us     → frontend.railway.app                     │
+│  api.safeascent.us → backend.railway.app                      │
 └─────────────────────────┬───────────────────────────────────────┘
                           │
           ┌───────────────┴───────────────┐

@@ -1146,8 +1146,8 @@ async def get_ascent_analytics(
     """
     Get ascent analytics for a route including monthly breakdown and accident rate.
 
-    Note: Since mp_routes don't have direct ascent links yet, this uses geographic
-    proximity to find relevant ascent data from nearby routes.
+    Queries the mp_ticks table for tick/ascent data linked via route_id (mp_route_id).
+    Combines with nearby accident data to calculate accident rates.
     Coordinates are inherited from the route's parent location.
     """
     # Fetch route with location coordinates
@@ -1173,10 +1173,30 @@ async def get_ascent_analytics(
             "excluded_reason": "Boulder problems are excluded from safety analytics",
         }
 
-    # For now, return placeholder data since we don't have ascent-to-mp_route linking yet
-    # In a future iteration, we could:
-    # 1. Link ascents to mp_routes via mp_route_id matching
-    # 2. Use geographic proximity to aggregate nearby ascent data
+    # Query mp_ticks table for ascent data
+    # The mp_ticks table uses route_id which matches mp_route_id
+    total_ascents_query = text("""
+        SELECT COUNT(*) FROM mp_ticks WHERE route_id = :route_id
+    """)
+    total_result = await db.execute(total_ascents_query, {"route_id": mp_route_id})
+    total_ascents = total_result.scalar() or 0
+
+    # Get monthly ascent breakdown
+    monthly_ascents_query = text("""
+        SELECT
+            EXTRACT(MONTH FROM tick_date) as month,
+            COUNT(*) as ascent_count
+        FROM mp_ticks
+        WHERE route_id = :route_id
+          AND tick_date IS NOT NULL
+        GROUP BY EXTRACT(MONTH FROM tick_date)
+        ORDER BY month
+    """)
+    monthly_result = await db.execute(monthly_ascents_query, {"route_id": mp_route_id})
+    monthly_ascent_rows = monthly_result.fetchall()
+
+    # Build monthly ascent dict
+    monthly_ascent_dict = {int(row[0]): int(row[1]) for row in monthly_ascent_rows}
 
     # Get total accidents within 10km of this route
     accident_count_query = text("""
@@ -1192,40 +1212,103 @@ async def get_ascent_analytics(
           ) < 10
     """)
 
+    total_accidents = 0
     if route.latitude and route.longitude:
         accident_result = await db.execute(
             accident_count_query,
             {"lat": route.latitude, "lon": route.longitude}
         )
         total_accidents = accident_result.scalar() or 0
-    else:
-        total_accidents = 0
 
-    # Build empty monthly stats
+    # Get monthly accident breakdown for this area
+    monthly_accidents_query = text("""
+        SELECT
+            EXTRACT(MONTH FROM date) as month,
+            COUNT(*) as accident_count
+        FROM accidents
+        WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+          AND date IS NOT NULL
+          AND (
+              6371 * acos(
+                  cos(radians(:lat)) * cos(radians(latitude)) *
+                  cos(radians(longitude) - radians(:lon)) +
+                  sin(radians(:lat)) * sin(radians(latitude))
+              )
+          ) < 10
+        GROUP BY EXTRACT(MONTH FROM date)
+        ORDER BY month
+    """)
+
+    monthly_accident_dict = {}
+    if route.latitude and route.longitude:
+        monthly_acc_result = await db.execute(
+            monthly_accidents_query,
+            {"lat": route.latitude, "lon": route.longitude}
+        )
+        monthly_accident_rows = monthly_acc_result.fetchall()
+        monthly_accident_dict = {int(row[0]): int(row[1]) for row in monthly_accident_rows}
+
+    # Build monthly stats array with both ascents and accidents
     month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-    monthly_stats = [
-        {
-            "month": month_names[i],
-            "month_num": i + 1,
-            "ascent_count": 0,
-            "accident_count": 0,
-            "accident_rate": 0.0,
-        }
-        for i in range(12)
-    ]
+    monthly_stats = []
+    for i in range(12):
+        month_num = i + 1
+        ascent_count = monthly_ascent_dict.get(month_num, 0)
+        accident_count = monthly_accident_dict.get(month_num, 0)
 
-    return {
+        # Calculate accident rate per 1000 ascents (if we have ascent data)
+        if ascent_count > 0:
+            accident_rate = round((accident_count / ascent_count) * 1000, 2)
+        else:
+            accident_rate = 0.0
+
+        monthly_stats.append({
+            "month": month_names[i],
+            "month_num": month_num,
+            "ascent_count": ascent_count,
+            "accident_count": accident_count,
+            "accident_rate": accident_rate,
+        })
+
+    # Calculate overall accident rate
+    if total_ascents > 0:
+        overall_accident_rate = round((total_accidents / total_ascents) * 1000, 2)
+    else:
+        overall_accident_rate = 0.0
+
+    # Find best/worst months (only among months with ascent data)
+    months_with_ascents = [m for m in monthly_stats if m["ascent_count"] > 0]
+
+    best_month = None
+    worst_month = None
+    peak_month = None
+
+    if months_with_ascents:
+        # Best month = lowest accident rate
+        best_month = min(months_with_ascents, key=lambda x: x["accident_rate"])
+        # Worst month = highest accident rate
+        worst_month = max(months_with_ascents, key=lambda x: x["accident_rate"])
+        # Peak month = most ascents
+        peak_month = max(months_with_ascents, key=lambda x: x["ascent_count"])
+
+    has_data = total_ascents > 0
+
+    response = {
         "route_id": mp_route_id,
         "route_name": route.name,
         "route_type": route.type,
-        "total_ascents": 0,  # No ascent data linked yet
+        "total_ascents": total_ascents,
         "total_accidents": total_accidents,
-        "overall_accident_rate": 0.0,
+        "overall_accident_rate": overall_accident_rate,
         "monthly_stats": monthly_stats,
-        "best_month": None,
-        "worst_month": None,
-        "peak_month": None,
-        "has_data": False,
-        "message": "Ascent data not yet available for MP routes. Coming soon with tick data integration.",
+        "best_month": {"name": best_month["month"], "accident_rate": best_month["accident_rate"], "ascent_count": best_month["ascent_count"]} if best_month else None,
+        "worst_month": {"name": worst_month["month"], "accident_rate": worst_month["accident_rate"], "ascent_count": worst_month["ascent_count"]} if worst_month else None,
+        "peak_month": {"name": peak_month["month"], "ascent_count": peak_month["ascent_count"]} if peak_month else None,
+        "has_data": has_data,
     }
+
+    if not has_data:
+        response["message"] = "No tick data available yet for this route."
+
+    return response
