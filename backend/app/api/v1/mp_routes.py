@@ -7,15 +7,13 @@ from typing import Optional
 from datetime import date, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, or_, text
+from sqlalchemy import select, func, text
 import logging
 import calendar
 
 from app.db.session import get_db
 from app.models.mp_route import MpRoute
 from app.models.mp_location import MpLocation
-from app.models.accident import Accident
-from app.models.ascent import Ascent
 from app.schemas.mp_route import (
     MpRouteResponse,
     MpRouteListResponse,
@@ -635,7 +633,7 @@ async def get_risk_breakdown(
         factors.append({
             "name": "Weather Similarity",
             "contribution": round(avg_weather, 1),
-            "description": f"Pattern matching between forecast and accident conditions"
+            "description": "Pattern matching between forecast and accident conditions"
         })
 
         factors.append({
@@ -649,7 +647,7 @@ async def get_risk_breakdown(
             "name": "Elevation Similarity",
             "contribution": round(avg_elevation, 1),
             "description": "Elevation similarity with nearby accidents. "
-                          f"Similar elevations share weather and condition patterns"
+                          "Similar elevations share weather and condition patterns"
         })
     else:
         factors.append({

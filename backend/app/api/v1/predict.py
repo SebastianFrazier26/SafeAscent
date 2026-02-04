@@ -5,9 +5,9 @@ POST /api/v1/predict - Calculate safety prediction for a planned climbing route
 """
 import os
 import logging
-from datetime import date, timedelta
-from typing import List, Optional, Dict, Tuple
-from fastapi import APIRouter, Depends, HTTPException, status
+from datetime import timedelta
+from typing import List, Optional, Dict
+from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, func
 from geoalchemy2.functions import ST_DWithin, ST_MakePoint
@@ -126,7 +126,6 @@ async def predict_route_safety(
         )
 
         # Infer accident route type
-        from app.services.route_type_mapper import infer_route_type_from_accident
         accident_route_type = infer_route_type_from_accident(
             activity=accident.activity,
             accident_type=accident.accident_type,
@@ -158,7 +157,7 @@ async def predict_route_safety(
             num_contributing_accidents=0,
             top_contributing_accidents=[],
             metadata={
-                "message": f"No compatible accidents found after route type filtering",
+                "message": "No compatible accidents found after route type filtering",
                 "route_type": request.route_type,
                 "search_date": request.planned_date.isoformat(),
             },

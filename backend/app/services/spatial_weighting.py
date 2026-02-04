@@ -8,7 +8,6 @@ Mathematical basis: Gaussian Kernel Density Estimation
 Formula: weight = exp(-(distance² / (2 × bandwidth²)))
 """
 import math
-from typing import Optional
 
 from app.services.algorithm_config import (
     SPATIAL_BANDWIDTH,

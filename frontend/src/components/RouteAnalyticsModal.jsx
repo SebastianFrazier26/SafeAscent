@@ -557,7 +557,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
 // TAB COMPONENTS
 // ============================================================================
 
-function ForecastTab({ data, loading, selectedDate, routeData }) {
+function ForecastTab({ data, loading, selectedDate: _selectedDate, routeData }) {
   if (loading) {
     return <LoadingState message="Loading forecast data..." />;
   }
@@ -1044,7 +1044,7 @@ function RiskBreakdownTab({ data, loading, routeData }) {
   );
 }
 
-function SeasonalTab({ data, loading, routeData }) {
+function SeasonalTab({ data, loading, routeData: _routeData }) {
   if (loading) {
     return <LoadingState message="Loading seasonal patterns..." />;
   }
@@ -1172,7 +1172,7 @@ function SeasonalTab({ data, loading, routeData }) {
   );
 }
 
-function HistoricalTab({ data, loading, routeData }) {
+function HistoricalTab({ data, loading, routeData: _routeData }) {
   if (loading) {
     return <LoadingState message="Loading historical trends..." />;
   }
@@ -1289,7 +1289,7 @@ function HistoricalTab({ data, loading, routeData }) {
   );
 }
 
-function TimeOfDayTab({ data, loading, routeData, selectedDate }) {
+function TimeOfDayTab({ data, loading, routeData: _routeData, selectedDate }) {
   if (loading) {
     return <LoadingState message="Analyzing hourly conditions..." />;
   }
