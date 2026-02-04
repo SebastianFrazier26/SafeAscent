@@ -2,7 +2,27 @@
 Application configuration settings.
 Reads from environment variables and .env file.
 """
+import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def parse_cors_origins() -> list[str]:
+    """
+    Parse CORS_ORIGINS from environment variable.
+    Supports comma-separated string format for Railway/production.
+    Falls back to default origins including production domains.
+    """
+    cors_env = os.environ.get("CORS_ORIGINS", "")
+    if cors_env:
+        # Parse comma-separated origins
+        return [origin.strip() for origin in cors_env.split(",") if origin.strip()]
+    # Default origins - includes both development and production
+    return [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "https://safeascent.us",
+        "https://www.safeascent.us",
+    ]
 
 
 class Settings(BaseSettings):
@@ -21,11 +41,8 @@ class Settings(BaseSettings):
     # Environment
     ENVIRONMENT: str = "development"
 
-    # CORS
-    CORS_ORIGINS: list[str] = [
-        "http://localhost:3000",  # React dev server
-        "http://localhost:5173",  # Vite dev server
-    ]
+    # CORS - parsed from environment variable
+    CORS_ORIGINS: list[str] = parse_cors_origins()
 
     model_config = SettingsConfigDict(
         env_file=".env",
