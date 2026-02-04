@@ -1136,13 +1136,13 @@ brew services list
 
 ### Version History
 
-| Version | Date | Author | Summary of Changes |
-|---------|------|--------|-------------------|
-| 2.1 | 2026-02-02 | Claude + User | **MAJOR UPDATE**: Frontend Phase 2 complete (interactive map with stratified risk heatmaps, two-view system, all 1,415 routes visualized), UI text corrections, Material-UI documentation, Project 85% complete |
-| 2.0 | 2026-01-30 | Claude + User | **MAJOR UPDATE**: Backend production-ready (Phase 7+8 complete), Frontend Phase 1 complete (Material Design), Project 75% complete |
-| 1.2 | 2026-01-28 | Claude + User | Completed safety prediction algorithm design (7 decisions, created ALGORITHM_DESIGN.md), updated project status to 45% |
-| 1.1 | 2026-01-28 | Claude + User | Fixed Routes API state filtering bug (added Mountain JOIN), updated technical debt section |
-| 1.0 | 2026-01-28 | Claude + User | Initial document creation with comprehensive project inventory |
+| Version | Date | Summary of Changes |
+|---------|------|-------------------|
+| 2.1 | 2026-02-02 | **MAJOR UPDATE**: Frontend Phase 2 complete (interactive map with stratified risk heatmaps, two-view system, all 1,415 routes visualized), UI text corrections, Material-UI documentation, Project 85% complete |
+| 2.0 | 2026-01-30 | **MAJOR UPDATE**: Backend production-ready (Phase 7+8 complete), Frontend Phase 1 complete (Material Design), Project 75% complete |
+| 1.2 | 2026-01-28 | Completed safety prediction algorithm design (7 decisions, created ALGORITHM_DESIGN.md), updated project status to 45% |
+| 1.1 | 2026-01-28 | Fixed Routes API state filtering bug (added Mountain JOIN), updated technical debt section |
+| 1.0 | 2026-01-28 | Initial document creation with comprehensive project inventory |
 
 ---
 

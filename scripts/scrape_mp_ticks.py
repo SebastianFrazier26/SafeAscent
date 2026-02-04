@@ -20,7 +20,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, InvalidSessionIdException, WebDriverException
 import pandas as pd
 import json
 import time
@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 # Rate limiting
 REQUEST_DELAY = 0.5  # seconds between requests
+DRIVER_RESTART_INTERVAL = 100  # Restart driver every N routes to prevent session issues
 
 
 def setup_driver():
@@ -230,6 +231,8 @@ def main(limit=None, resume=False):
     # Setup driver
     driver = setup_driver()
     logger.info("Chrome driver initialized")
+    routes_since_restart = 0
+    consecutive_errors = 0
 
     try:
         for idx, route in enumerate(routes_to_process):
@@ -237,9 +240,48 @@ def main(limit=None, resume=False):
             route_url = route['url']
             route_name = route['name']
 
-            ticks = scrape_route_ticks(driver, route_id, route_url, route_name)
-            all_ticks.extend(ticks)
-            processed_ids.add(route_id)
+            try:
+                ticks = scrape_route_ticks(driver, route_id, route_url, route_name)
+                all_ticks.extend(ticks)
+                processed_ids.add(route_id)
+                routes_since_restart += 1
+                consecutive_errors = 0  # Reset on success
+
+            except (InvalidSessionIdException, WebDriverException) as e:
+                logger.warning(f"Driver error on route {route_id}: {e}")
+                consecutive_errors += 1
+
+                # Restart driver on session errors
+                try:
+                    driver.quit()
+                except:
+                    pass
+
+                logger.info("Restarting Chrome driver...")
+                time.sleep(2)
+                driver = setup_driver()
+                routes_since_restart = 0
+
+                # Retry this route
+                try:
+                    ticks = scrape_route_ticks(driver, route_id, route_url, route_name)
+                    all_ticks.extend(ticks)
+                    processed_ids.add(route_id)
+                    consecutive_errors = 0
+                except Exception as retry_e:
+                    logger.error(f"Retry failed for route {route_id}: {retry_e}")
+                    processed_ids.add(route_id)  # Skip this route
+
+            # Periodic driver restart to prevent session issues
+            if routes_since_restart >= DRIVER_RESTART_INTERVAL:
+                logger.info(f"Preventive driver restart after {routes_since_restart} routes")
+                try:
+                    driver.quit()
+                except:
+                    pass
+                time.sleep(2)
+                driver = setup_driver()
+                routes_since_restart = 0
 
             # Progress logging
             if (idx + 1) % 10 == 0:
@@ -250,22 +292,34 @@ def main(limit=None, resume=False):
                     json.dump({
                         'processed_ids': list(processed_ids),
                         'ticks': all_ticks,
+                        'routes_processed': len(processed_ids),
+                        'ticks_collected': len(all_ticks),
                         'last_updated': datetime.now().isoformat()
                     }, f)
 
             # Rate limiting
             time.sleep(REQUEST_DELAY)
 
+            # Safety check: too many consecutive errors
+            if consecutive_errors >= 5:
+                logger.error("Too many consecutive errors, stopping...")
+                break
+
     except KeyboardInterrupt:
         logger.info("Interrupted! Saving progress...")
     finally:
-        driver.quit()
+        try:
+            driver.quit()
+        except:
+            pass
 
         # Save progress
         with open(progress_file, 'w') as f:
             json.dump({
                 'processed_ids': list(processed_ids),
                 'ticks': all_ticks,
+                'routes_processed': len(processed_ids),
+                'ticks_collected': len(all_ticks),
                 'last_updated': datetime.now().isoformat()
             }, f)
 

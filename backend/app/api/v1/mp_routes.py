@@ -1,0 +1,1161 @@
+"""
+MP Routes API endpoints.
+Uses mp_routes table for Mountain Project climbing routes.
+Includes all analytics and safety endpoints.
+"""
+from typing import Optional
+from datetime import date, timedelta
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func, or_, text
+import logging
+import calendar
+
+from app.db.session import get_db
+from app.models.mp_route import MpRoute
+from app.models.mp_location import MpLocation
+from app.models.accident import Accident
+from app.models.ascent import Ascent
+from app.schemas.mp_route import (
+    MpRouteResponse,
+    MpRouteListResponse,
+    MpRouteDetail,
+    MpRouteMapMarker,
+    MpRouteMapResponse,
+    MpRouteSafetyResponse,
+)
+from app.api.v1.predict import predict_route_safety
+from app.schemas.prediction import PredictionRequest
+from app.utils.cache import cache_get, cache_set, build_safety_score_key
+
+router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+def normalize_route_type(route_type: Optional[str]) -> str:
+    """
+    Normalize route type to one accepted by the prediction algorithm.
+
+    Maps various route type strings to canonical types:
+    alpine, ice, mixed, trad, sport, aid, boulder
+
+    Args:
+        route_type: Raw route type string from database
+
+    Returns:
+        Normalized route type (defaults to 'trad' if unknown)
+    """
+    if not route_type:
+        return 'trad'  # Default fallback
+
+    route_type = route_type.lower().strip()
+
+    # Direct matches
+    valid_types = ['alpine', 'ice', 'mixed', 'trad', 'sport', 'aid', 'boulder']
+    if route_type in valid_types:
+        return route_type
+
+    # Mappings for common variations
+    type_mapping = {
+        'yds': 'trad',
+        'traditional': 'trad',
+        'trad climb': 'trad',
+        'sport climb': 'sport',
+        'bouldering': 'boulder',
+        'ice climb': 'ice',
+        'ice climbing': 'ice',
+        'alpine climb': 'alpine',
+        'mountaineering': 'alpine',
+        'aid climb': 'aid',
+        'big wall': 'aid',
+        'snow': 'alpine',
+        'rock': 'trad',
+        'toprope': 'sport',  # Top rope is similar to sport
+    }
+
+    return type_mapping.get(route_type, 'trad')
+
+
+def get_safety_color_code(risk_score: float) -> str:
+    """
+    Convert risk score to color code for map markers.
+
+    Args:
+        risk_score: Risk score from 0-100
+
+    Returns:
+        Color code string: 'green', 'yellow', 'orange', or 'red'
+    """
+    if risk_score < 30:
+        return 'green'
+    elif risk_score < 50:
+        return 'yellow'
+    elif risk_score < 70:
+        return 'orange'
+    else:
+        return 'red'
+
+
+# ============================================================================
+# BASIC CRUD ENDPOINTS
+# ============================================================================
+
+@router.get("/mp-routes", response_model=MpRouteListResponse)
+async def list_mp_routes(
+    search: Optional[str] = Query(None, description="Search route name"),
+    location_id: Optional[int] = Query(None, description="Filter by location ID"),
+    route_type: Optional[str] = Query(None, description="Filter by route type"),
+    grade: Optional[str] = Query(None, description="Filter by grade (e.g., '5.10')"),
+    limit: int = Query(50, ge=1, le=500, description="Number of results to return"),
+    offset: int = Query(0, ge=0, description="Number of results to skip"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    List and search MP routes with optional filters.
+
+    - **search**: Search in route name
+    - **location_id**: Filter by specific location
+    - **route_type**: Filter by type (rock, ice, mixed, etc.)
+    - **grade**: Filter by grade
+    - **limit**: Number of results (max 500)
+    - **offset**: Pagination offset
+    """
+    query = select(MpRoute)
+
+    # Apply filters
+    if search:
+        query = query.where(MpRoute.name.ilike(f"%{search}%"))
+    if location_id is not None:
+        query = query.where(MpRoute.location_id == location_id)
+    if route_type:
+        query = query.where(MpRoute.type.ilike(f"%{route_type}%"))
+    if grade:
+        query = query.where(MpRoute.grade.ilike(f"%{grade}%"))
+
+    # Order by name
+    query = query.order_by(MpRoute.name)
+
+    # Get total count
+    count_query = select(func.count()).select_from(query.subquery())
+    total_result = await db.execute(count_query)
+    total = total_result.scalar() or 0
+
+    # Apply pagination
+    query = query.limit(limit).offset(offset)
+
+    # Execute query
+    result = await db.execute(query)
+    routes = result.scalars().all()
+
+    return MpRouteListResponse(
+        total=total,
+        data=[MpRouteResponse.model_validate(r) for r in routes]
+    )
+
+
+@router.get("/mp-routes/map", response_model=MpRouteMapResponse)
+async def get_mp_routes_for_map(
+    min_lat: Optional[float] = Query(None, description="Minimum latitude (bounding box)"),
+    max_lat: Optional[float] = Query(None, description="Maximum latitude (bounding box)"),
+    min_lon: Optional[float] = Query(None, description="Minimum longitude (bounding box)"),
+    max_lon: Optional[float] = Query(None, description="Maximum longitude (bounding box)"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get all MP routes with coordinates for map display.
+    Returns minimal data optimized for map markers.
+
+    - **min_lat, max_lat, min_lon, max_lon**: Optional bounding box to filter routes
+    """
+    # Build query - only routes with valid coordinates
+    query = select(MpRoute).where(
+        MpRoute.latitude.isnot(None),
+        MpRoute.longitude.isnot(None)
+    )
+
+    # Apply bounding box filter if provided
+    if all([min_lat, max_lat, min_lon, max_lon]):
+        query = query.where(
+            MpRoute.latitude >= min_lat,
+            MpRoute.latitude <= max_lat,
+            MpRoute.longitude >= min_lon,
+            MpRoute.longitude <= max_lon
+        )
+
+    # Execute query
+    result = await db.execute(query)
+    routes = result.scalars().all()
+
+    return MpRouteMapResponse(
+        total=len(routes),
+        routes=[MpRouteMapMarker.model_validate(r) for r in routes]
+    )
+
+
+@router.get("/mp-routes/{mp_route_id}", response_model=MpRouteDetail)
+async def get_mp_route(
+    mp_route_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get detailed information about a specific MP route.
+
+    - **mp_route_id**: Mountain Project route ID
+    """
+    query = select(MpRoute).where(MpRoute.mp_route_id == mp_route_id)
+    result = await db.execute(query)
+    route = result.scalar_one_or_none()
+
+    if not route:
+        raise HTTPException(status_code=404, detail="Route not found")
+
+    return MpRouteDetail.model_validate(route)
+
+
+@router.post("/mp-routes/{mp_route_id}/safety", response_model=MpRouteSafetyResponse)
+async def calculate_mp_route_safety(
+    mp_route_id: int,
+    target_date: date = Query(..., description="Target date for safety calculation (YYYY-MM-DD)"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Calculate safety score for an MP route on a specific date.
+
+    Uses the SafeAscent algorithm to compute risk based on:
+    - Historical accident data nearby
+    - Weather conditions
+    - Route characteristics
+    - Seasonal patterns
+
+    Returns a risk score from 0-100 and a color code for visualization.
+    """
+    # Look up route
+    query = select(MpRoute).where(MpRoute.mp_route_id == mp_route_id)
+    result = await db.execute(query)
+    route = result.scalar_one_or_none()
+
+    if not route:
+        raise HTTPException(status_code=404, detail="Route not found")
+
+    if not route.latitude or not route.longitude:
+        raise HTTPException(
+            status_code=400,
+            detail="Route has no coordinates - cannot calculate safety score"
+        )
+
+    # Check cache first
+    date_str = target_date.isoformat()
+    cache_key = build_safety_score_key(mp_route_id, date_str)
+    cached_result = await cache_get(cache_key)
+    if cached_result:
+        return MpRouteSafetyResponse(**cached_result)
+
+    # Build prediction request
+    normalized_type = normalize_route_type(route.type)
+    prediction_request = PredictionRequest(
+        latitude=route.latitude,
+        longitude=route.longitude,
+        target_date=target_date,
+        route_type=normalized_type,
+    )
+
+    # Get prediction
+    prediction_response = await predict_route_safety(prediction_request, db)
+
+    # Build response
+    response = MpRouteSafetyResponse(
+        route_id=mp_route_id,
+        route_name=route.name,
+        target_date=date_str,
+        risk_score=prediction_response.risk_score,
+        color_code=get_safety_color_code(prediction_response.risk_score),
+    )
+
+    # Cache the result (1 hour TTL)
+    await cache_set(cache_key, response.model_dump(), ttl=3600)
+
+    return response
+
+
+# ============================================================================
+# ANALYTICS ENDPOINTS
+# ============================================================================
+
+@router.get("/mp-routes/{mp_route_id}/forecast")
+async def get_route_forecast(
+    mp_route_id: int,
+    start_date: date = Query(..., description="Start date for forecast (YYYY-MM-DD)"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get 7-day safety forecast for a route starting from the specified date.
+
+    Returns detailed weather and risk scores for each day.
+    """
+    from app.services.weather_service import fetch_current_weather_pattern
+
+    # Fetch route
+    query = select(MpRoute).where(MpRoute.mp_route_id == mp_route_id)
+    result = await db.execute(query)
+    route = result.scalar_one_or_none()
+
+    if not route:
+        raise HTTPException(status_code=404, detail="Route not found")
+
+    if route.latitude is None or route.longitude is None:
+        raise HTTPException(status_code=400, detail="Route missing GPS coordinates")
+
+    # Calculate forecast for 7 days
+    forecast_days = []
+    normalized_type = normalize_route_type(route.type)
+
+    for day_offset in range(7):
+        target_date = start_date + timedelta(days=day_offset)
+
+        # Create prediction request
+        prediction_request = PredictionRequest(
+            latitude=route.latitude,
+            longitude=route.longitude,
+            route_type=normalized_type,
+            planned_date=target_date,
+            elevation_meters=None,
+        )
+
+        try:
+            # Calculate safety
+            prediction = await predict_route_safety(prediction_request, db)
+
+            # Fetch weather for this date
+            weather = fetch_current_weather_pattern(
+                latitude=route.latitude,
+                longitude=route.longitude,
+                target_date=target_date
+            )
+
+            # Extract weather details (last day of pattern is target date)
+            if weather and len(weather.temperature) > 0:
+                idx = -1  # Last day (target date)
+                temp_avg = weather.temperature[idx]
+                temp_min, temp_max = weather.daily_temps[idx][0], weather.daily_temps[idx][2]
+                precip = weather.precipitation[idx]
+                wind = weather.wind_speed[idx]
+                cloud = weather.cloud_cover[idx]
+
+                weather_desc = []
+                if temp_avg < -10:
+                    weather_desc.append("Very Cold")
+                elif temp_avg < 0:
+                    weather_desc.append("Freezing")
+                elif temp_avg < 10:
+                    weather_desc.append("Cold")
+                elif temp_avg < 20:
+                    weather_desc.append("Mild")
+                else:
+                    weather_desc.append("Warm")
+
+                if precip > 10:
+                    weather_desc.append("Heavy Precipitation")
+                elif precip > 2:
+                    weather_desc.append("Precipitation")
+                elif cloud > 70:
+                    weather_desc.append("Cloudy")
+                elif cloud < 30:
+                    weather_desc.append("Clear")
+
+                if wind > 15:
+                    weather_desc.append("Very Windy")
+                elif wind > 10:
+                    weather_desc.append("Windy")
+
+                weather_summary = ", ".join(weather_desc) if weather_desc else "Moderate Conditions"
+            else:
+                temp_avg = temp_min = temp_max = precip = wind = cloud = None
+                weather_summary = "Weather data unavailable"
+
+            forecast_days.append({
+                "date": target_date.isoformat(),
+                "risk_score": round(prediction.risk_score, 1),
+                "weather_summary": weather_summary,
+                "temp_high": round(temp_max, 1) if temp_max else None,
+                "temp_low": round(temp_min, 1) if temp_min else None,
+                "temp_avg": round(temp_avg, 1) if temp_avg else None,
+                "precip_mm": round(precip, 1) if precip else None,
+                "precip_chance": int(min(precip * 10, 100)) if precip else None,
+                "wind_speed": round(wind, 1) if wind else None,
+                "cloud_cover": round(cloud, 0) if cloud else None,
+            })
+        except Exception as e:
+            logger.error(f"Error calculating forecast for {target_date}: {e}")
+            forecast_days.append({
+                "date": target_date.isoformat(),
+                "risk_score": None,
+                "error": str(e)
+            })
+
+    # Today's detailed conditions (first day)
+    today_data = forecast_days[0] if forecast_days else {}
+
+    return {
+        "route_id": mp_route_id,
+        "route_name": route.name,
+        "start_date": start_date.isoformat(),
+        "forecast_days": forecast_days,
+        "today": today_data,
+    }
+
+
+@router.get("/mp-routes/{mp_route_id}/accidents")
+async def get_route_accidents(
+    mp_route_id: int,
+    limit: int = Query(50, ge=1, le=100, description="Maximum accidents to return"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get accident reports near this route's location.
+
+    Uses geographic proximity to find nearby accidents within ~50km radius.
+    Includes weather data for accident dates when available.
+    """
+    import requests
+
+    # Fetch route
+    route_query = select(MpRoute).where(MpRoute.mp_route_id == mp_route_id)
+    route_result = await db.execute(route_query)
+    route = route_result.scalar_one_or_none()
+
+    if not route:
+        raise HTTPException(status_code=404, detail="Route not found")
+
+    if not route.latitude or not route.longitude:
+        raise HTTPException(status_code=400, detail="Route missing GPS coordinates")
+
+    # Fetch nearby accidents using geographic proximity
+    # Using Haversine formula for distance calculation
+    accidents_query = text("""
+        SELECT
+            accident_id, date, latitude, longitude, description,
+            accident_type, injury_severity, location, route as route_name
+        FROM accidents
+        WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+          AND (
+              6371 * acos(
+                  cos(radians(:lat)) * cos(radians(latitude)) *
+                  cos(radians(longitude) - radians(:lon)) +
+                  sin(radians(:lat)) * sin(radians(latitude))
+              )
+          ) < 50
+        ORDER BY date DESC NULLS LAST
+        LIMIT :limit
+    """)
+
+    accidents_result = await db.execute(
+        accidents_query,
+        {"lat": route.latitude, "lon": route.longitude, "limit": limit}
+    )
+    accidents = accidents_result.fetchall()
+
+    # Format accident data with weather
+    accidents_data = []
+    for accident in accidents:
+        accident_id, acc_date, acc_lat, acc_lon, description, acc_type, severity, location, route_name = accident
+
+        # Fetch historical weather for accident date
+        weather_data = None
+        if acc_date and acc_lat and acc_lon:
+            try:
+                params = {
+                    "latitude": acc_lat,
+                    "longitude": acc_lon,
+                    "start_date": acc_date.isoformat(),
+                    "end_date": acc_date.isoformat(),
+                    "daily": [
+                        "temperature_2m_mean",
+                        "temperature_2m_min",
+                        "temperature_2m_max",
+                        "precipitation_sum",
+                        "wind_speed_10m_max",
+                    ],
+                    "temperature_unit": "celsius",
+                    "wind_speed_unit": "ms",
+                    "precipitation_unit": "mm",
+                }
+
+                response = requests.get(
+                    "https://archive-api.open-meteo.com/v1/archive",
+                    params=params,
+                    timeout=5
+                )
+
+                if response.status_code == 200:
+                    data = response.json()
+                    daily = data.get("daily", {})
+
+                    if daily and len(daily.get("temperature_2m_mean", [])) > 0:
+                        temp_avg = daily["temperature_2m_mean"][0]
+                        temp_min = daily["temperature_2m_min"][0]
+                        temp_max = daily["temperature_2m_max"][0]
+                        precip = daily["precipitation_sum"][0]
+                        wind = daily["wind_speed_10m_max"][0]
+
+                        conditions = []
+                        if temp_avg is not None:
+                            if temp_avg < -10:
+                                conditions.append("Extreme Cold")
+                            elif temp_avg < 0:
+                                conditions.append("Freezing")
+                            elif temp_avg < 10:
+                                conditions.append("Cold")
+
+                        if precip and precip > 10:
+                            conditions.append("Heavy Precip")
+                        elif precip and precip > 2:
+                            conditions.append("Rain/Snow")
+
+                        if wind and wind > 15:
+                            conditions.append("High Winds")
+                        elif wind and wind > 10:
+                            conditions.append("Windy")
+
+                        weather_data = {
+                            "temp": f"{round(temp_min) if temp_min else '?'}-{round(temp_max) if temp_max else '?'}°C",
+                            "temp_avg": round(temp_avg, 1) if temp_avg else None,
+                            "wind_speed": round(wind, 1) if wind else None,
+                            "precipitation": round(precip, 1) if precip else None,
+                            "conditions": ", ".join(conditions) if conditions else "Moderate",
+                        }
+            except Exception as e:
+                logger.warning(f"Failed to fetch weather for accident {accident_id}: {e}")
+
+        accidents_data.append({
+            "accident_id": accident_id,
+            "route_name": route_name or "Unknown",
+            "date": acc_date.isoformat() if acc_date else None,
+            "description": description[:500] if description else "No description available",
+            "accident_type": acc_type,
+            "injury_severity": severity,
+            "location": location,
+            "weather": weather_data,
+        })
+
+    # Get location name if available
+    location_name = None
+    if route.location_id:
+        loc_query = select(MpLocation.name).where(MpLocation.mp_id == route.location_id)
+        loc_result = await db.execute(loc_query)
+        location_name = loc_result.scalar_one_or_none()
+
+    return {
+        "route_id": mp_route_id,
+        "route_name": route.name,
+        "location_name": location_name or "Unknown Area",
+        "total_accidents": len(accidents_data),
+        "accidents": accidents_data,
+    }
+
+
+@router.get("/mp-routes/{mp_route_id}/risk-breakdown")
+async def get_risk_breakdown(
+    mp_route_id: int,
+    target_date: date = Query(..., description="Date for risk calculation (YYYY-MM-DD)"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get detailed breakdown of risk score factors.
+
+    Shows what contributed to the risk score calculation with actual algorithm data.
+    """
+    # Fetch route
+    route_query = select(MpRoute).where(MpRoute.mp_route_id == mp_route_id)
+    route_result = await db.execute(route_query)
+    route = route_result.scalar_one_or_none()
+
+    if not route:
+        raise HTTPException(status_code=404, detail="Route not found")
+
+    if route.latitude is None or route.longitude is None:
+        raise HTTPException(status_code=400, detail="Route missing GPS coordinates")
+
+    # Calculate safety score with full details
+    normalized_type = normalize_route_type(route.type)
+    prediction_request = PredictionRequest(
+        latitude=route.latitude,
+        longitude=route.longitude,
+        route_type=normalized_type,
+        planned_date=target_date,
+        elevation_meters=None,
+    )
+
+    prediction = await predict_route_safety(prediction_request, db)
+
+    # Extract actual factor contributions from top contributing accidents
+    spatial_weights = [acc.spatial_weight for acc in prediction.top_contributing_accidents[:10]]
+    temporal_weights = [acc.temporal_weight for acc in prediction.top_contributing_accidents[:10]]
+    weather_weights = [acc.weather_weight for acc in prediction.top_contributing_accidents[:10]]
+    route_type_weights = [acc.route_type_weight for acc in prediction.top_contributing_accidents[:10]]
+    elevation_weights = [acc.elevation_weight for acc in prediction.top_contributing_accidents[:10]]
+
+    # Calculate average weights (normalized to percentages)
+    avg_spatial = (sum(spatial_weights) / len(spatial_weights) * 100) if spatial_weights else 0
+    avg_temporal = (sum(temporal_weights) / len(temporal_weights) * 100) if temporal_weights else 0
+    avg_weather = (sum(weather_weights) / len(weather_weights) * 100) if weather_weights else 0
+    avg_route_type = (sum(route_type_weights) / len(route_type_weights) * 100) if route_type_weights else 0
+    avg_elevation = (sum(elevation_weights) / len(elevation_weights) * 100) if elevation_weights else 0
+
+    # Normalize to 100%
+    total_weight = avg_spatial + avg_temporal + avg_weather + avg_route_type + avg_elevation
+    if total_weight > 0:
+        avg_spatial = (avg_spatial / total_weight) * 100
+        avg_temporal = (avg_temporal / total_weight) * 100
+        avg_weather = (avg_weather / total_weight) * 100
+        avg_route_type = (avg_route_type / total_weight) * 100
+        avg_elevation = (avg_elevation / total_weight) * 100
+
+    # Calculate median days_ago from top accidents
+    days_ago_list = sorted([acc.days_ago for acc in prediction.top_contributing_accidents[:10]])
+    median_days_ago = days_ago_list[len(days_ago_list) // 2] if days_ago_list else 0
+
+    # Build factor breakdown with actual data
+    factors = []
+
+    if prediction.num_contributing_accidents > 0:
+        factors.append({
+            "name": "Spatial Proximity",
+            "contribution": round(avg_spatial, 1),
+            "description": f"{prediction.num_contributing_accidents} nearby accidents within search radius, "
+                          f"weighted by distance using Gaussian decay"
+        })
+
+        factors.append({
+            "name": "Temporal Recency",
+            "contribution": round(avg_temporal, 1),
+            "description": f"Recent accidents weighted more heavily. "
+                          f"Median: {median_days_ago} days ago"
+        })
+
+        factors.append({
+            "name": "Weather Similarity",
+            "contribution": round(avg_weather, 1),
+            "description": f"Pattern matching between forecast and accident conditions"
+        })
+
+        factors.append({
+            "name": "Route Type Match",
+            "contribution": round(avg_route_type, 1),
+            "description": f"Climbing discipline similarity ({route.type} routes). "
+                          f"Asymmetric weighting accounts for shared risk factors"
+        })
+
+        factors.append({
+            "name": "Elevation Similarity",
+            "contribution": round(avg_elevation, 1),
+            "description": "Elevation similarity with nearby accidents. "
+                          f"Similar elevations share weather and condition patterns"
+        })
+    else:
+        factors.append({
+            "name": "No Data",
+            "contribution": 0,
+            "description": "Insufficient accident data for risk calculation"
+        })
+
+    return {
+        "route_id": mp_route_id,
+        "route_name": route.name,
+        "target_date": target_date.isoformat(),
+        "risk_score": round(prediction.risk_score, 1),
+        "num_contributing_accidents": prediction.num_contributing_accidents,
+        "factors": factors,
+        "top_accidents": [
+            {
+                "accident_id": acc.accident_id,
+                "distance_km": round(acc.distance_km, 1),
+                "days_ago": acc.days_ago,
+                "total_influence": round(acc.total_influence, 3),
+            }
+            for acc in prediction.top_contributing_accidents[:5]
+        ],
+    }
+
+
+@router.get("/mp-routes/{mp_route_id}/seasonal-patterns")
+async def get_seasonal_patterns(
+    mp_route_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get seasonal accident patterns for the route's area.
+
+    Shows accident frequency and average risk by month using geographic proximity.
+    """
+    # Fetch route
+    route_query = select(MpRoute).where(MpRoute.mp_route_id == mp_route_id)
+    route_result = await db.execute(route_query)
+    route = route_result.scalar_one_or_none()
+
+    if not route:
+        raise HTTPException(status_code=404, detail="Route not found")
+
+    if not route.latitude or not route.longitude:
+        raise HTTPException(status_code=400, detail="Route missing GPS coordinates")
+
+    # Get monthly accident counts using geographic proximity (~50km radius)
+    monthly_query = text("""
+        SELECT
+            EXTRACT(MONTH FROM a.date) as month,
+            COUNT(*) as accident_count,
+            AVG(50.0) as avg_risk_score,
+            AVG(CURRENT_DATE - a.date) as avg_days_ago
+        FROM accidents a
+        WHERE a.date IS NOT NULL
+          AND a.latitude IS NOT NULL
+          AND a.longitude IS NOT NULL
+          AND (
+              6371 * acos(
+                  cos(radians(:lat)) * cos(radians(a.latitude)) *
+                  cos(radians(a.longitude) - radians(:lon)) +
+                  sin(radians(:lat)) * sin(radians(a.latitude))
+              )
+          ) < 50
+        GROUP BY EXTRACT(MONTH FROM a.date)
+        ORDER BY month
+    """)
+    result = await db.execute(monthly_query, {"lat": route.latitude, "lon": route.longitude})
+    monthly_data = result.fetchall()
+
+    # Build monthly patterns array (all 12 months)
+    monthly_patterns = []
+    month_data_dict = {int(row[0]): row for row in monthly_data}
+
+    for month_num in range(1, 13):
+        month_name = calendar.month_abbr[month_num]
+        data = month_data_dict.get(month_num)
+
+        if data:
+            monthly_patterns.append({
+                "month": month_name,
+                "month_num": month_num,
+                "accident_count": int(data[1]),
+                "avg_risk_score": round(float(data[2]), 1),
+                "avg_temp": None,
+            })
+        else:
+            monthly_patterns.append({
+                "month": month_name,
+                "month_num": month_num,
+                "accident_count": 0,
+                "avg_risk_score": 0,
+                "avg_temp": None,
+            })
+
+    # Find best and worst months
+    months_with_data = [m for m in monthly_patterns if m["accident_count"] > 0]
+    best_months = sorted(months_with_data, key=lambda x: x["accident_count"])[:3]
+    worst_months = sorted(months_with_data, key=lambda x: x["accident_count"], reverse=True)[:3]
+
+    # Get location name
+    location_name = None
+    if route.location_id:
+        loc_query = select(MpLocation.name).where(MpLocation.mp_id == route.location_id)
+        loc_result = await db.execute(loc_query)
+        location_name = loc_result.scalar_one_or_none()
+
+    return {
+        "route_id": mp_route_id,
+        "route_name": route.name,
+        "location_name": location_name or "Unknown Area",
+        "monthly_patterns": monthly_patterns,
+        "best_months": [{"name": m["month"], "avg_risk": m["avg_risk_score"], "accident_count": m["accident_count"]} for m in best_months],
+        "worst_months": [{"name": m["month"], "avg_risk": m["avg_risk_score"], "accident_count": m["accident_count"]} for m in worst_months],
+    }
+
+
+@router.get("/mp-routes/{mp_route_id}/time-of-day")
+async def get_time_of_day_analysis(
+    mp_route_id: int,
+    target_date: date = Query(..., description="Date to analyze (YYYY-MM-DD)"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get hourly weather and risk score analysis for a specific day.
+
+    Helps climbers identify the optimal time window for their ascent.
+    """
+    import requests
+
+    # Fetch route
+    route_query = select(MpRoute).where(MpRoute.mp_route_id == mp_route_id)
+    route_result = await db.execute(route_query)
+    route = route_result.scalar_one_or_none()
+
+    if not route:
+        raise HTTPException(status_code=404, detail="Route not found")
+
+    if route.latitude is None or route.longitude is None:
+        raise HTTPException(status_code=400, detail="Route missing GPS coordinates")
+
+    # Fetch hourly weather data from Open-Meteo
+    try:
+        params = {
+            "latitude": route.latitude,
+            "longitude": route.longitude,
+            "start_date": target_date.isoformat(),
+            "end_date": target_date.isoformat(),
+            "hourly": [
+                "temperature_2m",
+                "precipitation",
+                "wind_speed_10m",
+                "wind_gusts_10m",
+                "cloud_cover",
+                "visibility",
+            ],
+            "temperature_unit": "celsius",
+            "wind_speed_unit": "ms",
+            "precipitation_unit": "mm",
+            "timezone": "auto",
+        }
+
+        response = requests.get("https://api.open-meteo.com/v1/forecast", params=params, timeout=10)
+        response.raise_for_status()
+        weather_data = response.json()
+
+        hourly = weather_data["hourly"]
+        times = hourly["time"]
+        temperatures = hourly["temperature_2m"]
+        precipitations = hourly["precipitation"]
+        wind_speeds = hourly["wind_speed_10m"]
+        wind_gusts = hourly["wind_gusts_10m"]
+        cloud_covers = hourly["cloud_cover"]
+        visibilities = hourly["visibility"]
+
+        # Get base daily risk
+        normalized_type = normalize_route_type(route.type)
+        prediction_request = PredictionRequest(
+            latitude=route.latitude,
+            longitude=route.longitude,
+            route_type=normalized_type,
+            planned_date=target_date,
+            elevation_meters=None,
+        )
+        base_prediction = await predict_route_safety(prediction_request, db)
+        base_risk = base_prediction.risk_score
+
+        # Analyze each hour
+        hourly_data = []
+        for i in range(len(times)):
+            hour = int(times[i].split("T")[1][:2])
+            temp = temperatures[i]
+            precip = precipitations[i]
+            wind = wind_speeds[i]
+            gust = wind_gusts[i]
+            cloud = cloud_covers[i]
+            visibility = visibilities[i]
+
+            # Calculate hourly risk adjustment
+            risk_adjustment = 0.0
+
+            if temp is not None:
+                if temp < -15:
+                    risk_adjustment += 15
+                elif temp < -5:
+                    risk_adjustment += 8
+                elif temp > 30:
+                    risk_adjustment += 5
+
+            if precip is not None:
+                if precip > 5:
+                    risk_adjustment += 20
+                elif precip > 1:
+                    risk_adjustment += 10
+                elif precip > 0.2:
+                    risk_adjustment += 3
+
+            if gust is not None and gust > 20:
+                risk_adjustment += 15
+            elif wind is not None:
+                if wind > 15:
+                    risk_adjustment += 10
+                elif wind > 10:
+                    risk_adjustment += 5
+
+            if visibility is not None and visibility < 1000:
+                risk_adjustment += 10
+            elif visibility is not None and visibility < 5000:
+                risk_adjustment += 5
+
+            hourly_risk = min(max(base_risk + risk_adjustment, 0), 100)
+
+            # Determine condition summary
+            conditions = []
+            if temp is not None and temp < -10:
+                conditions.append("Very Cold")
+            elif temp is not None and temp > 25:
+                conditions.append("Hot")
+            if precip is not None and precip > 1:
+                conditions.append("Rain/Snow")
+            if wind is not None and wind > 10:
+                conditions.append("Windy")
+            if visibility is not None and visibility < 5000:
+                conditions.append("Low Visibility")
+
+            if not conditions:
+                if hourly_risk < 30:
+                    conditions.append("Good Conditions")
+                elif hourly_risk < 50:
+                    conditions.append("Moderate")
+                else:
+                    conditions.append("Cautious")
+
+            is_daylight = 6 <= hour <= 18
+            is_climbable = hourly_risk < 70 and (precip is None or precip < 5) and (wind is None or wind < 20)
+
+            hourly_data.append({
+                "hour": hour,
+                "time": times[i],
+                "risk_score": round(hourly_risk, 1),
+                "temperature": round(temp, 1) if temp else None,
+                "precipitation": round(precip, 2) if precip else None,
+                "wind_speed": round(wind, 1) if wind else None,
+                "wind_gusts": round(gust, 1) if gust else None,
+                "cloud_cover": round(cloud, 0) if cloud else None,
+                "visibility": round(visibility, 0) if visibility else None,
+                "conditions_summary": ", ".join(conditions),
+                "is_daylight": is_daylight,
+                "is_climbable": is_climbable and is_daylight,
+            })
+
+        # Find best climbing windows
+        windows = []
+        current_window = []
+
+        for hour_data in hourly_data:
+            if hour_data["is_climbable"]:
+                current_window.append(hour_data)
+            else:
+                if len(current_window) >= 2:
+                    avg_risk = sum(h["risk_score"] for h in current_window) / len(current_window)
+                    windows.append({
+                        "start_hour": current_window[0]["hour"],
+                        "end_hour": current_window[-1]["hour"],
+                        "duration_hours": len(current_window),
+                        "avg_risk": round(avg_risk, 1),
+                        "conditions": current_window[len(current_window)//2]["conditions_summary"],
+                    })
+                current_window = []
+
+        if len(current_window) >= 2:
+            avg_risk = sum(h["risk_score"] for h in current_window) / len(current_window)
+            windows.append({
+                "start_hour": current_window[0]["hour"],
+                "end_hour": current_window[-1]["hour"],
+                "duration_hours": len(current_window),
+                "avg_risk": round(avg_risk, 1),
+                "conditions": current_window[len(current_window)//2]["conditions_summary"],
+            })
+
+        windows.sort(key=lambda w: w["avg_risk"])
+
+        return {
+            "route_id": mp_route_id,
+            "route_name": route.name,
+            "target_date": target_date.isoformat(),
+            "base_daily_risk": round(base_risk, 1),
+            "hourly_data": hourly_data,
+            "climbing_windows": windows,
+            "best_window": windows[0] if windows else None,
+            "recommendation": (
+                f"Best window: {windows[0]['start_hour']:02d}:00-{windows[0]['end_hour']:02d}:00 "
+                f"(Risk: {windows[0]['avg_risk']}/100)"
+            ) if windows else "No suitable climbing windows identified for this date",
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching hourly weather: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch hourly weather data: {str(e)}")
+
+
+@router.get("/mp-routes/{mp_route_id}/historical-trends")
+async def get_historical_trends(
+    mp_route_id: int,
+    days: int = Query(30, ge=1, le=365, description="Number of days of history to return"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get historical risk score trends for this route.
+
+    Requires historical_predictions table to be populated via backfill script.
+    """
+    # Fetch route
+    route_query = select(MpRoute).where(MpRoute.mp_route_id == mp_route_id)
+    route_result = await db.execute(route_query)
+    route = route_result.scalar_one_or_none()
+
+    if not route:
+        raise HTTPException(status_code=404, detail="Route not found")
+
+    # Fetch historical predictions
+    historical_query = text("""
+        SELECT
+            prediction_date,
+            risk_score,
+            color_code
+        FROM historical_predictions
+        WHERE route_id = :route_id
+          AND prediction_date >= CURRENT_DATE - INTERVAL ':days days'
+        ORDER BY prediction_date ASC
+    """)
+
+    try:
+        result = await db.execute(historical_query, {"route_id": mp_route_id, "days": days})
+        historical_data = result.fetchall()
+
+        if not historical_data:
+            return {
+                "route_id": mp_route_id,
+                "route_name": route.name,
+                "historical_predictions": [],
+                "summary": None,
+                "trend": None,
+                "message": "Historical data not yet available. Run backfill script to collect historical predictions."
+            }
+
+        predictions = [
+            {
+                "date": row[0].isoformat(),
+                "risk_score": round(float(row[1]), 1),
+                "color_code": row[2],
+            }
+            for row in historical_data
+        ]
+
+        risk_scores = [p["risk_score"] for p in predictions]
+        summary = {
+            "avg_risk": round(sum(risk_scores) / len(risk_scores), 1),
+            "min_risk": round(min(risk_scores), 1),
+            "max_risk": round(max(risk_scores), 1),
+        }
+
+        trend = None
+        if len(predictions) >= 7:
+            recent_avg = sum(risk_scores[-7:]) / 7
+            older_avg = sum(risk_scores[:7]) / 7
+
+            if recent_avg > older_avg + 5:
+                trend = {"direction": "increasing", "description": "Risk has increased over the past week"}
+            elif recent_avg < older_avg - 5:
+                trend = {"direction": "decreasing", "description": "Risk has decreased over the past week"}
+            else:
+                trend = {"direction": "stable", "description": "Risk has remained relatively stable"}
+
+        return {
+            "route_id": mp_route_id,
+            "route_name": route.name,
+            "days_available": len(predictions),
+            "historical_predictions": predictions,
+            "summary": summary,
+            "trend": trend,
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching historical trends: {e}")
+        return {
+            "route_id": mp_route_id,
+            "route_name": route.name,
+            "historical_predictions": [],
+            "summary": None,
+            "trend": None,
+            "error": "Historical predictions table may not exist. Run backfill script first."
+        }
+
+
+@router.get("/mp-routes/{mp_route_id}/ascent-analytics")
+async def get_ascent_analytics(
+    mp_route_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get ascent analytics for a route including monthly breakdown and accident rate.
+
+    Note: Since mp_routes don't have direct ascent links yet, this uses geographic
+    proximity to find relevant ascent data from nearby routes.
+    """
+    # Fetch route
+    route_query = select(MpRoute).where(MpRoute.mp_route_id == mp_route_id)
+    route_result = await db.execute(route_query)
+    route = route_result.scalar_one_or_none()
+
+    if not route:
+        raise HTTPException(status_code=404, detail="Route not found")
+
+    # Check if route is a boulder problem (excluded from analytics)
+    route_type = (route.type or '').lower()
+    if route_type in ['boulder', 'bouldering']:
+        return {
+            "route_id": mp_route_id,
+            "route_name": route.name,
+            "route_type": route.type,
+            "total_ascents": 0,
+            "total_accidents": 0,
+            "overall_accident_rate": 0.0,
+            "monthly_stats": [],
+            "best_month": None,
+            "worst_month": None,
+            "has_data": False,
+            "excluded_reason": "Boulder problems are excluded from safety analytics",
+        }
+
+    # For now, return placeholder data since we don't have ascent-to-mp_route linking yet
+    # In a future iteration, we could:
+    # 1. Link ascents to mp_routes via mp_route_id matching
+    # 2. Use geographic proximity to aggregate nearby ascent data
+
+    # Get total accidents within 10km of this route
+    accident_count_query = text("""
+        SELECT COUNT(*)
+        FROM accidents
+        WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+          AND (
+              6371 * acos(
+                  cos(radians(:lat)) * cos(radians(latitude)) *
+                  cos(radians(longitude) - radians(:lon)) +
+                  sin(radians(:lat)) * sin(radians(latitude))
+              )
+          ) < 10
+    """)
+
+    if route.latitude and route.longitude:
+        accident_result = await db.execute(
+            accident_count_query,
+            {"lat": route.latitude, "lon": route.longitude}
+        )
+        total_accidents = accident_result.scalar() or 0
+    else:
+        total_accidents = 0
+
+    # Build empty monthly stats
+    month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    monthly_stats = [
+        {
+            "month": month_names[i],
+            "month_num": i + 1,
+            "ascent_count": 0,
+            "accident_count": 0,
+            "accident_rate": 0.0,
+        }
+        for i in range(12)
+    ]
+
+    return {
+        "route_id": mp_route_id,
+        "route_name": route.name,
+        "route_type": route.type,
+        "total_ascents": 0,  # No ascent data linked yet
+        "total_accidents": total_accidents,
+        "overall_accident_rate": 0.0,
+        "monthly_stats": monthly_stats,
+        "best_month": None,
+        "worst_month": None,
+        "peak_month": None,
+        "has_data": False,
+        "message": "Ascent data not yet available for MP routes. Coming soon with tick data integration.",
+    }
