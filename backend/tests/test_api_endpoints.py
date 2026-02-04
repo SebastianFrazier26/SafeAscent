@@ -14,14 +14,23 @@ import pytest
 from datetime import date, timedelta
 
 
-# Check if we're running against a database with MP tables
-# In CI/production, set MP_TABLES_AVAILABLE=true
-MP_TABLES_AVAILABLE = os.environ.get("MP_TABLES_AVAILABLE", "false").lower() == "true"
+# Check if we're running against a database with tables
+# In CI/production, set DB_TABLES_AVAILABLE=true
+DB_TABLES_AVAILABLE = os.environ.get("DB_TABLES_AVAILABLE", "false").lower() == "true"
+
+# Backward compat: also check MP_TABLES_AVAILABLE
+MP_TABLES_AVAILABLE = os.environ.get("MP_TABLES_AVAILABLE", "false").lower() == "true" or DB_TABLES_AVAILABLE
 
 # Skip marker for tests requiring MP tables
 requires_mp_tables = pytest.mark.skipif(
     not MP_TABLES_AVAILABLE,
-    reason="MP tables (mp_locations, mp_routes) not available in test database. Set MP_TABLES_AVAILABLE=true to run."
+    reason="MP tables (mp_locations, mp_routes) not available in test database. Set DB_TABLES_AVAILABLE=true to run."
+)
+
+# Skip marker for tests requiring database tables (accidents, predict with data)
+requires_database = pytest.mark.skipif(
+    not DB_TABLES_AVAILABLE,
+    reason="Database tables not available in test database. Set DB_TABLES_AVAILABLE=true to run."
 )
 
 
@@ -64,6 +73,7 @@ class TestHealthEndpoints:
 class TestPredictEndpoint:
     """Tests for the /predict endpoint"""
 
+    @requires_database
     def test_predict_valid_request(self, test_client):
         """Valid prediction request should return risk score"""
         request_data = {
@@ -282,6 +292,7 @@ class TestMpRoutesEndpoint:
 # ============================================================================
 
 
+@requires_database
 class TestAccidentsEndpoint:
     """Tests for the /accidents endpoint"""
 
