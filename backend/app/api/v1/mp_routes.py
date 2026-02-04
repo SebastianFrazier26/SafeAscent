@@ -331,7 +331,7 @@ async def calculate_mp_route_safety(
     prediction_request = PredictionRequest(
         latitude=route.latitude,
         longitude=route.longitude,
-        target_date=target_date,
+        planned_date=target_date,
         route_type=normalized_type,
     )
 
