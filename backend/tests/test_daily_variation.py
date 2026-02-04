@@ -4,9 +4,20 @@ Test to demonstrate that risk scores vary DAY-BY-DAY, not seasonally.
 This test proves the algorithm calculates risk based on specific daily weather
 forecasts, not by bucketing months or seasons.
 """
+import os
 import pytest
 
+# Check if database tables are available (set in CI)
+DB_TABLES_AVAILABLE = os.environ.get("DB_TABLES_AVAILABLE", "false").lower() == "true"
 
+# Skip marker for tests requiring database tables
+requires_database = pytest.mark.skipif(
+    not DB_TABLES_AVAILABLE,
+    reason="Database tables not available in test database. Set DB_TABLES_AVAILABLE=true to run."
+)
+
+
+@requires_database
 class TestDailyVariation:
     """Verify that risk scores vary between consecutive days in the same month."""
 
