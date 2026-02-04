@@ -77,8 +77,27 @@ jobs:
           # MP tables not available in CI test database
           MP_TABLES_AVAILABLE: "false"
         run: |
-          # Run core API tests (excluding performance benchmarks and known-failing integration tests)
-          pytest tests/test_api_endpoints.py tests/test_weather_service.py tests/test_route_type_mapper.py tests/test_temporal_weighting.py tests/test_daily_variation.py -v --tb=short --ignore=tests/benchmark_* --ignore=tests/profile_*
+          # Run unit tests that work without production data:
+          # - API endpoint validation (test_api_endpoints.py)
+          # - Weather service with mocks (test_weather_service.py)
+          # - Route type mapping logic (test_route_type_mapper.py)
+          # - Temporal weighting logic (test_temporal_weighting.py)
+          # - Daily variation logic (test_daily_variation.py)
+          # - Safety algorithm unit tests (test_safety_algorithm.py)
+          #
+          # Excluded from CI (require production accident data):
+          # - test_predict_integration.py, test_prediction_integration.py
+          # - test_known_outcomes_validation.py, test_edge_cases_performance.py
+          # - test_performance.py, test_weather_caching.py (performance-sensitive)
+          pytest tests/test_api_endpoints.py \
+                 tests/test_weather_service.py \
+                 tests/test_route_type_mapper.py \
+                 tests/test_temporal_weighting.py \
+                 tests/test_daily_variation.py \
+                 tests/test_safety_algorithm.py \
+                 -v --tb=short \
+                 --ignore=tests/benchmark_* \
+                 --ignore=tests/profile_*
 
   # ===========================================================================
   # Frontend Tests

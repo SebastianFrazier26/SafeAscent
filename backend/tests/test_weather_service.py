@@ -52,10 +52,13 @@ class TestFetchCurrentWeatherPattern:
         # (Open-Meteo API might still return data, so this may pass)
         assert weather is None or isinstance(weather, WeatherPattern)
 
-    @patch('requests.get')
-    def test_fetch_current_weather_api_failure(self, mock_get):
+    @patch('app.services.weather_service.cache_get')
+    @patch('app.services.weather_service.requests.get')
+    def test_fetch_current_weather_api_failure(self, mock_get, mock_cache_get):
         """Test when API request fails"""
         import requests
+        # Ensure cache miss so we hit the API
+        mock_cache_get.return_value = None
         # Mock API failure
         mock_get.side_effect = requests.exceptions.RequestException("API connection failed")
 
@@ -67,10 +70,13 @@ class TestFetchCurrentWeatherPattern:
 
         assert weather is None  # Should return None on failure
 
+    @patch('app.services.weather_service.cache_get')
     @patch('app.services.weather_service.requests.get')
-    def test_fetch_current_weather_timeout(self, mock_get):
+    def test_fetch_current_weather_timeout(self, mock_get, mock_cache_get):
         """Test when API times out"""
         import requests
+        # Ensure cache miss so we hit the API
+        mock_cache_get.return_value = None
         mock_get.side_effect = requests.Timeout("Request timed out")
 
         weather = fetch_current_weather_pattern(
@@ -81,9 +87,12 @@ class TestFetchCurrentWeatherPattern:
 
         assert weather is None
 
+    @patch('app.services.weather_service.cache_get')
     @patch('app.services.weather_service.requests.get')
-    def test_fetch_current_weather_malformed_response(self, mock_get):
+    def test_fetch_current_weather_malformed_response(self, mock_get, mock_cache_get):
         """Test when API returns malformed JSON"""
+        # Ensure cache miss so we hit the API
+        mock_cache_get.return_value = None
         # Mock response with missing required fields
         mock_response = MagicMock()
         mock_response.json.return_value = {"daily": {"time": []}}  # Missing weather data

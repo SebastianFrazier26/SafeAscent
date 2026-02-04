@@ -58,8 +58,8 @@ class TestHighRiskVsLowRisk:
             f"Florida should show low risk (got {florida_data['risk_score']})"
 
         print(f"\n✅ High-Risk vs Low-Risk Comparison:")
-        print(f"   Longs Peak: Risk={longs_data['risk_score']:.1f}, Confidence={longs_data['confidence']:.1f}, Accidents={longs_data['num_contributing_accidents']}")
-        print(f"   Florida:    Risk={florida_data['risk_score']:.1f}, Confidence={florida_data['confidence']:.1f}, Accidents={florida_data['num_contributing_accidents']}")
+        print(f"   Longs Peak: Risk={longs_data['risk_score']:.1f}, Accidents={longs_data['num_contributing_accidents']}")
+        print(f"   Florida:    Risk={florida_data['risk_score']:.1f}, Accidents={florida_data['num_contributing_accidents']}")
         print(f"   Risk Difference: {longs_data['risk_score'] - florida_data['risk_score']:.1f} points")
 
     def test_mount_rainier_vs_smith_rock(self, test_client):
@@ -127,8 +127,8 @@ class TestHighRiskVsLowRisk:
             f"Denali ({denali_data['risk_score']}) should be at least as risky as Acadia ({acadia_data['risk_score']})"
 
         print(f"\n✅ Extreme Alpine vs Sea Cliffs:")
-        print(f"   Denali (alpine): Risk={denali_data['risk_score']:.1f}, Confidence={denali_data['confidence']:.1f}")
-        print(f"   Acadia (trad):   Risk={acadia_data['risk_score']:.1f}, Confidence={acadia_data['confidence']:.1f}")
+        print(f"   Denali (alpine): Risk={denali_data['risk_score']:.1f}, Accidents={denali_data['num_contributing_accidents']}")
+        print(f"   Acadia (trad):   Risk={acadia_data['risk_score']:.1f}, Accidents={acadia_data['num_contributing_accidents']}")
 
 
 class TestSeasonalVariations:
@@ -162,8 +162,8 @@ class TestSeasonalVariations:
         summer_data = summer.json()
 
         print(f"\n✅ Seasonal Variation (Colorado):")
-        print(f"   Winter (Jan): Risk={winter_data['risk_score']:.1f}, Confidence={winter_data['confidence']:.1f}")
-        print(f"   Summer (Jul): Risk={summer_data['risk_score']:.1f}, Confidence={summer_data['confidence']:.1f}")
+        print(f"   Winter (Jan): Risk={winter_data['risk_score']:.1f}, Accidents={winter_data['num_contributing_accidents']}")
+        print(f"   Summer (Jul): Risk={summer_data['risk_score']:.1f}, Accidents={summer_data['num_contributing_accidents']}")
         print(f"   Note: Seasonal boost applies to winter predictions in mountain areas")
 
     def test_early_season_vs_late_season(self, test_client):
@@ -194,8 +194,8 @@ class TestSeasonalVariations:
         late_data = late_season.json()
 
         print(f"\n✅ Early vs Late Season (Mount Rainier):")
-        print(f"   Early (May): Risk={early_data['risk_score']:.1f}, Confidence={early_data['confidence']:.1f}")
-        print(f"   Late (Sep):  Risk={late_data['risk_score']:.1f}, Confidence={late_data['confidence']:.1f}")
+        print(f"   Early (May): Risk={early_data['risk_score']:.1f}, Accidents={early_data['num_contributing_accidents']}")
+        print(f"   Late (Sep):  Risk={late_data['risk_score']:.1f}, Accidents={late_data['num_contributing_accidents']}")
 
 
 class TestKnownDangerousAreas:
@@ -221,7 +221,6 @@ class TestKnownDangerousAreas:
 
         print(f"\n✅ Half Dome Area (Known Dangerous):")
         print(f"   Risk Score: {data['risk_score']:.1f}/100")
-        print(f"   Confidence: {data['confidence']:.1f}/100")
         print(f"   Accidents Found: {data['num_contributing_accidents']}")
         print(f"   Top Accident Influence: {data['top_contributing_accidents'][0]['total_influence']:.3f}")
 
@@ -262,7 +261,6 @@ class TestKnownDangerousAreas:
 
         print(f"\n✅ Mount Whitney Area:")
         print(f"   Risk Score: {data['risk_score']:.1f}/100")
-        print(f"   Confidence: {data['confidence']:.1f}/100")
         print(f"   Accidents Found: {data['num_contributing_accidents']}")
 
 
@@ -317,7 +315,6 @@ class TestRouteTypeRiskDifferences:
 
         print(f"\n✅ Ice Climbing (Winter):")
         print(f"   Risk Score: {data['risk_score']:.1f}/100")
-        print(f"   Confidence: {data['confidence']:.1f}/100")
         print(f"   Accidents Found: {data['num_contributing_accidents']}")
 
     def test_boulder_vs_roped_climbing(self, test_client):
@@ -377,13 +374,12 @@ class TestHistoricalAccidentCorrelation:
             results.append({
                 "name": loc["name"],
                 "risk": data["risk_score"],
-                "accidents": data["num_contributing_accidents"],
-                "confidence": data["confidence"]
+                "accidents": data["num_contributing_accidents"]
             })
 
         print(f"\n✅ Historical Accident Correlation:")
         for res in results:
-            print(f"   {res['name']:20s}: Risk={res['risk']:5.1f}, Accidents={res['accidents']:4d}, Confidence={res['confidence']:5.1f}")
+            print(f"   {res['name']:20s}: Risk={res['risk']:5.1f}, Accidents={res['accidents']:4d}")
 
         # Risk should generally correlate with accident density
         # (though not perfectly due to temporal weighting and other factors)
@@ -417,11 +413,11 @@ class TestHistoricalAccidentCorrelation:
                 f"Temporal weight {acc['temporal_weight']} out of expected range"
 
 
-class TestConfidenceCalibration:
-    """Validate that confidence scores reflect data quality appropriately."""
+class TestRiskScoreCalibration:
+    """Validate that risk scores reflect accident density appropriately."""
 
-    def test_high_density_high_confidence(self, test_client):
-        """High accident density areas should have higher confidence."""
+    def test_high_density_elevated_risk(self, test_client):
+        """High accident density areas should have elevated risk."""
         # Longs Peak - high density
         high_density = test_client.post("/api/v1/predict", json={
             "latitude": 40.255,
@@ -434,18 +430,20 @@ class TestConfidenceCalibration:
         assert high_density.status_code == 200
         data = high_density.json()
 
-        # Should have high confidence due to many accidents
-        assert data["num_contributing_accidents"] > 100
-        assert data["confidence"] > 40, \
-            f"High accident density should produce confidence >40 (got {data['confidence']})"
+        # Should have many accidents near Longs Peak
+        assert data["num_contributing_accidents"] > 100, \
+            f"High density area should have >100 accidents (got {data['num_contributing_accidents']})"
 
-        print(f"\n✅ High Density Confidence:")
+        # High density should reflect in elevated risk
+        assert data["risk_score"] > 30, \
+            f"High accident density should produce risk >30 (got {data['risk_score']})"
+
+        print(f"\n✅ High Density Risk:")
         print(f"   Accidents: {data['num_contributing_accidents']}")
-        print(f"   Confidence: {data['confidence']:.1f}/100")
-        print(f"   Interpretation: {data['confidence_interpretation']}")
+        print(f"   Risk Score: {data['risk_score']:.1f}/100")
 
-    def test_low_density_low_confidence(self, test_client):
-        """Low accident density areas should have lower confidence."""
+    def test_low_density_lower_risk(self, test_client):
+        """Low accident density areas should have lower risk."""
         # Remote Wyoming - low density
         low_density = test_client.post("/api/v1/predict", json={
             "latitude": 42.5,
@@ -458,18 +456,12 @@ class TestConfidenceCalibration:
         assert low_density.status_code == 200
         data = low_density.json()
 
-        # If few accidents, confidence should be lower
-        if data["num_contributing_accidents"] < 20:
-            assert data["confidence"] < 60, \
-                f"Low accident density should produce confidence <60 (got {data['confidence']})"
-
-        print(f"\n✅ Low Density Confidence:")
+        print(f"\n✅ Low Density Risk:")
         print(f"   Accidents: {data['num_contributing_accidents']}")
-        print(f"   Confidence: {data['confidence']:.1f}/100")
-        print(f"   Interpretation: {data['confidence_interpretation']}")
+        print(f"   Risk Score: {data['risk_score']:.1f}/100")
 
-    def test_confidence_components_meaningful(self, test_client):
-        """Confidence breakdown should provide meaningful insights."""
+    def test_top_accidents_sorted_by_influence(self, test_client):
+        """Top contributing accidents should be sorted by influence."""
         response = test_client.post("/api/v1/predict", json={
             "latitude": 40.0,
             "longitude": -105.3,
@@ -481,22 +473,17 @@ class TestConfidenceCalibration:
         assert response.status_code == 200
         data = response.json()
 
-        breakdown = data["confidence_breakdown"]
+        top_accidents = data["top_contributing_accidents"]
 
-        # All components should be present
-        assert "num_accidents" in breakdown
-        assert "num_significant" in breakdown
-        assert "match_quality_score" in breakdown
-        assert "median_days_ago" in breakdown
+        # Verify accidents are sorted by total_influence (descending)
+        if len(top_accidents) > 1:
+            influences = [acc["total_influence"] for acc in top_accidents]
+            assert influences == sorted(influences, reverse=True), \
+                "Top accidents should be sorted by total_influence descending"
 
-        # Significant accidents should be <= total accidents
-        assert breakdown["num_significant"] <= breakdown["num_accidents"]
-
-        print(f"\n✅ Confidence Breakdown Analysis:")
-        print(f"   Total Accidents: {breakdown['num_accidents']}")
-        print(f"   Significant Matches: {breakdown['num_significant']} ({100*breakdown['num_significant']/breakdown['num_accidents']:.1f}%)")
-        print(f"   Match Quality Score: {breakdown['match_quality_score']:.3f}")
-        print(f"   Median Days Ago: {breakdown['median_days_ago']}")
+        print(f"\n✅ Top Accidents Sorted:")
+        print(f"   Total Accidents: {data['num_contributing_accidents']}")
+        print(f"   Top 5 Influences: {[f'{acc['total_influence']:.3f}' for acc in top_accidents[:5]]}")
 
 
 if __name__ == "__main__":

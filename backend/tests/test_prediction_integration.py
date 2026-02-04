@@ -28,7 +28,6 @@ class TestPredictionEndpointIntegration:
 
         # Verify response structure
         assert "risk_score" in data
-        assert "confidence" in data
         assert "top_contributing_accidents" in data
         assert "num_contributing_accidents" in data
         assert "metadata" in data
@@ -36,16 +35,12 @@ class TestPredictionEndpointIntegration:
         # Longs Peak should have elevated risk (many nearby accidents)
         assert data["risk_score"] > 30, "Longs Peak should show elevated risk"
 
-        # Should have good confidence (many nearby accidents)
-        assert data["confidence"] > 40, "Should have reasonable confidence"
-
         # Should have contributing accidents
         assert len(data["top_contributing_accidents"]) > 0
         assert data["num_contributing_accidents"] > 0
 
         print(f"\n✅ Longs Peak Prediction:")
         print(f"   Risk Score: {data['risk_score']}/100")
-        print(f"   Confidence: {data['confidence']}/100")
         print(f"   Accidents Found: {data['num_contributing_accidents']}")
 
     def test_prediction_with_low_risk_area(self, test_client):
@@ -67,7 +62,6 @@ class TestPredictionEndpointIntegration:
 
         print(f"\n✅ Florida Prediction:")
         print(f"   Risk Score: {data['risk_score']}/100")
-        print(f"   Confidence: {data['confidence']}/100")
         print(f"   Accidents Found: {data['num_contributing_accidents']}")
 
     def test_prediction_response_structure(self, test_client):
@@ -85,32 +79,18 @@ class TestPredictionEndpointIntegration:
 
         # Required top-level fields
         assert "risk_score" in data
-        assert "confidence" in data
-        assert "confidence_interpretation" in data
         assert "top_contributing_accidents" in data
         assert "num_contributing_accidents" in data
-        assert "confidence_breakdown" in data
         assert "metadata" in data
 
         # Type checks
         assert isinstance(data["risk_score"], (int, float))
-        assert isinstance(data["confidence"], (int, float))
-        assert isinstance(data["confidence_interpretation"], str)
         assert isinstance(data["top_contributing_accidents"], list)
         assert isinstance(data["num_contributing_accidents"], int)
-        assert isinstance(data["confidence_breakdown"], dict)
         assert isinstance(data["metadata"], dict)
 
         # Value ranges
         assert 0 <= data["risk_score"] <= 100
-        assert 0 <= data["confidence"] <= 100
-
-        # Confidence breakdown structure (matches actual API response)
-        breakdown = data["confidence_breakdown"]
-        assert "num_accidents" in breakdown
-        assert "num_significant" in breakdown
-        assert "match_quality_score" in breakdown
-        assert "median_days_ago" in breakdown
 
         # Metadata fields
         metadata = data["metadata"]
@@ -227,9 +207,9 @@ class TestDatabaseIntegration:
 class TestComponentIntegration:
     """Test that all algorithm components work together correctly."""
 
-    def test_confidence_components_make_sense(self, test_client):
-        """Test that confidence breakdown reflects data quality."""
-        # High-density area (should have high confidence)
+    def test_high_accident_density_reflects_risk(self, test_client):
+        """Test that high-density accident areas show elevated risk."""
+        # High-density area (Longs Peak)
         response = test_client.post("/api/v1/predict", json={
             "latitude": 40.255,
             "longitude": -105.615,  # Longs Peak
@@ -241,23 +221,19 @@ class TestComponentIntegration:
         assert response.status_code == 200
         data = response.json()
 
-        breakdown = data["confidence_breakdown"]
-
-        # Sample size should be good (many accidents near Longs Peak)
-        num_accidents = breakdown["num_accidents"]
+        # Should have many contributing accidents near Longs Peak
+        num_accidents = data["num_contributing_accidents"]
         assert num_accidents > 100, "Should have many accidents near Longs Peak"
 
-        # Check all required components are present
-        assert "num_accidents" in breakdown
-        assert "num_significant" in breakdown
-        assert "match_quality_score" in breakdown
-        assert "median_days_ago" in breakdown
+        # High density should reflect in elevated risk
+        assert data["risk_score"] > 30, "High accident density should show elevated risk"
 
-        print(f"\n✅ Confidence Breakdown (Longs Peak):")
-        print(f"   Total Accidents: {breakdown['num_accidents']}")
-        print(f"   Significant Matches: {breakdown['num_significant']}")
-        print(f"   Match Quality Score: {breakdown['match_quality_score']:.2f}")
-        print(f"   Median Days Ago: {breakdown['median_days_ago']}")
+        # Should have top contributing accidents
+        assert len(data["top_contributing_accidents"]) > 0
+
+        print(f"\n✅ High Density Area (Longs Peak):")
+        print(f"   Total Contributing Accidents: {num_accidents}")
+        print(f"   Risk Score: {data['risk_score']}/100")
 
     def test_real_time_weather_integration(self, test_client):
         """Test that current weather is fetched and used."""
@@ -277,11 +253,9 @@ class TestComponentIntegration:
 
         # Should generate valid prediction (weather API may or may not succeed)
         assert 0 <= data["risk_score"] <= 100
-        assert 0 <= data["confidence"] <= 100
 
         print(f"\n✅ Real-time Weather: Prediction generated for today")
         print(f"   Risk Score: {data['risk_score']}/100")
-        print(f"   Confidence: {data['confidence']}/100")
 
 
 class TestValidationAndErrorHandling:

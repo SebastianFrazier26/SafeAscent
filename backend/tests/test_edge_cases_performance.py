@@ -30,12 +30,10 @@ class TestExtremeLocations:
 
         # Should return valid prediction even at extreme latitude
         assert 0 <= data["risk_score"] <= 100
-        assert 0 <= data["confidence"] <= 100
 
         print(f"\n✅ Alaska (Denali) Prediction:")
         print(f"   Latitude: 63.069° N (extreme north)")
         print(f"   Risk Score: {data['risk_score']}/100")
-        print(f"   Confidence: {data['confidence']}/100")
         print(f"   Accidents Found: {data['num_contributing_accidents']}")
 
     def test_hawaii_extreme_tropical(self, test_client):
@@ -54,13 +52,11 @@ class TestExtremeLocations:
 
         # Should handle sparse data gracefully
         assert 0 <= data["risk_score"] <= 100
-        assert 0 <= data["confidence"] <= 100
 
         print(f"\n✅ Hawaii (Mauna Kea) Prediction:")
         print(f"   Risk Score: {data['risk_score']}/100")
-        print(f"   Confidence: {data['confidence']}/100")
         print(f"   Accidents Found: {data['num_contributing_accidents']}")
-        print(f"   Note: Sparse data area - low confidence expected")
+        print(f"   Note: Sparse data area - lower accident count expected")
 
     def test_washington_cascades_high_activity(self, test_client):
         """Test prediction for Washington Cascades (high accident density)."""
@@ -81,7 +77,6 @@ class TestExtremeLocations:
 
         print(f"\n✅ Mount Rainier Prediction:")
         print(f"   Risk Score: {data['risk_score']}/100")
-        print(f"   Confidence: {data['confidence']}/100")
         print(f"   Accidents Found: {data['num_contributing_accidents']}")
 
 
@@ -104,15 +99,10 @@ class TestSparseDataScenarios:
 
         # Should handle gracefully even with few accidents
         assert 0 <= data["risk_score"] <= 100
-        assert 0 <= data["confidence"] <= 100
-
-        # Confidence should be low due to sparse data
-        if data["num_contributing_accidents"] < 10:
-            assert data["confidence"] < 60, "Low accident count should result in lower confidence"
 
         print(f"\n✅ Remote Wyoming Prediction:")
         print(f"   Accidents Found: {data['num_contributing_accidents']}")
-        print(f"   Confidence: {data['confidence']}/100 (low expected for sparse data)")
+        print(f"   Risk Score: {data['risk_score']}/100")
 
     def test_ocean_location_no_accidents(self, test_client):
         """Test prediction for ocean coordinates (should find zero nearby accidents)."""
@@ -130,13 +120,11 @@ class TestSparseDataScenarios:
 
         # Should return prediction even with zero nearby accidents
         assert 0 <= data["risk_score"] <= 100
-        assert 0 <= data["confidence"] <= 100
 
         print(f"\n✅ Ocean Location Prediction:")
         print(f"   Accidents Found: {data['num_contributing_accidents']}")
         print(f"   Risk Score: {data['risk_score']}/100")
-        print(f"   Confidence: {data['confidence']}/100")
-        print(f"   Note: Zero accidents expected - algorithm should handle gracefully")
+        print(f"   Note: Zero/few accidents expected - algorithm should handle gracefully")
 
     def test_very_large_search_radius(self, test_client):
         """Test with maximum search radius to find distant accidents."""
@@ -253,13 +241,12 @@ class TestBoundaryValues:
             data = response.json()
             results[route_type] = {
                 "risk": data["risk_score"],
-                "confidence": data["confidence"],
                 "accidents": data["num_contributing_accidents"]
             }
 
         print(f"\n✅ All Route Types Tested:")
         for rt, res in results.items():
-            print(f"   {rt:8s}: Risk={res['risk']:5.1f}, Conf={res['confidence']:5.1f}, Accidents={res['accidents']}")
+            print(f"   {rt:8s}: Risk={res['risk']:5.1f}, Accidents={res['accidents']}")
 
 
 class TestPerformanceBenchmarks:
@@ -467,12 +454,11 @@ class TestConsistencyAndReproducibility:
 
         # Should produce identical results
         assert data1["risk_score"] == data2["risk_score"]
-        assert data1["confidence"] == data2["confidence"]
         assert data1["num_contributing_accidents"] == data2["num_contributing_accidents"]
 
         print(f"\n✅ Consistency Test:")
-        print(f"   Request 1: Risk={data1['risk_score']}, Confidence={data1['confidence']}")
-        print(f"   Request 2: Risk={data2['risk_score']}, Confidence={data2['confidence']}")
+        print(f"   Request 1: Risk={data1['risk_score']}, Accidents={data1['num_contributing_accidents']}")
+        print(f"   Request 2: Risk={data2['risk_score']}, Accidents={data2['num_contributing_accidents']}")
         print(f"   Status: Identical results ✅")
 
 

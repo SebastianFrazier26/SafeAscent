@@ -276,3 +276,6 @@ SESSION_HISTORY.md
 *.progress.json
 *_progress*.json
 *_checkpoint*
+
+# Playwright MCP (browser automation)
+.playwright-mcp/

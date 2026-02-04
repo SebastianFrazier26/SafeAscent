@@ -67,6 +67,7 @@ def nearby_accident(reference_weather):
         accident_id=1,
         latitude=40.3549,  # ~10km north
         longitude=-105.6426,
+        elevation_meters=4200.0,
         accident_date=date(2023, 7, 15),
         route_type="alpine",
         severity="Serious Injury",
@@ -81,6 +82,7 @@ def distant_accident(reference_weather):
         accident_id=2,
         latitude=41.2549,  # ~100km north
         longitude=-105.6426,
+        elevation_meters=3500.0,
         accident_date=date(2023, 7, 15),
         route_type="alpine",
         severity="Minor Injury",
@@ -95,6 +97,7 @@ def old_accident(reference_weather):
         accident_id=3,
         latitude=40.2549,
         longitude=-105.6426,
+        elevation_meters=4346.0,
         accident_date=date(2014, 7, 15),
         route_type="alpine",
         severity="Fatal",
@@ -109,6 +112,7 @@ def different_route_type_accident(reference_weather):
         accident_id=4,
         latitude=40.2549,
         longitude=-105.6426,
+        elevation_meters=4346.0,
         accident_date=date(2023, 7, 15),
         route_type="sport",
         severity="Minor Injury",
@@ -124,7 +128,8 @@ def different_route_type_accident(reference_weather):
 class TestRiskScoreNormalization:
     """Tests for risk score normalization to 0-100 scale
 
-    Formula: risk_score = total_influence * 10 (capped at 100)
+    Formula: risk_score = total_influence * 5.0 (capped at 100)
+    Note: Normalization factor changed from 10.0 to 5.0 per Decision #30
     """
 
     def test_zero_influence_zero_risk(self):
@@ -134,28 +139,28 @@ class TestRiskScoreNormalization:
 
     def test_low_influence_low_risk(self):
         """Low influence should give low risk
-        0.5 * 10 = 5
+        0.5 * 5 = 2.5
         """
         risk = normalize_risk_score(total_influence=0.5)
-        assert risk == 5.0
+        assert risk == 2.5
 
     def test_moderate_influence_moderate_risk(self):
         """Moderate influence should give moderate risk
-        2.0 * 10 = 20
+        2.0 * 5 = 10
         """
         risk = normalize_risk_score(total_influence=2.0)
-        assert risk == 20.0
+        assert risk == 10.0
 
     def test_high_influence_high_risk(self):
         """High influence should give high risk
-        5.0 * 10 = 50
+        5.0 * 5 = 25
         """
         risk = normalize_risk_score(total_influence=5.0)
-        assert risk == 50.0
+        assert risk == 25.0
 
     def test_extreme_influence_capped_at_100(self):
         """Extreme influence should cap at 100
-        100.0 * 10 = 1000, but capped at 100
+        100.0 * 5 = 500, but capped at 100
         """
         risk = normalize_risk_score(total_influence=100.0)
         assert risk == 100.0
@@ -173,9 +178,11 @@ class TestRiskScoreNormalization:
         for i in range(1, len(risks)):
             assert risks[i] >= risks[i - 1]
 
-    def test_reaches_max_at_10(self):
-        """Risk should reach maximum (100) at influence of 10"""
-        risk = normalize_risk_score(total_influence=10.0)
+    def test_reaches_max_at_20(self):
+        """Risk should reach maximum (100) at influence of 20
+        (with normalization factor 5.0, need influence=20 to hit 100)
+        """
+        risk = normalize_risk_score(total_influence=20.0)
         assert risk == 100.0
 
 
@@ -198,6 +205,7 @@ class TestTopContributingAccidents:
                 "days_ago": 100 + i,
                 "spatial_weight": 0.8,
                 "temporal_weight": 0.7,
+                "elevation_weight": 1.0,
                 "weather_weight": 0.6,
                 "route_type_weight": 1.0,
                 "severity_weight": 1.0,
@@ -221,6 +229,7 @@ class TestTopContributingAccidents:
                 "days_ago": 100,
                 "spatial_weight": 0.8,
                 "temporal_weight": 0.7,
+                "elevation_weight": 1.0,
                 "weather_weight": 0.6,
                 "route_type_weight": 1.0,
                 "severity_weight": 1.0,
@@ -247,6 +256,7 @@ class TestTopContributingAccidents:
                 "days_ago": 100,
                 "spatial_weight": 0.8,
                 "temporal_weight": 0.7,
+                "elevation_weight": 1.0,
                 "weather_weight": 0.6,
                 "route_type_weight": 1.0,
                 "severity_weight": 1.0,
@@ -276,6 +286,7 @@ class TestCalculateSafetyScore:
         result = calculate_safety_score(
             route_lat=reference_location["latitude"],
             route_lon=reference_location["longitude"],
+            route_elevation_m=reference_location["elevation"],
             route_type=reference_location["route_type"],
             current_date=reference_location["planned_date"],
             current_weather=reference_weather,
@@ -293,6 +304,7 @@ class TestCalculateSafetyScore:
         result = calculate_safety_score(
             route_lat=reference_location["latitude"],
             route_lon=reference_location["longitude"],
+            route_elevation_m=reference_location["elevation"],
             route_type=reference_location["route_type"],
             current_date=reference_location["planned_date"],
             current_weather=reference_weather,
@@ -316,6 +328,7 @@ class TestCalculateSafetyScore:
         result = calculate_safety_score(
             route_lat=reference_location["latitude"],
             route_lon=reference_location["longitude"],
+            route_elevation_m=reference_location["elevation"],
             route_type=reference_location["route_type"],
             current_date=reference_location["planned_date"],
             current_weather=reference_weather,
@@ -333,6 +346,7 @@ class TestCalculateSafetyScore:
                 accident_id=i,
                 latitude=40.2549 + (i * 0.01),  # Spread out
                 longitude=-105.6426 + (i * 0.01),
+                elevation_meters=4000.0 + (i * 10),
                 accident_date=date(2023, 7, 15) - timedelta(days=i * 10),
                 route_type="alpine",
                 severity="Minor Injury",
@@ -344,6 +358,7 @@ class TestCalculateSafetyScore:
         result = calculate_safety_score(
             route_lat=reference_location["latitude"],
             route_lon=reference_location["longitude"],
+            route_elevation_m=reference_location["elevation"],
             route_type=reference_location["route_type"],
             current_date=reference_location["planned_date"],
             current_weather=reference_weather,
@@ -364,6 +379,7 @@ class TestCalculateSafetyScore:
                 accident_id=i,
                 latitude=40.2549,
                 longitude=-105.6426,
+                elevation_meters=4346.0,
                 accident_date=date(2023, 7, 15),
                 route_type="alpine",
                 severity="Minor Injury",
@@ -375,6 +391,7 @@ class TestCalculateSafetyScore:
         result = calculate_safety_score(
             route_lat=reference_location["latitude"],
             route_lon=reference_location["longitude"],
+            route_elevation_m=reference_location["elevation"],
             route_type=reference_location["route_type"],
             current_date=reference_location["planned_date"],
             current_weather=reference_weather,
@@ -390,6 +407,7 @@ class TestCalculateSafetyScore:
             accident_id=1,
             latitude=reference_location["latitude"],
             longitude=reference_location["longitude"],
+            elevation_meters=reference_location["elevation"],
             accident_date=date(2023, 7, 15),  # Summer
             route_type=reference_location["route_type"],
             severity="Minor Injury",
@@ -399,6 +417,7 @@ class TestCalculateSafetyScore:
             accident_id=2,
             latitude=reference_location["latitude"],
             longitude=reference_location["longitude"],
+            elevation_meters=reference_location["elevation"],
             accident_date=date(2023, 1, 15),  # Winter
             route_type=reference_location["route_type"],
             severity="Minor Injury",
@@ -408,6 +427,7 @@ class TestCalculateSafetyScore:
         summer_result = calculate_safety_score(
             route_lat=reference_location["latitude"],
             route_lon=reference_location["longitude"],
+            route_elevation_m=reference_location["elevation"],
             route_type=reference_location["route_type"],
             current_date=date(2024, 7, 15),  # Summer target
             current_weather=reference_weather,
@@ -417,6 +437,7 @@ class TestCalculateSafetyScore:
         winter_result = calculate_safety_score(
             route_lat=reference_location["latitude"],
             route_lon=reference_location["longitude"],
+            route_elevation_m=reference_location["elevation"],
             route_type=reference_location["route_type"],
             current_date=date(2024, 7, 15),  # Summer target
             current_weather=reference_weather,
@@ -441,6 +462,7 @@ class TestEdgeCases:
         result = calculate_safety_score(
             route_lat=reference_location["latitude"],
             route_lon=reference_location["longitude"],
+            route_elevation_m=reference_location["elevation"],
             route_type=reference_location["route_type"],
             current_date=reference_location["planned_date"],
             current_weather=None,  # No weather data
@@ -456,6 +478,7 @@ class TestEdgeCases:
             accident_id=1,
             latitude=reference_location["latitude"],
             longitude=reference_location["longitude"],
+            elevation_meters=reference_location["elevation"],
             accident_date=date(2023, 7, 15),
             route_type=reference_location["route_type"],
             severity="Minor Injury",
@@ -465,6 +488,7 @@ class TestEdgeCases:
         result = calculate_safety_score(
             route_lat=reference_location["latitude"],
             route_lon=reference_location["longitude"],
+            route_elevation_m=reference_location["elevation"],
             route_type=reference_location["route_type"],
             current_date=reference_location["planned_date"],
             current_weather=reference_weather,
@@ -479,6 +503,7 @@ class TestEdgeCases:
         result = calculate_safety_score(
             route_lat=reference_location["latitude"],
             route_lon=reference_location["longitude"],
+            route_elevation_m=reference_location["elevation"],
             route_type="default",
             current_date=reference_location["planned_date"],
             current_weather=reference_weather,
@@ -492,6 +517,7 @@ class TestEdgeCases:
         result = calculate_safety_score(
             route_lat=reference_location["latitude"],
             route_lon=reference_location["longitude"],
+            route_elevation_m=reference_location["elevation"],
             route_type=reference_location["route_type"],
             current_date=date(1900, 1, 1),  # Very old
             current_weather=reference_weather,
@@ -505,6 +531,7 @@ class TestEdgeCases:
         result = calculate_safety_score(
             route_lat=reference_location["latitude"],
             route_lon=reference_location["longitude"],
+            route_elevation_m=reference_location["elevation"],
             route_type=reference_location["route_type"],
             current_date=date(2030, 12, 31),  # Future
             current_weather=reference_weather,
