@@ -94,6 +94,44 @@ def get_safety_color_code(risk_score: float) -> str:
         return 'red'
 
 
+async def get_route_with_location_coords(db: AsyncSession, mp_route_id: int):
+    """
+    Fetch a route with coordinates inherited from its parent location.
+
+    Routes don't store coordinates directly - they inherit them from their
+    parent location in the MP hierarchy.
+
+    Args:
+        db: Database session
+        mp_route_id: Mountain Project route ID
+
+    Returns:
+        Row with route fields + location latitude/longitude, or None
+
+    Raises:
+        HTTPException: If route not found or has no coordinates
+    """
+    query = (
+        select(
+            MpRoute.mp_route_id,
+            MpRoute.name,
+            MpRoute.type,
+            MpRoute.grade,
+            MpRoute.url,
+            MpRoute.location_id,
+            MpRoute.length_ft,
+            MpRoute.pitches,
+            MpLocation.latitude,
+            MpLocation.longitude,
+            MpLocation.name.label('location_name'),
+        )
+        .join(MpLocation, MpRoute.location_id == MpLocation.mp_id)
+        .where(MpRoute.mp_route_id == mp_route_id)
+    )
+    result = await db.execute(query)
+    return result.one_or_none()
+
+
 # ============================================================================
 # BASIC CRUD ENDPOINTS
 # ============================================================================
@@ -163,30 +201,59 @@ async def get_mp_routes_for_map(
     Get all MP routes with coordinates for map display.
     Returns minimal data optimized for map markers.
 
+    Coordinates are inherited from the route's parent location.
+
     - **min_lat, max_lat, min_lon, max_lon**: Optional bounding box to filter routes
     """
-    # Build query - only routes with valid coordinates
-    query = select(MpRoute).where(
-        MpRoute.latitude.isnot(None),
-        MpRoute.longitude.isnot(None)
+    # Join routes with locations to get coordinates from parent location
+    # Routes inherit coordinates from their location_id
+    query = (
+        select(
+            MpRoute.mp_route_id,
+            MpRoute.name,
+            MpRoute.grade,
+            MpRoute.type,
+            MpRoute.location_id,
+            MpLocation.latitude,
+            MpLocation.longitude,
+        )
+        .join(MpLocation, MpRoute.location_id == MpLocation.mp_id)
+        .where(
+            MpLocation.latitude.isnot(None),
+            MpLocation.longitude.isnot(None)
+        )
     )
 
     # Apply bounding box filter if provided
     if all([min_lat, max_lat, min_lon, max_lon]):
         query = query.where(
-            MpRoute.latitude >= min_lat,
-            MpRoute.latitude <= max_lat,
-            MpRoute.longitude >= min_lon,
-            MpRoute.longitude <= max_lon
+            MpLocation.latitude >= min_lat,
+            MpLocation.latitude <= max_lat,
+            MpLocation.longitude >= min_lon,
+            MpLocation.longitude <= max_lon
         )
 
     # Execute query
     result = await db.execute(query)
-    routes = result.scalars().all()
+    rows = result.fetchall()
+
+    # Convert to response format
+    routes = [
+        MpRouteMapMarker(
+            mp_route_id=row.mp_route_id,
+            name=row.name,
+            latitude=row.latitude,
+            longitude=row.longitude,
+            grade=row.grade,
+            type=row.type,
+            location_id=row.location_id,
+        )
+        for row in rows
+    ]
 
     return MpRouteMapResponse(
         total=len(routes),
-        routes=[MpRouteMapMarker.model_validate(r) for r in routes]
+        routes=routes
     )
 
 
@@ -225,12 +292,23 @@ async def calculate_mp_route_safety(
     - Route characteristics
     - Seasonal patterns
 
+    Coordinates are inherited from the route's parent location.
     Returns a risk score from 0-100 and a color code for visualization.
     """
-    # Look up route
-    query = select(MpRoute).where(MpRoute.mp_route_id == mp_route_id)
+    # Look up route with its location to get coordinates
+    query = (
+        select(
+            MpRoute.mp_route_id,
+            MpRoute.name,
+            MpRoute.type,
+            MpLocation.latitude,
+            MpLocation.longitude,
+        )
+        .join(MpLocation, MpRoute.location_id == MpLocation.mp_id)
+        .where(MpRoute.mp_route_id == mp_route_id)
+    )
     result = await db.execute(query)
-    route = result.scalar_one_or_none()
+    route = result.one_or_none()
 
     if not route:
         raise HTTPException(status_code=404, detail="Route not found")
@@ -238,7 +316,7 @@ async def calculate_mp_route_safety(
     if not route.latitude or not route.longitude:
         raise HTTPException(
             status_code=400,
-            detail="Route has no coordinates - cannot calculate safety score"
+            detail="Route's location has no coordinates - cannot calculate safety score"
         )
 
     # Check cache first
@@ -289,19 +367,18 @@ async def get_route_forecast(
     Get 7-day safety forecast for a route starting from the specified date.
 
     Returns detailed weather and risk scores for each day.
+    Coordinates are inherited from the route's parent location.
     """
     from app.services.weather_service import fetch_current_weather_pattern
 
-    # Fetch route
-    query = select(MpRoute).where(MpRoute.mp_route_id == mp_route_id)
-    result = await db.execute(query)
-    route = result.scalar_one_or_none()
+    # Fetch route with location coordinates
+    route = await get_route_with_location_coords(db, mp_route_id)
 
     if not route:
         raise HTTPException(status_code=404, detail="Route not found")
 
     if route.latitude is None or route.longitude is None:
-        raise HTTPException(status_code=400, detail="Route missing GPS coordinates")
+        raise HTTPException(status_code=400, detail="Route's location missing GPS coordinates")
 
     # Calculate forecast for 7 days
     forecast_days = []
@@ -413,19 +490,18 @@ async def get_route_accidents(
 
     Uses geographic proximity to find nearby accidents within ~50km radius.
     Includes weather data for accident dates when available.
+    Coordinates are inherited from the route's parent location.
     """
     import requests
 
-    # Fetch route
-    route_query = select(MpRoute).where(MpRoute.mp_route_id == mp_route_id)
-    route_result = await db.execute(route_query)
-    route = route_result.scalar_one_or_none()
+    # Fetch route with location coordinates
+    route = await get_route_with_location_coords(db, mp_route_id)
 
     if not route:
         raise HTTPException(status_code=404, detail="Route not found")
 
     if not route.latitude or not route.longitude:
-        raise HTTPException(status_code=400, detail="Route missing GPS coordinates")
+        raise HTTPException(status_code=400, detail="Route's location missing GPS coordinates")
 
     # Fetch nearby accidents using geographic proximity
     # Using Haversine formula for distance calculation
@@ -561,17 +637,16 @@ async def get_risk_breakdown(
     Get detailed breakdown of risk score factors.
 
     Shows what contributed to the risk score calculation with actual algorithm data.
+    Coordinates are inherited from the route's parent location.
     """
-    # Fetch route
-    route_query = select(MpRoute).where(MpRoute.mp_route_id == mp_route_id)
-    route_result = await db.execute(route_query)
-    route = route_result.scalar_one_or_none()
+    # Fetch route with location coordinates
+    route = await get_route_with_location_coords(db, mp_route_id)
 
     if not route:
         raise HTTPException(status_code=404, detail="Route not found")
 
     if route.latitude is None or route.longitude is None:
-        raise HTTPException(status_code=400, detail="Route missing GPS coordinates")
+        raise HTTPException(status_code=400, detail="Route's location missing GPS coordinates")
 
     # Calculate safety score with full details
     normalized_type = normalize_route_type(route.type)
@@ -684,17 +759,16 @@ async def get_seasonal_patterns(
     Get seasonal accident patterns for the route's area.
 
     Shows accident frequency and average risk by month using geographic proximity.
+    Coordinates are inherited from the route's parent location.
     """
-    # Fetch route
-    route_query = select(MpRoute).where(MpRoute.mp_route_id == mp_route_id)
-    route_result = await db.execute(route_query)
-    route = route_result.scalar_one_or_none()
+    # Fetch route with location coordinates
+    route = await get_route_with_location_coords(db, mp_route_id)
 
     if not route:
         raise HTTPException(status_code=404, detail="Route not found")
 
     if not route.latitude or not route.longitude:
-        raise HTTPException(status_code=400, detail="Route missing GPS coordinates")
+        raise HTTPException(status_code=400, detail="Route's location missing GPS coordinates")
 
     # Get monthly accident counts using geographic proximity (~50km radius)
     monthly_query = text("""
@@ -777,19 +851,18 @@ async def get_time_of_day_analysis(
     Get hourly weather and risk score analysis for a specific day.
 
     Helps climbers identify the optimal time window for their ascent.
+    Coordinates are inherited from the route's parent location.
     """
     import requests
 
-    # Fetch route
-    route_query = select(MpRoute).where(MpRoute.mp_route_id == mp_route_id)
-    route_result = await db.execute(route_query)
-    route = route_result.scalar_one_or_none()
+    # Fetch route with location coordinates
+    route = await get_route_with_location_coords(db, mp_route_id)
 
     if not route:
         raise HTTPException(status_code=404, detail="Route not found")
 
     if route.latitude is None or route.longitude is None:
-        raise HTTPException(status_code=400, detail="Route missing GPS coordinates")
+        raise HTTPException(status_code=400, detail="Route's location missing GPS coordinates")
 
     # Fetch hourly weather data from Open-Meteo
     try:
@@ -1075,11 +1148,10 @@ async def get_ascent_analytics(
 
     Note: Since mp_routes don't have direct ascent links yet, this uses geographic
     proximity to find relevant ascent data from nearby routes.
+    Coordinates are inherited from the route's parent location.
     """
-    # Fetch route
-    route_query = select(MpRoute).where(MpRoute.mp_route_id == mp_route_id)
-    route_result = await db.execute(route_query)
-    route = route_result.scalar_one_or_none()
+    # Fetch route with location coordinates
+    route = await get_route_with_location_coords(db, mp_route_id)
 
     if not route:
         raise HTTPException(status_code=404, detail="Route not found")
