@@ -319,10 +319,10 @@ async def calculate_mp_route_safety(
             detail="Route's location has no coordinates - cannot calculate safety score"
         )
 
-    # Check cache first
+    # Check cache first (cache_get is sync, not async)
     date_str = target_date.isoformat()
     cache_key = build_safety_score_key(mp_route_id, date_str)
-    cached_result = await cache_get(cache_key)
+    cached_result = cache_get(cache_key)
     if cached_result:
         return MpRouteSafetyResponse(**cached_result)
 
@@ -347,8 +347,8 @@ async def calculate_mp_route_safety(
         color_code=get_safety_color_code(prediction_response.risk_score),
     )
 
-    # Cache the result (1 hour TTL)
-    await cache_set(cache_key, response.model_dump(), ttl=3600)
+    # Cache the result (1 hour TTL) - cache_set is sync, not async
+    cache_set(cache_key, response.model_dump(), ttl_seconds=3600)
 
     return response
 
