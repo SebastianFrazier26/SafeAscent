@@ -245,26 +245,9 @@ async def _compute_single_route_safety(
             # Determine color code
             color_code = get_safety_color_code(prediction.risk_score)
 
-            # Derive confidence from number of contributing accidents
-            # More accidents = higher confidence in the prediction
-            num_accidents = prediction.num_contributing_accidents
-            if num_accidents >= 100:
-                confidence = 0.95
-            elif num_accidents >= 50:
-                confidence = 0.80
-            elif num_accidents >= 20:
-                confidence = 0.65
-            elif num_accidents >= 10:
-                confidence = 0.50
-            elif num_accidents >= 5:
-                confidence = 0.35
-            else:
-                confidence = 0.20
-
             return (mp_route_id, {
                 "risk_score": round(prediction.risk_score, 1),
                 "color_code": color_code,
-                "confidence": round(confidence, 2),
             })
 
     except Exception as e:
@@ -381,7 +364,6 @@ async def _ensure_historical_predictions_table(db):
                     route_id INTEGER NOT NULL,
                     prediction_date DATE NOT NULL,
                     risk_score FLOAT NOT NULL,
-                    confidence FLOAT NOT NULL,
                     color_code VARCHAR(10) NOT NULL,
                     calculated_at TIMESTAMP DEFAULT NOW(),
                     UNIQUE(route_id, prediction_date)
@@ -425,11 +407,10 @@ async def _save_batch_to_historical_predictions(
     values_list = []
     params = {}
     for i, (route_id, score) in enumerate(batch_scores.items()):
-        values_list.append(f"(:route_id_{i}, :date_{i}, :risk_{i}, :conf_{i}, :color_{i})")
+        values_list.append(f"(:route_id_{i}, :date_{i}, :risk_{i}, :color_{i})")
         params[f"route_id_{i}"] = route_id
         params[f"date_{i}"] = target_date
         params[f"risk_{i}"] = score["risk_score"]
-        params[f"conf_{i}"] = score["confidence"]
         params[f"color_{i}"] = score["color_code"]
 
     values_sql = ", ".join(values_list)
@@ -437,12 +418,11 @@ async def _save_batch_to_historical_predictions(
     try:
         await db.execute(text(f"""
             INSERT INTO historical_predictions
-                (route_id, prediction_date, risk_score, confidence, color_code)
+                (route_id, prediction_date, risk_score, color_code)
             VALUES {values_sql}
             ON CONFLICT (route_id, prediction_date)
             DO UPDATE SET
                 risk_score = EXCLUDED.risk_score,
-                confidence = EXCLUDED.confidence,
                 color_code = EXCLUDED.color_code,
                 calculated_at = NOW()
         """), params)
