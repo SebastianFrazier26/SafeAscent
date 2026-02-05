@@ -1694,7 +1694,7 @@ async def redis_debug():
         for key in ["celery", "celery:default", "default"]:
             try:
                 queue_lengths[key] = r.llen(key)
-            except:
+            except Exception:
                 queue_lengths[key] = "N/A"
 
         return {
