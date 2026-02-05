@@ -33,8 +33,14 @@ from app.utils.cache import (
     set_bulk_cached_safety_scores,
     get_safety_cache_stats,
 )
+from app.services.weather_service import fetch_current_weather_pattern
+from app.services.weather_similarity import WeatherPattern
 
 logger = logging.getLogger(__name__)
+
+# Module-level weather cache for batch processing
+# Populated once per date, keyed by location bucket
+_prefetched_weather: Dict[str, Optional[WeatherPattern]] = {}
 
 # ============================================================================
 # PERFORMANCE TUNING CONSTANTS
@@ -43,6 +49,61 @@ BATCH_SIZE = 200          # Routes per batch (increased from 100)
 CONCURRENCY_LIMIT = 20    # Max concurrent safety calculations per batch
 LOG_INTERVAL = 1000       # Log progress every N routes
 LOCATION_BUCKET_PRECISION = 2  # Decimal places for location bucketing (0.01° ≈ 1km)
+WEATHER_PREFETCH_BATCH_SIZE = 50  # Fetch weather for N locations at a time
+WEATHER_PREFETCH_TIMEOUT = 3  # Shorter timeout for batch pre-fetching
+
+
+async def _prefetch_weather_for_locations(
+    location_buckets: Dict[str, List],
+    target_date: date,
+) -> Dict[str, Optional[WeatherPattern]]:
+    """
+    Pre-fetch weather patterns for all unique location buckets.
+
+    Instead of fetching weather per-route (168K API calls), we fetch
+    per-location-bucket (much fewer). Routes in the same bucket share weather.
+
+    Args:
+        location_buckets: Dict mapping bucket keys to lists of routes
+        target_date: Date to fetch weather for
+
+    Returns:
+        Dict mapping bucket_key to WeatherPattern (or None if fetch failed)
+    """
+    weather_map: Dict[str, Optional[WeatherPattern]] = {}
+    bucket_keys = list(location_buckets.keys())
+    total_buckets = len(bucket_keys)
+
+    logger.info(f"Pre-fetching weather for {total_buckets:,} unique location buckets")
+    start_time = time.time()
+
+    # Process in batches to avoid overwhelming the API
+    for batch_start in range(0, total_buckets, WEATHER_PREFETCH_BATCH_SIZE):
+        batch_keys = bucket_keys[batch_start:batch_start + WEATHER_PREFETCH_BATCH_SIZE]
+
+        # Fetch weather for each bucket in this batch (sequentially to be gentle on API)
+        for bucket_key in batch_keys:
+            # Parse lat/lon from bucket key (format: "40.01:-105.27")
+            lat_str, lon_str = bucket_key.split(":")
+            lat = float(lat_str)
+            lon = float(lon_str)
+
+            # Fetch weather (this uses the built-in Redis cache)
+            weather = fetch_current_weather_pattern(lat, lon, target_date)
+            weather_map[bucket_key] = weather
+
+        # Log progress every few batches
+        processed = min(batch_start + WEATHER_PREFETCH_BATCH_SIZE, total_buckets)
+        if processed % 500 == 0 or processed == total_buckets:
+            elapsed = time.time() - start_time
+            logger.info(f"  Weather pre-fetch: {processed:,}/{total_buckets:,} locations ({elapsed:.1f}s)")
+
+    # Count successes
+    successful = sum(1 for w in weather_map.values() if w is not None)
+    elapsed = time.time() - start_time
+    logger.info(f"Weather pre-fetch complete: {successful:,}/{total_buckets:,} successful in {elapsed:.1f}s")
+
+    return weather_map
 
 
 @celery_app.task(
@@ -178,9 +239,14 @@ async def _compute_all_safety_scores_async() -> dict:
             is_today = (target_date == today)
             logger.info(f"Processing date: {date_str}{' (saving to historical)' if is_today else ''}")
 
+            # Pre-fetch weather for all unique location buckets (once per date)
+            # This reduces 168K API calls to ~X calls (one per unique bucket)
+            weather_map = await _prefetch_weather_for_locations(location_buckets, target_date)
+
             date_stats = await _compute_safety_for_date_parallel(
                 db, routes, target_date, total_routes,
                 save_to_historical=is_today,  # Only save today's predictions for trends
+                weather_map=weather_map,  # Pass pre-fetched weather
             )
 
             stats["successful"] += date_stats["successful"]
@@ -208,6 +274,7 @@ async def _compute_all_safety_scores_async() -> dict:
 async def _compute_single_route_safety(
     route: Tuple,
     target_date: date,
+    prefetched_weather: Optional[WeatherPattern] = None,
 ) -> Tuple[int, Optional[Dict]]:
     """
     Compute safety score for a single route.
@@ -216,6 +283,11 @@ async def _compute_single_route_safety(
     asyncpg "another operation is in progress" errors when running
     concurrent coroutines. asyncpg connections can only handle one
     query at a time, so shared sessions don't work with asyncio.gather.
+
+    Args:
+        route: Tuple of (mp_route_id, name, type, latitude, longitude)
+        target_date: Date to compute safety for
+        prefetched_weather: Pre-fetched weather pattern for this location bucket
 
     Returns:
         Tuple of (route_id, score_dict or None if failed)
@@ -240,7 +312,10 @@ async def _compute_single_route_safety(
         # cannot share a session across concurrent coroutines
         async with AsyncSessionLocal() as route_db:
             # Calculate safety score with dedicated session
-            prediction = await predict_route_safety(prediction_request, route_db)
+            # Pass pre-fetched weather to avoid API calls during batch processing
+            prediction = await predict_route_safety(
+                prediction_request, route_db, prefetched_weather=prefetched_weather
+            )
 
             # Determine color code
             color_code = get_safety_color_code(prediction.risk_score)
@@ -261,6 +336,7 @@ async def _compute_safety_for_date_parallel(
     target_date: date,
     total_routes: int,
     save_to_historical: bool = False,
+    weather_map: Optional[Dict[str, Optional[WeatherPattern]]] = None,
 ) -> Dict:
     """
     Compute safety scores for all routes for a single date using PARALLEL processing.
@@ -273,6 +349,7 @@ async def _compute_safety_for_date_parallel(
         routes: List of route tuples (mp_route_id, name, type, latitude, longitude)
         target_date: The date to compute scores for
         total_routes: Total route count for progress logging
+        weather_map: Pre-fetched weather by location bucket (reduces API calls)
 
     Returns:
         Dict with successful/failed counts
@@ -286,9 +363,15 @@ async def _compute_safety_for_date_parallel(
 
     async def compute_with_semaphore(route):
         async with semaphore:
+            # Look up pre-fetched weather for this route's location bucket
+            prefetched_weather = None
+            if weather_map:
+                bucket_key = _get_location_bucket(route.latitude, route.longitude)
+                prefetched_weather = weather_map.get(bucket_key)
+
             # NOTE: Each coroutine creates its own db session inside
             # _compute_single_route_safety to avoid asyncpg conflicts
-            return await _compute_single_route_safety(route, target_date)
+            return await _compute_single_route_safety(route, target_date, prefetched_weather)
 
     # Process in batches
     logger.info(f"Starting batch processing: {len(routes)} routes in batches of {BATCH_SIZE}")
