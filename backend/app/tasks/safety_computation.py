@@ -66,6 +66,7 @@ def compute_daily_safety_scores(self):
     logger.info("=" * 60)
     logger.info("STARTING NIGHTLY SAFETY SCORE PRE-COMPUTATION")
     logger.info(f"Settings: BATCH_SIZE={BATCH_SIZE}, CONCURRENCY={CONCURRENCY_LIMIT}")
+    logger.info("FIX APPLIED: Each route uses its own DB session (v2)")
     logger.info("=" * 60)
 
     try:
@@ -207,10 +208,14 @@ async def _compute_all_safety_scores_async() -> dict:
 async def _compute_single_route_safety(
     route: Tuple,
     target_date: date,
-    db,
 ) -> Tuple[int, Optional[Dict]]:
     """
     Compute safety score for a single route.
+
+    IMPORTANT: Each call creates its own database session to avoid
+    asyncpg "another operation is in progress" errors when running
+    concurrent coroutines. asyncpg connections can only handle one
+    query at a time, so shared sessions don't work with asyncio.gather.
 
     Returns:
         Tuple of (route_id, score_dict or None if failed)
@@ -230,17 +235,21 @@ async def _compute_single_route_safety(
             elevation_meters=None,  # Auto-detect from location
         )
 
-        # Calculate safety score
-        prediction = await predict_route_safety(prediction_request, db)
+        # CRITICAL: Create a NEW session for each concurrent route calculation
+        # asyncpg only allows one operation per connection at a time, so we
+        # cannot share a session across concurrent coroutines
+        async with AsyncSessionLocal() as route_db:
+            # Calculate safety score with dedicated session
+            prediction = await predict_route_safety(prediction_request, route_db)
 
-        # Determine color code
-        color_code = get_safety_color_code(prediction.risk_score)
+            # Determine color code
+            color_code = get_safety_color_code(prediction.risk_score)
 
-        return (mp_route_id, {
-            "risk_score": round(prediction.risk_score, 1),
-            "color_code": color_code,
-            "confidence": round(prediction.confidence, 2),
-        })
+            return (mp_route_id, {
+                "risk_score": round(prediction.risk_score, 1),
+                "color_code": color_code,
+                "confidence": round(prediction.confidence, 2),
+            })
 
     except Exception as e:
         logger.warning(f"Failed to compute safety for route {mp_route_id}: {e}")
@@ -278,7 +287,9 @@ async def _compute_safety_for_date_parallel(
 
     async def compute_with_semaphore(route):
         async with semaphore:
-            return await _compute_single_route_safety(route, target_date, db)
+            # NOTE: Each coroutine creates its own db session inside
+            # _compute_single_route_safety to avoid asyncpg conflicts
+            return await _compute_single_route_safety(route, target_date)
 
     # Process in batches
     logger.info(f"Starting batch processing: {len(routes)} routes in batches of {BATCH_SIZE}")
