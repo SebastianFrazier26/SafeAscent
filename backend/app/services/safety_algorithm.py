@@ -38,6 +38,7 @@ from app.services.weather_similarity import (
     WeatherPattern,
 )
 from app.services.severity_weighting import calculate_severity_weight
+from app.services.grade_weighting import calculate_grade_weight
 from app.services.algorithm_config import (
     RISK_NORMALIZATION_FACTOR,
     MAX_RISK_SCORE,
@@ -59,6 +60,7 @@ class AccidentData:
         route_type: Type of climbing route (alpine, sport, etc.)
         severity: Severity level (fatal, serious, minor, unknown)
         weather_pattern: 7-day weather pattern (or None if missing)
+        grade: Climbing grade of accident route (e.g., "5.10a", None if unknown)
     """
 
     accident_id: int
@@ -69,6 +71,7 @@ class AccidentData:
     route_type: str
     severity: str
     weather_pattern: Optional[WeatherPattern] = None
+    grade: Optional[str] = None
 
 
 @dataclass
@@ -98,6 +101,7 @@ def calculate_safety_score(
     current_weather: WeatherPattern,
     accidents: List[AccidentData],
     historical_weather_stats: Optional[Dict[str, Tuple[float, float]]] = None,
+    route_grade: Optional[str] = None,
 ) -> SafetyPrediction:
     """
     Calculate safety prediction for a planned climbing route.
@@ -113,6 +117,7 @@ def calculate_safety_score(
         current_weather: Current 7-day weather pattern
         accidents: List of relevant accidents from database
         historical_weather_stats: Location/season weather statistics for extreme detection
+        route_grade: Grade of planned route (e.g., "5.10a", None = neutral weight)
 
     Returns:
         SafetyPrediction object with risk score and detailed breakdown
@@ -157,6 +162,7 @@ def calculate_safety_score(
             current_weather=current_weather,
             accident=accident,
             historical_weather_stats=historical_weather_stats,
+            route_grade=route_grade,
         )
 
         accident_influences.append(influence)
@@ -197,6 +203,7 @@ def calculate_accident_influence(
     current_weather: WeatherPattern,
     accident: AccidentData,
     historical_weather_stats: Optional[Dict[str, Tuple[float, float]]] = None,
+    route_grade: Optional[str] = None,
 ) -> Dict:
     """
     Calculate total influence of a single accident on risk score.
@@ -277,6 +284,12 @@ def calculate_accident_influence(
         route_type=route_type,
     )
 
+    # 7. Grade weight (similar grades more relevant)
+    grade_weight = calculate_grade_weight(
+        route_grade=route_grade,
+        accident_grade=accident.grade,
+    )
+
     # Calculate total influence with quadratic weather weighting
     # NEW ALGORITHM (2026-01-30): Weather becomes primary risk driver via power weighting
     # - Calculate base influence from non-weather factors
@@ -289,6 +302,7 @@ def calculate_accident_influence(
         * elevation_weight
         * route_type_weight
         * severity_weight
+        * grade_weight
     )
 
     # Apply quadratic weather weighting for exponential weather sensitivity
@@ -321,6 +335,7 @@ def calculate_accident_influence(
         "weather_weight": weather_weight,
         "route_type_weight": route_type_weight,
         "severity_weight": severity_weight,
+        "grade_weight": grade_weight,
         "distance_km": distance_km,
         "days_ago": days_ago,
         "bearing": bearing,
@@ -393,6 +408,7 @@ def get_top_contributing_accidents(
                 "weather_weight": round(acc["weather_weight"], 3),
                 "route_type_weight": round(acc["route_type_weight"], 3),
                 "severity_weight": round(acc["severity_weight"], 3),
+                "grade_weight": round(acc["grade_weight"], 3),
             }
         )
 

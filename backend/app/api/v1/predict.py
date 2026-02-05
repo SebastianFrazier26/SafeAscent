@@ -55,6 +55,7 @@ async def predict_route_safety(
     request: PredictionRequest,
     db: AsyncSession,
     prefetched_weather: Optional[WeatherPattern] = None,
+    route_grade: Optional[str] = None,
 ):
     """
     Calculate safety prediction for a planned climbing route.
@@ -193,6 +194,11 @@ async def predict_route_safety(
             tags=accident.tags,
         )
 
+        # Get accident grade from linked mp_route (if available)
+        # NOTE: mp_route_id and grade will be populated after running
+        # scripts/link_accidents_to_mp_routes.py migration
+        accident_grade = getattr(accident, 'route_grade', None)
+
         accident_data = AccidentData(
             accident_id=accident.accident_id,
             latitude=accident.latitude,
@@ -202,6 +208,7 @@ async def predict_route_safety(
             route_type=inferred_route_type,
             severity=accident.injury_severity or "unknown",
             weather_pattern=weather_pattern,
+            grade=accident_grade,  # Will be None until routes are linked
         )
         accident_data_list.append(accident_data)
 
@@ -241,6 +248,9 @@ async def predict_route_safety(
     # Feature flag: Use vectorized algorithm if enabled (default: True)
     use_vectorized = os.getenv("USE_VECTORIZED_ALGORITHM", "true").lower() == "true"
 
+    # Use route_grade from function parameter (batch processing) or request
+    effective_grade = route_grade if route_grade is not None else getattr(request, 'route_grade', None)
+
     if use_vectorized:
         logger.debug(f"Using VECTORIZED algorithm for {len(accident_data_list)} accidents")
         prediction = calculate_safety_score_vectorized(
@@ -252,6 +262,7 @@ async def predict_route_safety(
             current_weather=current_weather,  # Real weather from API!
             accidents=accident_data_list,
             historical_weather_stats=historical_weather_stats,  # For extreme detection
+            route_grade=effective_grade,  # Grade similarity matching
         )
     else:
         logger.debug(f"Using LOOP-BASED algorithm for {len(accident_data_list)} accidents")
@@ -264,9 +275,10 @@ async def predict_route_safety(
             current_weather=current_weather,  # Real weather from API!
             accidents=accident_data_list,
             historical_weather_stats=historical_weather_stats,  # For extreme detection
+            route_grade=effective_grade,  # Grade similarity matching
         )
 
-    # Step 6: Convert to API response format
+    # Step 7: Convert to API response format
     # Convert top contributing accidents
     contributing_accidents = [
         ContributingAccident(
@@ -280,6 +292,7 @@ async def predict_route_safety(
             weather_weight=acc["weather_weight"],
             route_type_weight=acc["route_type_weight"],
             severity_weight=acc["severity_weight"],
+            grade_weight=acc.get("grade_weight", 1.0),  # Default 1.0 for backward compatibility
         )
         for acc in prediction.top_contributing_accidents
     ]

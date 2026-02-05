@@ -60,6 +60,11 @@ class PredictionRequest(BaseModel):
         description="Maximum search radius for accidents in kilometers (default: route-type-specific)",
         example=150.0,
     )
+    route_grade: Optional[str] = Field(
+        default=None,
+        description="Climbing grade of route (e.g., '5.10a', 'V5', 'WI4') for grade similarity matching",
+        example="5.10a",
+    )
 
     @validator("route_type")
     def validate_route_type(cls, v):
@@ -102,6 +107,9 @@ class ContributingAccident(BaseModel):
     weather_weight: float = Field(..., description="Weather similarity weight (0-2+)")
     route_type_weight: float = Field(..., description="Route type similarity (0-1)")
     severity_weight: float = Field(..., description="Severity boost (1.0-1.3)")
+    grade_weight: float = Field(
+        default=1.0, description="Grade similarity weight (0.25-1.0)"
+    )
 
     class Config:
         json_schema_extra = {
