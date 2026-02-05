@@ -31,7 +31,10 @@ from app.services.algorithm_config import (
     DEFAULT_SEVERITY_WEIGHT,
     SEASONS,
     EARTH_RADIUS_KM,
+    GRADE_HALF_WEIGHT_DIFF,
+    GRADE_MIN_WEIGHT,
 )
+from app.services.grade_weighting import parse_grade
 
 
 def haversine_distance_vectorized(
@@ -235,6 +238,46 @@ def calculate_severity_weights_vectorized(
     return weights
 
 
+def calculate_grade_weights_vectorized(
+    route_grade: Optional[str],
+    accident_grades: List[Optional[str]],
+) -> np.ndarray:
+    """
+    Vectorized grade weight calculation.
+
+    Args:
+        route_grade: Route grade (e.g., "5.10a", None = all 1.0)
+        accident_grades: List of accident grades (may contain None)
+
+    Returns:
+        Array of grade weights
+    """
+    # If route grade is unknown, use neutral weight for all
+    route_difficulty = parse_grade(route_grade)
+    if route_difficulty is None:
+        return np.ones(len(accident_grades))
+
+    # Parse accident grades
+    accident_difficulties = np.array([
+        parse_grade(g) if g else np.nan for g in accident_grades
+    ])
+
+    # Calculate grade differences
+    grade_diffs = np.abs(accident_difficulties - route_difficulty)
+
+    # Gaussian decay
+    sigma = GRADE_HALF_WEIGHT_DIFF / 1.18
+
+    # Handle NaN (unknown grades get weight 1.0)
+    weights = np.where(
+        np.isnan(accident_difficulties),
+        1.0,
+        np.maximum(GRADE_MIN_WEIGHT, np.exp(-(grade_diffs ** 2) / (2 * sigma ** 2)))
+    )
+
+    return weights
+
+
 def calculate_safety_score_vectorized(
     route_lat: float,
     route_lon: float,
@@ -244,6 +287,7 @@ def calculate_safety_score_vectorized(
     current_weather: WeatherPattern,
     accidents: List[AccidentData],
     historical_weather_stats: Optional[Dict[str, Tuple[float, float]]] = None,
+    route_grade: Optional[str] = None,
 ) -> SafetyPrediction:
     """
     Vectorized safety score calculation - 3-5× faster than loop-based version.
@@ -275,6 +319,7 @@ def calculate_safety_score_vectorized(
     accident_dates = [acc.accident_date for acc in accidents]  # date objects
     accident_route_types = [acc.route_type for acc in accidents]
     accident_severities = [acc.severity for acc in accidents]
+    accident_grades = [acc.grade for acc in accidents]  # May contain None
 
     # Calculate all weights vectorized
     spatial_weights, distances = calculate_spatial_weights_vectorized(
@@ -295,6 +340,8 @@ def calculate_safety_score_vectorized(
 
     severity_weights = calculate_severity_weights_vectorized(accident_severities)
 
+    grade_weights = calculate_grade_weights_vectorized(route_grade, accident_grades)
+
     # Calculate base influence (non-weather factors)
     base_influences = (
         spatial_weights
@@ -302,6 +349,7 @@ def calculate_safety_score_vectorized(
         * elevation_weights
         * route_type_weights
         * severity_weights
+        * grade_weights
     )
 
     # Weather weighting (simplified - no weather similarity for now in vectorized version)
@@ -330,6 +378,7 @@ def calculate_safety_score_vectorized(
             "weather_weight": float(weather_weights[i]),
             "route_type_weight": float(route_type_weights[i]),
             "severity_weight": float(severity_weights[i]),
+            "grade_weight": float(grade_weights[i]),
             "distance_km": float(distances[i]),
             "days_ago": int(days_elapsed[i]),
         })
@@ -353,6 +402,7 @@ def calculate_safety_score_vectorized(
             "weather_weight": round(acc["weather_weight"], 3),
             "route_type_weight": round(acc["route_type_weight"], 3),
             "severity_weight": round(acc["severity_weight"], 3),
+            "grade_weight": round(acc["grade_weight"], 3),
         })
 
     return SafetyPrediction(

@@ -241,6 +241,7 @@ async def _compute_all_safety_scores_async() -> dict:
                 MpRoute.mp_route_id,
                 MpRoute.name,
                 MpRoute.type,
+                MpRoute.grade,
                 MpLocation.latitude,
                 MpLocation.longitude,
             )
@@ -341,14 +342,14 @@ async def _compute_single_route_safety(
     query at a time, so shared sessions don't work with asyncio.gather.
 
     Args:
-        route: Tuple of (mp_route_id, name, type, latitude, longitude)
+        route: Tuple of (mp_route_id, name, type, grade, latitude, longitude)
         target_date: Date to compute safety for
         prefetched_weather: Pre-fetched weather pattern for this location bucket
 
     Returns:
         Tuple of (route_id, score_dict or None if failed)
     """
-    mp_route_id, name, route_type, latitude, longitude = route
+    mp_route_id, name, route_type, route_grade, latitude, longitude = route
 
     try:
         # Normalize route type
@@ -369,8 +370,11 @@ async def _compute_single_route_safety(
         async with AsyncSessionLocal() as route_db:
             # Calculate safety score with dedicated session
             # Pass pre-fetched weather to avoid API calls during batch processing
+            # Pass route_grade for grade similarity matching
             prediction = await predict_route_safety(
-                prediction_request, route_db, prefetched_weather=prefetched_weather
+                prediction_request, route_db,
+                prefetched_weather=prefetched_weather,
+                route_grade=route_grade,
             )
 
             # Determine color code
@@ -618,6 +622,7 @@ async def _compute_single_date_async(date_str: str) -> dict:
                 MpRoute.mp_route_id,
                 MpRoute.name,
                 MpRoute.type,
+                MpRoute.grade,
                 MpLocation.latitude,
                 MpLocation.longitude,
             )

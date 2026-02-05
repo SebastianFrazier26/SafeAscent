@@ -192,6 +192,20 @@ ELEVATION_DECAY_CONSTANT = {
 
 
 # =============================================================================
+# GRADE WEIGHTING PARAMETERS
+# =============================================================================
+
+# Grade difference that results in 50% weight (in normalized difficulty units)
+# ~3 YDS grades apart = half weight (e.g., 5.10a vs 5.13a)
+# Larger value = more forgiving grade matching
+GRADE_HALF_WEIGHT_DIFF = 3.0
+
+# Minimum grade weight (floor)
+# Ensures accidents are never fully excluded based on grade alone
+GRADE_MIN_WEIGHT = 0.25
+
+
+# =============================================================================
 # SEVERITY WEIGHTING PARAMETERS
 # =============================================================================
 
