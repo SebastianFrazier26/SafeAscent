@@ -1578,3 +1578,42 @@ async def trigger_cache_population(
             status_code=500,
             detail=f"Failed to trigger cache population: {str(e)}"
         )
+
+
+@router.get("/mp-routes/admin/task-status/{task_id}")
+async def get_task_status(task_id: str):
+    """
+    Check the status of a Celery background task.
+
+    **Returns:**
+    - `pending`: Task is waiting to be picked up by a worker
+    - `started`: Task is currently running
+    - `success`: Task completed successfully (includes result)
+    - `failure`: Task failed (includes error message)
+    - `revoked`: Task was cancelled
+    """
+    from app.celery_app import celery_app
+
+    try:
+        result = celery_app.AsyncResult(task_id)
+
+        response = {
+            "task_id": task_id,
+            "status": result.status.lower(),
+            "ready": result.ready(),
+        }
+
+        if result.ready():
+            if result.successful():
+                response["result"] = result.result
+            else:
+                response["error"] = str(result.result)
+
+        return response
+
+    except Exception as e:
+        logger.error(f"Failed to get task status: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get task status: {str(e)}"
+        )
