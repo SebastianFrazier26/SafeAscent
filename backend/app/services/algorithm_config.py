@@ -29,6 +29,17 @@ SPATIAL_BANDWIDTH = {
 # No hard cutoff, but we stop searching beyond this distance for performance
 MAX_SEARCH_RADIUS_KM = 300.0
 
+# Spatial decay function: "gaussian" (original) or "linear_floor"
+SPATIAL_DECAY_FUNCTION = "gaussian"
+
+# Weather-primary model relies on weather² weighting to naturally penalize
+# poor weather matches (0.5 similarity → 0.25 factor, 0.3 → 0.09 factor).
+# No hard gate needed - the quadratic penalty is sufficient.
+# Spatial decay uses pure Gaussian - distant accidents contribute less,
+# but can still contribute if weather is excellent (which is rare).
+WEATHER_GATE_THRESHOLD = 0.0   # Disabled - rely on weather² weighting instead
+SPATIAL_DECAY_FLOOR = 0.0      # Disabled - pure Gaussian decay
+
 
 # =============================================================================
 # TEMPORAL WEIGHTING PARAMETERS
