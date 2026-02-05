@@ -413,6 +413,9 @@ async def _compute_safety_for_date_parallel(
             if weather_map:
                 bucket_key = _get_location_bucket(route.latitude, route.longitude)
                 prefetched_weather = weather_map.get(bucket_key)
+                # Debug: Log if we're missing pre-fetched weather (indicates fallback will happen)
+                if prefetched_weather is None and batch_start == 0:
+                    logger.warning(f"No pre-fetched weather for bucket {bucket_key} - will fallback to API call")
 
             # NOTE: Each coroutine creates its own db session inside
             # _compute_single_route_safety to avoid asyncpg conflicts
