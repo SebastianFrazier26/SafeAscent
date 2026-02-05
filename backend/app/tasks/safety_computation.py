@@ -69,7 +69,15 @@ def compute_daily_safety_scores(self):
     logger.info("=" * 60)
 
     try:
-        result = asyncio.run(_compute_all_safety_scores_async())
+        # Create a fresh event loop for each task execution
+        # (Celery fork pool reuses workers, so asyncio.run() can leave loops closed)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            result = loop.run_until_complete(_compute_all_safety_scores_async())
+        finally:
+            loop.close()
+
         logger.info("=" * 60)
         logger.info(f"NIGHTLY COMPUTATION COMPLETE: {result}")
         logger.info("=" * 60)
@@ -318,27 +326,45 @@ async def _compute_safety_for_date_parallel(
 
 async def _ensure_historical_predictions_table(db):
     """Create historical_predictions table if it doesn't exist."""
-    await db.execute(text("""
-        CREATE TABLE IF NOT EXISTS historical_predictions (
-            id SERIAL PRIMARY KEY,
-            route_id INTEGER NOT NULL,
-            prediction_date DATE NOT NULL,
-            risk_score FLOAT NOT NULL,
-            confidence FLOAT NOT NULL,
-            color_code VARCHAR(10) NOT NULL,
-            calculated_at TIMESTAMP DEFAULT NOW(),
-            UNIQUE(route_id, prediction_date)
-        )
-    """))
-    await db.execute(text("""
-        CREATE INDEX IF NOT EXISTS idx_historical_predictions_route
-            ON historical_predictions(route_id)
-    """))
-    await db.execute(text("""
-        CREATE INDEX IF NOT EXISTS idx_historical_predictions_date
-            ON historical_predictions(prediction_date)
-    """))
-    await db.commit()
+    try:
+        # Check if table already exists first
+        result = await db.execute(text("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_name = 'historical_predictions'
+            )
+        """))
+        exists = result.scalar()
+
+        if not exists:
+            await db.execute(text("""
+                CREATE TABLE historical_predictions (
+                    id SERIAL PRIMARY KEY,
+                    route_id INTEGER NOT NULL,
+                    prediction_date DATE NOT NULL,
+                    risk_score FLOAT NOT NULL,
+                    confidence FLOAT NOT NULL,
+                    color_code VARCHAR(10) NOT NULL,
+                    calculated_at TIMESTAMP DEFAULT NOW(),
+                    UNIQUE(route_id, prediction_date)
+                )
+            """))
+            await db.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_historical_predictions_route
+                    ON historical_predictions(route_id)
+            """))
+            await db.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_historical_predictions_date
+                    ON historical_predictions(prediction_date)
+            """))
+            await db.commit()
+            logger.info("Created historical_predictions table")
+        else:
+            logger.info("historical_predictions table already exists")
+    except Exception as e:
+        # Table might already exist from concurrent creation attempts
+        logger.warning(f"Table creation skipped (may already exist): {e}")
+        await db.rollback()
 
 
 async def _save_batch_to_historical_predictions(
@@ -404,7 +430,14 @@ def compute_safety_for_single_date(date_str: str):
     logger.info(f"Settings: BATCH_SIZE={BATCH_SIZE}, CONCURRENCY={CONCURRENCY_LIMIT}")
 
     try:
-        result = asyncio.run(_compute_single_date_async(date_str))
+        # Create a fresh event loop for each task execution
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            result = loop.run_until_complete(_compute_single_date_async(date_str))
+        finally:
+            loop.close()
+
         logger.info(f"Single date computation complete: {result}")
         return result
     except Exception as e:
