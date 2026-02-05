@@ -109,12 +109,13 @@ class TestFetchCurrentWeatherPattern:
 
 
 class TestFetchWeatherStatistics:
-    """Tests for fetch_weather_statistics()"""
+    """Tests for fetch_weather_statistics() - now an async function"""
 
-    def test_fetch_weather_statistics_found(self):
+    @pytest.mark.asyncio
+    async def test_fetch_weather_statistics_found(self):
         """Test fetching statistics for a known bucket"""
         # Use location with known weather data (Estes Park area)
-        stats = fetch_weather_statistics(
+        stats = await fetch_weather_statistics(
             latitude=40.3,  # Rounded to bucket
             longitude=-105.7,
             elevation_meters=2500.0,  # 2438-3048m band
@@ -142,10 +143,11 @@ class TestFetchWeatherStatistics:
             # (depends on data availability)
             pass
 
-    def test_fetch_weather_statistics_not_found(self):
+    @pytest.mark.asyncio
+    async def test_fetch_weather_statistics_not_found(self):
         """Test fetching statistics for a bucket with no data"""
         # Use unlikely location (middle of ocean)
-        stats = fetch_weather_statistics(
+        stats = await fetch_weather_statistics(
             latitude=0.0,
             longitude=0.0,
             elevation_meters=0.0,
@@ -155,7 +157,8 @@ class TestFetchWeatherStatistics:
         # Should return None for missing bucket
         assert stats is None
 
-    def test_fetch_weather_statistics_elevation_bands(self):
+    @pytest.mark.asyncio
+    async def test_fetch_weather_statistics_elevation_bands(self):
         """Test that different elevation bands are handled correctly"""
         test_elevations = [
             (1000.0, 0, 2438),      # Low elevation
@@ -167,7 +170,7 @@ class TestFetchWeatherStatistics:
 
         for elevation, expected_min, expected_max in test_elevations:
             # Just verify the function doesn't crash
-            stats = fetch_weather_statistics(
+            stats = await fetch_weather_statistics(
                 latitude=40.3,
                 longitude=-105.7,
                 elevation_meters=elevation,
@@ -176,9 +179,10 @@ class TestFetchWeatherStatistics:
             # Stats may or may not exist, that's okay
             assert stats is None or isinstance(stats, dict)
 
-    def test_fetch_weather_statistics_invalid_elevation(self):
+    @pytest.mark.asyncio
+    async def test_fetch_weather_statistics_invalid_elevation(self):
         """Test with elevation outside known bands"""
-        stats = fetch_weather_statistics(
+        stats = await fetch_weather_statistics(
             latitude=40.3,
             longitude=-105.7,
             elevation_meters=15000.0,  # Above highest band
@@ -188,7 +192,8 @@ class TestFetchWeatherStatistics:
         # Should return None for invalid elevation
         assert stats is None
 
-    def test_fetch_weather_statistics_db_error(self):
+    @pytest.mark.asyncio
+    async def test_fetch_weather_statistics_db_error(self):
         """Test when database connection fails"""
         # Use invalid credentials to trigger connection error
         import os
@@ -196,7 +201,7 @@ class TestFetchWeatherStatistics:
 
         # Mock environment variables to cause connection failure
         with patch.dict(os.environ, {"DB_NAME": "nonexistent_database"}):
-            stats = fetch_weather_statistics(
+            stats = await fetch_weather_statistics(
                 latitude=40.3,
                 longitude=-105.7,
                 elevation_meters=3000.0,
