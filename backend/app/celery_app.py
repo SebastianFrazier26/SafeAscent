@@ -12,7 +12,10 @@ celery_app = Celery(
     "safeascent",
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
-    include=["app.tasks.cache_warming"],
+    include=[
+        "app.tasks.cache_warming",
+        "app.tasks.safety_computation",
+    ],
 )
 
 # Celery configuration
@@ -32,6 +35,13 @@ celery_app.conf.update(
 
 # Celery Beat schedule - periodic tasks
 celery_app.conf.beat_schedule = {
+    # Nightly pre-computation of ALL safety scores (runs at 2am UTC)
+    "compute-daily-safety-scores": {
+        "task": "app.tasks.safety_computation.compute_daily_safety_scores",
+        "schedule": crontab(minute=0, hour=2),  # 2:00 AM UTC daily
+        "options": {"expires": 7200},  # Task expires after 2 hours if not picked up
+    },
+    # Legacy: Warm cache for popular routes (backup/supplement)
     "warm-popular-routes-cache": {
         "task": "app.tasks.cache_warming.warm_popular_routes_cache",
         "schedule": crontab(minute=0, hour="*/6"),  # Every 6 hours
