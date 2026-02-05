@@ -204,6 +204,9 @@ async def fetch_weather_statistics(
 
     Queries the weather_statistics table computed in Phase 6.
 
+    NOTE: If SKIP_WEATHER_STATISTICS env var is set, returns None immediately
+    to avoid database errors when the table doesn't exist.
+
     **Caching**: Results cached for 24 hours (historical data is static).
     Cache key: weather:stats:{lat}:{lon}:{elevation}:{season}
 
@@ -225,6 +228,11 @@ async def fetch_weather_statistics(
         >>> print(f"Mean temp: {stats['temperature'][0]:.1f}°C")
         Mean temp: 12.8°C
     """
+    import os
+    # Skip if weather_statistics table doesn't exist (avoids DB errors)
+    if os.getenv("SKIP_WEATHER_STATISTICS", "false").lower() == "true":
+        return None
+
     # Check cache first (sync operation, but fast)
     cache_key = build_weather_stats_key(latitude, longitude, elevation_meters, season)
     cached = cache_get(cache_key)
