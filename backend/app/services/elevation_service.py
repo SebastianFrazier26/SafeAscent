@@ -10,15 +10,24 @@ API: https://open-elevation.com/
 - Returns elevation in meters above sea level
 
 Fallback: Returns None if API unavailable (algorithm uses neutral weight)
+
+**OPTIMIZATION**: In-memory cache reduces API calls during batch processing.
 """
 import requests
 import logging
-from typing import Optional
+import time
+from typing import Optional, Dict, Tuple
 
 logger = logging.getLogger(__name__)
 
 # Open-Elevation API endpoint
 ELEVATION_API_URL = "https://api.open-elevation.com/api/v1/lookup"
+
+# In-memory elevation cache: (lat_rounded, lon_rounded) -> (elevation, timestamp)
+# Coordinates rounded to 3 decimal places (~111m precision)
+_elevation_cache: Dict[Tuple[float, float], Tuple[Optional[float], float]] = {}
+ELEVATION_CACHE_TTL = 3600  # 1 hour
+ELEVATION_COORD_PRECISION = 3  # Decimal places for coordinate rounding
 
 
 def fetch_elevation(latitude: float, longitude: float) -> Optional[float]:
@@ -28,19 +37,32 @@ def fetch_elevation(latitude: float, longitude: float) -> Optional[float]:
     Uses Open-Elevation API to get accurate elevation data.
     Returns None if API fails (algorithm will use neutral weight).
 
+    **OPTIMIZATION**: Results are cached in memory for 1 hour, keyed by
+    coordinates rounded to 3 decimal places (~111m precision). This
+    dramatically reduces API calls during batch processing.
+
     Args:
         latitude: Latitude in degrees
         longitude: Longitude in degrees
 
     Returns:
         Elevation in meters above sea level, or None if unavailable
-
-    Example:
-        >>> # Longs Peak summit
-        >>> elevation = fetch_elevation(40.255, -105.615)
-        >>> print(f"{elevation:.0f}m")
-        4346m
     """
+    global _elevation_cache
+
+    # Round coordinates for cache key (3 decimals = ~111m precision)
+    lat_key = round(latitude, ELEVATION_COORD_PRECISION)
+    lon_key = round(longitude, ELEVATION_COORD_PRECISION)
+    cache_key = (lat_key, lon_key)
+
+    # Check cache
+    current_time = time.time()
+    if cache_key in _elevation_cache:
+        cached_elevation, cached_time = _elevation_cache[cache_key]
+        if (current_time - cached_time) < ELEVATION_CACHE_TTL:
+            # Cache hit - don't log every hit to avoid spam
+            return cached_elevation
+
     try:
         # API expects JSON with locations array
         payload = {
@@ -59,20 +81,26 @@ def fetch_elevation(latitude: float, longitude: float) -> Optional[float]:
         data = response.json()
         results = data.get("results", [])
 
+        elevation = None
         if results and len(results) > 0:
             elevation = results[0].get("elevation")
             if elevation is not None:
-                logger.info(f"Fetched elevation for ({latitude}, {longitude}): {elevation}m")
-                return float(elevation)
+                elevation = float(elevation)
+                logger.debug(f"Fetched elevation for ({latitude}, {longitude}): {elevation}m")
 
-        logger.warning(f"No elevation data returned for ({latitude}, {longitude})")
-        return None
+        # Cache the result (even None to avoid repeated failed lookups)
+        _elevation_cache[cache_key] = (elevation, current_time)
+
+        return elevation
 
     except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to fetch elevation from Open-Elevation API: {e}")
+        logger.warning(f"Elevation API failed for ({latitude}, {longitude}): {e}")
+        # Cache None to avoid hammering failed API
+        _elevation_cache[cache_key] = (None, current_time)
         return None
     except (KeyError, IndexError, ValueError) as e:
-        logger.error(f"Failed to parse elevation API response: {e}")
+        logger.warning(f"Failed to parse elevation response: {e}")
+        _elevation_cache[cache_key] = (None, current_time)
         return None
 
 
