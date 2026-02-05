@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 async def predict_route_safety(
     request: PredictionRequest,
     db: AsyncSession = Depends(get_db),
+    skip_weather: bool = False,  # Skip weather API calls (for batch processing)
 ):
     """
     Calculate safety prediction for a planned climbing route.
@@ -192,32 +193,40 @@ async def predict_route_safety(
         accident_data_list.append(accident_data)
 
     # Step 4: Fetch current weather pattern from Open-Meteo API
-    current_weather = fetch_current_weather_pattern(
-        latitude=request.latitude,
-        longitude=request.longitude,
-        target_date=request.planned_date,
-    )
-
-    # Log if weather fetch failed
-    if current_weather is None:
-        logger.warning(
-            f"Failed to fetch current weather for {request.latitude}, {request.longitude}. "
-            "Using neutral weather weight (0.5)."
+    # Skip weather fetching for batch processing (uses neutral weight 0.5)
+    if skip_weather:
+        current_weather = None
+    else:
+        current_weather = fetch_current_weather_pattern(
+            latitude=request.latitude,
+            longitude=request.longitude,
+            target_date=request.planned_date,
         )
 
+        # Log if weather fetch failed
+        if current_weather is None:
+            logger.warning(
+                f"Failed to fetch current weather for {request.latitude}, {request.longitude}. "
+                "Using neutral weather weight (0.5)."
+            )
+
     # Step 5: Fetch historical weather statistics for extreme detection
-    route_season = get_season(request.planned_date)
+    # Skip for batch processing to avoid database overhead
+    if skip_weather:
+        historical_weather_stats = None
+    else:
+        route_season = get_season(request.planned_date)
 
-    # Use route_elevation for weather stats (default to 3000m if unavailable)
-    weather_stats_elevation = route_elevation if route_elevation is not None else 3000.0
+        # Use route_elevation for weather stats (default to 3000m if unavailable)
+        weather_stats_elevation = route_elevation if route_elevation is not None else 3000.0
 
-    historical_weather_stats = await fetch_weather_statistics(
-        latitude=request.latitude,
-        longitude=request.longitude,
-        elevation_meters=weather_stats_elevation,
-        season=route_season,
-        db=db,  # Pass the async session to avoid blocking
-    )
+        historical_weather_stats = await fetch_weather_statistics(
+            latitude=request.latitude,
+            longitude=request.longitude,
+            elevation_meters=weather_stats_elevation,
+            season=route_season,
+            db=db,  # Pass the async session to avoid blocking
+        )
 
     # Step 6: Calculate safety prediction
     # Feature flag: Use vectorized algorithm if enabled (default: True)
