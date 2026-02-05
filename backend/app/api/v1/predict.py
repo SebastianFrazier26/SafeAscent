@@ -100,14 +100,13 @@ async def predict_route_safety(
     # Step 1.5: Fetch route elevation (auto-detect if not provided)
     if request.elevation_meters is not None:
         route_elevation = request.elevation_meters
-        logger.info(f"Using provided elevation: {route_elevation}m")
+        logger.debug(f"Using provided elevation: {route_elevation}m")
     else:
         # Auto-fetch elevation from coordinates
         route_elevation = fetch_elevation(request.latitude, request.longitude)
         if route_elevation is not None:
-            logger.info(f"Auto-detected elevation: {route_elevation}m")
-        else:
-            logger.warning("Failed to fetch elevation, using None (neutral weight)")
+            logger.debug(f"Auto-detected elevation: {route_elevation}m")
+        # Note: missing elevation is handled gracefully, no need to log every time
 
     if not accidents:
         # No accidents found - return zero risk
@@ -130,7 +129,8 @@ async def predict_route_safety(
     STRICT_ROUTE_TYPE_THRESHOLD = 0.85  # ice ↔ alpine (0.95), exact matches (1.0)
 
     filtered_accidents = []
-    logger.info(f"Applying distance-based route type filtering ({len(accidents)} total accidents)")
+    # DEBUG level - this runs 168K+ times during batch processing
+    logger.debug(f"Applying distance-based route type filtering ({len(accidents)} total accidents)")
 
     for accident in accidents:
         # Calculate distance
@@ -162,7 +162,7 @@ async def predict_route_safety(
             filtered_accidents.append(accident)
         # else: filtered out (distant + incompatible route type)
 
-    logger.info(f"After route type filtering: {len(filtered_accidents)} accidents")
+    logger.debug(f"After route type filtering: {len(filtered_accidents)} accidents")
     accidents = filtered_accidents
 
     if not accidents:
@@ -242,7 +242,7 @@ async def predict_route_safety(
     use_vectorized = os.getenv("USE_VECTORIZED_ALGORITHM", "true").lower() == "true"
 
     if use_vectorized:
-        logger.info(f"Using VECTORIZED algorithm for {len(accident_data_list)} accidents")
+        logger.debug(f"Using VECTORIZED algorithm for {len(accident_data_list)} accidents")
         prediction = calculate_safety_score_vectorized(
             route_lat=request.latitude,
             route_lon=request.longitude,
@@ -254,7 +254,7 @@ async def predict_route_safety(
             historical_weather_stats=historical_weather_stats,  # For extreme detection
         )
     else:
-        logger.info(f"Using LOOP-BASED algorithm for {len(accident_data_list)} accidents")
+        logger.debug(f"Using LOOP-BASED algorithm for {len(accident_data_list)} accidents")
         prediction = calculate_safety_score(
             route_lat=request.latitude,
             route_lon=request.longitude,
@@ -328,9 +328,11 @@ async def fetch_all_accidents(db: AsyncSession) -> List[Accident]:
     # Check if cache is valid
     current_time = time.time()
     if _accidents_cache and (current_time - _accidents_cache_time) < ACCIDENTS_CACHE_TTL:
-        logger.info(f"Using cached accidents ({len(_accidents_cache)} accidents, age: {int(current_time - _accidents_cache_time)}s)")
+        # DEBUG - this runs 168K+ times during batch processing
+        logger.debug(f"Using cached accidents ({len(_accidents_cache)} accidents)")
         return _accidents_cache
 
+    # This only runs once per 10 minutes, so INFO is fine
     logger.info("Fetching all accidents from database (cache miss or expired)")
 
     # Query: Find all accidents with required fields for prediction
