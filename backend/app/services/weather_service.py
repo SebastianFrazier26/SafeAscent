@@ -5,8 +5,7 @@ Fetches current and forecast weather from Open-Meteo API.
 Builds WeatherPattern objects for the safety algorithm.
 
 API: https://open-meteo.com/
-- Free, no API key required
-- 10,000 requests/day limit
+- Paid plan: 1M requests/month, no rate limits
 - Historical + Forecast data
 
 Caching (Phase 8):
@@ -14,6 +13,7 @@ Caching (Phase 8):
 - Weather statistics cached for 24 hours (historical data is static)
 - Uses Redis for fast in-memory storage
 """
+import os
 import requests
 from datetime import date, timedelta
 from typing import Optional, Dict, Any
@@ -27,8 +27,12 @@ from app.utils.cache import (
     build_weather_stats_key,
 )
 
-# Open-Meteo API endpoint
-WEATHER_API_URL = "https://api.open-meteo.com/v1/forecast"
+# Open-Meteo API endpoint (commercial API if key provided, otherwise free)
+OPEN_METEO_API_KEY = os.getenv("OPEN_METEO_API_KEY")
+if OPEN_METEO_API_KEY:
+    WEATHER_API_URL = "https://customer-api.open-meteo.com/v1/forecast"
+else:
+    WEATHER_API_URL = "https://api.open-meteo.com/v1/forecast"
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -139,6 +143,10 @@ def fetch_current_weather_pattern(
             "precipitation_unit": "mm",
             "timezone": "auto",
         }
+
+        # Add API key for commercial endpoint (removes rate limits)
+        if OPEN_METEO_API_KEY:
+            params["apikey"] = OPEN_METEO_API_KEY
 
         # Make API request
         response = requests.get(WEATHER_API_URL, params=params, timeout=10)
