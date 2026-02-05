@@ -386,14 +386,24 @@ async def compute_safety_scores_optimized(
     """
     start_time = time.time()
     date_str = target_date.isoformat()
+    logger.warning(f"compute_safety_scores_optimized STARTED for {date_str}")
 
     # Clear weather similarity cache (weather changes by date)
     clear_weather_similarity_cache()
+    logger.warning("Weather cache cleared")
 
+    logger.warning("Opening database session...")
     async with AsyncSessionLocal() as db:
+        logger.warning("Database session opened")
+
         # Step 1: Load all data
+        logger.warning("Loading accidents...")
         accidents = await load_all_accidents(db)
+        logger.warning(f"Loaded {len(accidents)} accidents")
+
+        logger.warning("Loading locations with routes...")
         locations = await load_locations_with_routes(db)
+        logger.warning(f"Loaded {len(locations)} locations")
 
         if not locations:
             return {"status": "no_locations", "computed": 0}
@@ -635,18 +645,27 @@ def compute_daily_safety_scores_optimized():
 
     Uses location-level pre-computation for ~6× speedup.
     """
-    logger.info("=" * 60)
-    logger.info("STARTING OPTIMIZED SAFETY SCORE COMPUTATION")
-    logger.info(f"Settings: LOCATION_BATCH_SIZE={LOCATION_BATCH_SIZE}")
-    logger.info("=" * 60)
+    import sys
+    print("=" * 60, flush=True)
+    print("OPTIMIZED TASK STARTING", flush=True)
+    print(f"Python: {sys.version}", flush=True)
+    print("=" * 60, flush=True)
+
+    logger.warning("=" * 60)
+    logger.warning("STARTING OPTIMIZED SAFETY SCORE COMPUTATION")
+    logger.warning(f"Settings: LOCATION_BATCH_SIZE={LOCATION_BATCH_SIZE}")
+    logger.warning("=" * 60)
 
     try:
+        logger.warning("Creating event loop...")
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+        logger.warning("Event loop created, starting async computation...")
         try:
             result = loop.run_until_complete(_compute_all_dates_async())
         finally:
             loop.close()
+            logger.warning("Event loop closed")
 
         logger.info("=" * 60)
         logger.info(f"OPTIMIZED COMPUTATION COMPLETE: {result}")
@@ -659,7 +678,9 @@ def compute_daily_safety_scores_optimized():
 
 async def _compute_all_dates_async() -> Dict:
     """Compute safety scores for all dates."""
+    logger.warning("_compute_all_dates_async() STARTED")
     today = date.today()
+    logger.warning(f"Today: {today}, DAYS_TO_COMPUTE: {DAYS_TO_COMPUTE}")
     dates_to_compute = [today + timedelta(days=i) for i in range(DAYS_TO_COMPUTE)]
 
     all_stats = {
