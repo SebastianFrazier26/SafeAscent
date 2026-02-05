@@ -1,0 +1,12 @@
+# Railway Configuration for SafeAscent Celery Worker
+# No healthcheck - Celery workers don't serve HTTP
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile.worker"
+
+[deploy]
+# No healthcheck for background workers
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
+numReplicas = 1
