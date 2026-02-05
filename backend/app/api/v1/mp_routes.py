@@ -1541,9 +1541,8 @@ async def trigger_cache_population(
 
     **Returns:** Task ID and status message (task runs in background).
     """
-    from app.tasks.safety_computation import (
-        compute_daily_safety_scores,
-        compute_safety_for_single_date,
+    from app.tasks.safety_computation_optimized import (
+        compute_daily_safety_scores_optimized,
     )
 
     logger.info("=" * 60)
@@ -1551,26 +1550,16 @@ async def trigger_cache_population(
     logger.info("=" * 60)
 
     try:
-        if target_date:
-            # Single date mode - trigger Celery task
-            logger.info(f"Triggering Celery task for date: {target_date}")
-            task = compute_safety_for_single_date.delay(target_date)
-            return {
-                "status": "started",
-                "message": f"Cache population started for {target_date}. Check Railway logs for progress.",
-                "task_id": task.id,
-                "target_date": target_date,
-            }
-        else:
-            # Full 7-day mode - trigger Celery task
-            logger.info("Triggering Celery task for 7-day computation...")
-            task = compute_daily_safety_scores.delay()
-            return {
-                "status": "started",
-                "message": "Full 7-day cache population started. Check Railway logs for progress.",
-                "task_id": task.id,
-                "estimated_time": "10-20 minutes",
-            }
+        # Use optimized location-level computation (today only)
+        # target_date parameter is ignored - optimized task always computes today
+        logger.info("Triggering OPTIMIZED Celery task (location-level computation)...")
+        task = compute_daily_safety_scores_optimized.delay()
+        return {
+            "status": "started",
+            "message": "Optimized cache population started (today only). Check Railway logs for progress.",
+            "task_id": task.id,
+            "estimated_time": "5-10 minutes",
+        }
 
     except Exception as e:
         logger.error(f"Failed to trigger cache population: {e}", exc_info=True)
