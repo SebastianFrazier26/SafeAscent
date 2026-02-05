@@ -22,35 +22,28 @@ Formula:
   route_influence = base_influence × route_type_weight × grade_weight
   risk_score = Σ(route_influence) × NORMALIZATION_FACTOR
 """
-import numpy as np
-from datetime import date
-from typing import Dict, List, Optional, Tuple, NamedTuple
-from dataclasses import dataclass, field
 import math
+from dataclasses import dataclass, field
+from datetime import date
+from typing import Dict, List, Optional, Tuple
 
-# Pre-computed numpy arrays for accidents (populated on first use)
-_accident_lat: Optional[np.ndarray] = None
-_accident_lon: Optional[np.ndarray] = None
-_accident_ids: Optional[np.ndarray] = None
-_accident_dates: Optional[np.ndarray] = None  # Days since epoch
-_accident_elevations: Optional[np.ndarray] = None
-_accident_severities: Optional[np.ndarray] = None  # Numeric severity weights
+import numpy as np
 
 from app.services.algorithm_config import (
-    SPATIAL_BANDWIDTH,
-    TEMPORAL_LAMBDA,
-    SEASONAL_BOOST,
-    SEASONS,
+    EARTH_RADIUS_KM,
     ELEVATION_DECAY_CONSTANT,
-    SEVERITY_BOOSTERS,
-    DEFAULT_SEVERITY_WEIGHT,
-    ROUTE_TYPE_WEIGHTS,
-    DEFAULT_ROUTE_TYPE_WEIGHT,
     GRADE_HALF_WEIGHT_DIFF,
     GRADE_MIN_WEIGHT,
-    RISK_NORMALIZATION_FACTOR,
     MAX_RISK_SCORE,
-    EARTH_RADIUS_KM,
+    RISK_NORMALIZATION_FACTOR,
+    ROUTE_TYPE_WEIGHTS,
+    DEFAULT_ROUTE_TYPE_WEIGHT,
+    SEASONAL_BOOST,
+    SEASONS,
+    SEVERITY_BOOSTERS,
+    DEFAULT_SEVERITY_WEIGHT,
+    SPATIAL_BANDWIDTH,
+    TEMPORAL_LAMBDA,
 )
 from app.services.grade_weighting import parse_grade
 
@@ -265,8 +258,6 @@ def prepare_accident_arrays(accidents: List[Dict]) -> Tuple[np.ndarray, ...]:
 
     Returns: (lat, lon, ids, days_since_epoch, elevations, severity_weights, route_types)
     """
-    n = len(accidents)
-
     lat = np.array([a["latitude"] for a in accidents], dtype=np.float64)
     lon = np.array([a["longitude"] for a in accidents], dtype=np.float64)
     ids = np.array([a["accident_id"] for a in accidents], dtype=np.int64)
@@ -338,9 +329,6 @@ def compute_location_base_score_vectorized(
         default_route_type.lower(), ELEVATION_DECAY_CONSTANT["default"]
     )
 
-    # Current season
-    current_season = get_season(target_date.month)
-
     # Weather parameters
     WEATHER_POWER = 2
     WEATHER_EXCLUSION_THRESHOLD = 0.25
@@ -375,15 +363,9 @@ def compute_location_base_score_vectorized(
     days_elapsed = np.clip(days_elapsed, 0, None)  # No negative values
     temporal_weights = lambda_val ** days_elapsed
 
-    # Seasonal boost (vectorized season check)
-    accident_months = np.array([
-        ((d % 365) // 30) + 1 for d in days_since_epoch  # Approximate month
-    ])
-    # This is an approximation - exact month calculation would be slower
-    # For accuracy, we could pre-compute accident months in prepare_accident_arrays
-    seasonal_boost = np.ones(n, dtype=np.float64)
-    # Skip exact seasonal matching for speed - apply average boost instead
-    seasonal_boost *= 1.125  # Average of 1.0 and 1.5 (SEASONAL_BOOST)
+    # Seasonal boost - apply average boost for speed (skip exact month matching)
+    # Average of 1.0 (different season) and 1.5 (same season) = 1.125
+    seasonal_boost = np.full(n, 1.125, dtype=np.float64)
 
     temporal_weights *= seasonal_boost
 

@@ -18,7 +18,7 @@ import asyncio
 import time
 import logging
 from datetime import date, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from collections import defaultdict
 
 from sqlalchemy import select, text
@@ -30,10 +30,8 @@ from app.models.mp_location import MpLocation
 from app.models.accident import Accident
 from app.celery_app import celery_app
 from app.services.location_safety_computation import (
-    compute_location_base_score,
     compute_location_base_score_vectorized,
     compute_batch_route_scores,
-    LocationBaseScore,
     prepare_accident_arrays,
 )
 from app.services.weather_service import fetch_current_weather_pattern
@@ -42,8 +40,7 @@ from app.services.weather_similarity import (
     calculate_weather_similarity,
 )
 from app.services.route_type_mapper import infer_route_type_from_accident
-from app.services.elevation_service import fetch_elevation
-from app.utils.cache import set_bulk_cached_safety_scores, get_safety_cache_stats
+from app.utils.cache import set_bulk_cached_safety_scores
 from app.models.weather import Weather
 
 # Silence verbose loggers
@@ -236,8 +233,6 @@ async def load_all_accident_weather_patterns(
         return {}
 
     # Bulk query: fetch all weather records for all accidents
-    from datetime import timedelta
-    from collections import defaultdict
 
     result = await db.execute(
         select(
