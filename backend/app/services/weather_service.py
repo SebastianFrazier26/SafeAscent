@@ -337,4 +337,11 @@ async def fetch_weather_statistics(
 
     except Exception as e:
         logger.error(f"Failed to fetch weather statistics: {e}")
+        # CRITICAL: Rollback the transaction to clear the aborted state
+        # Otherwise all subsequent queries on this session will fail
+        if db is not None:
+            try:
+                await db.rollback()
+            except Exception:
+                pass  # Ignore rollback errors
         return None
