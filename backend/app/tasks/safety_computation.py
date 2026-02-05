@@ -36,6 +36,11 @@ from app.utils.cache import (
 from app.services.weather_service import fetch_current_weather_pattern
 from app.services.weather_similarity import WeatherPattern
 
+# Silence verbose SQLAlchemy logging during batch processing
+# This prevents Railway's 500 logs/sec rate limit from being hit
+logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+logging.getLogger("sqlalchemy.pool").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 # Module-level weather cache for batch processing
