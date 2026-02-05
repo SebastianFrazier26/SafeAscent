@@ -34,7 +34,8 @@ class MpRouteListResponse(BaseModel):
 
 class MpRouteDetail(MpRouteResponse):
     """Detailed route response with additional data."""
-    pass
+    location_name: Optional[str] = None  # Parent location/area name from MpLocation
+    elevation_meters: Optional[float] = None  # Elevation fetched from Open-Elevation API
 
 
 class MpRouteMapMarker(BaseModel):
