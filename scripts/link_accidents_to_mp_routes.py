@@ -18,7 +18,7 @@ Usage:
 import os
 import sys
 import argparse
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Set
 from collections import defaultdict
 
 # Add backend to path
@@ -98,12 +98,22 @@ def normalize_route_name(name: str) -> str:
 
 
 def get_sync_engine():
-    """Create synchronous engine for database operations."""
+    """Create synchronous engine for database operations with keepalive settings."""
     db_url = os.getenv("DATABASE_URL", "")
     # Convert asyncpg URL to psycopg2 for sync queries
     if "asyncpg" in db_url:
         db_url = db_url.replace("postgresql+asyncpg", "postgresql")
-    return create_engine(db_url)
+    return create_engine(
+        db_url,
+        pool_pre_ping=True,  # Check connection health before use
+        pool_recycle=120,    # Recycle connections after 2 minutes
+        connect_args={
+            "keepalives": 1,
+            "keepalives_idle": 30,
+            "keepalives_interval": 10,
+            "keepalives_count": 5,
+        }
+    )
 
 
 def ensure_mp_route_id_column(conn) -> bool:
@@ -141,11 +151,13 @@ def ensure_mp_route_id_column(conn) -> bool:
     return True
 
 
-def load_mp_routes(conn) -> dict:
+def load_mp_routes(conn) -> Tuple[dict, dict]:
     """
     Load all MP routes into memory for fast matching.
 
-    Returns dict: normalized_name -> list of (mp_route_id, name, lat, lon)
+    Returns:
+        routes_by_name: normalized_name -> list of (mp_route_id, name, lat, lon)
+        routes_by_length: name_length -> set of normalized_names
     """
     print("Loading MP routes...")
 
@@ -157,6 +169,7 @@ def load_mp_routes(conn) -> dict:
     """))
 
     routes_by_name = defaultdict(list)
+    routes_by_length = defaultdict(set)
     total = 0
 
     for row in result:
@@ -169,10 +182,11 @@ def load_mp_routes(conn) -> dict:
             "latitude": lat,
             "longitude": lon,
         })
+        routes_by_length[len(normalized)].add(normalized)
         total += 1
 
     print(f"✓ Loaded {total:,} routes into {len(routes_by_name):,} unique name buckets")
-    return routes_by_name
+    return routes_by_name, routes_by_length
 
 
 def find_best_match(
@@ -180,6 +194,7 @@ def find_best_match(
     accident_lat: float,
     accident_lon: float,
     routes_by_name: dict,
+    routes_by_length: dict,
     max_levenshtein: int = 1,
 ) -> Optional[dict]:
     """
@@ -187,7 +202,7 @@ def find_best_match(
 
     Strategy:
     1. Try exact match first
-    2. Try Levenshtein distance ≤ max_levenshtein
+    2. Try Levenshtein distance ≤ max_levenshtein (optimized: only check similar-length names)
     3. If multiple matches, take closest by coordinates
 
     Returns matched route dict or None.
@@ -202,10 +217,13 @@ def find_best_match(
     if normalized in routes_by_name:
         candidates = routes_by_name[normalized]
     else:
-        # Try fuzzy match
-        for route_name, routes in routes_by_name.items():
-            if levenshtein_distance(normalized, route_name) <= max_levenshtein:
-                candidates.extend(routes)
+        # Try fuzzy match - only check names with similar length (optimization)
+        name_len = len(normalized)
+        for length in range(max(1, name_len - max_levenshtein), name_len + max_levenshtein + 1):
+            if length in routes_by_length:
+                for route_name in routes_by_length[length]:
+                    if levenshtein_distance(normalized, route_name) <= max_levenshtein:
+                        candidates.extend(routes_by_name[route_name])
 
     if not candidates:
         return None
@@ -231,19 +249,19 @@ def find_best_match(
     return best_match
 
 
-def link_accidents_to_routes(conn, routes_by_name: dict, dry_run: bool = False) -> dict:
+def link_accidents_to_routes(conn, routes_by_name: dict, routes_by_length: dict, dry_run: bool = False) -> dict:
     """
     Link AAC accidents to MP routes.
 
     Returns statistics dict.
     """
-    print("\nLinking accidents to routes...")
+    print("\nLinking accidents to routes...", flush=True)
 
-    # Get AAC accidents with route names
+    # Get AAC accidents with route names (case-insensitive source check)
     result = conn.execute(text("""
         SELECT accident_id, route, latitude, longitude
         FROM accidents
-        WHERE source = 'AAC'
+        WHERE LOWER(source) = 'aac'
           AND route IS NOT NULL
           AND route != ''
           AND mp_route_id IS NULL
@@ -252,7 +270,7 @@ def link_accidents_to_routes(conn, routes_by_name: dict, dry_run: bool = False) 
     """))
 
     accidents = result.fetchall()
-    print(f"Found {len(accidents):,} AAC accidents with route names to process")
+    print(f"Found {len(accidents):,} AAC accidents with route names to process", flush=True)
 
     stats = {
         "total": len(accidents),
@@ -265,8 +283,11 @@ def link_accidents_to_routes(conn, routes_by_name: dict, dry_run: bool = False) 
     updates = []
     clears = []
 
-    for accident_id, route_name, lat, lon in accidents:
-        match = find_best_match(route_name, lat, lon, routes_by_name)
+    for i, (accident_id, route_name, lat, lon) in enumerate(accidents):
+        if (i + 1) % 100 == 0:
+            print(f"  Processing {i + 1:,}/{len(accidents):,}...", flush=True)
+
+        match = find_best_match(route_name, lat, lon, routes_by_name, routes_by_length)
 
         if match:
             stats["matched"] += 1
@@ -286,8 +307,11 @@ def link_accidents_to_routes(conn, routes_by_name: dict, dry_run: bool = False) 
             })
 
     print(f"\nMatching results:")
-    print(f"  Matched: {stats['matched']:,} ({stats['matched']/stats['total']*100:.1f}%)")
-    print(f"  Unmatched: {stats['unmatched']:,} ({stats['unmatched']/stats['total']*100:.1f}%)")
+    if stats['total'] > 0:
+        print(f"  Matched: {stats['matched']:,} ({stats['matched']/stats['total']*100:.1f}%)")
+        print(f"  Unmatched: {stats['unmatched']:,} ({stats['unmatched']/stats['total']*100:.1f}%)")
+    else:
+        print("  No accidents with route names found to process.")
 
     if dry_run:
         print("\n[DRY RUN] Would update/clear the following:")
@@ -306,9 +330,10 @@ def link_accidents_to_routes(conn, routes_by_name: dict, dry_run: bool = False) 
         return stats
 
     # Execute updates
-    print("\nUpdating database...")
+    print("\nUpdating database...", flush=True)
 
-    # Update matched accidents
+    # Update matched accidents in batches
+    BATCH_SIZE = 50
     for i, u in enumerate(updates):
         conn.execute(text("""
             UPDATE accidents
@@ -324,17 +349,26 @@ def link_accidents_to_routes(conn, routes_by_name: dict, dry_run: bool = False) 
         })
         stats["coord_updated"] += 1
 
-        if (i + 1) % 100 == 0:
-            print(f"  Updated {i + 1:,}/{len(updates):,} matched accidents...")
+        # Commit in batches to avoid connection timeout
+        if (i + 1) % BATCH_SIZE == 0:
+            conn.commit()
+            print(f"  Updated {i + 1:,}/{len(updates):,} matched accidents...", flush=True)
 
-    # Clear unmatched route names
-    for c in clears:
+    # Commit remaining
+    conn.commit()
+    print(f"  Updated {len(updates):,}/{len(updates):,} matched accidents.", flush=True)
+
+    # Clear unmatched route names in batches
+    for i, c in enumerate(clears):
         conn.execute(text("""
             UPDATE accidents
             SET route = NULL
             WHERE accident_id = :accident_id
         """), {"accident_id": c["accident_id"]})
         stats["cleared"] += 1
+
+        if (i + 1) % BATCH_SIZE == 0:
+            conn.commit()
 
     conn.commit()
 
@@ -363,15 +397,106 @@ def main():
 
     engine = get_sync_engine()
 
+    # Step 1: Ensure mp_route_id column exists (fresh connection)
     with engine.connect() as conn:
-        # Step 1: Ensure mp_route_id column exists
         ensure_mp_route_id_column(conn)
 
-        # Step 2: Load MP routes
-        routes_by_name = load_mp_routes(conn)
+    # Step 2: Load MP routes (fresh connection, then release)
+    with engine.connect() as conn:
+        routes_by_name, routes_by_length = load_mp_routes(conn)
 
-        # Step 3: Link accidents to routes
-        stats = link_accidents_to_routes(conn, routes_by_name, dry_run=args.dry_run)
+    # Step 3: Load accidents (fresh connection, then release)
+    print("\nLoading AAC accidents...", flush=True)
+    with engine.connect() as conn:
+        result = conn.execute(text("""
+            SELECT accident_id, route, latitude, longitude
+            FROM accidents
+            WHERE LOWER(source) = 'aac'
+              AND route IS NOT NULL
+              AND route != ''
+              AND mp_route_id IS NULL
+              AND latitude IS NOT NULL
+              AND longitude IS NOT NULL
+        """))
+        accidents = result.fetchall()
+    print(f"✓ Loaded {len(accidents):,} AAC accidents with route names", flush=True)
+
+    # Step 4: Match accidents to routes (OFFLINE - no connection needed!)
+    print("\nMatching accidents to routes (offline)...", flush=True)
+    updates = []
+    clears = []
+    for i, (accident_id, route_name, lat, lon) in enumerate(accidents):
+        if (i + 1) % 200 == 0:
+            print(f"  Matching {i + 1:,}/{len(accidents):,}...", flush=True)
+
+        match = find_best_match(route_name, lat, lon, routes_by_name, routes_by_length)
+        if match:
+            updates.append({
+                "accident_id": accident_id,
+                "mp_route_id": match["mp_route_id"],
+                "new_lat": match["latitude"],
+                "new_lon": match["longitude"],
+                "route_name": route_name,
+                "matched_name": match["name"],
+            })
+        else:
+            clears.append({
+                "accident_id": accident_id,
+                "route_name": route_name,
+            })
+
+    print(f"\nMatching results:", flush=True)
+    print(f"  Matched: {len(updates):,} ({len(updates)/len(accidents)*100:.1f}%)", flush=True)
+    print(f"  Unmatched: {len(clears):,} ({len(clears)/len(accidents)*100:.1f}%)", flush=True)
+
+    if args.dry_run:
+        print("\n[DRY RUN] Would update/clear the following:")
+        print(f"  - Link {len(updates)} accidents to MP routes")
+        print(f"  - Clear route name for {len(clears)} unmatched accidents")
+        print("\nSample matches:")
+        for u in updates[:5]:
+            print(f"  '{u['route_name']}' -> '{u['matched_name']}' (ID: {u['mp_route_id']})")
+        print("\nSample unmatched (route name will be cleared):")
+        for c in clears[:5]:
+            print(f"  '{c['route_name']}'")
+        stats = {"total": len(accidents), "matched": len(updates), "unmatched": len(clears)}
+    else:
+        # Step 5: Apply updates (fresh connection with batching)
+        print("\nUpdating database...", flush=True)
+        BATCH_SIZE = 50
+        with engine.connect() as conn:
+            for i, u in enumerate(updates):
+                conn.execute(text("""
+                    UPDATE accidents
+                    SET mp_route_id = :mp_route_id,
+                        latitude = :new_lat,
+                        longitude = :new_lon
+                    WHERE accident_id = :accident_id
+                """), {
+                    "mp_route_id": u["mp_route_id"],
+                    "new_lat": u["new_lat"],
+                    "new_lon": u["new_lon"],
+                    "accident_id": u["accident_id"],
+                })
+                if (i + 1) % BATCH_SIZE == 0:
+                    conn.commit()
+                    print(f"  Updated {i + 1:,}/{len(updates):,} matched accidents...", flush=True)
+            conn.commit()
+            print(f"  ✓ Linked {len(updates):,} accidents to MP routes", flush=True)
+
+            # Clear unmatched route names
+            for i, c in enumerate(clears):
+                conn.execute(text("""
+                    UPDATE accidents
+                    SET route = NULL
+                    WHERE accident_id = :accident_id
+                """), {"accident_id": c["accident_id"]})
+                if (i + 1) % BATCH_SIZE == 0:
+                    conn.commit()
+            conn.commit()
+            print(f"  ✓ Cleared route name for {len(clears):,} unmatched accidents", flush=True)
+
+        stats = {"total": len(accidents), "matched": len(updates), "unmatched": len(clears), "coord_updated": len(updates), "cleared": len(clears)}
 
     print("\n" + "=" * 60)
     print("Migration complete!")
