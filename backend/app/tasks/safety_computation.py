@@ -50,7 +50,7 @@ CONCURRENCY_LIMIT = 20    # Max concurrent safety calculations per batch
 LOG_INTERVAL = 1000       # Log progress every N routes
 LOCATION_BUCKET_PRECISION = 2  # Decimal places for location bucketing (0.01° ≈ 1km)
 WEATHER_PREFETCH_BATCH_SIZE = 50  # Fetch weather for N locations at a time
-WEATHER_PREFETCH_CONCURRENCY = 10  # Parallel weather fetches (be gentle on API)
+WEATHER_PREFETCH_CONCURRENCY = 3   # Parallel weather fetches (reduced from 10 - Open-Meteo rate limits)
 
 
 async def _fetch_single_weather(
@@ -92,8 +92,8 @@ async def _prefetch_weather_for_locations(
     per-location-bucket (much fewer). Routes in the same bucket share weather.
 
     PARALLELIZATION: Uses asyncio.gather with a semaphore to fetch multiple
-    locations concurrently (10 at a time by default), dramatically reducing
-    pre-fetch time from ~minutes to ~seconds.
+    locations concurrently (3 at a time to respect Open-Meteo rate limits),
+    with a small delay between batches to avoid 429 errors.
 
     Args:
         location_buckets: Dict mapping bucket keys to lists of routes
@@ -137,6 +137,10 @@ async def _prefetch_weather_for_locations(
             elapsed = time.time() - start_time
             rate = processed / elapsed if elapsed > 0 else 0
             logger.info(f"  Weather pre-fetch: {processed:,}/{total_buckets:,} locations ({elapsed:.1f}s, {rate:.0f}/sec)")
+
+        # Small delay between batches to avoid API rate limits (Open-Meteo 429 errors)
+        if batch_start + WEATHER_PREFETCH_BATCH_SIZE < total_buckets:
+            await asyncio.sleep(0.5)
 
     # Count successes
     successful = sum(1 for w in weather_map.values() if w is not None)
