@@ -240,7 +240,8 @@ async def _compute_single_route_safety(
         # cannot share a session across concurrent coroutines
         async with AsyncSessionLocal() as route_db:
             # Calculate safety score with dedicated session
-            prediction = await predict_route_safety(prediction_request, route_db)
+            # skip_weather=True avoids 168K+ API calls during batch processing
+            prediction = await predict_route_safety(prediction_request, route_db, skip_weather=True)
 
             # Determine color code
             color_code = get_safety_color_code(prediction.risk_score)
