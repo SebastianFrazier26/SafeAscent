@@ -31,8 +31,10 @@ from app.utils.cache import (
 OPEN_METEO_API_KEY = os.getenv("OPEN_METEO_API_KEY")
 if OPEN_METEO_API_KEY:
     WEATHER_API_URL = "https://customer-api.open-meteo.com/v1/forecast"
+    print(f"[WeatherService] Using COMMERCIAL Open-Meteo API (key configured: {OPEN_METEO_API_KEY[:8]}...)")
 else:
     WEATHER_API_URL = "https://api.open-meteo.com/v1/forecast"
+    print("[WeatherService] WARNING: No API key - using FREE Open-Meteo API (rate limited!)")
 
 # Configure logging
 logger = logging.getLogger(__name__)
