@@ -36,10 +36,20 @@ from app.utils.cache import (
 from app.services.weather_service import fetch_current_weather_pattern
 from app.services.weather_similarity import WeatherPattern
 
-# Silence verbose SQLAlchemy logging during batch processing
-# This prevents Railway's 500 logs/sec rate limit from being hit
+# ============================================================================
+# SILENCE VERBOSE LOGGERS - Railway has 500 logs/sec limit!
+# Only keep: warnings, errors, progress updates, and startup messages
+# ============================================================================
 logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 logging.getLogger("sqlalchemy.pool").setLevel(logging.WARNING)
+logging.getLogger("sqlalchemy.orm").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("asyncio").setLevel(logging.WARNING)
+logging.getLogger("celery").setLevel(logging.WARNING)
+logging.getLogger("kombu").setLevel(logging.WARNING)
+logging.getLogger("amqp").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +62,8 @@ _prefetched_weather: Dict[str, Optional[WeatherPattern]] = {}
 # ============================================================================
 BATCH_SIZE = 200          # Routes per batch (increased from 100)
 CONCURRENCY_LIMIT = 20    # Max concurrent safety calculations per batch
-LOG_INTERVAL = 1000       # Log progress every N routes
+LOG_INTERVAL = 5000       # Log progress every N routes (reduced from 1000 to cut log spam)
+DAYS_TO_COMPUTE = 4       # Days to pre-compute (reduced from 7 for faster runs)
 LOCATION_BUCKET_PRECISION = 2  # Decimal places for location bucketing (0.01° ≈ 1km)
 WEATHER_PREFETCH_BATCH_SIZE = 50  # Fetch weather for N locations at a time
 WEATHER_PREFETCH_CONCURRENCY = 10  # Parallel weather fetches (paid API has no rate limits)
@@ -262,7 +273,7 @@ async def _compute_all_safety_scores_async() -> dict:
 
         # Calculate safety for next 7 days
         today = date.today()
-        dates_to_compute = [today + timedelta(days=i) for i in range(7)]
+        dates_to_compute = [today + timedelta(days=i) for i in range(DAYS_TO_COMPUTE)]
 
         stats = {
             "total_routes": total_routes,

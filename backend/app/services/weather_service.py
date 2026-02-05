@@ -116,10 +116,12 @@ def fetch_current_weather_pattern(
     cache_key = build_weather_pattern_key(latitude, longitude, target_date.isoformat())
     cached = cache_get(cache_key)
     if cached:
-        logger.info(f"Weather pattern cache HIT for {latitude}, {longitude}, {target_date}")
+        # DEBUG level - don't spam logs with every cache hit
+        logger.debug(f"Weather pattern cache HIT for {latitude}, {longitude}, {target_date}")
         return _dict_to_weather_pattern(cached)
 
-    logger.info("Weather pattern cache MISS, fetching from Open-Meteo API")
+    # DEBUG level - cache misses are expected during pre-fetch, don't spam logs
+    logger.debug("Weather pattern cache MISS, fetching from Open-Meteo API")
 
     try:
         # Calculate date range (6 days before target, up to target)
