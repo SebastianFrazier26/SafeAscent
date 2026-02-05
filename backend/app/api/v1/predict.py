@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 async def predict_route_safety(
     request: PredictionRequest,
     db: AsyncSession = Depends(get_db),
+    prefetched_weather: Optional[WeatherPattern] = None,  # Pre-fetched weather for batch processing
 ):
     """
     Calculate safety prediction for a planned climbing route.
@@ -191,19 +192,23 @@ async def predict_route_safety(
         )
         accident_data_list.append(accident_data)
 
-    # Step 4: Fetch current weather pattern from Open-Meteo API
-    current_weather = fetch_current_weather_pattern(
-        latitude=request.latitude,
-        longitude=request.longitude,
-        target_date=request.planned_date,
-    )
-
-    # Log if weather fetch failed
-    if current_weather is None:
-        logger.warning(
-            f"Failed to fetch current weather for {request.latitude}, {request.longitude}. "
-            "Using neutral weather weight (0.5)."
+    # Step 4: Get current weather pattern
+    # Use pre-fetched weather if provided (batch processing), otherwise fetch from API
+    if prefetched_weather is not None:
+        current_weather = prefetched_weather
+    else:
+        current_weather = fetch_current_weather_pattern(
+            latitude=request.latitude,
+            longitude=request.longitude,
+            target_date=request.planned_date,
         )
+
+        # Log if weather fetch failed
+        if current_weather is None:
+            logger.warning(
+                f"Failed to fetch current weather for {request.latitude}, {request.longitude}. "
+                "Using neutral weather weight (0.5)."
+            )
 
     # Step 5: Fetch historical weather statistics for extreme detection
     route_season = get_season(request.planned_date)
