@@ -50,7 +50,35 @@ CONCURRENCY_LIMIT = 20    # Max concurrent safety calculations per batch
 LOG_INTERVAL = 1000       # Log progress every N routes
 LOCATION_BUCKET_PRECISION = 2  # Decimal places for location bucketing (0.01° ≈ 1km)
 WEATHER_PREFETCH_BATCH_SIZE = 50  # Fetch weather for N locations at a time
-WEATHER_PREFETCH_TIMEOUT = 3  # Shorter timeout for batch pre-fetching
+WEATHER_PREFETCH_CONCURRENCY = 10  # Parallel weather fetches (be gentle on API)
+
+
+async def _fetch_single_weather(
+    bucket_key: str,
+    target_date: date,
+    semaphore: asyncio.Semaphore,
+) -> Tuple[str, Optional[WeatherPattern]]:
+    """
+    Fetch weather for a single location bucket with semaphore-limited concurrency.
+
+    Uses asyncio.to_thread() to run the synchronous requests-based weather
+    fetch in a thread pool, allowing parallel execution.
+    """
+    async with semaphore:
+        # Parse lat/lon from bucket key (format: "40.01:-105.27")
+        lat_str, lon_str = bucket_key.split(":")
+        lat = float(lat_str)
+        lon = float(lon_str)
+
+        try:
+            # Run sync function in thread pool for parallelization
+            weather = await asyncio.to_thread(
+                fetch_current_weather_pattern, lat, lon, target_date
+            )
+            return (bucket_key, weather)
+        except Exception as e:
+            logger.warning(f"Weather fetch failed for {bucket_key}: {e}")
+            return (bucket_key, None)
 
 
 async def _prefetch_weather_for_locations(
@@ -58,10 +86,14 @@ async def _prefetch_weather_for_locations(
     target_date: date,
 ) -> Dict[str, Optional[WeatherPattern]]:
     """
-    Pre-fetch weather patterns for all unique location buckets.
+    Pre-fetch weather patterns for all unique location buckets IN PARALLEL.
 
     Instead of fetching weather per-route (168K API calls), we fetch
     per-location-bucket (much fewer). Routes in the same bucket share weather.
+
+    PARALLELIZATION: Uses asyncio.gather with a semaphore to fetch multiple
+    locations concurrently (10 at a time by default), dramatically reducing
+    pre-fetch time from ~minutes to ~seconds.
 
     Args:
         location_buckets: Dict mapping bucket keys to lists of routes
@@ -70,38 +102,47 @@ async def _prefetch_weather_for_locations(
     Returns:
         Dict mapping bucket_key to WeatherPattern (or None if fetch failed)
     """
-    weather_map: Dict[str, Optional[WeatherPattern]] = {}
     bucket_keys = list(location_buckets.keys())
     total_buckets = len(bucket_keys)
 
-    logger.info(f"Pre-fetching weather for {total_buckets:,} unique location buckets")
+    logger.info(f"Pre-fetching weather for {total_buckets:,} unique location buckets (PARALLEL: {WEATHER_PREFETCH_CONCURRENCY} concurrent)")
     start_time = time.time()
 
-    # Process in batches to avoid overwhelming the API
+    # Semaphore limits concurrent API requests
+    semaphore = asyncio.Semaphore(WEATHER_PREFETCH_CONCURRENCY)
+
+    # Process in batches for progress logging, but parallelize within each batch
+    weather_map: Dict[str, Optional[WeatherPattern]] = {}
+
     for batch_start in range(0, total_buckets, WEATHER_PREFETCH_BATCH_SIZE):
         batch_keys = bucket_keys[batch_start:batch_start + WEATHER_PREFETCH_BATCH_SIZE]
 
-        # Fetch weather for each bucket in this batch (sequentially to be gentle on API)
-        for bucket_key in batch_keys:
-            # Parse lat/lon from bucket key (format: "40.01:-105.27")
-            lat_str, lon_str = bucket_key.split(":")
-            lat = float(lat_str)
-            lon = float(lon_str)
+        # PARALLEL: Fetch all locations in this batch concurrently (limited by semaphore)
+        results = await asyncio.gather(
+            *[_fetch_single_weather(key, target_date, semaphore) for key in batch_keys],
+            return_exceptions=True
+        )
 
-            # Fetch weather (this uses the built-in Redis cache)
-            weather = fetch_current_weather_pattern(lat, lon, target_date)
+        # Collect results
+        for result in results:
+            if isinstance(result, Exception):
+                logger.warning(f"Weather fetch exception: {result}")
+                continue
+            bucket_key, weather = result
             weather_map[bucket_key] = weather
 
         # Log progress every few batches
         processed = min(batch_start + WEATHER_PREFETCH_BATCH_SIZE, total_buckets)
         if processed % 500 == 0 or processed == total_buckets:
             elapsed = time.time() - start_time
-            logger.info(f"  Weather pre-fetch: {processed:,}/{total_buckets:,} locations ({elapsed:.1f}s)")
+            rate = processed / elapsed if elapsed > 0 else 0
+            logger.info(f"  Weather pre-fetch: {processed:,}/{total_buckets:,} locations ({elapsed:.1f}s, {rate:.0f}/sec)")
 
     # Count successes
     successful = sum(1 for w in weather_map.values() if w is not None)
     elapsed = time.time() - start_time
-    logger.info(f"Weather pre-fetch complete: {successful:,}/{total_buckets:,} successful in {elapsed:.1f}s")
+    rate = total_buckets / elapsed if elapsed > 0 else 0
+    logger.info(f"Weather pre-fetch complete: {successful:,}/{total_buckets:,} successful in {elapsed:.1f}s ({rate:.0f} locations/sec)")
 
     return weather_map
 
