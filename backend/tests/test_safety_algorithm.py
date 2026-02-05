@@ -209,6 +209,7 @@ class TestTopContributingAccidents:
                 "weather_weight": 0.6,
                 "route_type_weight": 1.0,
                 "severity_weight": 1.0,
+                "grade_weight": 1.0,
             }
             for i, influence in enumerate([0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.05])
         ]
@@ -233,6 +234,7 @@ class TestTopContributingAccidents:
                 "weather_weight": 0.6,
                 "route_type_weight": 1.0,
                 "severity_weight": 1.0,
+                "grade_weight": 1.0,
             }
             for i, influence in enumerate([0.8, 0.5, 0.3])
         ]
@@ -260,6 +262,7 @@ class TestTopContributingAccidents:
                 "weather_weight": 0.6,
                 "route_type_weight": 1.0,
                 "severity_weight": 1.0,
+                "grade_weight": 1.0,
             }
             for i, influence in enumerate([0.3, 0.8, 0.1, 0.9, 0.5])
         ]
