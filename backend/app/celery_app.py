@@ -2,10 +2,20 @@
 Celery application configuration for background tasks.
 Uses Redis as both broker and result backend.
 """
+import logging
+
 from celery import Celery
 from celery.schedules import crontab
 
 from app.config import settings
+
+# Silence verbose loggers BEFORE any other imports
+# This ensures SQLAlchemy doesn't spam logs with query parameters
+logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+logging.getLogger("sqlalchemy.pool").setLevel(logging.WARNING)
+logging.getLogger("sqlalchemy.dialects").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # Create Celery app
 celery_app = Celery(

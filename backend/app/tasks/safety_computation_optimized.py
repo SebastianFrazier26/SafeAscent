@@ -43,10 +43,7 @@ from app.services.route_type_mapper import infer_route_type_from_accident
 from app.utils.cache import set_bulk_cached_safety_scores
 from app.models.weather import Weather
 
-# Silence verbose loggers
-logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
-logging.getLogger("sqlalchemy.pool").setLevel(logging.WARNING)
-logging.getLogger("httpx").setLevel(logging.WARNING)
+# Note: SQLAlchemy/httpx loggers silenced in celery_app.py at worker startup
 
 logger = logging.getLogger(__name__)
 
