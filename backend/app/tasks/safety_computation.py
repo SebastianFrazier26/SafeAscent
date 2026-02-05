@@ -243,7 +243,7 @@ async def _compute_single_route_safety(
         })
 
     except Exception as e:
-        logger.debug(f"Failed to compute safety for route {mp_route_id}: {e}")
+        logger.warning(f"Failed to compute safety for route {mp_route_id}: {e}")
         return (mp_route_id, None)
 
 
@@ -281,14 +281,19 @@ async def _compute_safety_for_date_parallel(
             return await _compute_single_route_safety(route, target_date, db)
 
     # Process in batches
+    logger.info(f"Starting batch processing: {len(routes)} routes in batches of {BATCH_SIZE}")
     for batch_start in range(0, len(routes), BATCH_SIZE):
         batch = routes[batch_start:batch_start + BATCH_SIZE]
 
         # PARALLEL: Compute all routes in batch concurrently
-        results = await asyncio.gather(
-            *[compute_with_semaphore(route) for route in batch],
-            return_exceptions=True
-        )
+        try:
+            results = await asyncio.gather(
+                *[compute_with_semaphore(route) for route in batch],
+                return_exceptions=True
+            )
+        except Exception as e:
+            logger.error(f"Batch {batch_start} asyncio.gather failed: {e}")
+            continue
 
         # Collect successful results for bulk caching
         batch_scores = {}
@@ -302,6 +307,12 @@ async def _compute_safety_for_date_parallel(
                 successful += 1
             else:
                 failed += 1
+
+        # Log batch results
+        batch_success = len(batch_scores)
+        batch_failed = len(batch) - batch_success
+        if batch_start == 0:  # Log first batch in detail
+            logger.info(f"First batch: {batch_success} succeeded, {batch_failed} failed")
 
         # Bulk cache this batch
         if batch_scores:
