@@ -1483,3 +1483,58 @@ async def get_ascent_analytics(
         response["message"] = "No tick data available yet for this route."
 
     return response
+
+
+# =============================================================================
+# ADMIN ENDPOINTS - Cache Management
+# =============================================================================
+
+@router.post("/admin/trigger-cache-population")
+async def trigger_cache_population(
+    target_date: Optional[str] = Query(None, description="Specific date (YYYY-MM-DD) or leave empty for 7-day run"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Manually trigger safety score cache population.
+
+    This runs the pre-computation directly (not via Celery worker).
+    Use for initial population or cache refresh.
+
+    **Options:**
+    - No params: Compute all 7 days (takes 10-20 minutes)
+    - `target_date=2026-02-05`: Compute single date (takes 2-3 minutes)
+
+    **Returns:** Statistics about the computation run.
+    """
+    from app.tasks.safety_computation import (
+        _compute_all_safety_scores_async,
+        _compute_single_date_async,
+    )
+
+    logger.info("=" * 60)
+    logger.info("MANUAL CACHE POPULATION TRIGGERED VIA API")
+    logger.info("=" * 60)
+
+    try:
+        if target_date:
+            # Single date mode
+            logger.info(f"Computing safety scores for: {target_date}")
+            result = await _compute_single_date_async(target_date)
+        else:
+            # Full 7-day mode
+            logger.info("Computing safety scores for next 7 days...")
+            result = await _compute_all_safety_scores_async()
+
+        logger.info(f"Cache population complete: {result}")
+        return {
+            "status": "success",
+            "message": "Cache population completed",
+            "result": result,
+        }
+
+    except Exception as e:
+        logger.error(f"Cache population failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Cache population failed: {str(e)}"
+        )
