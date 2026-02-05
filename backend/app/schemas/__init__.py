@@ -1,18 +1,6 @@
 """
 Pydantic schemas export.
 """
-from app.schemas.mountain import (
-    MountainBase,
-    MountainResponse,
-    MountainListResponse,
-    MountainDetail,
-)
-from app.schemas.route import (
-    RouteBase,
-    RouteResponse,
-    RouteListResponse,
-    RouteDetail,
-)
 from app.schemas.accident import (
     AccidentBase,
     AccidentResponse,
@@ -36,16 +24,6 @@ from app.schemas.mp_route import (
 )
 
 __all__ = [
-    # Mountains (legacy)
-    "MountainBase",
-    "MountainResponse",
-    "MountainListResponse",
-    "MountainDetail",
-    # Routes (legacy)
-    "RouteBase",
-    "RouteResponse",
-    "RouteListResponse",
-    "RouteDetail",
     # Accidents
     "AccidentBase",
     "AccidentResponse",
