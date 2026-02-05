@@ -1617,3 +1617,58 @@ async def get_task_status(task_id: str):
             status_code=500,
             detail=f"Failed to get task status: {str(e)}"
         )
+
+
+@router.get("/mp-routes/admin/queue-info")
+async def get_queue_info():
+    """
+    Get info about Celery queue and purge stale tasks if needed.
+    """
+    from app.celery_app import celery_app
+    import redis
+    from app.config import settings
+
+    try:
+        # Connect to Redis directly to inspect queue
+        r = redis.from_url(settings.REDIS_URL)
+
+        # Get queue length
+        queue_length = r.llen("celery")
+
+        # Get active workers
+        inspect = celery_app.control.inspect()
+        active_workers = inspect.active()
+        registered = inspect.registered()
+
+        return {
+            "queue_length": queue_length,
+            "active_workers": active_workers,
+            "registered_tasks": registered,
+            "redis_connected": True,
+        }
+    except Exception as e:
+        return {
+            "error": str(e),
+            "redis_connected": False,
+        }
+
+
+@router.get("/mp-routes/admin/purge-queue")
+async def purge_queue():
+    """
+    Purge all pending tasks from the Celery queue.
+    Use with caution - this removes ALL queued tasks.
+    """
+    from app.celery_app import celery_app
+
+    try:
+        purged = celery_app.control.purge()
+        return {
+            "status": "purged",
+            "tasks_removed": purged,
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+        }
