@@ -1489,7 +1489,7 @@ async def get_ascent_analytics(
 # ADMIN ENDPOINTS - Cache Management
 # =============================================================================
 
-@router.get("/admin/trigger-cache-population")
+@router.get("/mp-routes/admin/trigger-cache-population")
 async def trigger_cache_population(
     target_date: Optional[str] = Query(None, description="Specific date (YYYY-MM-DD) or leave empty for 7-day run"),
     db: AsyncSession = Depends(get_db),
