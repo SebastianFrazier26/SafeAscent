@@ -20,7 +20,7 @@ from typing import List, Dict, Optional, Tuple
 import logging
 import time
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.celery_app import celery_app
 from app.db.session import AsyncSessionLocal
@@ -156,16 +156,22 @@ async def _compute_all_safety_scores_async() -> dict:
             "successful": 0,
             "failed": 0,
             "cached": 0,
+            "historical_saved": 0,
         }
+
+        # Ensure historical_predictions table exists (for today's save)
+        await _ensure_historical_predictions_table(db)
 
         # Process each date
         for target_date in dates_to_compute:
             date_str = target_date.isoformat()
             date_start = time.time()
-            logger.info(f"Processing date: {date_str}")
+            is_today = (target_date == today)
+            logger.info(f"Processing date: {date_str}{' (saving to historical)' if is_today else ''}")
 
             date_stats = await _compute_safety_for_date_parallel(
-                db, routes, target_date, total_routes
+                db, routes, target_date, total_routes,
+                save_to_historical=is_today,  # Only save today's predictions for trends
             )
 
             stats["successful"] += date_stats["successful"]
@@ -237,7 +243,8 @@ async def _compute_safety_for_date_parallel(
     db,
     routes: List,
     target_date: date,
-    total_routes: int
+    total_routes: int,
+    save_to_historical: bool = False,
 ) -> Dict:
     """
     Compute safety scores for all routes for a single date using PARALLEL processing.
@@ -292,6 +299,10 @@ async def _compute_safety_for_date_parallel(
         if batch_scores:
             set_bulk_cached_safety_scores(batch_scores, date_str)
 
+            # Also save to historical_predictions for trend analysis
+            if save_to_historical:
+                await _save_batch_to_historical_predictions(db, batch_scores, target_date)
+
         # Progress logging
         processed = batch_start + len(batch)
         if processed % LOG_INTERVAL == 0 or processed == total_routes:
@@ -303,6 +314,80 @@ async def _compute_safety_for_date_parallel(
         "failed": failed,
         "cached": successful,
     }
+
+
+async def _ensure_historical_predictions_table(db):
+    """Create historical_predictions table if it doesn't exist."""
+    await db.execute(text("""
+        CREATE TABLE IF NOT EXISTS historical_predictions (
+            id SERIAL PRIMARY KEY,
+            route_id INTEGER NOT NULL,
+            prediction_date DATE NOT NULL,
+            risk_score FLOAT NOT NULL,
+            confidence FLOAT NOT NULL,
+            color_code VARCHAR(10) NOT NULL,
+            calculated_at TIMESTAMP DEFAULT NOW(),
+            UNIQUE(route_id, prediction_date)
+        )
+    """))
+    await db.execute(text("""
+        CREATE INDEX IF NOT EXISTS idx_historical_predictions_route
+            ON historical_predictions(route_id)
+    """))
+    await db.execute(text("""
+        CREATE INDEX IF NOT EXISTS idx_historical_predictions_date
+            ON historical_predictions(prediction_date)
+    """))
+    await db.commit()
+
+
+async def _save_batch_to_historical_predictions(
+    db,
+    batch_scores: Dict[int, Dict],
+    target_date: date,
+) -> int:
+    """
+    Save a batch of predictions to historical_predictions table.
+
+    Uses UPSERT to handle duplicates (updates if exists).
+    Only saves for TODAY's date to build historical trends.
+
+    Returns count of saved records.
+    """
+    if not batch_scores:
+        return 0
+
+    # Build batch insert with ON CONFLICT UPDATE
+    values_list = []
+    params = {}
+    for i, (route_id, score) in enumerate(batch_scores.items()):
+        values_list.append(f"(:route_id_{i}, :date_{i}, :risk_{i}, :conf_{i}, :color_{i})")
+        params[f"route_id_{i}"] = route_id
+        params[f"date_{i}"] = target_date
+        params[f"risk_{i}"] = score["risk_score"]
+        params[f"conf_{i}"] = score["confidence"]
+        params[f"color_{i}"] = score["color_code"]
+
+    values_sql = ", ".join(values_list)
+
+    try:
+        await db.execute(text(f"""
+            INSERT INTO historical_predictions
+                (route_id, prediction_date, risk_score, confidence, color_code)
+            VALUES {values_sql}
+            ON CONFLICT (route_id, prediction_date)
+            DO UPDATE SET
+                risk_score = EXCLUDED.risk_score,
+                confidence = EXCLUDED.confidence,
+                color_code = EXCLUDED.color_code,
+                calculated_at = NOW()
+        """), params)
+        await db.commit()
+        return len(batch_scores)
+    except Exception as e:
+        logger.error(f"Failed to save to historical_predictions: {e}")
+        await db.rollback()
+        return 0
 
 
 @celery_app.task(name="app.tasks.safety_computation.compute_safety_for_single_date")
@@ -354,9 +439,18 @@ async def _compute_single_date_async(date_str: str) -> dict:
         routes = result.fetchall()
 
         total_routes = len(routes)
-        logger.info(f"Processing {total_routes:,} routes for {date_str}")
 
-        stats = await _compute_safety_for_date_parallel(db, routes, target_date, total_routes)
+        # Save to historical if processing today's date
+        is_today = (target_date == date.today())
+        if is_today:
+            await _ensure_historical_predictions_table(db)
+
+        logger.info(f"Processing {total_routes:,} routes for {date_str}{' (saving to historical)' if is_today else ''}")
+
+        stats = await _compute_safety_for_date_parallel(
+            db, routes, target_date, total_routes,
+            save_to_historical=is_today,
+        )
 
         elapsed = time.time() - start_time
         cache_stats = get_safety_cache_stats(date_str)

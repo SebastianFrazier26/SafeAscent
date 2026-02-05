@@ -437,15 +437,44 @@ async def get_mp_route(
     Get detailed information about a specific MP route.
 
     - **mp_route_id**: Mountain Project route ID
-    """
-    query = select(MpRoute).where(MpRoute.mp_route_id == mp_route_id)
-    result = await db.execute(query)
-    route = result.scalar_one_or_none()
 
-    if not route:
+    Returns route data including parent location name for display.
+    """
+    # Join with MpLocation to get location name and coordinates
+    query = (
+        select(
+            MpRoute,
+            MpLocation.name.label("location_name"),
+            MpLocation.latitude.label("loc_lat"),
+            MpLocation.longitude.label("loc_lon"),
+        )
+        .outerjoin(MpLocation, MpRoute.location_id == MpLocation.mp_id)
+        .where(MpRoute.mp_route_id == mp_route_id)
+    )
+    result = await db.execute(query)
+    row = result.first()
+
+    if not row:
         raise HTTPException(status_code=404, detail="Route not found")
 
-    return MpRouteDetail.model_validate(route)
+    route, location_name, loc_lat, loc_lon = row
+
+    # Build response with location name
+    route_data = MpRouteDetail.model_validate(route)
+    route_data.location_name = location_name
+
+    # Fetch elevation from coordinates (use location coords if route coords missing)
+    lat = route.latitude or loc_lat
+    lon = route.longitude or loc_lon
+    if lat and lon:
+        from app.services.elevation_service import fetch_elevation
+        elevation = fetch_elevation(lat, lon)
+        route_data.elevation_meters = elevation
+        # Also ensure lat/lon are set in response
+        route_data.latitude = lat
+        route_data.longitude = lon
+
+    return route_data
 
 
 @router.post("/mp-routes/{mp_route_id}/safety", response_model=MpRouteSafetyResponse)
@@ -942,11 +971,19 @@ async def get_seasonal_patterns(
         raise HTTPException(status_code=400, detail="Route's location missing GPS coordinates")
 
     # Get monthly accident counts using geographic proximity (~50km radius)
+    # Risk score calculated from injury severity:
+    #   fatal=100, serious=80, moderate=60, minor=40, unknown=30
     monthly_query = text("""
         SELECT
             EXTRACT(MONTH FROM a.date) as month,
             COUNT(*) as accident_count,
-            AVG(50.0) as avg_risk_score,
+            AVG(CASE
+                WHEN LOWER(a.injury_severity) LIKE '%fatal%' OR LOWER(a.injury_severity) LIKE '%death%' THEN 100
+                WHEN LOWER(a.injury_severity) LIKE '%serious%' OR LOWER(a.injury_severity) LIKE '%severe%' THEN 80
+                WHEN LOWER(a.injury_severity) LIKE '%moderate%' THEN 60
+                WHEN LOWER(a.injury_severity) LIKE '%minor%' OR LOWER(a.injury_severity) LIKE '%light%' THEN 40
+                ELSE 30
+            END) as avg_risk_score,
             AVG(CURRENT_DATE - a.date) as avg_days_ago
         FROM accidents a
         WHERE a.date IS NOT NULL

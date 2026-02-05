@@ -444,7 +444,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
     // Build CSV with key metrics
     let csv = 'SafeAscent Route Analytics Export\n\n';
     csv += `Route Name,${routeData.name}\n`;
-    csv += `Mountain,${routeData.mountain_name}\n`;
+    csv += `Location,${data.routeDetails?.location_name || routeData.mountain_name || 'Unknown'}\n`;
     csv += `Type,${routeData.type}\n`;
     csv += `Grade,${routeData.grade}\n`;
     csv += `Risk Score,${routeData.risk_score}\n`;
@@ -501,7 +501,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
               {routeData.name}
             </Typography>
             <Typography variant="body2" sx={{ opacity: 0.9, mt: 0.5 }}>
-              {routeData.mountain_name} • {routeData.type} • Grade {routeData.grade}
+              {data.routeDetails?.location_name || routeData.mountain_name || 'Unknown'} • {routeData.type} • Grade {routeData.grade}
             </Typography>
           </Box>
           <Chip
@@ -824,8 +824,8 @@ function RouteDetailsTab({ data, loading, routeData }) {
                 <Typography variant="body1" fontWeight={500}>{details.name}</Typography>
               </Grid>
               <Grid size={6}>
-                <Typography variant="body2" color="text.secondary">Mountain</Typography>
-                <Typography variant="body1" fontWeight={500}>{details.mountain_name}</Typography>
+                <Typography variant="body2" color="text.secondary">Location</Typography>
+                <Typography variant="body1" fontWeight={500}>{details.location_name || details.mountain_name || 'Unknown'}</Typography>
               </Grid>
               <Grid size={6}>
                 <Typography variant="body2" color="text.secondary">Route Type</Typography>
@@ -838,11 +838,11 @@ function RouteDetailsTab({ data, loading, routeData }) {
               <Grid size={6}>
                 <Typography variant="body2" color="text.secondary">Elevation</Typography>
                 <Typography variant="body1" fontWeight={500}>
-                  {details.elevation_meters ? `${Math.round(details.elevation_meters * 3.28084)} ft` : 'N/A'}
+                  {details.elevation_meters ? `${Math.round(details.elevation_meters * 3.28084)} ft (${Math.round(details.elevation_meters)}m)` : 'N/A'}
                 </Typography>
               </Grid>
               <Grid size={6}>
-                <Typography variant="body2" color="text.secondary">Location</Typography>
+                <Typography variant="body2" color="text.secondary">Coordinates</Typography>
                 <Typography variant="body1" fontWeight={500}>
                   {details.latitude?.toFixed(4)}, {details.longitude?.toFixed(4)}
                 </Typography>
@@ -867,12 +867,26 @@ function RouteDetailsTab({ data, loading, routeData }) {
                 <Typography variant="body2" color="text.secondary">Route Type</Typography>
                 <Typography variant="body1" fontWeight={500}>{details.type}</Typography>
               </Grid>
-              <Grid size={12}>
-                <Typography variant="body2" color="text.secondary">Description</Typography>
-                <Typography variant="body2">
-                  {details.description || 'No description available'}
-                </Typography>
-              </Grid>
+              {details.url && (
+                <Grid size={12}>
+                  <Typography variant="body2" color="text.secondary">Mountain Project</Typography>
+                  <Typography
+                    variant="body1"
+                    component="a"
+                    href={details.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    sx={{
+                      color: 'primary.main',
+                      textDecoration: 'none',
+                      fontWeight: 500,
+                      '&:hover': { textDecoration: 'underline' }
+                    }}
+                  >
+                    View on Mountain Project ↗
+                  </Typography>
+                </Grid>
+              )}
             </Grid>
           </CardContent>
         </Card>
@@ -885,7 +899,7 @@ function RouteDetailsTab({ data, loading, routeData }) {
               🗺️ Location Details
             </Typography>
             <Typography variant="body2" color="text.secondary" paragraph>
-              This route is located on {details.mountain_name} at coordinates {details.latitude?.toFixed(4)}, {details.longitude?.toFixed(4)}.
+              This route is located in {details.location_name || details.mountain_name || 'the area'} at coordinates {details.latitude?.toFixed(4)}, {details.longitude?.toFixed(4)}.
               {details.elevation_meters && ` The route reaches an elevation of approximately ${Math.round(details.elevation_meters * 3.28084)} feet.`}
             </Typography>
             {details.approach_notes && (
@@ -926,7 +940,7 @@ function AccidentsTab({ data, loading, routeData }) {
   return (
     <Box>
       <Typography variant="h6" gutterBottom fontWeight={600}>
-        ⚠️ Accident Reports for {routeData.mountain_name}
+        ⚠️ Accident Reports for {data.location_name || routeData.mountain_name || routeData.name}
       </Typography>
       <Typography variant="body2" color="text.secondary" paragraph>
         Showing {displayedAccidents.length} of {data.accidents.length} accidents.
