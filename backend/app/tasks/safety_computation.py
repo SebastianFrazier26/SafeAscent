@@ -32,7 +32,6 @@ from app.api.v1.mp_routes import normalize_route_type, get_safety_color_code
 from app.utils.cache import (
     set_bulk_cached_safety_scores,
     get_safety_cache_stats,
-    SAFETY_SCORE_TTL,
 )
 
 logger = logging.getLogger(__name__)
