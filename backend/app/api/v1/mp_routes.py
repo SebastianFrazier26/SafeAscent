@@ -1529,23 +1529,21 @@ async def get_ascent_analytics(
 @router.get("/mp-routes/admin/trigger-cache-population")
 async def trigger_cache_population(
     target_date: Optional[str] = Query(None, description="Specific date (YYYY-MM-DD) or leave empty for 7-day run"),
-    db: AsyncSession = Depends(get_db),
 ):
     """
-    Manually trigger safety score cache population.
+    Manually trigger safety score cache population via Celery background task.
 
-    This runs the pre-computation directly (not via Celery worker).
-    Use for initial population or cache refresh.
+    Returns immediately with task ID. Check Railway logs for progress.
 
     **Options:**
     - No params: Compute all 7 days (takes 10-20 minutes)
     - `target_date=2026-02-05`: Compute single date (takes 2-3 minutes)
 
-    **Returns:** Statistics about the computation run.
+    **Returns:** Task ID and status message (task runs in background).
     """
     from app.tasks.safety_computation import (
-        _compute_all_safety_scores_async,
-        _compute_single_date_async,
+        compute_daily_safety_scores,
+        compute_safety_for_single_date,
     )
 
     logger.info("=" * 60)
@@ -1554,24 +1552,29 @@ async def trigger_cache_population(
 
     try:
         if target_date:
-            # Single date mode
-            logger.info(f"Computing safety scores for: {target_date}")
-            result = await _compute_single_date_async(target_date)
+            # Single date mode - trigger Celery task
+            logger.info(f"Triggering Celery task for date: {target_date}")
+            task = compute_safety_for_single_date.delay(target_date)
+            return {
+                "status": "started",
+                "message": f"Cache population started for {target_date}. Check Railway logs for progress.",
+                "task_id": task.id,
+                "target_date": target_date,
+            }
         else:
-            # Full 7-day mode
-            logger.info("Computing safety scores for next 7 days...")
-            result = await _compute_all_safety_scores_async()
-
-        logger.info(f"Cache population complete: {result}")
-        return {
-            "status": "success",
-            "message": "Cache population completed",
-            "result": result,
-        }
+            # Full 7-day mode - trigger Celery task
+            logger.info("Triggering Celery task for 7-day computation...")
+            task = compute_daily_safety_scores.delay()
+            return {
+                "status": "started",
+                "message": "Full 7-day cache population started. Check Railway logs for progress.",
+                "task_id": task.id,
+                "estimated_time": "10-20 minutes",
+            }
 
     except Exception as e:
-        logger.error(f"Cache population failed: {e}", exc_info=True)
+        logger.error(f"Failed to trigger cache population: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Cache population failed: {str(e)}"
+            detail=f"Failed to trigger cache population: {str(e)}"
         )
