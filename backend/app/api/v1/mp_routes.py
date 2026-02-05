@@ -7,7 +7,7 @@ from typing import Optional
 from datetime import date, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, text
+from sqlalchemy import select, func, text, or_, and_, not_
 import logging
 import calendar
 
@@ -21,10 +21,19 @@ from app.schemas.mp_route import (
     MpRouteMapMarker,
     MpRouteMapResponse,
     MpRouteSafetyResponse,
+    MpRouteWithSafety,
+    MpRouteMapWithSafetyResponse,
+    MpRouteMapWithSafetyMeta,
+    SafetyScore,
 )
 from app.api.v1.predict import predict_route_safety
 from app.schemas.prediction import PredictionRequest
-from app.utils.cache import cache_get, cache_set, build_safety_score_key
+from app.utils.cache import (
+    cache_get,
+    cache_set,
+    build_safety_score_key,
+    get_bulk_cached_safety_scores,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -195,6 +204,10 @@ async def get_mp_routes_for_map(
     max_lat: Optional[float] = Query(None, description="Maximum latitude (bounding box)"),
     min_lon: Optional[float] = Query(None, description="Minimum longitude (bounding box)"),
     max_lon: Optional[float] = Query(None, description="Maximum longitude (bounding box)"),
+    season: Optional[str] = Query(
+        "rock",
+        description="Filter by season: 'rock' (default) or 'winter' (ice/mixed routes)"
+    ),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -204,6 +217,7 @@ async def get_mp_routes_for_map(
     Coordinates are inherited from the route's parent location.
 
     - **min_lat, max_lat, min_lon, max_lon**: Optional bounding box to filter routes
+    - **season**: 'rock' (default) returns all non-ice routes, 'winter' returns ice/mixed routes
     """
     # Join routes with locations to get coordinates from parent location
     # Routes inherit coordinates from their location_id
@@ -223,6 +237,24 @@ async def get_mp_routes_for_map(
             MpLocation.longitude.isnot(None)
         )
     )
+
+    # Apply season filter (server-side route type filtering)
+    # Winter = ice or mixed routes, Rock = everything else
+    if season == "winter":
+        query = query.where(
+            or_(
+                func.lower(MpRoute.type).contains('ice'),
+                func.lower(MpRoute.type).contains('mixed')
+            )
+        )
+    else:
+        # Default: rock routes (everything except ice/mixed)
+        query = query.where(
+            and_(
+                not_(func.lower(MpRoute.type).contains('ice')),
+                not_(func.lower(MpRoute.type).contains('mixed'))
+            )
+        )
 
     # Apply bounding box filter if provided
     if all([min_lat, max_lat, min_lon, max_lon]):
@@ -254,6 +286,145 @@ async def get_mp_routes_for_map(
     return MpRouteMapResponse(
         total=len(routes),
         routes=routes
+    )
+
+
+# ============================================================================
+# BULK SAFETY ENDPOINT - Returns routes with pre-computed safety scores
+# ============================================================================
+
+@router.get("/mp-routes/map-with-safety", response_model=MpRouteMapWithSafetyResponse)
+async def get_mp_routes_with_safety(
+    target_date: date = Query(
+        default=None,
+        description="Target date for safety calculation (YYYY-MM-DD). Defaults to today."
+    ),
+    season: Optional[str] = Query(
+        "rock",
+        description="Filter by season: 'rock' (default) or 'winter' (ice/mixed routes)"
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get all MP routes with PRE-COMPUTED safety scores in a single request.
+
+    This is the primary endpoint for the map view - it returns route data
+    with safety scores already embedded, eliminating the need for individual
+    safety API calls per route.
+
+    Safety scores are pre-computed nightly at 2am UTC and cached in Redis.
+    If a score is not cached (cache miss), it returns safety=None for that route.
+
+    **Performance**: This endpoint returns ~168K routes with safety scores in
+    a single response (~2-3 seconds) instead of requiring 168K individual
+    safety API calls (~76 hours).
+
+    - **target_date**: Date for safety calculation (default: today)
+    - **season**: 'rock' (default) returns all non-ice routes, 'winter' returns ice/mixed routes
+    """
+    from datetime import date as date_type
+
+    # Default to today if no date provided
+    if target_date is None:
+        target_date = date_type.today()
+
+    date_str = target_date.isoformat()
+
+    # Query routes with coordinates (same as /mp-routes/map)
+    query = (
+        select(
+            MpRoute.mp_route_id,
+            MpRoute.name,
+            MpRoute.grade,
+            MpRoute.type,
+            MpRoute.location_id,
+            MpLocation.latitude,
+            MpLocation.longitude,
+        )
+        .join(MpLocation, MpRoute.location_id == MpLocation.mp_id)
+        .where(
+            MpLocation.latitude.isnot(None),
+            MpLocation.longitude.isnot(None)
+        )
+    )
+
+    # Apply season filter
+    if season == "winter":
+        query = query.where(
+            or_(
+                func.lower(MpRoute.type).contains('ice'),
+                func.lower(MpRoute.type).contains('mixed')
+            )
+        )
+    else:
+        # Default: rock routes (everything except ice/mixed)
+        query = query.where(
+            and_(
+                not_(func.lower(MpRoute.type).contains('ice')),
+                not_(func.lower(MpRoute.type).contains('mixed'))
+            )
+        )
+
+    result = await db.execute(query)
+    rows = result.fetchall()
+
+    # Extract route IDs for bulk cache lookup
+    route_ids = [row.mp_route_id for row in rows]
+
+    # Bulk fetch safety scores from cache (single Redis MGET call)
+    cached_scores = get_bulk_cached_safety_scores(route_ids, date_str)
+
+    # Build response with embedded safety scores
+    routes_with_safety = []
+    cached_count = 0
+    missing_count = 0
+
+    for row in rows:
+        # Get cached safety score if available
+        cached = cached_scores.get(row.mp_route_id)
+
+        if cached:
+            safety = SafetyScore(
+                risk_score=cached.get("risk_score", 0),
+                color_code=cached.get("color_code", "gray"),
+                status="cached"
+            )
+            cached_count += 1
+        else:
+            safety = None
+            missing_count += 1
+
+        routes_with_safety.append(
+            MpRouteWithSafety(
+                mp_route_id=row.mp_route_id,
+                name=row.name,
+                latitude=row.latitude,
+                longitude=row.longitude,
+                grade=row.grade,
+                type=row.type,
+                location_id=row.location_id,
+                safety=safety,
+            )
+        )
+
+    # Build metadata
+    meta = MpRouteMapWithSafetyMeta(
+        total_routes=len(routes_with_safety),
+        cached_routes=cached_count,
+        computed_routes=0,  # We don't compute on-demand in bulk endpoint
+        missing_routes=missing_count,
+        target_date=date_str,
+        season=season or "rock",
+    )
+
+    logger.info(
+        f"Bulk safety endpoint: {len(routes_with_safety)} routes, "
+        f"{cached_count} cached, {missing_count} missing for {date_str}"
+    )
+
+    return MpRouteMapWithSafetyResponse(
+        routes=routes_with_safety,
+        meta=meta,
     )
 
 

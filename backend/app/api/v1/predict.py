@@ -211,11 +211,12 @@ async def predict_route_safety(
     # Use route_elevation for weather stats (default to 3000m if unavailable)
     weather_stats_elevation = route_elevation if route_elevation is not None else 3000.0
 
-    historical_weather_stats = fetch_weather_statistics(
+    historical_weather_stats = await fetch_weather_statistics(
         latitude=request.latitude,
         longitude=request.longitude,
         elevation_meters=weather_stats_elevation,
         season=route_season,
+        db=db,  # Pass the async session to avoid blocking
     )
 
     # Step 6: Calculate safety prediction

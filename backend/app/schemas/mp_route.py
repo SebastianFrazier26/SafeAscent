@@ -75,3 +75,72 @@ class MpRouteSafetyResponse(BaseModel):
                 "color_code": "yellow"
             }
         }
+
+
+# ============================================================================
+# BULK SAFETY ENDPOINT SCHEMAS
+# ============================================================================
+
+class SafetyScore(BaseModel):
+    """Embedded safety score for a route."""
+    risk_score: float
+    color_code: str
+    status: str = "cached"  # 'cached' or 'computed'
+
+
+class MpRouteWithSafety(BaseModel):
+    """Route data with embedded safety score for bulk endpoint."""
+    mp_route_id: int
+    name: str
+    latitude: float
+    longitude: float
+    grade: Optional[str] = None
+    type: Optional[str] = None
+    location_id: Optional[int] = None
+    safety: Optional[SafetyScore] = None  # None if no score available
+
+
+class MpRouteMapWithSafetyMeta(BaseModel):
+    """Metadata about the bulk safety response."""
+    total_routes: int
+    cached_routes: int
+    computed_routes: int
+    missing_routes: int
+    target_date: str
+    season: str
+
+
+class MpRouteMapWithSafetyResponse(BaseModel):
+    """Response for bulk map-with-safety endpoint."""
+    routes: list[MpRouteWithSafety]
+    meta: MpRouteMapWithSafetyMeta
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "routes": [
+                    {
+                        "mp_route_id": 105748391,
+                        "name": "The Nose",
+                        "latitude": 37.73,
+                        "longitude": -119.64,
+                        "grade": "5.9",
+                        "type": "Trad",
+                        "location_id": 12345,
+                        "safety": {
+                            "risk_score": 45.2,
+                            "color_code": "yellow",
+                            "status": "cached"
+                        }
+                    }
+                ],
+                "meta": {
+                    "total_routes": 168055,
+                    "cached_routes": 167000,
+                    "computed_routes": 1000,
+                    "missing_routes": 55,
+                    "target_date": "2026-02-04",
+                    "season": "rock"
+                }
+            }
+        }

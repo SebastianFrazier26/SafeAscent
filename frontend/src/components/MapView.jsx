@@ -58,10 +58,7 @@ export default function MapView({ selectedRouteForZoom }) {
   const [safetyData, setSafetyData] = useState(null);
   const [_loadingSafety, setLoadingSafety] = useState(false);
 
-  // Track if we've fetched initial safety scores
-  const hasInitialScoresRef = useRef(false);
-
-  // Track safety score loading progress
+  // Track safety score loading progress (now just for display, bulk fetch is fast)
   const [safetyLoadingProgress, setSafetyLoadingProgress] = useState({ loaded: 0, total: 0, isLoading: false });
 
   // Map view mode: 'clusters' (navigation) or 'risk' (risk coverage overlay)
@@ -70,53 +67,19 @@ export default function MapView({ selectedRouteForZoom }) {
   // Hover state for showing route names on hover
   const [hoveredRoute, setHoveredRoute] = useState(null);
 
-  // Season filter: 'all', 'summer' (rock routes), or 'winter' (ice/mixed routes)
-  const [seasonFilter, setSeasonFilter] = useState('all');
+  // Season filter: 'rock' (default) or 'winter' (ice/mixed routes)
+  const [seasonFilter, setSeasonFilter] = useState('rock');
 
   /**
-   * Filter routes by season (summer = rock, winter = ice/mixed)
-   * Also excludes boulder routes as they don't share the same safety risk factors.
-   * Memoized to avoid recalculating on every render
+   * Routes are now filtered server-side via the `season` query parameter.
+   * This useMemo just passes through the data, but is kept for potential
+   * future client-side filtering needs.
    */
   const filteredRoutes = useMemo(() => {
-    if (!routes) {
-      return routes;
-    }
-
-    const isBoulderRoute = (type) => {
-      const normalized = (type || '').toLowerCase();
-      return normalized === 'boulder' || normalized === 'bouldering';
-    };
-
-    const isWinterRoute = (type) => {
-      const normalized = (type || '').toLowerCase();
-      return normalized === 'ice' || normalized === 'mixed';
-    };
-
-    const filteredFeatures = routes.features.filter((feature) => {
-      const routeType = feature.properties.type;
-
-      // Always exclude boulder routes
-      if (isBoulderRoute(routeType)) {
-        return false;
-      }
-
-      // Apply season filter
-      if (seasonFilter === 'all') {
-        return true;
-      } else if (seasonFilter === 'winter') {
-        return isWinterRoute(routeType);
-      } else {
-        // summer: everything except ice/mixed (and boulders already filtered)
-        return !isWinterRoute(routeType);
-      }
-    });
-
-    return {
-      ...routes,
-      features: filteredFeatures,
-    };
-  }, [routes, seasonFilter]);
+    // Server-side filtering handles rock vs ice/mixed
+    // Boulder routes have been deleted from the database
+    return routes;
+  }, [routes]);
 
   /**
    * Compute map style based on season filter
@@ -130,17 +93,32 @@ export default function MapView({ selectedRouteForZoom }) {
   }, [seasonFilter]);
 
   /**
-   * Fetch all routes from API on mount and group by coordinates
+   * Fetch routes WITH pre-computed safety scores in a single request.
+   * Uses the bulk endpoint /mp-routes/map-with-safety which returns routes
+   * with safety scores already embedded - no need for individual API calls!
    */
   useEffect(() => {
-    const fetchRoutes = async () => {
+    const fetchRoutesWithSafety = async () => {
       try {
         setLoading(true);
-        const response = await fetch(`${API_BASE_URL}/mp-routes/map`);
+        setSafetyLoadingProgress({ loaded: 0, total: 0, isLoading: true });
+
+        // Format date for API
+        const dateStr = format(selectedDate, 'yyyy-MM-dd');
+
+        // BULK ENDPOINT: Returns routes WITH safety scores in single request
+        // This replaces 168K individual safety API calls with 1 request!
+        const response = await fetch(
+          `${API_BASE_URL}/mp-routes/map-with-safety?target_date=${dateStr}&season=${seasonFilter}`
+        );
         if (!response.ok) {
           throw new Error(`Failed to fetch routes: ${response.statusText}`);
         }
         const data = await response.json();
+
+        // Log metadata about cache status
+        const { meta } = data;
+        console.log(`📊 Bulk fetch stats: ${meta.cached_routes}/${meta.total_routes} cached, ${meta.missing_routes} missing`);
 
         // Group routes by coordinates to handle overlapping points
         const coordMap = new Map();
@@ -157,11 +135,15 @@ export default function MapView({ selectedRouteForZoom }) {
         // Convert to GeoJSON format with auto-spacing for overlapping routes
         const features = [];
         let overlappingRouteCount = 0;
+        let routesWithSafety = 0;
 
         coordMap.forEach((routesAtLocation, _coordKey) => {
           if (routesAtLocation.length === 1) {
             // Single route - use original coordinates
             const route = routesAtLocation[0];
+            const hasSafety = route.safety !== null;
+            if (hasSafety) routesWithSafety++;
+
             features.push({
               type: 'Feature',
               geometry: {
@@ -169,12 +151,15 @@ export default function MapView({ selectedRouteForZoom }) {
                 coordinates: [route.longitude, route.latitude],
               },
               properties: {
-                id: route.mp_route_id,  // Use mp_route_id as the primary ID
+                id: route.mp_route_id,
                 name: route.name,
-                grade: route.grade || 'N/A',  // mp_routes uses 'grade' not 'grade_yds'
+                grade: route.grade || 'N/A',
                 type: normalizeRouteTypeForDisplay(route.type),
                 mp_route_id: route.mp_route_id,
                 location_id: route.location_id,
+                // Safety scores embedded from bulk response!
+                color_code: hasSafety ? route.safety.color_code : 'gray',
+                risk_score: hasSafety ? route.safety.risk_score : null,
               },
             });
           } else {
@@ -182,26 +167,23 @@ export default function MapView({ selectedRouteForZoom }) {
             overlappingRouteCount += routesAtLocation.length;
             const numRoutes = routesAtLocation.length;
 
-            // Tight grid-based clustering (≈4.4m spacing instead of ≈11m circular spread)
-            // This keeps routes as close to actual location and each other as possible
             const baseOffset = 0.00004; // ~4.4 meters at equator
             const cols = Math.ceil(Math.sqrt(numRoutes));
             const rows = Math.ceil(numRoutes / cols);
 
-            // Center the grid on the actual coordinate
             const gridWidth = (cols - 1) * baseOffset;
             const gridHeight = (rows - 1) * baseOffset;
             const startLon = routesAtLocation[0].longitude - gridWidth / 2;
             const startLat = routesAtLocation[0].latitude - gridHeight / 2;
 
             routesAtLocation.forEach((route, index) => {
-              // Calculate grid position
               const col = index % cols;
               const row = Math.floor(index / cols);
-
-              // Apply grid offset from center
               const offsetLon = startLon + col * baseOffset;
               const offsetLat = startLat + row * baseOffset;
+
+              const hasSafety = route.safety !== null;
+              if (hasSafety) routesWithSafety++;
 
               features.push({
                 type: 'Feature',
@@ -210,12 +192,15 @@ export default function MapView({ selectedRouteForZoom }) {
                   coordinates: [offsetLon, offsetLat],
                 },
                 properties: {
-                  id: route.mp_route_id,  // Use mp_route_id as the primary ID
+                  id: route.mp_route_id,
                   name: route.name,
-                  grade: route.grade || 'N/A',  // mp_routes uses 'grade' not 'grade_yds'
+                  grade: route.grade || 'N/A',
                   type: normalizeRouteTypeForDisplay(route.type),
                   mp_route_id: route.mp_route_id,
                   location_id: route.location_id,
+                  // Safety scores embedded from bulk response!
+                  color_code: hasSafety ? route.safety.color_code : 'gray',
+                  risk_score: hasSafety ? route.safety.risk_score : null,
                 },
               });
             });
@@ -227,189 +212,25 @@ export default function MapView({ selectedRouteForZoom }) {
           features: features,
         };
 
-        console.log(`✅ Loaded ${geojson.features.length} routes for map display`);
+        console.log(`✅ Loaded ${geojson.features.length} ${seasonFilter} routes with ${routesWithSafety} safety scores`);
         if (overlappingRouteCount > 0) {
-          console.log(`📍 Auto-spaced ${overlappingRouteCount} overlapping routes in ${coordMap.size - (geojson.features.length - overlappingRouteCount)} locations`);
+          console.log(`📍 Auto-spaced ${overlappingRouteCount} overlapping routes`);
         }
 
         setRoutes(geojson);
         setError(null);
+        setSafetyLoadingProgress({ loaded: routesWithSafety, total: features.length, isLoading: false });
       } catch (err) {
         console.error('Error fetching routes:', err);
         setError(err.message);
+        setSafetyLoadingProgress({ loaded: 0, total: 0, isLoading: false });
       } finally {
         setLoading(false);
       }
     };
 
-    fetchRoutes();
-  }, []);
-
-  /**
-   * Fetch safety scores for ALL routes when routes first load
-   * This enables heatmap and cluster colors to work properly
-   */
-  useEffect(() => {
-    if (!routes || hasInitialScoresRef.current) return;
-
-    // Set ref IMMEDIATELY to prevent re-trigger
-    hasInitialScoresRef.current = true;
-
-    const fetchInitialSafetyScores = async () => {
-      const dateStr = format(selectedDate, 'yyyy-MM-dd');
-      // Fetch ALL routes for complete heatmap/cluster coverage
-      const allRoutes = routes.features;
-
-      console.log(`🎯 Fetching safety scores for ${allRoutes.length} routes on ${dateStr}...`);
-      console.log('⏳ This will take 1-2 minutes but enables full heatmap + cluster colors');
-
-      setSafetyLoadingProgress({ loaded: 0, total: allRoutes.length, isLoading: true });
-
-      const batchSize = 10;
-      const updatedFeatures = [...routes.features];
-      let successCount = 0;
-
-      for (let i = 0; i < allRoutes.length; i += batchSize) {
-        const batch = allRoutes.slice(i, i + batchSize);
-
-        await Promise.all(
-          batch.map(async (feature) => {
-            try {
-              const response = await fetch(
-                `${API_BASE_URL}/mp-routes/${feature.properties.id}/safety?target_date=${dateStr}`,
-                { method: 'POST' }
-              );
-
-              if (response.ok) {
-                const data = await response.json();
-                const featureIndex = updatedFeatures.findIndex(
-                  f => f.properties.id === feature.properties.id
-                );
-                if (featureIndex !== -1) {
-                  updatedFeatures[featureIndex] = {
-                    ...updatedFeatures[featureIndex],
-                    properties: {
-                      ...updatedFeatures[featureIndex].properties,
-                      color_code: data.color_code,
-                      risk_score: data.risk_score,
-                    }
-                  };
-                  successCount++;
-                }
-              } else {
-                console.warn(`HTTP ${response.status} for route ${feature.properties.id}`);
-              }
-            } catch (err) {
-              console.error(`Network error for route ${feature.properties.id}:`, err.message);
-            }
-          })
-        );
-
-        // Update progress every batch
-        setSafetyLoadingProgress({ loaded: Math.min(i + batchSize, allRoutes.length), total: allRoutes.length, isLoading: true });
-
-        // Update map incrementally every 10 batches (100 routes) for visual feedback
-        // Use callback form to avoid depending on routes state
-        if (i % 100 === 0 && i > 0) {
-          setRoutes(prevRoutes => ({
-            ...prevRoutes,
-            features: prevRoutes.features.map((f, idx) =>
-              updatedFeatures[idx] ? updatedFeatures[idx] : f
-            )
-          }));
-        }
-      }
-
-      // Final update - use callback form
-      setRoutes(prevRoutes => ({
-        ...prevRoutes,
-        features: updatedFeatures
-      }));
-
-      console.log(`✅ Loaded safety scores for ${successCount}/${allRoutes.length} routes`);
-      setSafetyLoadingProgress({ loaded: allRoutes.length, total: allRoutes.length, isLoading: false });
-    };
-
-    fetchInitialSafetyScores();
-  }, [routes]); // Only run when routes first loads
-
-  /**
-   * Re-fetch safety scores when selected date changes
-   */
-  useEffect(() => {
-    if (!routes || !selectedDate || !hasInitialScoresRef.current) return;
-
-    const fetchSafetyScores = async () => {
-      const dateStr = format(selectedDate, 'yyyy-MM-dd');
-      // Get route count from current state
-      const routeCount = routes.features.length;
-
-      console.log(`📅 Date changed - fetching safety scores for ${routeCount} routes on ${dateStr}...`);
-
-      setSafetyLoadingProgress({ loaded: 0, total: routeCount, isLoading: true });
-
-      const batchSize = 10;
-      let successCount = 0;
-
-      // Work with indices instead of copying the array
-      for (let i = 0; i < routeCount; i += batchSize) {
-        const batchEnd = Math.min(i + batchSize, routeCount);
-        const batchPromises = [];
-
-        for (let j = i; j < batchEnd; j++) {
-          batchPromises.push(
-            (async (index) => {
-              try {
-                const featureId = routes.features[index].properties.id;
-                const response = await fetch(
-                  `${API_BASE_URL}/mp-routes/${featureId}/safety?target_date=${dateStr}`,
-                  { method: 'POST' }
-                );
-
-                if (response.ok) {
-                  const data = await response.json();
-                  return { index, data };
-                }
-              } catch (err) {
-                console.error(`Network error for route at index ${index}:`, err.message);
-              }
-              return null;
-            })(j)
-          );
-        }
-
-        const batchResults = await Promise.all(batchPromises);
-
-        // Update routes using callback form to avoid stale state
-        setRoutes(prevRoutes => {
-          const updatedFeatures = [...prevRoutes.features];
-          batchResults.forEach(result => {
-            if (result) {
-              updatedFeatures[result.index] = {
-                ...updatedFeatures[result.index],
-                properties: {
-                  ...updatedFeatures[result.index].properties,
-                  color_code: result.data.color_code,
-                  risk_score: result.data.risk_score,
-                }
-              };
-              successCount++;
-            }
-          });
-          return { ...prevRoutes, features: updatedFeatures };
-        });
-
-        // Update progress
-        setSafetyLoadingProgress({ loaded: batchEnd, total: routeCount, isLoading: true });
-      }
-
-      console.log(`✅ Updated ${successCount}/${routeCount} routes with new safety colors`);
-      setSafetyLoadingProgress({ loaded: routeCount, total: routeCount, isLoading: false });
-    };
-
-    const timeout = setTimeout(fetchSafetyScores, 500);
-    return () => clearTimeout(timeout);
-  }, [selectedDate]); // Only depend on date changes
+    fetchRoutesWithSafety();
+  }, [seasonFilter, selectedDate]); // Re-fetch when season or date changes
 
   /**
    * Handle zoom to route or mountain from search
@@ -1054,26 +875,21 @@ export default function MapView({ selectedRouteForZoom }) {
             sx={{
               mb: 0.5,
               '& .MuiToggleButton-root': {
-                fontSize: '0.7rem',
+                fontSize: '0.8rem',
                 py: 0.5,
-                px: 1,
+                px: 2,
               }
             }}
           >
-            <ToggleButton value="all">
-              All
-            </ToggleButton>
-            <ToggleButton value="summer">
-              ☀️ Summer
+            <ToggleButton value="rock">
+              🪨 Rock
             </ToggleButton>
             <ToggleButton value="winter">
-              ❄️ Winter
+              ❄️ Ice
             </ToggleButton>
           </ToggleButtonGroup>
           <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: '0.65rem', lineHeight: 1.25 }}>
-            {seasonFilter === 'all'
-              ? 'All roped routes (no boulders)'
-              : seasonFilter === 'summer'
+            {seasonFilter === 'rock'
               ? 'Rock routes (alpine, trad, sport, aid)'
               : 'Ice & mixed routes'}
           </Typography>
@@ -1188,9 +1004,8 @@ export default function MapView({ selectedRouteForZoom }) {
           >
             <Typography variant="caption" color="text.secondary">
               📍 <Box component="span" fontWeight={600}>
-                {filteredRoutes?.features?.length || 0}
-                {seasonFilter !== 'all' && routes && ` / ${routes.features.length}`}
-              </Box> routes {seasonFilter !== 'all' ? 'shown' : 'loaded'}
+                {filteredRoutes?.features?.length?.toLocaleString() || 0}
+              </Box> {seasonFilter === 'rock' ? 'rock' : 'ice'} routes loaded
             </Typography>
           </Paper>
         )}

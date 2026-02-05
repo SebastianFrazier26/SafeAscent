@@ -4,7 +4,7 @@ Redis Cache Service
 Provides caching functionality for expensive operations:
 - Weather API calls (Open-Meteo)
 - Database queries (weather statistics)
-- Prediction results (future)
+- Pre-computed safety scores (nightly batch job)
 
 Uses Redis for fast in-memory storage with automatic expiration (TTL).
 Fails gracefully if Redis is unavailable (returns None, logs warning).
@@ -12,7 +12,8 @@ Fails gracefully if Redis is unavailable (returns None, logs warning).
 import redis
 import json
 import logging
-from typing import Optional, Any
+from typing import Optional, Any, Dict, List
+from urllib.parse import urlparse
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -20,10 +21,16 @@ logger = logging.getLogger(__name__)
 # Redis connection (lazy initialization)
 _redis_client: Optional[redis.Redis] = None
 
+# Cache TTL constants
+SAFETY_SCORE_TTL = 7 * 24 * 60 * 60  # 7 days in seconds (we compute 7 days ahead)
+WEATHER_PATTERN_TTL = 6 * 60 * 60    # 6 hours for weather data
+WEATHER_STATS_TTL = 24 * 60 * 60     # 24 hours for weather statistics
+
 
 def get_redis_client() -> Optional[redis.Redis]:
     """
     Get Redis client connection (singleton pattern).
+    Uses REDIS_URL from settings/environment for production compatibility.
 
     Returns:
         Redis client if connection successful, None if Redis unavailable
@@ -32,17 +39,25 @@ def get_redis_client() -> Optional[redis.Redis]:
 
     if _redis_client is None:
         try:
+            # Import settings here to avoid circular imports
+            from app.config import settings
+
+            # Parse Redis URL (supports both localhost and Railway format)
+            redis_url = settings.REDIS_URL
+            parsed = urlparse(redis_url)
+
             _redis_client = redis.Redis(
-                host='localhost',
-                port=6379,
-                db=0,
+                host=parsed.hostname or 'localhost',
+                port=parsed.port or 6379,
+                db=int(parsed.path.lstrip('/') or 0) if parsed.path else 0,
+                password=parsed.password,
                 decode_responses=True,  # Return strings instead of bytes
                 socket_connect_timeout=2,  # Fail fast if Redis is down
                 socket_timeout=2,
             )
             # Test connection
             _redis_client.ping()
-            logger.info("Redis connection established successfully")
+            logger.info(f"Redis connection established: {parsed.hostname}:{parsed.port}")
         except (redis.ConnectionError, redis.TimeoutError) as e:
             logger.warning(f"Redis unavailable, caching disabled: {e}")
             _redis_client = None
@@ -261,3 +276,191 @@ def build_safety_score_key(route_id: int, target_date: str) -> str:
         safety:route:1234:date:2026-02-01
     """
     return f"safety:route:{route_id}:date:{target_date}"
+
+
+# ============================================================================
+# BULK SAFETY SCORE OPERATIONS
+# ============================================================================
+# These functions are optimized for the pre-computed safety score system.
+# Instead of making 168K individual Redis calls, we use MGET/pipeline for
+# bulk operations which reduces network round trips significantly.
+
+
+def get_cached_safety_score(route_id: int, target_date: str) -> Optional[Dict]:
+    """
+    Get a single cached safety score.
+
+    Args:
+        route_id: Route ID
+        target_date: Date string (YYYY-MM-DD)
+
+    Returns:
+        Safety score dict with risk_score, color_code, confidence, or None if not cached
+    """
+    key = build_safety_score_key(route_id, target_date)
+    return cache_get(key)
+
+
+def set_cached_safety_score(
+    route_id: int,
+    target_date: str,
+    risk_score: float,
+    color_code: str,
+    confidence: float = 1.0,
+    computed_at: Optional[str] = None
+) -> bool:
+    """
+    Cache a single safety score.
+
+    Args:
+        route_id: Route ID
+        target_date: Date string (YYYY-MM-DD)
+        risk_score: Risk score 0-100
+        color_code: 'green', 'yellow', 'orange', 'red', or 'gray'
+        confidence: Confidence level 0-1 (default: 1.0)
+        computed_at: ISO timestamp when computed (default: now)
+
+    Returns:
+        True if cached successfully
+    """
+    from datetime import datetime
+
+    key = build_safety_score_key(route_id, target_date)
+    data = {
+        "risk_score": risk_score,
+        "color_code": color_code,
+        "confidence": confidence,
+        "computed_at": computed_at or datetime.utcnow().isoformat(),
+        "status": "cached"
+    }
+    return cache_set(key, data, ttl_seconds=SAFETY_SCORE_TTL)
+
+
+def get_bulk_cached_safety_scores(
+    route_ids: List[int],
+    target_date: str
+) -> Dict[int, Optional[Dict]]:
+    """
+    Get multiple safety scores in a single Redis call using MGET.
+
+    This is much faster than individual cache_get calls:
+    - Individual: ~168K round trips = ~30 seconds
+    - Bulk MGET: 1 round trip = ~1-2 seconds
+
+    Args:
+        route_ids: List of route IDs
+        target_date: Date string (YYYY-MM-DD)
+
+    Returns:
+        Dict mapping route_id -> safety data (or None if not cached)
+        Example: {123: {"risk_score": 45, "color_code": "yellow"}, 456: None}
+    """
+    client = get_redis_client()
+    if client is None or not route_ids:
+        return {route_id: None for route_id in route_ids}
+
+    try:
+        # Build all cache keys
+        keys = [build_safety_score_key(route_id, target_date) for route_id in route_ids]
+
+        # Bulk get using MGET
+        values = client.mget(keys)
+
+        # Map results back to route IDs
+        result = {}
+        for route_id, cached_value in zip(route_ids, values):
+            if cached_value:
+                try:
+                    result[route_id] = json.loads(cached_value)
+                except json.JSONDecodeError:
+                    result[route_id] = None
+            else:
+                result[route_id] = None
+
+        hit_count = sum(1 for v in result.values() if v is not None)
+        logger.debug(f"Bulk cache GET: {hit_count}/{len(route_ids)} hits for {target_date}")
+        return result
+
+    except redis.RedisError as e:
+        logger.error(f"Bulk cache get error: {e}")
+        return {route_id: None for route_id in route_ids}
+
+
+def set_bulk_cached_safety_scores(
+    scores: Dict[int, Dict],
+    target_date: str
+) -> int:
+    """
+    Cache multiple safety scores using Redis pipeline.
+
+    Pipeline batches multiple SET commands into a single network round trip.
+
+    Args:
+        scores: Dict mapping route_id -> safety data
+                Each safety data should have: risk_score, color_code, confidence
+        target_date: Date string (YYYY-MM-DD)
+
+    Returns:
+        Number of scores successfully cached
+    """
+    client = get_redis_client()
+    if client is None or not scores:
+        return 0
+
+    try:
+        from datetime import datetime
+        computed_at = datetime.utcnow().isoformat()
+
+        # Use pipeline for efficient bulk SET
+        pipe = client.pipeline()
+
+        for route_id, data in scores.items():
+            key = build_safety_score_key(route_id, target_date)
+            cache_data = {
+                "risk_score": data.get("risk_score", 0),
+                "color_code": data.get("color_code", "gray"),
+                "confidence": data.get("confidence", 1.0),
+                "computed_at": computed_at,
+                "status": "cached"
+            }
+            pipe.setex(key, SAFETY_SCORE_TTL, json.dumps(cache_data))
+
+        # Execute all commands in one round trip
+        pipe.execute()
+
+        logger.info(f"Bulk cache SET: {len(scores)} safety scores for {target_date}")
+        return len(scores)
+
+    except redis.RedisError as e:
+        logger.error(f"Bulk cache set error: {e}")
+        return 0
+
+
+def get_safety_cache_stats(target_date: str) -> Dict:
+    """
+    Get statistics about cached safety scores for a specific date.
+
+    Useful for monitoring the nightly pre-computation job.
+
+    Args:
+        target_date: Date string (YYYY-MM-DD)
+
+    Returns:
+        Dict with count of cached scores for this date
+    """
+    client = get_redis_client()
+    if client is None:
+        return {"status": "unavailable", "cached_count": 0}
+
+    try:
+        # Count keys matching the pattern for this date
+        pattern = f"safety:route:*:date:{target_date}"
+        keys = client.keys(pattern)
+        return {
+            "status": "connected",
+            "target_date": target_date,
+            "cached_count": len(keys)
+        }
+    except redis.RedisError as e:
+        logger.error(f"Safety cache stats error: {e}")
+        return {"status": "error", "error": str(e), "cached_count": 0}

@@ -192,11 +192,12 @@ def fetch_current_weather_pattern(
         return None
 
 
-def fetch_weather_statistics(
+async def fetch_weather_statistics(
     latitude: float,
     longitude: float,
     elevation_meters: float,
     season: str,
+    db=None,
 ) -> Optional[dict]:
     """
     Fetch historical weather statistics for a location/elevation/season (CACHED).
@@ -206,28 +207,32 @@ def fetch_weather_statistics(
     **Caching**: Results cached for 24 hours (historical data is static).
     Cache key: weather:stats:{lat}:{lon}:{elevation}:{season}
 
+    **IMPORTANT**: This is now an async function using SQLAlchemy to avoid
+    blocking the event loop under concurrent load.
+
     Args:
         latitude: Location latitude
         longitude: Location longitude
         elevation_meters: Elevation in meters
         season: Season name (winter, spring, summer, fall)
+        db: Optional database session (if not provided, creates one)
 
     Returns:
         Dictionary with statistical means/stds, or None if not found
 
     Example:
-        >>> stats = fetch_weather_statistics(40.25, -105.64, 4000, "summer")
-        >>> print(f"Mean temp: {stats['temperature_mean']:.1f}°C")
+        >>> stats = await fetch_weather_statistics(40.25, -105.64, 4000, "summer", db)
+        >>> print(f"Mean temp: {stats['temperature'][0]:.1f}°C")
         Mean temp: 12.8°C
     """
-    # Check cache first
+    # Check cache first (sync operation, but fast)
     cache_key = build_weather_stats_key(latitude, longitude, elevation_meters, season)
     cached = cache_get(cache_key)
     if cached:
-        logger.info(f"Weather stats cache HIT for {latitude}, {longitude}, {elevation_meters}m, {season}")
+        logger.debug(f"Weather stats cache HIT for {latitude}, {longitude}, {elevation_meters}m, {season}")
         return cached
 
-    logger.info("Weather stats cache MISS, querying database")
+    logger.debug("Weather stats cache MISS, querying database")
 
     # Round lat/lon to 0.1° bucket
     lat_bucket = round(latitude, 1)
@@ -252,57 +257,82 @@ def fetch_weather_statistics(
         logger.warning(f"Elevation {elevation_meters}m outside known bands")
         return None
 
-    # Query database using psycopg2 (sync) for simple lookup
+    # Query database using async SQLAlchemy (non-blocking!)
     try:
-        import psycopg2
-        import os
-        from dotenv import load_dotenv
+        from sqlalchemy import text
+        from app.db.session import AsyncSessionLocal
 
-        load_dotenv()
+        # Use provided session or create a new one
+        if db is not None:
+            # Use the provided session
+            result = await db.execute(
+                text("""
+                    SELECT
+                        temperature_mean, temperature_std,
+                        precipitation_mean, precipitation_std,
+                        wind_speed_mean, wind_speed_std,
+                        visibility_mean, visibility_std,
+                        sample_count
+                    FROM weather_statistics
+                    WHERE lat_bucket = :lat_bucket
+                      AND lon_bucket = :lon_bucket
+                      AND elevation_min_m = :elev_min
+                      AND elevation_max_m = :elev_max
+                      AND season = :season
+                    LIMIT 1;
+                """),
+                {
+                    "lat_bucket": lat_bucket,
+                    "lon_bucket": lon_bucket,
+                    "elev_min": elev_min,
+                    "elev_max": elev_max,
+                    "season": season,
+                }
+            )
+            row = result.fetchone()
+        else:
+            # Create a new session
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    text("""
+                        SELECT
+                            temperature_mean, temperature_std,
+                            precipitation_mean, precipitation_std,
+                            wind_speed_mean, wind_speed_std,
+                            visibility_mean, visibility_std,
+                            sample_count
+                        FROM weather_statistics
+                        WHERE lat_bucket = :lat_bucket
+                          AND lon_bucket = :lon_bucket
+                          AND elevation_min_m = :elev_min
+                          AND elevation_max_m = :elev_max
+                          AND season = :season
+                        LIMIT 1;
+                    """),
+                    {
+                        "lat_bucket": lat_bucket,
+                        "lon_bucket": lon_bucket,
+                        "elev_min": elev_min,
+                        "elev_max": elev_max,
+                        "season": season,
+                    }
+                )
+                row = result.fetchone()
 
-        conn = psycopg2.connect(
-            host=os.getenv("DB_HOST", "localhost"),
-            port=os.getenv("DB_PORT", "5432"),
-            database=os.getenv("DB_NAME", "safeascent"),
-            user=os.getenv("DB_USER", "sebastianfrazier"),
-            password=os.getenv("DB_PASSWORD", ""),
-        )
-        cur = conn.cursor()
-
-        cur.execute("""
-            SELECT
-                temperature_mean, temperature_std,
-                precipitation_mean, precipitation_std,
-                wind_speed_mean, wind_speed_std,
-                visibility_mean, visibility_std,
-                sample_count
-            FROM weather_statistics
-            WHERE lat_bucket = %s
-              AND lon_bucket = %s
-              AND elevation_min_m = %s
-              AND elevation_max_m = %s
-              AND season = %s
-            LIMIT 1;
-        """, (lat_bucket, lon_bucket, elev_min, elev_max, season))
-
-        result = cur.fetchone()
-        cur.close()
-        conn.close()
-
-        if result:
+        if row:
             stats_dict = {
-                "temperature": (result[0], result[1]),
-                "precipitation": (result[2], result[3]),
-                "wind_speed": (result[4], result[5]),
-                "visibility": (result[6], result[7]),
-                "sample_count": result[8],
+                "temperature": (row[0], row[1]),
+                "precipitation": (row[2], row[3]),
+                "wind_speed": (row[4], row[5]),
+                "visibility": (row[6], row[7]),
+                "sample_count": row[8],
             }
             # Cache the result
             cache_set(cache_key, stats_dict, ttl_seconds=WEATHER_STATS_TTL)
-            logger.info("Weather stats cached for 24 hours")
+            logger.debug("Weather stats cached for 24 hours")
             return stats_dict
         else:
-            logger.info(f"No statistics found for bucket: {lat_bucket}, {lon_bucket}, {elev_min}-{elev_max}m, {season}")
+            logger.debug(f"No statistics found for bucket: {lat_bucket}, {lon_bucket}, {elev_min}-{elev_max}m, {season}")
             return None
 
     except Exception as e:
