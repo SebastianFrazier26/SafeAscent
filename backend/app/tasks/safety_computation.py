@@ -245,10 +245,26 @@ async def _compute_single_route_safety(
             # Determine color code
             color_code = get_safety_color_code(prediction.risk_score)
 
+            # Derive confidence from number of contributing accidents
+            # More accidents = higher confidence in the prediction
+            num_accidents = prediction.num_contributing_accidents
+            if num_accidents >= 100:
+                confidence = 0.95
+            elif num_accidents >= 50:
+                confidence = 0.80
+            elif num_accidents >= 20:
+                confidence = 0.65
+            elif num_accidents >= 10:
+                confidence = 0.50
+            elif num_accidents >= 5:
+                confidence = 0.35
+            else:
+                confidence = 0.20
+
             return (mp_route_id, {
                 "risk_score": round(prediction.risk_score, 1),
                 "color_code": color_code,
-                "confidence": round(prediction.confidence, 2),
+                "confidence": round(confidence, 2),
             })
 
     except Exception as e:
