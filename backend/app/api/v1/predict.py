@@ -41,13 +41,26 @@ logger = logging.getLogger(__name__)
 
 
 @router.post("/predict", response_model=PredictionResponse)
-async def predict_route_safety(
+async def predict_route_safety_endpoint(
     request: PredictionRequest,
     db: AsyncSession = Depends(get_db),
-    prefetched_weather: Optional[WeatherPattern] = None,  # Pre-fetched weather for batch processing
+):
+    """
+    API endpoint for safety prediction. Calls the internal function.
+    """
+    return await predict_route_safety(request, db)
+
+
+async def predict_route_safety(
+    request: PredictionRequest,
+    db: AsyncSession,
+    prefetched_weather: Optional[WeatherPattern] = None,
 ):
     """
     Calculate safety prediction for a planned climbing route.
+
+    This internal function can be called directly with prefetched_weather
+    for batch processing, or via the API endpoint.
 
     Uses historical accident data, weather patterns, and the SafeAscent algorithm
     to predict risk level and confidence.
