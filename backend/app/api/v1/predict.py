@@ -280,6 +280,13 @@ async def predict_route_safety(
     return response
 
 
+# In-memory cache for accidents during batch processing
+# Accidents don't change during a batch run, so we can cache them
+_accidents_cache: List[Accident] = []
+_accidents_cache_time: float = 0
+ACCIDENTS_CACHE_TTL = 600  # 10 minutes
+
+
 async def fetch_all_accidents(db: AsyncSession) -> List[Accident]:
     """
     Fetch ALL accidents from database with required fields for prediction.
@@ -287,11 +294,9 @@ async def fetch_all_accidents(db: AsyncSession) -> List[Accident]:
     No spatial filtering - lets Gaussian spatial weighting naturally down-weight
     distant accidents. This maximizes weather similarity signal across regions.
 
-    Filters to only include accidents with valid coordinates and dates needed
-    for spatial/temporal calculations.
-
-    Performance: ~50-100ms for 10,000 accidents (acceptable for MVP)
-    Note: Result caching at prediction level (Phase 8.6) will eliminate this entirely
+    **OPTIMIZATION**: Results are cached in memory for 10 minutes to avoid
+    repeated database queries during batch processing. This is critical for
+    the nightly safety computation task which processes 168K+ routes.
 
     Args:
         db: Database session
@@ -299,7 +304,16 @@ async def fetch_all_accidents(db: AsyncSession) -> List[Accident]:
     Returns:
         List of all valid Accident objects
     """
-    logger.info("Fetching all accidents from database (no spatial filter)")
+    global _accidents_cache, _accidents_cache_time
+    import time
+
+    # Check if cache is valid
+    current_time = time.time()
+    if _accidents_cache and (current_time - _accidents_cache_time) < ACCIDENTS_CACHE_TTL:
+        logger.info(f"Using cached accidents ({len(_accidents_cache)} accidents, age: {int(current_time - _accidents_cache_time)}s)")
+        return _accidents_cache
+
+    logger.info("Fetching all accidents from database (cache miss or expired)")
 
     # Query: Find all accidents with required fields for prediction
     stmt = select(Accident).where(
@@ -313,10 +327,15 @@ async def fetch_all_accidents(db: AsyncSession) -> List[Accident]:
 
     result = await db.execute(stmt)
     accidents = result.scalars().all()
+    accidents_list = list(accidents)
 
-    logger.info(f"Loaded {len(accidents)} valid accidents")
+    # Update cache
+    _accidents_cache = accidents_list
+    _accidents_cache_time = current_time
 
-    return list(accidents)
+    logger.info(f"Loaded and cached {len(accidents_list)} valid accidents")
+
+    return accidents_list
 
 
 async def fetch_nearby_accidents(
