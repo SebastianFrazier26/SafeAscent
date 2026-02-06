@@ -203,6 +203,10 @@ ELEVATION_DECAY_CONSTANT = {
     "default": 2400,  # Default for unknown types (was 1200)
 }
 
+# Elevation micro-bonus (no penalties). Applied as a small boost when
+# elevations are similar; capped to avoid overpowering weather/proximity.
+ELEVATION_BONUS_MAX = 0.15  # +15% max boost for very similar elevations
+
 
 # =============================================================================
 # GRADE WEIGHTING PARAMETERS
@@ -240,13 +244,9 @@ DEFAULT_SEVERITY_WEIGHT = 1.0
 
 # Risk score normalization constant
 # Empirically determined: sum of influences → 0-100 scale
-# Adjusted 2026-01-30: Reduced from 10.0 to 5.0 to provide headroom for
-# high-density areas (476+ accidents) with quadratic weather weighting.
-# NOTE: Further reduction to 3.0 was considered but tabled. Future calibration
-# should use dynamic normalization based on ascent data (accidents per 1000 ascents)
-# to distinguish high-traffic vs. high-danger routes.
-# TODO: Calibrate via backtesting with real data + ascent density analysis
-RISK_NORMALIZATION_FACTOR = 5.0  # influence_sum * 5 ≈ risk_score
+# Adjusted 2026-02-06: Increased to surface more moderate/high risk routes
+# after altitude de-emphasis and weather alignment.
+RISK_NORMALIZATION_FACTOR = 7.0  # influence_sum * 7 ≈ risk_score
 
 # Maximum risk score (capped)
 MAX_RISK_SCORE = 100

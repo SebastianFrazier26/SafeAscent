@@ -253,6 +253,8 @@ import {
   Line,
   BarChart,
   Bar,
+  ComposedChart,
+  Scatter,
   AreaChart,
   Area,
   XAxis,
@@ -292,6 +294,17 @@ function cleanSegment(segment) {
   if (!segment || typeof segment !== 'string') return null;
 
   let cleaned = segment.trim();
+
+  // Strip trailing numeric/stat blobs sometimes appended to area names
+  // (e.g., "Joshua Tree National Park4,829/761/858/1,759/0/29/0/0/7,975")
+  const statsMatch = cleaned.match(/([0-9][0-9,/]+)\s*$/);
+  if (statsMatch) {
+    const tail = statsMatch[1];
+    const hasDelimiters = tail.includes('/') || tail.includes(',');
+    if (hasDelimiters || tail.length >= 5) {
+      cleaned = cleaned.slice(0, statsMatch.index).trim();
+    }
+  }
 
   // Check if it's mostly numbers and slashes (malformed MP IDs)
   if (isMalformedSegment(cleaned)) return null;
@@ -1912,6 +1925,30 @@ function AscentsTab({ data, loading, routeData }) {
                 </Paper>
               </Grid>
             </Grid>
+          </CardContent>
+        </Card>
+      </Grid>
+
+      {/* Seasonality Line + Scatter */}
+      <Grid size={12}>
+        <Card>
+          <CardContent>
+            <Typography variant="h6" gutterBottom fontWeight={600}>
+              🌤️ Ascents by Season (12 months)
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+              Shows when this route gets climbed the most. Dots show monthly ticks; line connects the seasonal trend.
+            </Typography>
+            <ResponsiveContainer width="100%" height={260}>
+              <ComposedChart data={data.monthly_stats}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="month" />
+                <YAxis />
+                <Tooltip />
+                <Line type="monotone" dataKey="ascent_count" stroke="#1976d2" strokeWidth={3} dot={false} />
+                <Scatter dataKey="ascent_count" fill="#ff9800" name="Ascents" />
+              </ComposedChart>
+            </ResponsiveContainer>
           </CardContent>
         </Card>
       </Grid>

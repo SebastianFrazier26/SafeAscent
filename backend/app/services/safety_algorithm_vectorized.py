@@ -16,7 +16,7 @@ from datetime import date
 from typing import List, Dict, Optional, Tuple
 
 from app.services.safety_algorithm import AccidentData, SafetyPrediction
-from app.services.weather_similarity import WeatherPattern
+from app.services.weather_similarity import WeatherPattern, calculate_weather_similarity
 from app.services.algorithm_config import (
     RISK_NORMALIZATION_FACTOR,
     MAX_RISK_SCORE,
@@ -25,6 +25,7 @@ from app.services.algorithm_config import (
     TEMPORAL_LAMBDA,
     SEASONAL_BOOST,
     ELEVATION_DECAY_CONSTANT,
+    ELEVATION_BONUS_MAX,
     ROUTE_TYPE_WEIGHTS,
     DEFAULT_ROUTE_TYPE_WEIGHT,
     SEVERITY_BOOSTERS,
@@ -155,7 +156,7 @@ def calculate_elevation_weights_vectorized(
     route_type: str,
 ) -> np.ndarray:
     """
-    Vectorized elevation weight calculation (asymmetric).
+    Vectorized elevation weight calculation (bonus-only).
 
     Args:
         route_elevation: Route elevation in meters (None = all 1.0)
@@ -171,26 +172,22 @@ def calculate_elevation_weights_vectorized(
     # Replace None with NaN for vectorized operations
     elevations = np.array([e if e is not None else np.nan for e in accident_elevations])
 
-    # Calculate elevation differences
-    elevation_diffs = elevations - route_elevation
+    # Calculate absolute elevation differences
+    elevation_diffs = np.abs(elevations - route_elevation)
 
     # Get decay constant
     decay_const = ELEVATION_DECAY_CONSTANT.get(
         route_type.lower(), ELEVATION_DECAY_CONSTANT["default"]
     )
 
-    # Vectorized asymmetric weighting
-    # Same or lower elevation: 1.0
-    # Higher elevation: decay
-    weights = np.where(
-        np.isnan(elevations),  # Missing elevation
-        1.0,
-        np.where(
-            elevation_diffs <= 0,  # Same or lower
-            1.0,
-            np.exp(-(elevation_diffs / decay_const) ** 2)  # Higher: decay
-        )
+    # Bonus-only weighting: neutral 1.0 plus small Gaussian bonus for close match
+    bonuses = np.where(
+        np.isnan(elevations),
+        0.0,
+        ELEVATION_BONUS_MAX * np.exp(-(elevation_diffs / decay_const) ** 2)
     )
+
+    weights = 1.0 + bonuses
 
     return weights
 
@@ -352,10 +349,20 @@ def calculate_safety_score_vectorized(
         * grade_weights
     )
 
-    # Weather weighting (simplified - no weather similarity for now in vectorized version)
-    # TODO: Vectorize weather similarity calculation
-    weather_weights = np.full(n_accidents, 0.5)  # Neutral weight
-    weather_factor = weather_weights ** 3  # Cubic for stronger weather influence
+    # Weather weighting (uses real similarity; exclusion for very poor matches)
+    weather_weights = np.array([
+        calculate_weather_similarity(current_weather, acc.weather_pattern, historical_weather_stats)
+        if current_weather and acc.weather_pattern else 0.5
+        for acc in accidents
+    ], dtype=float)
+
+    WEATHER_POWER = 3
+    WEATHER_EXCLUSION_THRESHOLD = 0.25
+    weather_factor = np.where(
+        weather_weights < WEATHER_EXCLUSION_THRESHOLD,
+        0.0,
+        weather_weights ** WEATHER_POWER
+    )
 
     # Total influence with weather
     total_influences = base_influences * weather_factor
