@@ -6,7 +6,7 @@
 
 > **Note**: This document captures design decisions. The algorithm is now fully implemented in `backend/app/services/`. Key tuning updates since design:
 > - Weather power: Uses **cubic (27×)** for strong weather influence
-> - Normalization factor: Changed from 10.0 to **5.0** for more headroom
+> - Normalization factor: **7.0** (increased from 5.0) to surface moderate/high risk better
 > - Elevation decay constants: Doubled (2×) to reduce elevation's dominance vs weather/proximity
 
 ---
@@ -1505,7 +1505,7 @@ def calculate_route_risk_and_confidence(route_location, route_type, current_weat
 
     # 7. Calculate risk score (sum of influences, normalized to 0-100)
     total_risk = sum([ai['influence'] for ai in accident_influences])
-    risk_score = min(total_risk * 5.0, 100)  # Normalize (tuned: 5.0 provides headroom)
+  risk_score = min(total_risk * 7.0, 100)  # Normalize (tuned: 7.0 surfaces moderate/high risk)
 
     # 8. Calculate confidence score (multi-factor - Decision #7)
     confidence_data = calculate_confidence(
@@ -1541,7 +1541,7 @@ def calculate_route_risk_and_confidence(route_location, route_type, current_weat
 | **Within-Window Decay** | 0.85 default (2.5× Day-0 vs Day-6) | Post-MVP backtesting planned | ✅ Complete |
 | **Severity Weighting** | Subtle boosters (1.3×, 1.1×, 1.0×) | Fatal, Serious, Minor/Unknown | ✅ Complete |
 | **Confidence Scoring** | Multi-factor (5 indicators) | Weighted 30/30/20/10/10 | ✅ Complete |
-| **Normalization Factor** | **5.0** (changed from 10.0) | Provides headroom for dense areas | ✅ Tuned |
+| **Normalization Factor** | **7.0** (was 5.0) | Surfaces moderate/high risk while retaining headroom | ✅ Tuned |
 
 ### Algorithm Characteristics
 
@@ -1597,4 +1597,3 @@ Total: ~320ms response time
 **Implementation Complete**: 2026-01-30
 **Testing Complete**: 2026-01-30 (50/50 tests passing, 100%)
 **Last Updated**: 2026-02-06
-

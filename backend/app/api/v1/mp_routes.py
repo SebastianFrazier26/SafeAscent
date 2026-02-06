@@ -1440,7 +1440,7 @@ async def get_historical_trends(
             color_code
         FROM historical_predictions
         WHERE route_id = :route_id
-          AND prediction_date >= CURRENT_DATE - INTERVAL ':days days'
+          AND prediction_date >= CURRENT_DATE - (:days || ' days')::interval
         ORDER BY prediction_date ASC
     """)
 

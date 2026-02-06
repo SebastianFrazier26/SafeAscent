@@ -632,6 +632,20 @@ async def _save_to_historical(
         values_sql = ", ".join(values_list)
 
         try:
+            # Ensure table exists (idempotent, safe to run)
+            await db.execute(text("""
+                CREATE TABLE IF NOT EXISTS historical_predictions (
+                    id SERIAL PRIMARY KEY,
+                    route_id INTEGER NOT NULL,
+                    prediction_date DATE NOT NULL,
+                    risk_score FLOAT,
+                    color_code VARCHAR(20),
+                    calculated_at TIMESTAMP DEFAULT NOW(),
+                    UNIQUE(route_id, prediction_date)
+                )
+            """))
+            await db.commit()
+
             await db.execute(text(f"""
                 INSERT INTO historical_predictions
                     (route_id, prediction_date, risk_score, color_code)
