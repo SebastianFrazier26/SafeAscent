@@ -966,10 +966,16 @@ export default function MapView({ selectedRouteForZoom }) {
                 Loading Safety Data
               </Typography>
             </Box>
-            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5, fontSize: '0.7rem' }}>
-              {safetyLoadingProgress.loaded} / {safetyLoadingProgress.total} routes
-              ({Math.round((safetyLoadingProgress.loaded / safetyLoadingProgress.total) * 100)}%)
-            </Typography>
+            {safetyLoadingProgress.total > 0 ? (
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5, fontSize: '0.7rem' }}>
+                {safetyLoadingProgress.loaded} / {safetyLoadingProgress.total} routes
+                ({Math.round((safetyLoadingProgress.loaded / safetyLoadingProgress.total) * 100)}%)
+              </Typography>
+            ) : (
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5, fontSize: '0.7rem' }}>
+                Fetching routes...
+              </Typography>
+            )}
             <Box sx={{
               width: '100%',
               height: 4,
@@ -979,7 +985,9 @@ export default function MapView({ selectedRouteForZoom }) {
               mb: 0.5,
             }}>
               <Box sx={{
-                width: `${(safetyLoadingProgress.loaded / safetyLoadingProgress.total) * 100}%`,
+                width: safetyLoadingProgress.total > 0
+                  ? `${(safetyLoadingProgress.loaded / safetyLoadingProgress.total) * 100}%`
+                  : '10%',
                 height: '100%',
                 bgcolor: 'info.main',
                 transition: 'width 0.3s ease',
