@@ -1388,7 +1388,7 @@ function RiskBreakdownTab({ data, loading, routeData }) {
         <Card elevation={3}>
           <CardContent>
             <Typography variant="h6" gutterBottom fontWeight={600}>
-              📊 Risk Score: {routeData.risk_score}/100
+              📊 Risk Score: {data.risk_score ?? routeData.risk_score}/100
             </Typography>
             <Typography variant="body2" color="text.secondary" paragraph>
               This risk score is calculated using statistical analysis of historical accident data,
