@@ -30,11 +30,11 @@ const getTodayDate = () => {
 };
 
 /**
- * Get max date (7 days from now) in YYYY-MM-DD format
+ * Get max date (3 days from now) in YYYY-MM-DD format
  */
 const getMaxDate = () => {
   const date = new Date();
-  date.setDate(date.getDate() + 7);
+  date.setDate(date.getDate() + 2); // 3-day window including today
   return date.toISOString().split('T')[0];
 };
 
@@ -243,7 +243,7 @@ export default function PredictionForm({ onSubmit, isLoading, onRouteSelect }) {
               }}
             />
             <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
-              Weather forecasts available for the next 7 days
+              Weather forecasts available for the next 3 days
             </Typography>
           </Box>
 
