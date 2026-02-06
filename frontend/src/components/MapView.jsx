@@ -71,7 +71,7 @@ export default function MapView({ selectedRouteForZoom }) {
   const [seasonFilter, setSeasonFilter] = useState('rock');
 
   // Track current zoom level for conditional heatmap rendering
-  const [currentZoom, setCurrentZoom] = useState(INITIAL_VIEW_STATE.zoom);
+  const [_currentZoom, setCurrentZoom] = useState(INITIAL_VIEW_STATE.zoom);
   const HEATMAP_MIN_ZOOM = 6; // Only show heatmap when zoomed in past this level
 
   /**

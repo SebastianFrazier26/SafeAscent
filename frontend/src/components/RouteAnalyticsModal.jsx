@@ -435,7 +435,9 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
     };
 
     fetchTabData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTab, open, routeData, selectedDate]);
+  // Note: data.* intentionally excluded - we only fetch when data is null, not on every change
 
   const handleTabChange = (event, newValue) => {
     setCurrentTab(newValue);
