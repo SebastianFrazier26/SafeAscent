@@ -269,6 +269,53 @@ import { format } from 'date-fns';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
 
+/**
+ * Clean up malformed location names
+ * Handles:
+ * - Names ending with ", the" or starting with commas
+ * - Names that are just numbers/slashes (e.g., "565/1,324/203/533")
+ * - Empty or whitespace-only names
+ */
+function cleanLocationName(name) {
+  if (!name || typeof name !== 'string') return null;
+
+  // Trim whitespace
+  let cleaned = name.trim();
+
+  // Check if it's mostly numbers and slashes (malformed MP IDs)
+  // Pattern: contains numbers, slashes, commas but very few letters
+  const letterCount = (cleaned.match(/[a-zA-Z]/g) || []).length;
+  const digitSlashCount = (cleaned.match(/[0-9/,]/g) || []).length;
+  if (digitSlashCount > letterCount * 2 && digitSlashCount > 5) {
+    return null; // This looks like MP route IDs, not a real name
+  }
+
+  // Remove trailing ", the" or ", The"
+  cleaned = cleaned.replace(/,\s*[Tt]he\s*$/, '').trim();
+
+  // Remove leading commas
+  cleaned = cleaned.replace(/^,\s*/, '').trim();
+
+  // Remove trailing commas
+  cleaned = cleaned.replace(/,\s*$/, '').trim();
+
+  // If result is empty or just whitespace, return null
+  if (!cleaned || cleaned.length < 2) return null;
+
+  return cleaned;
+}
+
+/**
+ * Get best available location name from multiple sources
+ */
+function getBestLocationName(sources) {
+  for (const source of sources) {
+    const cleaned = cleanLocationName(source);
+    if (cleaned) return cleaned;
+  }
+  return 'Location unavailable';
+}
+
 // Tab panel component
 function TabPanel({ children, value, index, ...other }) {
   return (
@@ -491,7 +538,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
     // Build CSV with key metrics
     let csv = 'SafeAscent Route Analytics Export\n\n';
     csv += `Route Name,${routeData.name}\n`;
-    csv += `Location,${data.routeDetails?.location_name || routeData.mountain_name || 'Unknown'}\n`;
+    csv += `Location,${getBestLocationName([data.routeDetails?.location_name, routeData.mountain_name, routeData.location_name])}\n`;
     csv += `Type,${routeData.type}\n`;
     csv += `Grade,${routeData.grade}\n`;
     csv += `Risk Score,${routeData.risk_score}\n`;
@@ -548,7 +595,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
               {routeData.name}
             </Typography>
             <Typography variant="body2" sx={{ opacity: 0.9, mt: 0.5 }}>
-              {data.routeDetails?.location_name || routeData.mountain_name || 'Unknown'} • {routeData.type} • Grade {routeData.grade}
+              {getBestLocationName([data.routeDetails?.location_name, routeData.mountain_name, routeData.location_name])} • {routeData.type} • Grade {routeData.grade}
             </Typography>
           </Box>
           <Chip
@@ -640,6 +687,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
             loading={loading.forecast}
             selectedDate={selectedDate}
             routeData={routeData}
+            routeDetails={data.routeDetails}
           />
         </TabPanel>
 
@@ -718,7 +766,7 @@ const msToMph = (ms) => {
   return Math.round(ms * 2.237);
 };
 
-function ForecastTab({ data, loading, selectedDate: _selectedDate, routeData }) {
+function ForecastTab({ data, loading, selectedDate: _selectedDate, routeData, routeDetails }) {
   if (loading) {
     return <LoadingState message="Loading forecast data..." />;
   }
@@ -738,11 +786,15 @@ function ForecastTab({ data, loading, selectedDate: _selectedDate, routeData }) 
   const tempHighF = celsiusToFahrenheit(today.temp_high);
   const tempLowF = celsiusToFahrenheit(today.temp_low);
   const windMph = msToMph(today.wind_speed);
-  // Handle precipitation - show 0% if data exists but is 0, N/A if null/undefined
+
+  // Handle precipitation - show actual value, 0 if data exists but is 0, N/A if null/undefined
   const precipMm = today.precip_mm;
   const precipChance = today.precip_chance !== undefined && today.precip_chance !== null
     ? today.precip_chance
     : (precipMm !== undefined && precipMm !== null ? Math.min(Math.round(precipMm * 10), 100) : null);
+
+  // Get elevation from forecast API, routeDetails, or fallback to routeData
+  const elevationMeters = data?.elevation_meters || routeDetails?.elevation_meters || routeData?.elevation_meters;
 
   return (
     <Grid container spacing={3}>
@@ -784,7 +836,7 @@ function ForecastTab({ data, loading, selectedDate: _selectedDate, routeData }) 
               <Grid size={{ xs: 6, md: 3 }}>
                 <Typography variant="body2" color="text.secondary">Elevation</Typography>
                 <Typography variant="h5" fontWeight={600}>
-                  {routeData.elevation_meters ? `${Math.round(routeData.elevation_meters * 3.28084)} ft` : 'N/A'}
+                  {elevationMeters ? `${Math.round(elevationMeters * 3.28084).toLocaleString()} ft` : 'N/A'}
                 </Typography>
               </Grid>
             </Grid>
@@ -806,7 +858,13 @@ function ForecastTab({ data, loading, selectedDate: _selectedDate, routeData }) 
                   dataKey="date"
                   tickFormatter={(date) => format(new Date(date), 'EEE M/d')}
                 />
-                <YAxis domain={[0, 100]} />
+                <YAxis
+                  domain={[
+                    (dataMin) => Math.max(0, Math.floor(dataMin / 10) * 10 - 10),
+                    (dataMax) => Math.min(100, Math.ceil(dataMax / 10) * 10 + 10)
+                  ]}
+                  tickCount={6}
+                />
                 <Tooltip
                   labelFormatter={(date) => format(new Date(date), 'EEEE, MMM d')}
                   formatter={(value) => [`${value}/100`, 'Risk Score']}
@@ -902,7 +960,7 @@ function RouteDetailsTab({ data, loading, routeData }) {
               {details.name}
             </Typography>
             <Typography variant="body1" color="text.secondary">
-              📍 {details.location_name || details.mountain_name || 'Unknown Location'}
+              📍 {getBestLocationName([details.location_name, details.mountain_name])}
             </Typography>
           </Box>
 
@@ -1039,7 +1097,7 @@ function AccidentsTab({ data, loading, routeData }) {
   return (
     <Box>
       <Typography variant="h6" gutterBottom fontWeight={600}>
-        ⚠️ Accident Reports for {data.location_name || routeData.mountain_name || routeData.name}
+        ⚠️ Accident Reports for {getBestLocationName([data.location_name, routeData.mountain_name, routeData.name])}
       </Typography>
       <Typography variant="body2" color="text.secondary" paragraph>
         Showing {displayedAccidents.length} of {data.accidents.length} accidents.
@@ -1113,7 +1171,7 @@ function AccidentsTab({ data, loading, routeData }) {
                         📍 LOCATION
                       </Typography>
                       <Typography variant="body2" sx={{ fontWeight: 500, color: '#212121' }}>
-                        {accident.mountain || accident.location || accident.state || 'Unknown'}
+                        {getBestLocationName([accident.mountain, accident.location, accident.state])}
                       </Typography>
                     </Grid>
                     <Grid size={{ xs: 6, sm: 3 }}>
@@ -1121,7 +1179,7 @@ function AccidentsTab({ data, loading, routeData }) {
                         🧗 ROUTE
                       </Typography>
                       <Typography variant="body2" sx={{ fontWeight: 500, color: '#212121' }}>
-                        {accident.route_name || 'Unknown'}
+                        {cleanLocationName(accident.route_name) || 'Unknown'}
                       </Typography>
                     </Grid>
                     <Grid size={{ xs: 6, sm: 3 }}>
@@ -1646,32 +1704,32 @@ function TimeOfDayTab({ data, loading, routeData: _routeData, selectedDate }) {
                     <Paper
                       sx={{
                         p: 1.5,
-                        bgcolor: hour.is_climbable ? 'success.50' : 'grey.100',
+                        bgcolor: hour.is_climbable ? '#e8f5e9' : '#f5f5f5',
                         border: 1,
-                        borderColor: hour.is_climbable ? 'success.main' : 'grey.300',
+                        borderColor: hour.is_climbable ? '#4caf50' : '#bdbdbd',
                       }}
                     >
                       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 0.5 }}>
-                        <Typography variant="subtitle2" fontWeight={600}>
+                        <Typography variant="subtitle2" fontWeight={600} sx={{ color: '#212121' }}>
                           {String(hour.hour).padStart(2, '0')}:00
                         </Typography>
                         <Chip
                           label={hour.risk_score}
                           size="small"
                           sx={{
-                            bgcolor: hour.risk_score < 35 ? 'success.main' :
-                                     hour.risk_score < 55 ? 'warning.main' :
-                                     hour.risk_score < 75 ? 'warning.dark' : 'error.main',
+                            bgcolor: hour.risk_score < 35 ? '#4caf50' :
+                                     hour.risk_score < 55 ? '#ff9800' :
+                                     hour.risk_score < 75 ? '#f57c00' : '#f44336',
                             color: 'white',
                             fontWeight: 600,
                           }}
                         />
                       </Box>
-                      <Typography variant="caption" display="block" color="text.secondary">
+                      <Typography variant="caption" display="block" sx={{ color: '#424242' }}>
                         {hour.conditions_summary}
                       </Typography>
-                      <Typography variant="caption" display="block" sx={{ mt: 0.5 }}>
-                        🌡️ {hour.temperature}°C | 💨 {hour.wind_speed} m/s | 🌧️ {hour.precipitation} mm
+                      <Typography variant="caption" display="block" sx={{ mt: 0.5, color: '#212121' }}>
+                        🌡️ {hour.temperature}°C | 💨 {hour.wind_speed} m/s | 🌧️ {hour.precipitation !== null && hour.precipitation !== undefined ? hour.precipitation : 0} mm
                       </Typography>
                     </Paper>
                   </Grid>

@@ -656,6 +656,7 @@ async def get_route_forecast(
     Coordinates are inherited from the route's parent location.
     """
     from app.services.weather_service import fetch_current_weather_pattern
+    from app.services.elevation_service import fetch_elevation
 
     # Fetch route with location coordinates
     route = await get_route_with_location_coords(db, mp_route_id)
@@ -665,6 +666,11 @@ async def get_route_forecast(
 
     if route.latitude is None or route.longitude is None:
         raise HTTPException(status_code=400, detail="Route's location missing GPS coordinates")
+
+    # Fetch elevation for the route location
+    elevation_meters = None
+    if route.latitude and route.longitude:
+        elevation_meters = fetch_elevation(route.latitude, route.longitude)
 
     # Calculate forecast for 7 days
     forecast_days = []
@@ -762,6 +768,7 @@ async def get_route_forecast(
         "start_date": start_date.isoformat(),
         "forecast_days": forecast_days,
         "today": today_data,
+        "elevation_meters": elevation_meters,
     }
 
 
