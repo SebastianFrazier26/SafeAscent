@@ -1012,21 +1012,24 @@ async def get_risk_breakdown(
     route_type_weights = [acc.route_type_weight for acc in prediction.top_contributing_accidents[:10]]
     elevation_weights = [acc.elevation_weight for acc in prediction.top_contributing_accidents[:10]]
 
+    # Blend elevation into spatial as a micro-boost (no separate category)
+    combined_spatial = [
+        s * e for s, e in zip(spatial_weights, elevation_weights)
+    ] if spatial_weights and elevation_weights else spatial_weights
+
     # Calculate average weights (normalized to percentages)
-    avg_spatial = (sum(spatial_weights) / len(spatial_weights) * 100) if spatial_weights else 0
+    avg_spatial = (sum(combined_spatial) / len(combined_spatial) * 100) if combined_spatial else 0
     avg_temporal = (sum(temporal_weights) / len(temporal_weights) * 100) if temporal_weights else 0
     avg_weather = (sum(weather_weights) / len(weather_weights) * 100) if weather_weights else 0
     avg_route_type = (sum(route_type_weights) / len(route_type_weights) * 100) if route_type_weights else 0
-    avg_elevation = (sum(elevation_weights) / len(elevation_weights) * 100) if elevation_weights else 0
 
     # Normalize to 100%
-    total_weight = avg_spatial + avg_temporal + avg_weather + avg_route_type + avg_elevation
+    total_weight = avg_spatial + avg_temporal + avg_weather + avg_route_type
     if total_weight > 0:
         avg_spatial = (avg_spatial / total_weight) * 100
         avg_temporal = (avg_temporal / total_weight) * 100
         avg_weather = (avg_weather / total_weight) * 100
         avg_route_type = (avg_route_type / total_weight) * 100
-        avg_elevation = (avg_elevation / total_weight) * 100
 
     # Calculate median days_ago from top accidents
     days_ago_list = sorted([acc.days_ago for acc in prediction.top_contributing_accidents[:10]])
@@ -1040,7 +1043,7 @@ async def get_risk_breakdown(
             "name": "Spatial Proximity",
             "contribution": round(avg_spatial, 1),
             "description": f"{prediction.num_contributing_accidents} nearby accidents within search radius, "
-                          f"weighted by distance using Gaussian decay"
+                          f"weighted by distance (includes small elevation bonus for similar altitude)"
         })
 
         factors.append({
@@ -1061,13 +1064,6 @@ async def get_risk_breakdown(
             "contribution": round(avg_route_type, 1),
             "description": f"Climbing discipline similarity ({route.type} routes). "
                           f"Asymmetric weighting accounts for shared risk factors"
-        })
-
-        factors.append({
-            "name": "Elevation Similarity",
-            "contribution": round(avg_elevation, 1),
-            "description": "Elevation similarity with nearby accidents. "
-                          "Similar elevations share weather and condition patterns"
         })
     else:
         factors.append({
@@ -1536,10 +1532,11 @@ async def get_ascent_analytics(
 
     # Query mp_ticks table for ascent data
     # The mp_ticks table uses route_id which matches mp_route_id
+    route_id_str = str(mp_route_id)
     total_ascents_query = text("""
         SELECT COUNT(*) FROM mp_ticks WHERE route_id = :route_id
     """)
-    total_result = await db.execute(total_ascents_query, {"route_id": mp_route_id})
+    total_result = await db.execute(total_ascents_query, {"route_id": route_id_str})
     total_ascents = total_result.scalar() or 0
 
     # Get monthly ascent breakdown
@@ -1553,7 +1550,7 @@ async def get_ascent_analytics(
         GROUP BY EXTRACT(MONTH FROM tick_date)
         ORDER BY month
     """)
-    monthly_result = await db.execute(monthly_ascents_query, {"route_id": mp_route_id})
+    monthly_result = await db.execute(monthly_ascents_query, {"route_id": route_id_str})
     monthly_ascent_rows = monthly_result.fetchall()
 
     # Build monthly ascent dict
@@ -1663,9 +1660,9 @@ async def get_ascent_analytics(
         "total_accidents": total_accidents,
         "overall_accident_rate": overall_accident_rate,
         "monthly_stats": monthly_stats,
-        "best_month": {"name": best_month["month"], "accident_rate": best_month["accident_rate"], "ascent_count": best_month["ascent_count"]} if best_month else None,
-        "worst_month": {"name": worst_month["month"], "accident_rate": worst_month["accident_rate"], "ascent_count": worst_month["ascent_count"]} if worst_month else None,
-        "peak_month": {"name": peak_month["month"], "ascent_count": peak_month["ascent_count"]} if peak_month else None,
+        "best_month": best_month["month"] if best_month else None,
+        "worst_month": worst_month["month"] if worst_month else None,
+        "peak_month": peak_month["month"] if peak_month else None,
         "has_data": has_data,
     }
 

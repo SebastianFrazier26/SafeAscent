@@ -32,6 +32,7 @@ import numpy as np
 from app.services.algorithm_config import (
     EARTH_RADIUS_KM,
     ELEVATION_DECAY_CONSTANT,
+    ELEVATION_BONUS_MAX,
     GRADE_HALF_WEIGHT_DIFF,
     GRADE_MIN_WEIGHT,
     MAX_RISK_SCORE,
@@ -198,17 +199,12 @@ def compute_location_base_score(
             else:
                 temporal_weight = base_temporal
 
-        # 3. Elevation weight (asymmetric)
+        # 3. Elevation micro-bonus (never penalizes)
         if location_elevation_m is None or accident.get("elevation_m") is None:
             elevation_weight = 1.0
         else:
-            elev_diff = accident["elevation_m"] - location_elevation_m
-            if elev_diff <= 0:
-                # Same or lower elevation: full weight
-                elevation_weight = 1.0
-            else:
-                # Higher elevation: decay
-                elevation_weight = math.exp(-(elev_diff / elevation_decay) ** 2)
+            elev_diff = abs(accident["elevation_m"] - location_elevation_m)
+            elevation_weight = 1.0 + (ELEVATION_BONUS_MAX * math.exp(-(elev_diff / elevation_decay) ** 2))
 
         # 4. Severity weight
         severity = accident.get("severity", "unknown")
