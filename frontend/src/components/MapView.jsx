@@ -46,7 +46,7 @@ export default function MapView({ selectedRouteForZoom }) {
   // Selected date for safety calculations (default: today)
   const today = startOfToday();
   const [selectedDate, setSelectedDate] = useState(today);
-  const maxDate = addDays(today, 6); // 7-day window
+  const maxDate = addDays(today, 2); // 3-day window
 
   // Routes data
   const [routes, setRoutes] = useState(null);
@@ -237,18 +237,27 @@ export default function MapView({ selectedRouteForZoom }) {
   }, [seasonFilter, selectedDate]); // Re-fetch when season or date changes
 
   /**
+   * Helper: Check if a route type is ice/mixed (winter season)
+   */
+  const isWinterRouteType = (routeType) => {
+    if (!routeType) return false;
+    const normalized = routeType.toLowerCase();
+    return normalized.includes('ice') || normalized.includes('mixed');
+  };
+
+  /**
    * Handle zoom to route or mountain from search
+   * Auto-switches season if route type doesn't match current filter
    */
   useEffect(() => {
-    if (!selectedRouteForZoom || !routes) return;
+    if (!selectedRouteForZoom) return;
 
     const map = mapRef.current?.getMap();
-    if (!map) return;
 
-    // Handle location/area selection (previously called 'mountain')
-    if (selectedRouteForZoom.type === 'location') {
+    // Handle location/area selection
+    if (selectedRouteForZoom.resultType === 'location' || selectedRouteForZoom.type === 'location') {
       // Zoom to location
-      if (selectedRouteForZoom.latitude && selectedRouteForZoom.longitude) {
+      if (map && selectedRouteForZoom.latitude && selectedRouteForZoom.longitude) {
         map.easeTo({
           center: [selectedRouteForZoom.longitude, selectedRouteForZoom.latitude],
           zoom: 12, // Zoom to see mountain area with routes
@@ -258,12 +267,28 @@ export default function MapView({ selectedRouteForZoom }) {
       return;
     }
 
-    // Handle route selection
+    // Handle route selection - check if we need to switch seasons
+    const routeType = selectedRouteForZoom.routeType || selectedRouteForZoom.type;
+    const isWinterRoute = isWinterRouteType(routeType);
+    const needsSeasonSwitch = (isWinterRoute && seasonFilter === 'rock') ||
+                              (!isWinterRoute && seasonFilter === 'winter');
+
+    if (needsSeasonSwitch) {
+      // Switch to the correct season - route data will reload via useEffect
+      console.log(`🔄 Auto-switching season: ${routeType} route requires ${isWinterRoute ? 'winter' : 'rock'} season`);
+      setSeasonFilter(isWinterRoute ? 'winter' : 'rock');
+      // Don't zoom yet - wait for routes to reload (handled in next render)
+      return;
+    }
+
+    // Routes are already loaded for correct season - find and zoom to route
+    if (!routes) return;
+
     const routeFeature = routes.features.find(
       (f) => f.properties.id === selectedRouteForZoom.route_id
     );
 
-    if (routeFeature) {
+    if (routeFeature && map) {
       // Zoom to route
       map.easeTo({
         center: routeFeature.geometry.coordinates,
@@ -275,8 +300,10 @@ export default function MapView({ selectedRouteForZoom }) {
       setTimeout(() => {
         setSelectedRoute(routeFeature);
       }, 500);
+    } else if (!routeFeature) {
+      console.log(`⚠️ Route ${selectedRouteForZoom.route_id} not found in current map data`);
     }
-  }, [selectedRouteForZoom, routes]);
+  }, [selectedRouteForZoom, routes, seasonFilter]);
 
   /**
    * Fetch safety score for selected route
@@ -545,8 +572,8 @@ export default function MapView({ selectedRouteForZoom }) {
           )}
 
           {/* RISK COVERAGE VIEW MODE - Regional risk overlay with all individual routes */}
-          {/* Only load data when zoomed in enough to prevent 160K point performance issues */}
-          {routes && mapViewMode === 'risk' && currentZoom >= HEATMAP_MIN_ZOOM && (
+          {/* Heatmap "heat" is always visible for overview; individual dots only when zoomed in */}
+          {routes && mapViewMode === 'risk' && (
             <Source
               id="routes"
               type="geojson"
@@ -556,6 +583,7 @@ export default function MapView({ selectedRouteForZoom }) {
               {/* Layered Heatmap Approach - One heatmap per risk category */}
               {/* Each layer shows smooth density for routes in that risk bracket */}
               {/* Higher risk layers render on top for correct visual priority */}
+              {/* Heatmap layers visible at ALL zoom levels for wide-zoom overview */}
 
               {/* BASE LAYER: Gray heatmap showing ALL climbing areas */}
               {/* Provides contrast - gray = climbing data exists, no gray = no climbing data */}
@@ -563,7 +591,6 @@ export default function MapView({ selectedRouteForZoom }) {
                 id="climbing-coverage-base"
                 type="heatmap"
                 source="routes"
-                minzoom={HEATMAP_MIN_ZOOM}
                 // No filter - ALL routes contribute to gray base
                 paint={{
                   'heatmap-weight': 1,
@@ -589,7 +616,6 @@ export default function MapView({ selectedRouteForZoom }) {
                 id="risk-low"
                 type="heatmap"
                 source="routes"
-                minzoom={HEATMAP_MIN_ZOOM}
                 filter={['all', ['has', 'risk_score'], ['<', ['get', 'risk_score'], 32]]}
                 paint={{
                   'heatmap-weight': 1,
@@ -622,7 +648,6 @@ export default function MapView({ selectedRouteForZoom }) {
                 id="risk-moderate"
                 type="heatmap"
                 source="routes"
-                minzoom={HEATMAP_MIN_ZOOM}
                 filter={['all', ['>=', ['get', 'risk_score'], 28], ['<', ['get', 'risk_score'], 52]]}
                 paint={{
                   'heatmap-weight': 1,
@@ -655,7 +680,6 @@ export default function MapView({ selectedRouteForZoom }) {
                 id="risk-elevated"
                 type="heatmap"
                 source="routes"
-                minzoom={HEATMAP_MIN_ZOOM}
                 filter={['all', ['>=', ['get', 'risk_score'], 48], ['<', ['get', 'risk_score'], 72]]}
                 paint={{
                   'heatmap-weight': 1,
@@ -688,7 +712,6 @@ export default function MapView({ selectedRouteForZoom }) {
                 id="risk-high"
                 type="heatmap"
                 source="routes"
-                minzoom={HEATMAP_MIN_ZOOM}
                 filter={['>=', ['get', 'risk_score'], 68]}
                 paint={{
                   'heatmap-weight': 1,
@@ -715,11 +738,13 @@ export default function MapView({ selectedRouteForZoom }) {
                 }}
               />
 
-              {/* Individual route markers - smaller in risk view */}
+              {/* Individual route markers - only visible when zoomed in */}
+              {/* The 160K dots would overwhelm the view at wide zooms */}
               <Layer
                 id="individual-routes"
                 type="circle"
                 source="routes"
+                minzoom={HEATMAP_MIN_ZOOM}
                 paint={{
                   'circle-color': [
                     'match',
@@ -794,37 +819,6 @@ export default function MapView({ selectedRouteForZoom }) {
           )}
         </MapGL>
 
-        {/* Zoom in prompt for Risk Coverage mode */}
-        {mapViewMode === 'risk' && currentZoom < HEATMAP_MIN_ZOOM && (
-          <Paper
-            elevation={4}
-            sx={{
-              position: 'absolute',
-              top: '50%',
-              left: '50%',
-              transform: 'translate(-50%, -50%)',
-              p: 3,
-              zIndex: 10,
-              bgcolor: 'background.paper',
-              borderRadius: 3,
-              textAlign: 'center',
-              maxWidth: 320,
-              boxShadow: '0 8px 32px rgba(0,0,0,0.15)',
-            }}
-          >
-            <Typography variant="h6" fontWeight={700} gutterBottom>
-              🔍 Zoom In to View Risk Heatmap
-            </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-              The risk coverage heatmap displays best at closer zoom levels.
-              Zoom in to a specific region to see the risk overlay.
-            </Typography>
-            <Typography variant="caption" color="text.secondary">
-              Current zoom: {currentZoom.toFixed(1)} • Required: {HEATMAP_MIN_ZOOM}+
-            </Typography>
-          </Paper>
-        )}
-
         {/* Date Picker - Controls safety score date */}
         <Paper
           elevation={3}
@@ -850,7 +844,7 @@ export default function MapView({ selectedRouteForZoom }) {
             slotProps={{
               textField: {
                 size: 'small',
-                helperText: '7-day forecast',
+                helperText: '3-day forecast',
                 sx: {
                   width: 210,
                   '& .MuiInputBase-root': {

@@ -177,7 +177,7 @@ function App() {
                   </ListItem>
                   <ListItem sx={{ px: 0 }}>
                     <ListItemText
-                      primary="2. Select your planned date (next 7 days)"
+                      primary="2. Select your planned date (next 3 days)"
                       primaryTypographyProps={{
                         variant: 'body2',
                         color: 'text.primary',

@@ -39,6 +39,66 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+async def get_location_breadcrumb(db: AsyncSession, location_id: int, exclude_states: bool = True) -> str:
+    """
+    Build a breadcrumb path for a location by traversing the parent_id chain.
+
+    Example output: "Yosemite National Park → Half Dome → Northwest Face"
+
+    Args:
+        db: Database session
+        location_id: Starting location ID (most specific)
+        exclude_states: If True, stops traversal at state level (excludes "California", "USA" etc.)
+
+    Returns:
+        Breadcrumb string with " → " separators, or empty string if location not found
+    """
+    # Known state/country names to exclude from breadcrumb
+    STATE_NAMES = {
+        'alabama', 'alaska', 'arizona', 'arkansas', 'california', 'colorado',
+        'connecticut', 'delaware', 'florida', 'georgia', 'hawaii', 'idaho',
+        'illinois', 'indiana', 'iowa', 'kansas', 'kentucky', 'louisiana',
+        'maine', 'maryland', 'massachusetts', 'michigan', 'minnesota',
+        'mississippi', 'missouri', 'montana', 'nebraska', 'nevada',
+        'new hampshire', 'new jersey', 'new mexico', 'new york',
+        'north carolina', 'north dakota', 'ohio', 'oklahoma', 'oregon',
+        'pennsylvania', 'rhode island', 'south carolina', 'south dakota',
+        'tennessee', 'texas', 'utah', 'vermont', 'virginia', 'washington',
+        'west virginia', 'wisconsin', 'wyoming', 'district of columbia',
+        'united states', 'usa', 'canada', 'mexico', 'international'
+    }
+
+    path_parts = []
+    current_id = location_id
+    max_depth = 15  # Safety limit to prevent infinite loops
+
+    for _ in range(max_depth):
+        if current_id is None:
+            break
+
+        # Fetch location name and parent
+        query = select(MpLocation.name, MpLocation.parent_id).where(MpLocation.mp_id == current_id)
+        result = await db.execute(query)
+        row = result.one_or_none()
+
+        if not row:
+            break
+
+        name, parent_id = row
+
+        # Check if this is a state/country to exclude
+        if exclude_states and name.lower().strip() in STATE_NAMES:
+            break
+
+        path_parts.append(name)
+        current_id = parent_id
+
+    # Reverse to get top-down order (most general → most specific)
+    path_parts.reverse()
+
+    return " → ".join(path_parts) if path_parts else ""
+
+
 def normalize_route_type(route_type: Optional[str]) -> str:
     """
     Normalize route type to one accepted by the prediction algorithm.
@@ -448,7 +508,8 @@ async def get_mp_route(
 
     - **mp_route_id**: Mountain Project route ID
 
-    Returns route data including parent location name for display.
+    Returns route data including full location breadcrumb path for display.
+    Example: "Yosemite National Park → Half Dome → Northwest Face"
     """
     # Join with MpLocation to get location name and coordinates
     query = (
@@ -457,6 +518,7 @@ async def get_mp_route(
             MpLocation.name.label("location_name"),
             MpLocation.latitude.label("loc_lat"),
             MpLocation.longitude.label("loc_lon"),
+            MpLocation.mp_id.label("location_mp_id"),
         )
         .outerjoin(MpLocation, MpRoute.location_id == MpLocation.mp_id)
         .where(MpRoute.mp_route_id == mp_route_id)
@@ -467,11 +529,17 @@ async def get_mp_route(
     if not row:
         raise HTTPException(status_code=404, detail="Route not found")
 
-    route, location_name, loc_lat, loc_lon = row
+    route, location_name, loc_lat, loc_lon, location_mp_id = row
 
     # Build response with location name
     route_data = MpRouteDetail.model_validate(route)
-    route_data.location_name = location_name
+
+    # Get full location breadcrumb path (e.g., "Yosemite → Half Dome → Northwest Face")
+    if location_mp_id:
+        breadcrumb = await get_location_breadcrumb(db, location_mp_id, exclude_states=True)
+        route_data.location_name = breadcrumb if breadcrumb else location_name
+    else:
+        route_data.location_name = location_name
 
     # Fetch elevation from coordinates (use location coords if route coords missing)
     lat = route.latitude or loc_lat
@@ -708,8 +776,14 @@ async def get_route_accidents(
     Uses geographic proximity to find nearby accidents within ~50km radius.
     Includes weather data for accident dates when available.
     Coordinates are inherited from the route's parent location.
+
+    Returns accidents with:
+    - impact_score: Relevance based on proximity (closer = higher score)
+    - same_route: True if accident occurred on the exact same route
+    - weather: Historical weather conditions on accident date
     """
     import requests
+    import math
 
     # Fetch route with location coordinates
     route = await get_route_with_location_coords(db, mp_route_id)
@@ -720,12 +794,21 @@ async def get_route_accidents(
     if not route.latitude or not route.longitude:
         raise HTTPException(status_code=400, detail="Route's location missing GPS coordinates")
 
-    # Fetch nearby accidents using geographic proximity
-    # Using Haversine formula for distance calculation
+    # Fetch nearby accidents using geographic proximity with distance calculation
+    # Using Haversine formula - also returns calculated distance for relevance scoring
+    # Include ALL available fields for comprehensive accident reports
     accidents_query = text("""
         SELECT
             accident_id, date, latitude, longitude, description,
-            accident_type, injury_severity, location, route as route_name
+            accident_type, injury_severity, location, route as route_name,
+            source, state, mountain, activity, age_range, tags, elevation_meters,
+            (
+                6371 * acos(
+                    cos(radians(:lat)) * cos(radians(latitude)) *
+                    cos(radians(longitude) - radians(:lon)) +
+                    sin(radians(:lat)) * sin(radians(latitude))
+                )
+            ) as distance_km
         FROM accidents
         WHERE latitude IS NOT NULL AND longitude IS NOT NULL
           AND (
@@ -735,7 +818,7 @@ async def get_route_accidents(
                   sin(radians(:lat)) * sin(radians(latitude))
               )
           ) < 50
-        ORDER BY date DESC NULLS LAST
+        ORDER BY distance_km ASC, date DESC NULLS LAST
         LIMIT :limit
     """)
 
@@ -745,10 +828,31 @@ async def get_route_accidents(
     )
     accidents = accidents_result.fetchall()
 
-    # Format accident data with weather
+    # Format accident data with weather and relevance scoring
+    import math
     accidents_data = []
     for accident in accidents:
-        accident_id, acc_date, acc_lat, acc_lon, description, acc_type, severity, location, route_name = accident
+        (accident_id, acc_date, acc_lat, acc_lon, description, acc_type, severity,
+         location, route_name, source, state, mountain, activity, age_range,
+         tags, elevation_m, distance_km) = accident
+
+        # Calculate impact score based on proximity (closer = higher score)
+        # Using exponential decay: 100 * e^(-distance/10)
+        # At 0km = 100, at 10km ≈ 37, at 20km ≈ 14, at 50km ≈ 0.7
+        impact_score = round(100 * math.exp(-distance_km / 10), 1)
+
+        # Check if accident occurred on the same route (fuzzy name matching)
+        same_route = False
+        if route_name and route.name:
+            # Normalize both names for comparison
+            route_name_lower = route_name.lower().strip()
+            current_route_lower = route.name.lower().strip()
+            # Check for exact match or if one contains the other
+            same_route = (
+                route_name_lower == current_route_lower or
+                route_name_lower in current_route_lower or
+                current_route_lower in route_name_lower
+            )
 
         # Fetch historical weather for accident date
         weather_data = None
@@ -821,11 +925,24 @@ async def get_route_accidents(
             "accident_id": accident_id,
             "route_name": route_name or "Unknown",
             "date": acc_date.isoformat() if acc_date else None,
-            "description": description[:500] if description else "No description available",
+            "description": description if description else None,
             "accident_type": acc_type,
             "injury_severity": severity,
             "location": location,
             "weather": weather_data,
+            # New relevance fields
+            "distance_km": round(distance_km, 1) if distance_km else None,
+            "impact_score": impact_score,
+            "same_route": same_route,
+            # Additional detail fields
+            "source": source,
+            "state": state,
+            "mountain": mountain,
+            "activity": activity,
+            "age_range": age_range,
+            "tags": tags,
+            "elevation_meters": round(elevation_m) if elevation_m else None,
+            "coordinates": {"lat": acc_lat, "lon": acc_lon} if acc_lat and acc_lon else None,
         })
 
     # Get location name if available
