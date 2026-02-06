@@ -370,12 +370,20 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
           case 3: // Risk Score Breakdown
             if (!data.breakdown) {
               setLoading(prev => ({ ...prev, breakdown: true }));
-              const response = await fetch(
-                `${API_BASE}/mp-routes/${routeData.route_id}/risk-breakdown?target_date=${selectedDate}`
-              );
-              if (!response.ok) throw new Error('Failed to fetch risk breakdown');
-              const breakdownData = await response.json();
-              setData(prev => ({ ...prev, breakdown: breakdownData }));
+              try {
+                const response = await fetch(
+                  `${API_BASE}/mp-routes/${routeData.route_id}/risk-breakdown?target_date=${selectedDate}`
+                );
+                if (!response.ok) {
+                  const errorText = await response.text();
+                  setData(prev => ({ ...prev, breakdown: { error: `API error: ${response.status} - ${errorText.substring(0, 100)}` } }));
+                } else {
+                  const breakdownData = await response.json();
+                  setData(prev => ({ ...prev, breakdown: breakdownData }));
+                }
+              } catch (fetchErr) {
+                setData(prev => ({ ...prev, breakdown: { error: `Network error: ${fetchErr.message}` } }));
+              }
               setLoading(prev => ({ ...prev, breakdown: false }));
             }
             break;
@@ -396,12 +404,20 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
           case 5: // Time of Day Analysis
             if (!data.timeOfDay) {
               setLoading(prev => ({ ...prev, timeOfDay: true }));
-              const response = await fetch(
-                `${API_BASE}/mp-routes/${routeData.route_id}/time-of-day?target_date=${selectedDate}`
-              );
-              if (!response.ok) throw new Error('Failed to fetch time-of-day data');
-              const timeOfDayData = await response.json();
-              setData(prev => ({ ...prev, timeOfDay: timeOfDayData }));
+              try {
+                const response = await fetch(
+                  `${API_BASE}/mp-routes/${routeData.route_id}/time-of-day?target_date=${selectedDate}`
+                );
+                if (!response.ok) {
+                  const errorText = await response.text();
+                  setData(prev => ({ ...prev, timeOfDay: { error: `API error: ${response.status} - ${errorText.substring(0, 100)}` } }));
+                } else {
+                  const timeOfDayData = await response.json();
+                  setData(prev => ({ ...prev, timeOfDay: timeOfDayData }));
+                }
+              } catch (fetchErr) {
+                setData(prev => ({ ...prev, timeOfDay: { error: `Network error: ${fetchErr.message}` } }));
+              }
               setLoading(prev => ({ ...prev, timeOfDay: false }));
             }
             break;
@@ -722,7 +738,11 @@ function ForecastTab({ data, loading, selectedDate: _selectedDate, routeData }) 
   const tempHighF = celsiusToFahrenheit(today.temp_high);
   const tempLowF = celsiusToFahrenheit(today.temp_low);
   const windMph = msToMph(today.wind_speed);
-  const precipChance = today.precip_chance ?? (today.precip_mm ? Math.min(Math.round(today.precip_mm * 10), 100) : null);
+  // Handle precipitation - show 0% if data exists but is 0, N/A if null/undefined
+  const precipMm = today.precip_mm;
+  const precipChance = today.precip_chance !== undefined && today.precip_chance !== null
+    ? today.precip_chance
+    : (precipMm !== undefined && precipMm !== null ? Math.min(Math.round(precipMm * 10), 100) : null);
 
   return (
     <Grid container spacing={3}>
@@ -747,8 +767,13 @@ function ForecastTab({ data, loading, selectedDate: _selectedDate, routeData }) 
               <Grid size={{ xs: 6, md: 3 }}>
                 <Typography variant="body2" color="text.secondary">Precipitation</Typography>
                 <Typography variant="h5" fontWeight={600}>
-                  {precipChance !== null ? `${precipChance}%` : 'N/A'}
+                  {precipMm !== null && precipMm !== undefined ? `${precipMm.toFixed(1)} mm` : 'N/A'}
                 </Typography>
+                {precipChance !== null && (
+                  <Typography variant="caption" color="text.secondary">
+                    {precipChance}% chance
+                  </Typography>
+                )}
               </Grid>
               <Grid size={{ xs: 6, md: 3 }}>
                 <Typography variant="body2" color="text.secondary">Wind Speed</Typography>
@@ -1037,7 +1062,7 @@ function AccidentsTab({ data, loading, routeData }) {
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
                   <Box sx={{ flex: 1 }}>
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mb: 1 }}>
-                      <Typography variant="subtitle1" fontWeight={700}>
+                      <Typography variant="subtitle1" fontWeight={700} sx={{ color: 'text.primary' }}>
                         📅 {accident.date ? format(new Date(accident.date), 'MMMM d, yyyy') : 'Date unknown'}
                       </Typography>
                       {accident.same_route && (
@@ -1062,8 +1087,8 @@ function AccidentsTab({ data, loading, routeData }) {
 
                   {/* Impact bar visualization with distance */}
                   <Box sx={{ width: 180, textAlign: 'right', flexShrink: 0 }}>
-                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.7rem' }}>
-                      Relevance: {accident.impact_score ? `${Math.round(accident.impact_score)}%` : '—'}
+                    <Typography variant="caption" sx={{ fontSize: '0.7rem', color: 'text.secondary' }}>
+                      Proximity: {accident.impact_score ? `${Math.round(accident.impact_score)}%` : '—'}
                     </Typography>
                     <Box sx={{ height: 6, bgcolor: 'grey.200', borderRadius: 1, overflow: 'hidden', mt: 0.5 }}>
                       <Box
@@ -1084,34 +1109,34 @@ function AccidentsTab({ data, loading, routeData }) {
                 <Paper sx={{ p: 1.5, bgcolor: 'grey.50', mb: 2, borderRadius: 1 }}>
                   <Grid container spacing={1}>
                     <Grid size={{ xs: 6, sm: 3 }}>
-                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem' }}>
+                      <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem', color: 'text.secondary' }}>
                         📍 LOCATION
                       </Typography>
-                      <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                      <Typography variant="body2" sx={{ fontWeight: 500, color: 'text.primary' }}>
                         {accident.mountain || accident.location || accident.state || 'Unknown'}
                       </Typography>
                     </Grid>
                     <Grid size={{ xs: 6, sm: 3 }}>
-                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem' }}>
+                      <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem', color: 'text.secondary' }}>
                         🧗 ROUTE
                       </Typography>
-                      <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                      <Typography variant="body2" sx={{ fontWeight: 500, color: 'text.primary' }}>
                         {accident.route_name || 'Unknown'}
                       </Typography>
                     </Grid>
                     <Grid size={{ xs: 6, sm: 3 }}>
-                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem' }}>
+                      <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem', color: 'text.secondary' }}>
                         ⚡ ACTIVITY
                       </Typography>
-                      <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                      <Typography variant="body2" sx={{ fontWeight: 500, color: 'text.primary' }}>
                         {accident.activity || accident.accident_type || 'Unknown'}
                       </Typography>
                     </Grid>
                     <Grid size={{ xs: 6, sm: 3 }}>
-                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem' }}>
+                      <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem', color: 'text.secondary' }}>
                         📰 SOURCE
                       </Typography>
-                      <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                      <Typography variant="body2" sx={{ fontWeight: 500, color: 'text.primary' }}>
                         {accident.source || 'Unknown'}
                       </Typography>
                     </Grid>
@@ -1121,36 +1146,36 @@ function AccidentsTab({ data, loading, routeData }) {
                     <Grid container spacing={1} sx={{ mt: 1, pt: 1, borderTop: '1px solid', borderColor: 'divider' }}>
                       {accident.state && (
                         <Grid size={{ xs: 6, sm: 3 }}>
-                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem' }}>
+                          <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem', color: 'text.secondary' }}>
                             🏛️ STATE
                           </Typography>
-                          <Typography variant="body2" sx={{ fontWeight: 500 }}>{accident.state}</Typography>
+                          <Typography variant="body2" sx={{ fontWeight: 500, color: 'text.primary' }}>{accident.state}</Typography>
                         </Grid>
                       )}
                       {accident.elevation_meters && (
                         <Grid size={{ xs: 6, sm: 3 }}>
-                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem' }}>
+                          <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem', color: 'text.secondary' }}>
                             ⛰️ ELEVATION
                           </Typography>
-                          <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                          <Typography variant="body2" sx={{ fontWeight: 500, color: 'text.primary' }}>
                             {Math.round(accident.elevation_meters * 3.28084).toLocaleString()} ft
                           </Typography>
                         </Grid>
                       )}
                       {accident.age_range && (
                         <Grid size={{ xs: 6, sm: 3 }}>
-                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem' }}>
+                          <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem', color: 'text.secondary' }}>
                             👤 AGE
                           </Typography>
-                          <Typography variant="body2" sx={{ fontWeight: 500 }}>{accident.age_range}</Typography>
+                          <Typography variant="body2" sx={{ fontWeight: 500, color: 'text.primary' }}>{accident.age_range}</Typography>
                         </Grid>
                       )}
                       {accident.accident_type && accident.activity && accident.accident_type !== accident.activity && (
                         <Grid size={{ xs: 6, sm: 3 }}>
-                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem' }}>
+                          <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem', color: 'text.secondary' }}>
                             ⚠️ TYPE
                           </Typography>
-                          <Typography variant="body2" sx={{ fontWeight: 500 }}>{accident.accident_type}</Typography>
+                          <Typography variant="body2" sx={{ fontWeight: 500, color: 'text.primary' }}>{accident.accident_type}</Typography>
                         </Grid>
                       )}
                     </Grid>
@@ -1160,7 +1185,7 @@ function AccidentsTab({ data, loading, routeData }) {
                 {/* Description */}
                 {accident.description && (
                   <Box sx={{ mb: 2 }}>
-                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 600, mb: 0.5 }}>
+                    <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, mb: 0.5, color: 'text.secondary' }}>
                       📝 DESCRIPTION
                     </Typography>
                     <Typography variant="body2" sx={{ lineHeight: 1.6, color: 'text.primary' }}>
@@ -1172,12 +1197,12 @@ function AccidentsTab({ data, loading, routeData }) {
                 {/* Tags if available */}
                 {accident.tags && (
                   <Box sx={{ mb: 2 }}>
-                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 600, mb: 0.5 }}>
+                    <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, mb: 0.5, color: 'text.secondary' }}>
                       🏷️ TAGS
                     </Typography>
                     <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
                       {accident.tags.split(',').map((tag, i) => (
-                        <Chip key={i} label={tag.trim()} size="small" variant="outlined" sx={{ fontSize: '0.7rem' }} />
+                        <Chip key={i} label={tag.trim()} size="small" variant="outlined" sx={{ fontSize: '0.7rem', color: 'text.primary' }} />
                       ))}
                     </Box>
                   </Box>
@@ -1186,29 +1211,29 @@ function AccidentsTab({ data, loading, routeData }) {
                 {/* Weather Conditions */}
                 {accident.weather && (
                   <Paper sx={{ p: 1.5, bgcolor: 'info.50', border: '1px solid', borderColor: 'info.200', borderRadius: 1 }}>
-                    <Typography variant="caption" fontWeight={600} color="info.dark" sx={{ display: 'block', mb: 1 }}>
+                    <Typography variant="caption" fontWeight={600} sx={{ display: 'block', mb: 1, color: 'info.dark' }}>
                       🌤️ WEATHER CONDITIONS ON ACCIDENT DATE
                     </Typography>
                     <Grid container spacing={2}>
                       <Grid size={3}>
-                        <Typography variant="caption" color="text.secondary">Temperature</Typography>
-                        <Typography variant="body2" fontWeight={600}>{accident.weather.temp || 'N/A'}</Typography>
+                        <Typography variant="caption" sx={{ color: 'text.secondary' }}>Temperature</Typography>
+                        <Typography variant="body2" fontWeight={600} sx={{ color: 'text.primary' }}>{accident.weather.temp || 'N/A'}</Typography>
                       </Grid>
                       <Grid size={3}>
-                        <Typography variant="caption" color="text.secondary">Wind</Typography>
-                        <Typography variant="body2" fontWeight={600}>
+                        <Typography variant="caption" sx={{ color: 'text.secondary' }}>Wind</Typography>
+                        <Typography variant="body2" fontWeight={600} sx={{ color: 'text.primary' }}>
                           {accident.weather.wind_speed ? `${accident.weather.wind_speed} m/s` : 'N/A'}
                         </Typography>
                       </Grid>
                       <Grid size={3}>
-                        <Typography variant="caption" color="text.secondary">Precipitation</Typography>
-                        <Typography variant="body2" fontWeight={600}>
-                          {accident.weather.precipitation ? `${accident.weather.precipitation} mm` : 'N/A'}
+                        <Typography variant="caption" sx={{ color: 'text.secondary' }}>Precipitation</Typography>
+                        <Typography variant="body2" fontWeight={600} sx={{ color: 'text.primary' }}>
+                          {accident.weather.precipitation !== undefined && accident.weather.precipitation !== null ? `${accident.weather.precipitation} mm` : 'N/A'}
                         </Typography>
                       </Grid>
                       <Grid size={3}>
-                        <Typography variant="caption" color="text.secondary">Conditions</Typography>
-                        <Typography variant="body2" fontWeight={600}>{accident.weather.conditions || 'Unknown'}</Typography>
+                        <Typography variant="caption" sx={{ color: 'text.secondary' }}>Conditions</Typography>
+                        <Typography variant="body2" fontWeight={600} sx={{ color: 'text.primary' }}>{accident.weather.conditions || 'Unknown'}</Typography>
                       </Grid>
                     </Grid>
                   </Paper>
@@ -1239,10 +1264,24 @@ function RiskBreakdownTab({ data, loading, routeData }) {
     return <LoadingState message="Analyzing risk factors..." />;
   }
 
-  if (!data) {
+  // Handle error responses from API
+  if (data?.error) {
+    return (
+      <Alert severity="warning">
+        <Typography variant="body2" fontWeight={600} sx={{ color: 'text.primary' }}>Unable to load risk breakdown</Typography>
+        <Typography variant="body2" sx={{ color: 'text.primary' }}>{data.error}</Typography>
+      </Alert>
+    );
+  }
+
+  if (!data || !data.factors) {
     return (
       <Alert severity="info">
-        No risk breakdown data available.
+        <Typography variant="body2" fontWeight={600} sx={{ color: 'text.primary' }}>Risk breakdown not available</Typography>
+        <Typography variant="body2" sx={{ color: 'text.primary' }}>
+          Risk breakdown data could not be calculated. This may occur if there is insufficient accident data
+          near this route or if the safety score has not been pre-computed yet.
+        </Typography>
       </Alert>
     );
   }
@@ -1486,8 +1525,8 @@ function TimeOfDayTab({ data, loading, routeData: _routeData, selectedDate }) {
   if (data?.error) {
     return (
       <Alert severity="warning">
-        <Typography variant="body2" fontWeight={600}>Unable to load hourly analysis</Typography>
-        <Typography variant="body2">{data.error}</Typography>
+        <Typography variant="body2" fontWeight={600} sx={{ color: 'text.primary' }}>Unable to load hourly analysis</Typography>
+        <Typography variant="body2" sx={{ color: 'text.primary' }}>{data.error}</Typography>
       </Alert>
     );
   }
@@ -1495,10 +1534,11 @@ function TimeOfDayTab({ data, loading, routeData: _routeData, selectedDate }) {
   if (!data || !data.hourly_data) {
     return (
       <Alert severity="info">
-        <Typography variant="body2" fontWeight={600}>Time-of-day analysis not available</Typography>
-        <Typography variant="body2">
-          Hourly weather data is only available for dates within the next 7 days.
-          Selected date: {selectedDate}
+        <Typography variant="body2" fontWeight={600} sx={{ color: 'text.primary' }}>Time-of-day analysis not available</Typography>
+        <Typography variant="body2" sx={{ color: 'text.primary' }}>
+          Hourly weather data could not be fetched. This feature requires the Open-Meteo API
+          to return forecast data for the selected date ({selectedDate}).
+          Try selecting a date within the next 3 days.
         </Typography>
       </Alert>
     );

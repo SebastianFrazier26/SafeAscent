@@ -34,6 +34,7 @@ from app.utils.cache import (
     build_safety_score_key,
     get_bulk_cached_safety_scores,
 )
+from app.services.weather_service import WEATHER_API_URL, OPEN_METEO_API_KEY
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -1205,7 +1206,7 @@ async def get_time_of_day_analysis(
     if route.latitude is None or route.longitude is None:
         raise HTTPException(status_code=400, detail="Route's location missing GPS coordinates")
 
-    # Fetch hourly weather data from Open-Meteo
+    # Fetch hourly weather data from Open-Meteo (uses commercial API if configured)
     try:
         params = {
             "latitude": route.latitude,
@@ -1226,7 +1227,11 @@ async def get_time_of_day_analysis(
             "timezone": "auto",
         }
 
-        response = requests.get("https://api.open-meteo.com/v1/forecast", params=params, timeout=10)
+        # Add API key if using commercial API
+        if OPEN_METEO_API_KEY:
+            params["apikey"] = OPEN_METEO_API_KEY
+
+        response = requests.get(WEATHER_API_URL, params=params, timeout=10)
         response.raise_for_status()
         weather_data = response.json()
 
