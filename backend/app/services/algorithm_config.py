@@ -190,15 +190,17 @@ FREEZE_THAW_TEMP_C = 0.0  # 32°F = 0°C
 # Elevation decay constants by route type (meters)
 # Controls how quickly influence decays for accidents at HIGHER elevations
 # Accidents at same/lower elevation always get full weight (1.0)
+# NOTE: Increased 2x from original to reduce elevation's dominance in risk calc
+# Weather and proximity should be primary factors, elevation is secondary
 ELEVATION_DECAY_CONSTANT = {
-    "alpine": 800,    # Most sensitive to altitude effects
-    "ice": 800,       # Same as alpine
-    "mixed": 800,     # Same as alpine
-    "trad": 1200,     # Medium sensitivity
-    "aid": 1200,      # Same as trad
-    "sport": 1800,    # Less sensitive to elevation
-    "boulder": 3000,  # Barely affected by elevation
-    "default": 1200,  # Default for unknown types
+    "alpine": 1600,   # Most sensitive to altitude effects (was 800)
+    "ice": 1600,      # Same as alpine (was 800)
+    "mixed": 1600,    # Same as alpine (was 800)
+    "trad": 2400,     # Medium sensitivity (was 1200)
+    "aid": 2400,      # Same as trad (was 1200)
+    "sport": 3600,    # Less sensitive to elevation (was 1800)
+    "boulder": 6000,  # Barely affected by elevation (was 3000)
+    "default": 2400,  # Default for unknown types (was 1200)
 }
 
 

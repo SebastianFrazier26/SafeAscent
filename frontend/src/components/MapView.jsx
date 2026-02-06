@@ -464,6 +464,7 @@ export default function MapView({ selectedRouteForZoom }) {
           {/* CLUSTER VIEW MODE - Navigation with route aggregation */}
           {routes && mapViewMode === 'clusters' && (
             <Source
+              key={`routes-clusters-${seasonFilter}`}
               id="routes"
               type="geojson"
               data={filteredRoutes}
@@ -575,6 +576,7 @@ export default function MapView({ selectedRouteForZoom }) {
           {/* Heatmap "heat" is always visible for overview; individual dots only when zoomed in */}
           {routes && mapViewMode === 'risk' && (
             <Source
+              key={`routes-risk-${seasonFilter}`}
               id="routes"
               type="geojson"
               data={filteredRoutes}

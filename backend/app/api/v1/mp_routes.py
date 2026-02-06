@@ -679,13 +679,13 @@ async def get_route_forecast(
     for day_offset in range(7):
         target_date = start_date + timedelta(days=day_offset)
 
-        # Create prediction request
+        # Create prediction request (use fetched elevation)
         prediction_request = PredictionRequest(
             latitude=route.latitude,
             longitude=route.longitude,
             route_type=normalized_type,
             planned_date=target_date,
-            elevation_meters=None,
+            elevation_meters=elevation_meters,
         )
 
         try:
@@ -989,6 +989,10 @@ async def get_risk_breakdown(
     if route.latitude is None or route.longitude is None:
         raise HTTPException(status_code=400, detail="Route's location missing GPS coordinates")
 
+    # Fetch elevation for the route
+    from app.services.elevation_service import fetch_elevation
+    elevation_meters = fetch_elevation(route.latitude, route.longitude)
+
     # Calculate safety score with full details
     normalized_type = normalize_route_type(route.type)
     prediction_request = PredictionRequest(
@@ -996,7 +1000,7 @@ async def get_risk_breakdown(
         longitude=route.longitude,
         route_type=normalized_type,
         planned_date=target_date,
-        elevation_meters=None,
+        elevation_meters=elevation_meters,
     )
 
     prediction = await predict_route_safety(prediction_request, db)
@@ -1213,6 +1217,10 @@ async def get_time_of_day_analysis(
     if route.latitude is None or route.longitude is None:
         raise HTTPException(status_code=400, detail="Route's location missing GPS coordinates")
 
+    # Fetch elevation for the route
+    from app.services.elevation_service import fetch_elevation
+    elevation_meters = fetch_elevation(route.latitude, route.longitude)
+
     # Fetch hourly weather data from Open-Meteo (uses commercial API if configured)
     try:
         params = {
@@ -1251,14 +1259,14 @@ async def get_time_of_day_analysis(
         cloud_covers = hourly["cloud_cover"]
         visibilities = hourly["visibility"]
 
-        # Get base daily risk
+        # Get base daily risk (use fetched elevation)
         normalized_type = normalize_route_type(route.type)
         prediction_request = PredictionRequest(
             latitude=route.latitude,
             longitude=route.longitude,
             route_type=normalized_type,
             planned_date=target_date,
-            elevation_meters=None,
+            elevation_meters=elevation_meters,
         )
         base_prediction = await predict_route_safety(prediction_request, db)
         base_risk = base_prediction.risk_score
