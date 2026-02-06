@@ -524,7 +524,14 @@ async def calculate_mp_route_safety(
     cache_key = build_safety_score_key(mp_route_id, date_str)
     cached_result = cache_get(cache_key)
     if cached_result:
-        return MpRouteSafetyResponse(**cached_result)
+        # Merge cached safety data with route info from database
+        return MpRouteSafetyResponse(
+            route_id=mp_route_id,
+            route_name=route.name,
+            target_date=date_str,
+            risk_score=cached_result.get("risk_score", 0),
+            color_code=cached_result.get("color_code", "gray"),
+        )
 
     # Build prediction request
     normalized_type = normalize_route_type(route.type)
