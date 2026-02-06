@@ -167,8 +167,8 @@ def compute_location_base_score(
     # Current season for seasonal boost
     current_season = get_season(target_date.month)
 
-    # Weather parameters
-    WEATHER_POWER = 2
+    # Weather parameters - cubic for stronger weather sensitivity
+    WEATHER_POWER = 3
     WEATHER_EXCLUSION_THRESHOLD = 0.25
 
     total_base = 0.0
@@ -329,8 +329,8 @@ def compute_location_base_score_vectorized(
         default_route_type.lower(), ELEVATION_DECAY_CONSTANT["default"]
     )
 
-    # Weather parameters
-    WEATHER_POWER = 2
+    # Weather parameters - cubic for stronger weather sensitivity
+    WEATHER_POWER = 3
     WEATHER_EXCLUSION_THRESHOLD = 0.25
 
     # Target date as days since epoch

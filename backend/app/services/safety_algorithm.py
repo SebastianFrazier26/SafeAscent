@@ -305,9 +305,9 @@ def calculate_accident_influence(
         * grade_weight
     )
 
-    # Apply quadratic weather weighting for exponential weather sensitivity
-    # weather=0.3 → 0.09 (91% reduction), weather=0.8 → 0.64 (36% reduction)
-    WEATHER_POWER = 2  # Quadratic power (easily tunable: 2=square, 3=cubic, 1.77=7× variation)
+    # Apply cubic weather weighting for stronger weather sensitivity
+    # weather=0.3 → 0.027 (97% reduction), weather=0.8 → 0.512 (49% reduction)
+    WEATHER_POWER = 3  # Cubic power for stronger weather influence
     WEATHER_EXCLUSION_THRESHOLD = 0.25  # Exclude accidents with <25% weather similarity
 
     if weather_weight < WEATHER_EXCLUSION_THRESHOLD:

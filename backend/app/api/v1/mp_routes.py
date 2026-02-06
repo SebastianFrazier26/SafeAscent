@@ -743,13 +743,13 @@ async def get_route_forecast(
                 "date": target_date.isoformat(),
                 "risk_score": round(prediction.risk_score, 1),
                 "weather_summary": weather_summary,
-                "temp_high": round(temp_max, 1) if temp_max else None,
-                "temp_low": round(temp_min, 1) if temp_min else None,
-                "temp_avg": round(temp_avg, 1) if temp_avg else None,
-                "precip_mm": round(precip, 1) if precip else None,
-                "precip_chance": int(min(precip * 10, 100)) if precip else None,
-                "wind_speed": round(wind, 1) if wind else None,
-                "cloud_cover": round(cloud, 0) if cloud else None,
+                "temp_high": round(temp_max, 1) if temp_max is not None else None,
+                "temp_low": round(temp_min, 1) if temp_min is not None else None,
+                "temp_avg": round(temp_avg, 1) if temp_avg is not None else None,
+                "precip_mm": round(precip, 1) if precip is not None else None,
+                "precip_chance": int(min(precip * 10, 100)) if precip is not None else None,
+                "wind_speed": round(wind, 1) if wind is not None else None,
+                "cloud_cover": round(cloud, 0) if cloud is not None else None,
             })
         except Exception as e:
             logger.error(f"Error calculating forecast for {target_date}: {e}")
