@@ -285,7 +285,7 @@ function TabPanel({ children, value, index, ...other }) {
 }
 
 export default function RouteAnalyticsModal({ open, onClose, routeData, selectedDate }) {
-  const [currentTab, setCurrentTab] = useState(0);
+  const [currentTab, setCurrentTab] = useState(1);  // Default to Route Details tab
   const [loading, setLoading] = useState({});
   const [data, setData] = useState({
     forecast: null,
@@ -299,10 +299,10 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
   const [error, setError] = useState(null);
   const [exportMenuAnchor, setExportMenuAnchor] = useState(null);
 
-  // Reset tab when modal opens
+  // Reset tab when modal opens - default to Route Details (tab 1)
   useEffect(() => {
     if (open) {
-      setCurrentTab(0);
+      setCurrentTab(1);  // Route Details as default tab
       setError(null);
     }
   }, [open]);
@@ -425,7 +425,12 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
       } catch (err) {
         console.error('Error fetching tab data:', err);
         setError(err.message);
-        setLoading(prev => ({ ...prev, [Object.keys(loading)[0]]: false }));
+        // Clear loading state for the current tab
+        const tabKeys = ['forecast', 'routeDetails', 'accidents', 'breakdown', 'historical', 'timeOfDay', 'ascents'];
+        const currentTabKey = tabKeys[currentTab];
+        if (currentTabKey) {
+          setLoading(prev => ({ ...prev, [currentTabKey]: false }));
+        }
       }
     };
 
@@ -683,6 +688,18 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
 // TAB COMPONENTS
 // ============================================================================
 
+// Helper to convert Celsius to Fahrenheit
+const celsiusToFahrenheit = (celsius) => {
+  if (celsius === null || celsius === undefined) return null;
+  return Math.round(celsius * 9/5 + 32);
+};
+
+// Helper to convert m/s to mph
+const msToMph = (ms) => {
+  if (ms === null || ms === undefined) return null;
+  return Math.round(ms * 2.237);
+};
+
 function ForecastTab({ data, loading, selectedDate: _selectedDate, routeData }) {
   if (loading) {
     return <LoadingState message="Loading forecast data..." />;
@@ -695,6 +712,15 @@ function ForecastTab({ data, loading, selectedDate: _selectedDate, routeData }) 
       </Alert>
     );
   }
+
+  // Get today's data from forecast
+  const today = data.today || data.forecast_days?.[0] || {};
+
+  // Convert temps from Celsius to Fahrenheit for display
+  const tempHighF = celsiusToFahrenheit(today.temp_high);
+  const tempLowF = celsiusToFahrenheit(today.temp_low);
+  const windMph = msToMph(today.wind_speed);
+  const precipChance = today.precip_chance ?? (today.precip_mm ? Math.min(Math.round(today.precip_mm * 10), 100) : null);
 
   return (
     <Grid container spacing={3}>
@@ -709,19 +735,23 @@ function ForecastTab({ data, loading, selectedDate: _selectedDate, routeData }) 
               <Grid size={{ xs: 6, md: 3 }}>
                 <Typography variant="body2" color="text.secondary">Temperature</Typography>
                 <Typography variant="h5" fontWeight={600}>
-                  {data.today?.temp_high}°F / {data.today?.temp_low}°F
+                  {tempHighF !== null && tempLowF !== null
+                    ? `${tempHighF}°F / ${tempLowF}°F`
+                    : today.temp_high !== null && today.temp_low !== null
+                      ? `${Math.round(today.temp_high)}°C / ${Math.round(today.temp_low)}°C`
+                      : 'N/A'}
                 </Typography>
               </Grid>
               <Grid size={{ xs: 6, md: 3 }}>
                 <Typography variant="body2" color="text.secondary">Precipitation</Typography>
                 <Typography variant="h5" fontWeight={600}>
-                  {data.today?.precip_chance}%
+                  {precipChance !== null ? `${precipChance}%` : 'N/A'}
                 </Typography>
               </Grid>
               <Grid size={{ xs: 6, md: 3 }}>
                 <Typography variant="body2" color="text.secondary">Wind Speed</Typography>
                 <Typography variant="h5" fontWeight={600}>
-                  {data.today?.wind_speed} mph
+                  {windMph !== null ? `${windMph} mph` : today.wind_speed !== null ? `${Math.round(today.wind_speed)} m/s` : 'N/A'}
                 </Typography>
               </Grid>
               <Grid size={{ xs: 6, md: 3 }}>
@@ -875,11 +905,11 @@ function RouteDetailsTab({ data, loading, routeData }) {
         <Grid container spacing={3}>
           {/* Grade */}
           <Grid size={{ xs: 6, sm: 3, md: 2.4 }}>
-            <Box sx={{ textAlign: 'center', p: 2, bgcolor: 'grey.50', borderRadius: 2 }}>
-              <Typography variant="h4" fontWeight={700} color="primary.main">
+            <Box sx={{ textAlign: 'center', p: 2, bgcolor: 'primary.50', borderRadius: 2, border: '1px solid', borderColor: 'primary.100' }}>
+              <Typography variant="h4" fontWeight={700} sx={{ color: '#1565c0' }}>
                 {details.grade || '—'}
               </Typography>
-              <Typography variant="body2" color="text.secondary" fontWeight={500}>
+              <Typography variant="body2" sx={{ color: '#424242', fontWeight: 500 }}>
                 🎯 Grade
               </Typography>
             </Box>
@@ -887,11 +917,11 @@ function RouteDetailsTab({ data, loading, routeData }) {
 
           {/* Pitches */}
           <Grid size={{ xs: 6, sm: 3, md: 2.4 }}>
-            <Box sx={{ textAlign: 'center', p: 2, bgcolor: 'grey.50', borderRadius: 2 }}>
-              <Typography variant="h4" fontWeight={700} color="text.primary">
+            <Box sx={{ textAlign: 'center', p: 2, bgcolor: '#f5f5f5', borderRadius: 2, border: '1px solid #e0e0e0' }}>
+              <Typography variant="h4" fontWeight={700} sx={{ color: '#212121' }}>
                 {details.pitches ? Math.round(details.pitches) : 1}
               </Typography>
-              <Typography variant="body2" color="text.secondary" fontWeight={500}>
+              <Typography variant="body2" sx={{ color: '#424242', fontWeight: 500 }}>
                 📏 Pitches
               </Typography>
             </Box>
@@ -899,11 +929,11 @@ function RouteDetailsTab({ data, loading, routeData }) {
 
           {/* Elevation */}
           <Grid size={{ xs: 6, sm: 3, md: 2.4 }}>
-            <Box sx={{ textAlign: 'center', p: 2, bgcolor: 'grey.50', borderRadius: 2 }}>
-              <Typography variant="h4" fontWeight={700} color="text.primary">
+            <Box sx={{ textAlign: 'center', p: 2, bgcolor: '#e8f5e9', borderRadius: 2, border: '1px solid #c8e6c9' }}>
+              <Typography variant="h4" fontWeight={700} sx={{ color: '#2e7d32' }}>
                 {elevationDisplay ? elevationDisplay.split(' ')[0] : '—'}
               </Typography>
-              <Typography variant="body2" color="text.secondary" fontWeight={500}>
+              <Typography variant="body2" sx={{ color: '#424242', fontWeight: 500 }}>
                 ⛰️ Elevation
               </Typography>
             </Box>
@@ -911,11 +941,11 @@ function RouteDetailsTab({ data, loading, routeData }) {
 
           {/* Coordinates */}
           <Grid size={{ xs: 6, sm: 3, md: 4.8 }}>
-            <Box sx={{ textAlign: 'center', p: 2, bgcolor: 'grey.50', borderRadius: 2 }}>
-              <Typography variant="h6" fontWeight={600} color="text.primary" sx={{ fontFamily: 'monospace' }}>
+            <Box sx={{ textAlign: 'center', p: 2, bgcolor: '#fff3e0', borderRadius: 2, border: '1px solid #ffe0b2' }}>
+              <Typography variant="h6" fontWeight={600} sx={{ color: '#e65100', fontFamily: 'monospace' }}>
                 {coordsDisplay || '—'}
               </Typography>
-              <Typography variant="body2" color="text.secondary" fontWeight={500}>
+              <Typography variant="body2" sx={{ color: '#424242', fontWeight: 500 }}>
                 🧭 GPS Coordinates
               </Typography>
             </Box>
@@ -995,80 +1025,188 @@ function AccidentsTab({ data, loading, routeData }) {
             <Card
               elevation={accident.same_route ? 4 : 1}
               sx={{
-                border: accident.same_route ? 2 : 0,
-                borderColor: accident.same_route ? 'error.main' : 'transparent',
+                border: accident.same_route ? 2 : 1,
+                borderColor: accident.same_route ? 'error.main' : 'divider',
                 bgcolor: accident.same_route ? 'error.50' : 'background.paper',
               }}
             >
               <CardContent>
+                {/* Header Row: Date, Severity Badge, Relevance */}
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
                   <Box sx={{ flex: 1 }}>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-                      <Typography variant="subtitle1" fontWeight={600}>
-                        {accident.date ? format(new Date(accident.date), 'MMM d, yyyy') : 'Date unknown'}
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mb: 1 }}>
+                      <Typography variant="subtitle1" fontWeight={700}>
+                        📅 {accident.date ? format(new Date(accident.date), 'MMMM d, yyyy') : 'Date unknown'}
                       </Typography>
                       {accident.same_route && (
+                        <Chip label="SAME ROUTE" size="small" color="error" sx={{ fontWeight: 600 }} />
+                      )}
+                      {accident.injury_severity && (
                         <Chip
-                          label="SAME ROUTE"
+                          label={accident.injury_severity}
                           size="small"
-                          color="error"
-                          sx={{ fontWeight: 600 }}
+                          sx={{
+                            fontWeight: 600,
+                            bgcolor: accident.injury_severity.toLowerCase().includes('fatal') || accident.injury_severity.toLowerCase().includes('death') ? '#b71c1c' :
+                                     accident.injury_severity.toLowerCase().includes('serious') || accident.injury_severity.toLowerCase().includes('severe') ? '#e65100' :
+                                     accident.injury_severity.toLowerCase().includes('moderate') ? '#f57c00' :
+                                     accident.injury_severity.toLowerCase().includes('minor') ? '#fbc02d' : '#9e9e9e',
+                            color: 'white',
+                          }}
                         />
                       )}
                     </Box>
-                    <Typography variant="body2" color="text.secondary">
-                      Route: {accident.route_name || 'Unknown route'}
-                    </Typography>
                   </Box>
 
-                  {/* Impact bar visualization */}
-                  <Box sx={{ width: 200, textAlign: 'right' }}>
-                    <Typography variant="caption" color="text.secondary">
-                      Relevance Score
+                  {/* Impact bar visualization with distance */}
+                  <Box sx={{ width: 180, textAlign: 'right', flexShrink: 0 }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.7rem' }}>
+                      Relevance: {accident.impact_score ? `${Math.round(accident.impact_score)}%` : '—'}
                     </Typography>
-                    <Box
-                      sx={{
-                        height: 8,
-                        bgcolor: 'grey.200',
-                        borderRadius: 1,
-                        overflow: 'hidden',
-                        mt: 0.5,
-                      }}
-                    >
+                    <Box sx={{ height: 6, bgcolor: 'grey.200', borderRadius: 1, overflow: 'hidden', mt: 0.5 }}>
                       <Box
                         sx={{
                           height: '100%',
-                          width: `${accident.impact_score || 50}%`,
-                          bgcolor: accident.same_route ? 'error.main' : 'warning.main',
+                          width: `${accident.impact_score || 10}%`,
+                          bgcolor: accident.same_route ? 'error.main' : accident.impact_score > 50 ? 'warning.main' : 'info.main',
                         }}
                       />
                     </Box>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem' }}>
+                      {accident.distance_km !== undefined ? `${accident.distance_km.toFixed(1)} km away` : ''}
+                    </Typography>
                   </Box>
                 </Box>
 
-                <Typography variant="body2" paragraph>
-                  {accident.description || 'No description available'}
-                </Typography>
+                {/* Location & Route Info Grid */}
+                <Paper sx={{ p: 1.5, bgcolor: 'grey.50', mb: 2, borderRadius: 1 }}>
+                  <Grid container spacing={1}>
+                    <Grid size={{ xs: 6, sm: 3 }}>
+                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem' }}>
+                        📍 LOCATION
+                      </Typography>
+                      <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                        {accident.mountain || accident.location || accident.state || 'Unknown'}
+                      </Typography>
+                    </Grid>
+                    <Grid size={{ xs: 6, sm: 3 }}>
+                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem' }}>
+                        🧗 ROUTE
+                      </Typography>
+                      <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                        {accident.route_name || 'Unknown'}
+                      </Typography>
+                    </Grid>
+                    <Grid size={{ xs: 6, sm: 3 }}>
+                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem' }}>
+                        ⚡ ACTIVITY
+                      </Typography>
+                      <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                        {accident.activity || accident.accident_type || 'Unknown'}
+                      </Typography>
+                    </Grid>
+                    <Grid size={{ xs: 6, sm: 3 }}>
+                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem' }}>
+                        📰 SOURCE
+                      </Typography>
+                      <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                        {accident.source || 'Unknown'}
+                      </Typography>
+                    </Grid>
+                  </Grid>
+                  {/* Second row for additional details */}
+                  {(accident.state || accident.elevation_meters || accident.age_range) && (
+                    <Grid container spacing={1} sx={{ mt: 1, pt: 1, borderTop: '1px solid', borderColor: 'divider' }}>
+                      {accident.state && (
+                        <Grid size={{ xs: 6, sm: 3 }}>
+                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem' }}>
+                            🏛️ STATE
+                          </Typography>
+                          <Typography variant="body2" sx={{ fontWeight: 500 }}>{accident.state}</Typography>
+                        </Grid>
+                      )}
+                      {accident.elevation_meters && (
+                        <Grid size={{ xs: 6, sm: 3 }}>
+                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem' }}>
+                            ⛰️ ELEVATION
+                          </Typography>
+                          <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                            {Math.round(accident.elevation_meters * 3.28084).toLocaleString()} ft
+                          </Typography>
+                        </Grid>
+                      )}
+                      {accident.age_range && (
+                        <Grid size={{ xs: 6, sm: 3 }}>
+                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem' }}>
+                            👤 AGE
+                          </Typography>
+                          <Typography variant="body2" sx={{ fontWeight: 500 }}>{accident.age_range}</Typography>
+                        </Grid>
+                      )}
+                      {accident.accident_type && accident.activity && accident.accident_type !== accident.activity && (
+                        <Grid size={{ xs: 6, sm: 3 }}>
+                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem' }}>
+                            ⚠️ TYPE
+                          </Typography>
+                          <Typography variant="body2" sx={{ fontWeight: 500 }}>{accident.accident_type}</Typography>
+                        </Grid>
+                      )}
+                    </Grid>
+                  )}
+                </Paper>
 
-                {accident.weather && (
-                  <Paper sx={{ p: 2, bgcolor: 'grey.50' }}>
-                    <Typography variant="caption" fontWeight={600} color="text.secondary">
-                      Weather Conditions on Accident Date:
+                {/* Description */}
+                {accident.description && (
+                  <Box sx={{ mb: 2 }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 600, mb: 0.5 }}>
+                      📝 DESCRIPTION
                     </Typography>
-                    <Grid container spacing={1} sx={{ mt: 0.5 }}>
+                    <Typography variant="body2" sx={{ lineHeight: 1.6, color: 'text.primary' }}>
+                      {accident.description.length > 500 ? `${accident.description.substring(0, 500)}...` : accident.description}
+                    </Typography>
+                  </Box>
+                )}
+
+                {/* Tags if available */}
+                {accident.tags && (
+                  <Box sx={{ mb: 2 }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 600, mb: 0.5 }}>
+                      🏷️ TAGS
+                    </Typography>
+                    <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+                      {accident.tags.split(',').map((tag, i) => (
+                        <Chip key={i} label={tag.trim()} size="small" variant="outlined" sx={{ fontSize: '0.7rem' }} />
+                      ))}
+                    </Box>
+                  </Box>
+                )}
+
+                {/* Weather Conditions */}
+                {accident.weather && (
+                  <Paper sx={{ p: 1.5, bgcolor: 'info.50', border: '1px solid', borderColor: 'info.200', borderRadius: 1 }}>
+                    <Typography variant="caption" fontWeight={600} color="info.dark" sx={{ display: 'block', mb: 1 }}>
+                      🌤️ WEATHER CONDITIONS ON ACCIDENT DATE
+                    </Typography>
+                    <Grid container spacing={2}>
                       <Grid size={3}>
-                        <Typography variant="caption">Temp: {accident.weather.temp}°F</Typography>
+                        <Typography variant="caption" color="text.secondary">Temperature</Typography>
+                        <Typography variant="body2" fontWeight={600}>{accident.weather.temp || 'N/A'}</Typography>
                       </Grid>
                       <Grid size={3}>
-                        <Typography variant="caption">Wind: {accident.weather.wind_speed} mph</Typography>
-                      </Grid>
-                      <Grid size={3}>
-                        <Typography variant="caption">Precip: {accident.weather.precipitation}%</Typography>
-                      </Grid>
-                      <Grid size={3}>
-                        <Typography variant="caption">
-                          {accident.weather.conditions || 'Unknown'}
+                        <Typography variant="caption" color="text.secondary">Wind</Typography>
+                        <Typography variant="body2" fontWeight={600}>
+                          {accident.weather.wind_speed ? `${accident.weather.wind_speed} m/s` : 'N/A'}
                         </Typography>
+                      </Grid>
+                      <Grid size={3}>
+                        <Typography variant="caption" color="text.secondary">Precipitation</Typography>
+                        <Typography variant="body2" fontWeight={600}>
+                          {accident.weather.precipitation ? `${accident.weather.precipitation} mm` : 'N/A'}
+                        </Typography>
+                      </Grid>
+                      <Grid size={3}>
+                        <Typography variant="caption" color="text.secondary">Conditions</Typography>
+                        <Typography variant="body2" fontWeight={600}>{accident.weather.conditions || 'Unknown'}</Typography>
                       </Grid>
                     </Grid>
                   </Paper>
@@ -1342,10 +1480,24 @@ function TimeOfDayTab({ data, loading, routeData: _routeData, selectedDate }) {
     return <LoadingState message="Analyzing hourly conditions..." />;
   }
 
+  // Handle error responses from API
+  if (data?.error) {
+    return (
+      <Alert severity="warning">
+        <Typography variant="body2" fontWeight={600}>Unable to load hourly analysis</Typography>
+        <Typography variant="body2">{data.error}</Typography>
+      </Alert>
+    );
+  }
+
   if (!data || !data.hourly_data) {
     return (
       <Alert severity="info">
-        Time-of-day analysis not available for this date.
+        <Typography variant="body2" fontWeight={600}>Time-of-day analysis not available</Typography>
+        <Typography variant="body2">
+          Hourly weather data is only available for dates within the next 7 days.
+          Selected date: {selectedDate}
+        </Typography>
       </Alert>
     );
   }
@@ -1539,6 +1691,18 @@ function AscentsTab({ data, loading, routeData }) {
     return <LoadingState message="Loading ascent analytics..." />;
   }
 
+  // Handle error responses
+  if (data?.error) {
+    return (
+      <Alert severity="warning">
+        <Typography variant="body2" fontWeight={600}>
+          Unable to load ascent data
+        </Typography>
+        <Typography variant="body2">{data.error}</Typography>
+      </Alert>
+    );
+  }
+
   // Handle boulder routes (excluded from analytics)
   if (data?.excluded_reason) {
     return (
@@ -1554,11 +1718,12 @@ function AscentsTab({ data, loading, routeData }) {
     );
   }
 
-  if (!data || !data.has_data) {
+  // Show DataOnTheWay if no data or no tick data available
+  if (!data || data.has_data === false || data.total_ascents === 0) {
     return (
       <DataOnTheWay
         title="Ascent Data on its way!"
-        message="We're collecting tick data for this route. Ascent records help calculate accident rates by comparing successful climbs to incidents."
+        message={data?.message || "We're collecting tick data for this route. Ascent records help calculate accident rates by comparing successful climbs to incidents."}
       />
     );
   }

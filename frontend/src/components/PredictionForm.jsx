@@ -71,10 +71,10 @@ export default function PredictionForm({ onSubmit, isLoading, onRouteSelect }) {
         const routesData = await routesResponse.json();
         const locationsData = await locationsResponse.json();
 
-        // Combine results - locations first (marked as type: 'location'), then routes
+        // Combine results - locations first (marked as resultType: 'location'), then routes
         const locations = (locationsData.data || []).map(loc => ({
           ...loc,
-          type: 'location',
+          resultType: 'location',  // Use resultType to distinguish result type
           route_count: loc.route_count || 0,
           // Map mp_id to mountain_id for backwards compatibility
           mountain_id: loc.mp_id
@@ -82,7 +82,8 @@ export default function PredictionForm({ onSubmit, isLoading, onRouteSelect }) {
 
         const routes = (routesData.data || []).map(r => ({
           ...r,
-          type: 'route',
+          resultType: 'route',  // Use resultType to distinguish from route's actual climbing type
+          routeType: r.type,    // Preserve the actual route type (Ice, Trad, Sport, etc.)
           // Map mp_route_id to route_id for backwards compatibility
           route_id: r.mp_route_id
         }));
@@ -118,7 +119,7 @@ export default function PredictionForm({ onSubmit, isLoading, onRouteSelect }) {
     }
 
     // If location is selected, don't submit prediction - just zoom to it
-    if (selectedRoute.type === 'location') {
+    if (selectedRoute.resultType === 'location') {
       alert('Location selected. Click on a route marker to get its safety prediction.');
       return;
     }
@@ -156,7 +157,7 @@ export default function PredictionForm({ onSubmit, isLoading, onRouteSelect }) {
               getOptionLabel={(option) => option.name || ''}
               loading={loadingRoutes}
               disabled={isLoading}
-              groupBy={(option) => option.type === 'location' ? 'Locations' : 'Routes'}
+              groupBy={(option) => option.resultType === 'location' ? 'Locations' : 'Routes'}
               renderInput={(params) => (
                 <TextField
                   {...params}
@@ -186,21 +187,21 @@ export default function PredictionForm({ onSubmit, isLoading, onRouteSelect }) {
                   <Box sx={{ flexGrow: 1 }}>
                     <Typography
                       variant="body2"
-                      sx={{ fontWeight: option.type === 'location' ? 600 : 400 }}
+                      sx={{ fontWeight: option.resultType === 'location' ? 600 : 400 }}
                     >
                       {option.name}
-                      {option.type === 'location' && option.route_count > 0 && (
+                      {option.resultType === 'location' && option.route_count > 0 && (
                         <Typography component="span" variant="caption" sx={{ ml: 1, color: 'primary.main' }}>
                           ({option.route_count} routes)
                         </Typography>
                       )}
                     </Typography>
-                    {option.type === 'route' && (
+                    {option.resultType === 'route' && (
                       <Typography variant="caption" color="text.secondary">
-                        {option.grade || 'N/A'} • {option.type || 'Unknown type'}
+                        {option.grade || 'N/A'} • {option.routeType || 'Unknown type'}
                       </Typography>
                     )}
-                    {option.type === 'location' && (
+                    {option.resultType === 'location' && (
                       <Typography variant="caption" color="text.secondary">
                         {option.latitude && option.longitude
                           ? `${option.latitude.toFixed(2)}°, ${option.longitude.toFixed(2)}°`
