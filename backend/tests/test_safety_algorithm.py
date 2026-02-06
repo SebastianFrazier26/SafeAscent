@@ -128,8 +128,8 @@ def different_route_type_accident(reference_weather):
 class TestRiskScoreNormalization:
     """Tests for risk score normalization to 0-100 scale
 
-    Formula: risk_score = total_influence * 5.0 (capped at 100)
-    Note: Normalization factor changed from 10.0 to 5.0 per Decision #30
+    Formula: risk_score = total_influence * 7.0 (capped at 100)
+    Note: Normalization factor raised 2026-02-06 to surface more moderate/high risk routes
     """
 
     def test_zero_influence_zero_risk(self):
@@ -139,24 +139,24 @@ class TestRiskScoreNormalization:
 
     def test_low_influence_low_risk(self):
         """Low influence should give low risk
-        0.5 * 5 = 2.5
+        0.5 * 7 = 3.5
         """
         risk = normalize_risk_score(total_influence=0.5)
-        assert risk == 2.5
+        assert risk == 3.5
 
     def test_moderate_influence_moderate_risk(self):
         """Moderate influence should give moderate risk
-        2.0 * 5 = 10
+        2.0 * 7 = 14
         """
         risk = normalize_risk_score(total_influence=2.0)
-        assert risk == 10.0
+        assert risk == 14.0
 
     def test_high_influence_high_risk(self):
         """High influence should give high risk
-        5.0 * 5 = 25
+        5.0 * 7 = 35
         """
         risk = normalize_risk_score(total_influence=5.0)
-        assert risk == 25.0
+        assert risk == 35.0
 
     def test_extreme_influence_capped_at_100(self):
         """Extreme influence should cap at 100
@@ -180,7 +180,7 @@ class TestRiskScoreNormalization:
 
     def test_reaches_max_at_20(self):
         """Risk should reach maximum (100) at influence of 20
-        (with normalization factor 5.0, need influence=20 to hit 100)
+        (with normalization factor 7.0, any influence >= ~14.3 hits 100; 20 still caps)
         """
         risk = normalize_risk_score(total_influence=20.0)
         assert risk == 100.0
