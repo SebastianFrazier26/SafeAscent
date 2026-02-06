@@ -1,12 +1,13 @@
 # SafeAscent Safety Prediction Algorithm - Design Document
 
 **Status**: ✅ Implemented and Tested (50/50 tests passing)
-**Last Updated**: 2026-02-03
+**Last Updated**: 2026-02-06
 **Author**: Sebastian Frazier
 
 > **Note**: This document captures design decisions. The algorithm is now fully implemented in `backend/app/services/`. Key tuning updates since design:
-> - Weather power: Changed from cubic (27×) to **quadratic (9×)** for better balance
+> - Weather power: Uses **cubic (27×)** for strong weather influence
 > - Normalization factor: Changed from 10.0 to **5.0** for more headroom
+> - Elevation decay constants: Doubled (2×) to reduce elevation's dominance vs weather/proximity
 
 ---
 
@@ -1470,17 +1471,17 @@ def calculate_route_risk_and_confidence(route_location, route_type, current_weat
         # fatal: 1.3, serious: 1.1, minor: 1.0, unknown: 1.0
 
         # COMBINE ALL WEIGHTS
-        # Implementation update (2026-01-30):
-        # - Weather uses QUADRATIC power (weather²) for 9× sunny/stormy variation
-        # - Accidents with weather_similarity < 0.25 are EXCLUDED (poor match)
+        # Implementation update (2026-02-06):
+        # - Weather uses CUBIC power (weather³) for 27× sunny/stormy variation
+        # - Strong weather influence ensures poor matches contribute minimally
 
-        WEATHER_EXCLUSION_THRESHOLD = 0.25
-        WEATHER_POWER = 2  # Quadratic
+        WEATHER_EXCLUSION_THRESHOLD = 0.0  # Disabled - cubic weighting handles this
+        WEATHER_POWER = 3  # Cubic for stronger weather influence
 
         if weather_weight < WEATHER_EXCLUSION_THRESHOLD:
             continue  # Skip accidents with very poor weather match
 
-        weather_factor = weather_weight ** WEATHER_POWER  # Quadratic amplification
+        weather_factor = weather_weight ** WEATHER_POWER  # Cubic amplification
 
         total_influence = (
             spatial_weight *
@@ -1535,8 +1536,8 @@ def calculate_route_risk_and_confidence(route_location, route_type, current_weat
 | **Temporal Decay** | Year-scale (λ=0.9998 to 0.999) | Route-type-specific | ✅ Complete |
 | **Seasonal Boost** | 1.5× multiplier for same season | Winter/Spring/Summer/Fall | ✅ Complete |
 | **Weather Similarity** | Pattern correlation (equal weighting) | 6 factors, 2.0 SD extreme threshold | ✅ Complete |
-| **Weather Power** | **Quadratic (weather²)** | 9× sunny/stormy variation | ✅ Tuned |
-| **Weather Exclusion** | Skip accidents with similarity < 0.25 | Filters poor matches | ✅ Tuned |
+| **Weather Power** | **Cubic (weather³)** | 27× sunny/stormy variation | ✅ Tuned |
+| **Weather Exclusion** | Disabled (cubic handles naturally) | N/A | ✅ Tuned |
 | **Within-Window Decay** | 0.85 default (2.5× Day-0 vs Day-6) | Post-MVP backtesting planned | ✅ Complete |
 | **Severity Weighting** | Subtle boosters (1.3×, 1.1×, 1.0×) | Fatal, Serious, Minor/Unknown | ✅ Complete |
 | **Confidence Scoring** | Multi-factor (5 indicators) | Weighted 30/30/20/10/10 | ✅ Complete |
@@ -1595,5 +1596,5 @@ Total: ~320ms response time
 **Design Phase Complete**: 2026-01-28
 **Implementation Complete**: 2026-01-30
 **Testing Complete**: 2026-01-30 (50/50 tests passing, 100%)
-**Last Updated**: 2026-02-03
+**Last Updated**: 2026-02-06
 

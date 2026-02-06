@@ -1,424 +1,106 @@
-# SafeAscent Climbing & Mountaineering Incident Data
+# SafeAscent Data Sources
+
+**Last Updated:** February 2026
+
+---
 
 ## Overview
-This directory contains datasets of climbing, mountaineering, and avalanche incidents in the United States. The data is compiled from multiple authoritative sources to enable comprehensive analysis of incident patterns, risk factors, and safety trends.
 
-**Last Updated:** February 3, 2026
-**Data Collection Period:** 1990-2026 (varies by source)
-
-### Current Data Summary
-| Source | Records | Geocoded | Weather-Ready |
-|--------|---------|----------|---------------|
-| **AAC** | 2,770 | 99.9% | 2,763 |
-| **Avalanche.org** | 1,372 | 100% | 1,372 |
-| **NPS** | 848 | 77% | 655 |
-| **Total** | **4,990** | **96%** | **4,790** |
+SafeAscent aggregates climbing accident data from multiple authoritative sources to power safety predictions. All data is stored in a Neon PostgreSQL database with PostGIS for spatial queries.
 
 ---
 
-## Datasets
+## Data Summary
 
-### 1. Avalanche Accidents (`avalanche_accidents.csv`)
-**Source:** Colorado Avalanche Information Center (CAIC) API
-**URL:** https://avalanche.org / https://api.avalanche.state.co.us
-**Collection Method:** Automated API scraping
-**Collection Date:** January 17, 2026
-
-**Coverage:**
-- **Time Period:** March 1997 - January 2026
-- **Geographic Scope:** 15 U.S. states
-- **Total Incidents:** 1,372
-- **Total Fatalities:** 473
-
-**Data Fields (43 total):**
-
-#### Basic Information
-- `id` - Unique incident identifier (UUID)
-- `type` - Report type (incident_report, accident_report)
-- `observed_at` - Date/time of incident (ISO 8601)
-- `date_known` - Date accuracy (Estimated, Exact, etc.)
-- `time_known` - Time accuracy (Unknown, Estimated, Exact)
-- `water_year` - Avalanche season water year
-- `state` - U.S. state abbreviation
-- `latitude` - Incident latitude (decimal degrees)
-- `longitude` - Incident longitude (decimal degrees)
-- `status` - Report status (approved, pending, etc.)
-- `investigation_status` - Investigation phase
-- `created_at` - Record creation timestamp
-- `updated_at` - Record update timestamp
-
-#### Location & Context
-- `location` - Location description/name
-- `is_anonymous` - Whether reporter is anonymous
-- `is_anonymous_location` - Whether location is anonymized
-
-#### Incident Details
-- `involvement_summary` - Brief summary of casualties (e.g., "1 snowmobiler caught, buried, and killed")
-- `accident_summary` - Detailed narrative description
-- `weather_summary` - Weather conditions
-- `snowpack_summary` - Snowpack conditions
-- `rescue_summary` - Rescue operations details
-- `activity` - Activity type
-- `travel_mode` - Mode of travel
-- `authors` - Report authors (typically avalanche center name)
-- `links_media` - Media coverage links
-- `links_social_media` - Social media links
-- `closest_avalanche_center` - Nearest avalanche forecast center
-
-#### Casualty Statistics
-- `involved_count` - Total people involved
-- `buried_count` - Number of people buried
-- `killed_count` - Number of fatalities
-- `travel_activities` - JSON breakdown by activity type
-
-#### Avalanche Technical Details
-- `avalanche_aspect` - Slope aspect (N, NE, E, SE, S, SW, W, NW)
-- `avalanche_elevation_feet` - Elevation in feet
-- `avalanche_relative_size` - Relative size (R1-R5)
-- `avalanche_destructive_size` - Destructive size (D1-D5)
-- `avalanche_type_code` - Avalanche classification code
-- `avalanche_problem_type` - Problem type (persistent, storm, wind, wet, etc.)
-- `avalanche_primary_trigger` - Primary trigger code
-- `avalanche_secondary_trigger` - Secondary trigger code
-- `avalanche_angle_average` - Average slope angle (degrees)
-- `avalanche_crown_average` - Average crown depth
-- `avalanche_weak_layer` - Weak layer description
-- `avalanche_surface` - Surface condition
-
-#### Affected Groups
-- `affected_groups` - JSON array with details about affected parties
-
-**Citation:**
-Colorado Avalanche Information Center, U.S. Avalanche Accident Reports, https://avalanche.org, Accessed January 17, 2026
+| Source | Records | Geocoded | Coverage |
+|--------|---------|----------|----------|
+| **AAC** (American Alpine Club) | 2,770 | 99.9% | 1990-2019 |
+| **Avalanche.org** (CAIC) | 1,372 | 100% | 1997-2026 |
+| **NPS** (National Park Service) | 848 | 77% | Various |
+| **Mountain Project** | ~168,000 routes | 100% | Current |
+| **Total Accidents** | **~6,900** | **96%** | **1990-2026** |
 
 ---
 
-### 2. AAC Climbing Accidents (`processed_aac_accidents.csv`)
-**Source:** American Alpine Club / GitHub Repository
-**URL:** https://github.com/ecaroom/climbing-accidents
-**Coverage:** 1990-2019 (2,770 climbing accidents after processing)
+## Accident Data Sources
 
-**Scope:**
-- All climbing disciplines (alpine, trad, sport, ice, top-rope)
-- North American incidents
-- Detailed narratives and accident analysis
-- Enhanced discipline tagging
+### American Alpine Club (AAC)
+- **Coverage:** 1990-2019 climbing accidents
+- **Scope:** All climbing disciplines (alpine, trad, sport, ice)
+- **Processing:** Gemini 2.0 Flash for field extraction, Google Maps API for geocoding
+- **Quality:** Detailed narratives with lesson-focused analysis
 
-**Processing Applied (Feb 2026):**
-- **Extraction:** Gemini 2.0 Flash API (structured field extraction)
-- **Geocoding:** Google Maps API (99% success) + Gemini fallback (14 records)
-- **Date Recovery:** Publication Year - 1 + Month + 15th (+1,656 records recovered)
+### Avalanche.org (CAIC)
+- **Coverage:** 1997-2026 avalanche incidents
+- **Scope:** 15 U.S. states with avalanche activity
+- **Data:** Technical avalanche details (size, trigger, aspect, weak layer)
+- **Quality:** Standardized data collection, regular updates
 
-**Note:** Original dataset from external source; reprocessed with geocoding and date recovery.
-
----
-
-### 3. NPS Mortality Data (`nps_mortality.xlsx`)
-**Source:** National Park Service
-**Coverage:** Mortality incidents in U.S. National Parks
-
-**Scope:**
-- All causes of death in national parks
-- Includes but not limited to climbing/mountaineering
-- Geographic focus on national park lands
-
-**Note:** This dataset predates the project and was obtained from an external source.
+### National Park Service (NPS)
+- **Coverage:** Mortality incidents in U.S. National Parks
+- **Scope:** All causes of death (filtered for climbing-related)
+- **Quality:** Official government records
 
 ---
 
-## Additional Data Sources (Not Yet Collected)
+## Route Data
 
-### The Mountaineers Incident Reports
-**URL:** https://www.mountaineers.org/about/safety/safety-reports
-**Format:** PDF reports (quarterly, 2000-2025)
-**Geographic Focus:** Pacific Northwest (primarily Washington)
-
-**Content:**
-- Incident rates per 1,000 trip days
-- Breakdown by activity type (climbing, scrambling, hiking, kayaking, etc.)
-- Organized outings perspective
-- Quarterly and annual trend reports
-
-**Collection Status:** Index created; PDFs available for download
-**Recommendation:** Manual review and extraction recommended due to PDF format
+### Mountain Project
+- **Routes:** ~168,000 climbing routes across the United States
+- **Locations:** ~45,000 areas in hierarchical structure
+- **Data:** Name, grade, type, coordinates, length, pitches
+- **Excluded:** Boulder routes (different risk profile)
 
 ---
 
-### Mountain Rescue Association (MRA)
-**URL:** https://mra.org/training-education/accident-reports
-**Format:** Comprehensive PDF document
-**Coverage:** 1994-2011 (documented), ongoing updates
+## Weather Data
 
-**Content:**
-- Search and rescue operations data
-- Multi-casualty incident analysis
-- Rescue team perspective on climbing incidents
-- Educational materials for rescue operations
-
-**Collection Status:** Primary document identified
-**Recommendation:** Contact MRA directly for structured data access
-
-**Note:** MRA data significantly overlaps with AAC data but provides rescue operations perspective.
-
----
-
-### Park-Specific NPS Incident Reports
-**Sources:**
-- Yosemite National Park: https://nps.gov/yose/planyourvisit/climbing_safety.htm
-- Sequoia/Kings Canyon: https://nps.gov/seki
-- NPS Morning Reports Archive: https://npshistory.com/morningreport/
-
-**Coverage:** 1989-present (varies by park)
-
-**Content:**
-- Detailed park-specific incident reports
-- Search and rescue operations
-- Medical clinic data (injury classifications)
-- High-elevation and specialized hazard incidents
-
-**Collection Status:** Sources identified
-**Recommendation:** May complement existing nps_mortality.xlsx with more detailed narratives
+### Open-Meteo Historical Archive
+- **Purpose:** 7-day weather windows for each accident
+- **Variables:** Temperature, wind, precipitation, visibility, cloud cover
+- **Resolution:** 1km grid (coordinates rounded to 0.01°)
+- **Records:** ~25,000 weather observations
 
 ---
 
 ## Data Quality Notes
 
-### Avalanche Accidents
-**Strengths:**
-- Comprehensive, authoritative source (CAIC)
-- Standardized data collection
-- Technical avalanche details
-- Geographic coordinates
-- Regular updates
+### Geocoding Accuracy
+- **AAC:** 99.9% successfully geocoded (Google Maps + Gemini fallback)
+- **Avalanche.org:** 100% (coordinates provided in source)
+- **NPS:** 77% (some records lack specific locations)
 
-**Limitations:**
-- Data availability starts 1997 (not 1950 as initially advertised)
-- Primarily avalanche-related incidents only
-- Some historical records may be incomplete
-- Geographic bias toward states with avalanche forecast centers
+### Date Coverage
+- Dates recovered for AAC using publication year - 1 + month + 15th
+- ~4,800 accidents have both coordinates and dates (weather-ready)
 
-### AAC Accidents
-**Strengths:**
-- Long time series (1990-2019)
-- All climbing disciplines
-- Detailed narratives
-- Lesson-focused analysis
-
-**Limitations:**
-- Data ends 2019 (needs updating for 2020-2026)
-- May miss incidents not reported to AAC
-- North America wide (includes Canada/Mexico)
-
-### NPS Mortality
-**Strengths:**
-- Official government source
-- Comprehensive park coverage
-- All mortality causes
-
-**Limitations:**
-- Focused on national park lands only
-- May lack technical climbing details
-- Broader than climbing-specific incidents
+### Duplicate Handling
+- Some incidents may appear in multiple sources
+- Deduplication via date + location + casualty count matching
 
 ---
 
-## Data Integration Considerations
+## Database Schema
 
-### Overlapping Incidents
-Some incidents may appear in multiple datasets:
-- Avalanche accidents in national parks → both avalanche_accidents.csv and nps_mortality.xlsx
-- Climbing incidents → both aac_accidents.xlsx and NPS data
-- Well-publicized incidents → may be in AAC, NPS, and regional sources
-
-**Recommendation:** When combining datasets, deduplicate using:
-1. Date + Location matching
-2. Casualty count verification
-3. Narrative similarity analysis
-
-### Complementary Strengths
-- **Avalanche data:** Technical avalanche details, comprehensive modern coverage
-- **AAC data:** Climbing technique/human factors, educational focus
-- **NPS data:** National park incidents, official records
-- **Regional sources (Mountaineers, MRA):** Local detail, activity-specific trends
+See [DATABASE_STRUCTURE.md](./DATABASE_STRUCTURE.md) for detailed table schemas and query patterns.
 
 ---
 
-## File Inventory
+## Legal & Attribution
 
-### Raw Data
-| Filename | Format | Records | Status |
-|----------|--------|---------|--------|
-| `avalanche_accidents.csv` | CSV | 1,372 | ✅ Complete |
-| `aac_accidents.xlsx` | Excel | 2,724 | ✅ Original source |
-| `nps_mortality.xlsx` | Excel | ~1,000 | ✅ Original source |
+All data is from publicly accessible sources. When using this data:
 
-### Processed Data
-| Filename | Format | Records | Status |
-|----------|--------|---------|--------|
-| `processed_aac_accidents.csv` | CSV | 2,770 | ✅ Geocoded + dates recovered |
-| `mp_routes_v2.csv` | CSV | 196,000+ | 🚧 Collection in progress |
-| `mp_ticks.csv` | CSV | Growing | 🚧 Collection in progress |
-
-### Database Tables (`tables/`)
-| Filename | Format | Records | Status |
-|----------|--------|---------|--------|
-| `accidents.csv` | CSV | ~6,900 | ✅ Combined from all sources |
-| `weather.csv` | CSV | ~71,600 | 🚧 Backfill in progress |
-| `routes.csv` | CSV | 622 | ✅ Base routes |
-| `mountains.csv` | CSV | 442 | ✅ Complete |
-
----
-
-## Scripts & Tools
-
-All scripts are in `/scripts/` directory. Core scripts for data pipeline:
-
-### Data Processing Scripts
-| Script | Purpose |
-|--------|---------|
-| `extract_aac_accidents.py` | Extract structured fields from AAC using Gemini |
-| `geocode_aac_accidents.py` | Geocode AAC with Google Maps + Gemini fallback |
-| `process_avalanche_accidents.py` | Process Avalanche.org data |
-| `process_nps_accidents.py` | Process NPS mortality data |
-| `enhance_accident_coordinates.py` | Enhance coordinate precision |
-
-### Data Collection Scripts
-| Script | Purpose |
-|--------|---------|
-| `scrape_mp_routes_v2.py` | BFS traversal of Mountain Project (196k+ routes) |
-| `scrape_mp_ticks.py` | Collect tick/ascent data from MP |
-| `backfill_weather_7day_windows.py` | Collect 7-day weather for accidents |
-| `compute_weather_statistics.py` | Compute location/season weather stats |
-
-### Database Scripts
-| Script | Purpose |
-|--------|---------|
-| `load_data_to_postgres.py` | Load CSVs into PostgreSQL |
-| `integrate_mp_routes.py` | Integrate MP routes into database |
-
-**All scrapers support resume via checkpoint files.**
-
----
-
-## Future Work
-
-### Recommended Next Steps
-1. **Update AAC data:** Collect 2020-2026 accidents to complement existing dataset
-2. **Parse Mountaineers PDFs:** Extract structured data from quarterly reports
-3. **Integrate park-specific data:** Scrape Yosemite, Sequoia/Kings Canyon incident archives
-4. **Contact MRA:** Request structured historical data
-5. **Deduplicate:** Identify and merge overlapping incidents across datasets
-6. **Enrich:** Add weather data correlation, geographic analysis, trend modeling
-
-### Additional Data Sources to Consider
-- **State-specific avalanche centers:**
-  - Northwest Avalanche Center (WA/OR): https://nwac.us
-  - Utah Avalanche Center
-  - Chugach Avalanche Center (Alaska)
-  - Idaho Panhandle Avalanche Center
-
-- **International comparison data:**
-  - British Mountaineering Council (UK/Ireland)
-  - UIAA international database
-  - Alpine nations (France, Switzerland, etc.)
-
-- **Academic sources:**
-  - Published research papers on climbing injuries
-  - Medical journal case studies
-  - Risk analysis studies
-
----
-
-## Legal & Ethical Considerations
-
-### Data Usage
-- All data is from publicly accessible sources
-- Respect original source terms of use
-- Cite sources appropriately in publications
-- Anonymized data should remain anonymized
-
-### Required Citations
-When using this data, please cite:
-1. Original source organizations (CAIC, AAC, NPS, etc.)
-2. Access dates
-3. This repository (if distributing derivative datasets)
+1. **Cite original sources** (AAC, CAIC/Avalanche.org, NPS)
+2. **Respect privacy** for fatal incidents
+3. **Use aggregated analysis** when possible
 
 **Example Citation:**
 ```
-Colorado Avalanche Information Center (CAIC). U.S. Avalanche Accident Reports.
-Retrieved from https://avalanche.org, January 17, 2026.
-
-American Alpine Club. Accidents in North American Climbing Database.
-Retrieved from https://publications.americanalpineclub.org, [Access Date].
-
-National Park Service. Mortality and SAR Data. Retrieved [Access Date].
+American Alpine Club. Accidents in North American Climbing.
+Colorado Avalanche Information Center. U.S. Avalanche Accident Reports.
+National Park Service. Mortality and SAR Data.
 ```
-
-### Privacy
-- Incident reports may contain personal information
-- Use aggregated analysis when possible
-- Respect family privacy for fatal incidents
-- Follow IRB guidelines if conducting formal research
 
 ---
 
-## Contact & Contributions
-
-For questions about this data collection:
-- Check source websites for official data updates
-- Contact source organizations directly for data clarifications
-- Review CAIC, AAC, and NPS terms of use before redistribution
-
----
-
-## Technical Notes
-
-### Data Processing
-All datasets can be loaded with pandas:
-```python
-import pandas as pd
-
-# Avalanche data
-avalanche_df = pd.read_csv('avalanche_accidents.csv')
-avalanche_df['observed_at'] = pd.to_datetime(avalanche_df['observed_at'])
-
-# AAC data
-aac_df = pd.read_excel('aac_accidents.xlsx')
-
-# NPS data
-nps_df = pd.read_excel('nps_mortality.xlsx')
-```
-
-### JSON Fields
-Some fields contain JSON-encoded data:
-- `travel_activities` - Breakdown of casualties by activity type
-- `affected_groups` - Array of affected party details
-
-Parse with:
-```python
-import json
-df['travel_activities'] = df['travel_activities'].apply(
-    lambda x: json.loads(x) if pd.notna(x) else None
-)
-```
-
-### Geographic Coordinates
-Latitude/longitude fields use WGS84 decimal degrees:
-- Suitable for GIS mapping
-- Can be used with Folium, GeoPandas, ArcGIS
-- Some records may have null coordinates
-
-### Avalanche Classification Codes
-- **Size:** R1-R5 (relative), D1-D5 (destructive)
-- **Type:** SS (soft slab), HS (hard slab), L (loose), WL (wet loose), etc.
-- **Trigger:** N (natural), AS (skier), AM (snowmobiler), etc.
-- **Aspect:** Cardinal and intercardinal directions
-
-See CAIC classification guide: https://avalanche.state.co.us/
-
----
-
-**Document Version:** 2.0
-**Created:** January 17, 2026
-**Updated:** February 3, 2026
-**Author:** SafeAscent Data Collection Project
+*SafeAscent - Climbing Safety Through Data*
