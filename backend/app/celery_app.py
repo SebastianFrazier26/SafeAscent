@@ -46,9 +46,10 @@ celery_app.conf.update(
 # Celery Beat schedule - periodic tasks
 celery_app.conf.beat_schedule = {
     # Nightly pre-computation of ALL safety scores (runs at 2am UTC)
+    # Uses optimized location-level task (~2 hours for 3 days)
     "compute-daily-safety-scores": {
-        "task": "app.tasks.safety_computation.compute_daily_safety_scores",
+        "task": "app.tasks.safety_computation_optimized.compute_daily_safety_scores_optimized",
         "schedule": crontab(minute=0, hour=2),  # 2:00 AM UTC daily
-        "options": {"expires": 7200},  # Task expires after 2 hours if not picked up
+        "options": {"expires": 14400},  # Task expires after 4 hours if not picked up
     },
 }

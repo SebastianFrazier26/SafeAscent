@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 LOCATION_BATCH_SIZE = 100  # Process locations in batches
 WEATHER_CONCURRENCY = 10   # Concurrent weather fetches
 LOG_INTERVAL = 1000        # Log progress every N locations
-DAYS_TO_COMPUTE = 1        # Today only (multi-day forecasts on route analytics page)
+DAYS_TO_COMPUTE = 3        # Today + 2 days ahead (for trip planning)
 
 
 async def load_all_accidents(db: AsyncSession) -> List[Dict]:
