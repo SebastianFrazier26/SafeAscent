@@ -10,7 +10,7 @@
 
 SafeAscent is a web application that predicts climbing route safety by analyzing ~5,000 historical accidents weighted by:
 - **Spatial proximity** - Gaussian decay by distance (route-type-specific bandwidths)
-- **Weather similarity** - 7-day pattern matching with quadratic weighting
+- **Weather similarity** - 7-day pattern matching with cubic weighting
 - **Temporal relevance** - Year-scale decay with seasonal boosting
 - **Route type** - Asymmetric cross-type influence matrix
 
@@ -27,7 +27,7 @@ For detailed algorithm documentation, see [ALGORITHM_DESIGN.md](./ALGORITHM_DESI
 | **Backend API** | ✅ Production-ready | FastAPI + PostgreSQL |
 | **Safety Algorithm** | ✅ Complete | 7 modular services, 50/50 tests passing |
 | **Frontend Map** | ✅ Complete | Two-view system with stratified heatmaps |
-| **Data Pipeline** | 🚧 Rebuilding | Routes/ticks/weather collection in progress |
+| **Data Pipeline** | ✅ Complete | ~168K routes, ~6.9K accidents, ~25K weather records |
 
 ---
 
@@ -113,10 +113,10 @@ For detailed database documentation, see [data/DATABASE_STRUCTURE.md](./data/DAT
 | Table | Records | Description |
 |-------|---------|-------------|
 | **accidents** | ~6,900 | Combined from AAC, Avalanche.org, NPS |
-| **weather** | ~70,000+ | 7-day windows for each accident |
-| **routes** | 622 (base) | Mountain Project routes |
-| **mountains** | 442 | Peaks and crags |
-| **ascents** | Growing | MP tick data (being collected) |
+| **weather_patterns** | ~25,000 | 7-day windows for each accident |
+| **mp_routes** | ~168,000 | Mountain Project climbing routes |
+| **mp_locations** | ~45,000 | Location hierarchy (areas → crags) |
+| **historical_predictions** | Growing | Daily safety score history |
 
 ---
 
@@ -127,7 +127,7 @@ For detailed database documentation, see [data/DATABASE_STRUCTURE.md](./data/DAT
 | **AAC** (American Alpine Club) | 2,770 | 1990-2019 |
 | **Avalanche.org** | 1,372 | 1997-2026 |
 | **NPS** (National Park Service) | 848 | Various |
-| **Mountain Project** | 196,000+ routes | Ongoing scrape |
+| **Mountain Project** | ~168,000 routes | Complete |
 
 ---
 
@@ -153,8 +153,7 @@ npm run dev
 ## Documentation
 
 - [ALGORITHM_DESIGN.md](./ALGORITHM_DESIGN.md) - Detailed algorithm decisions
-- [DEVELOPMENT_LOG.md](./DEVELOPMENT_LOG.md) - Implementation details
-- [SESSION_HISTORY.md](./SESSION_HISTORY.md) - Development timeline
+- [DEPLOYMENT.md](./DEPLOYMENT.md) - Infrastructure architecture
 - [data/DATABASE_STRUCTURE.md](./data/DATABASE_STRUCTURE.md) - Database schema
 - [data/README.md](./data/README.md) - Data sources and collection
 
