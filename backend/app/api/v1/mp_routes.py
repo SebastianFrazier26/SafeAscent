@@ -829,7 +829,6 @@ async def get_route_accidents(
     accidents = accidents_result.fetchall()
 
     # Format accident data with weather and relevance scoring
-    import math
     accidents_data = []
     for accident in accidents:
         (accident_id, acc_date, acc_lat, acc_lon, description, acc_type, severity,
