@@ -313,12 +313,34 @@ async def predict_route_safety(
 
 # In-memory cache for accidents during batch processing
 # Accidents don't change during a batch run, so we can cache them
-_accidents_cache: List[Accident] = []
+# IMPORTANT: We cache DICTS, not ORM objects, to avoid SQLAlchemy session binding issues
+_accidents_cache: List[Dict] = []
 _accidents_cache_time: float = 0
 ACCIDENTS_CACHE_TTL = 600  # 10 minutes
 
 
-async def fetch_all_accidents(db: AsyncSession) -> List[Accident]:
+class AccidentRecord:
+    """
+    Simple data class for cached accident data.
+    Avoids SQLAlchemy session binding issues by storing plain Python values.
+    """
+    __slots__ = ['accident_id', 'latitude', 'longitude', 'elevation_meters',
+                 'date', 'activity', 'accident_type', 'tags', 'injury_severity']
+
+    def __init__(self, accident_id, latitude, longitude, elevation_meters,
+                 date, activity, accident_type, tags, injury_severity):
+        self.accident_id = accident_id
+        self.latitude = latitude
+        self.longitude = longitude
+        self.elevation_meters = elevation_meters
+        self.date = date
+        self.activity = activity
+        self.accident_type = accident_type
+        self.tags = tags
+        self.injury_severity = injury_severity
+
+
+async def fetch_all_accidents(db: AsyncSession) -> List[AccidentRecord]:
     """
     Fetch ALL accidents from database with required fields for prediction.
 
@@ -329,11 +351,15 @@ async def fetch_all_accidents(db: AsyncSession) -> List[Accident]:
     repeated database queries during batch processing. This is critical for
     the nightly safety computation task which processes 168K+ routes.
 
+    **FIX**: We convert ORM objects to plain AccidentRecord objects before caching
+    to avoid SQLAlchemy "Instance not bound to Session" errors when the original
+    session closes.
+
     Args:
         db: Database session
 
     Returns:
-        List of all valid Accident objects
+        List of AccidentRecord objects (session-independent)
     """
     global _accidents_cache, _accidents_cache_time
     import time
@@ -360,9 +386,25 @@ async def fetch_all_accidents(db: AsyncSession) -> List[Accident]:
 
     result = await db.execute(stmt)
     accidents = result.scalars().all()
-    accidents_list = list(accidents)
 
-    # Update cache
+    # Convert ORM objects to plain AccidentRecord objects BEFORE caching
+    # This avoids SQLAlchemy session binding issues
+    accidents_list = [
+        AccidentRecord(
+            accident_id=acc.accident_id,
+            latitude=acc.latitude,
+            longitude=acc.longitude,
+            elevation_meters=acc.elevation_meters,
+            date=acc.date,
+            activity=acc.activity,
+            accident_type=acc.accident_type,
+            tags=acc.tags,
+            injury_severity=acc.injury_severity,
+        )
+        for acc in accidents
+    ]
+
+    # Update cache with plain Python objects (not ORM objects!)
     _accidents_cache = accidents_list
     _accidents_cache_time = current_time
 
@@ -422,7 +464,7 @@ async def fetch_nearby_accidents(
 
 async def fetch_accident_weather_patterns(
     db: AsyncSession,
-    accidents: List[Accident],
+    accidents: List[AccidentRecord],
 ) -> Dict[int, Optional[WeatherPattern]]:
     """
     Fetch 7-day weather patterns for a list of accidents using BULK query.

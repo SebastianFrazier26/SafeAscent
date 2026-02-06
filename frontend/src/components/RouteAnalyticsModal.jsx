@@ -1106,76 +1106,76 @@ function AccidentsTab({ data, loading, routeData }) {
                 </Box>
 
                 {/* Location & Route Info Grid */}
-                <Paper sx={{ p: 1.5, bgcolor: 'grey.50', mb: 2, borderRadius: 1 }}>
+                <Paper sx={{ p: 1.5, bgcolor: '#f5f5f5', mb: 2, borderRadius: 1 }}>
                   <Grid container spacing={1}>
                     <Grid size={{ xs: 6, sm: 3 }}>
-                      <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem', color: 'text.secondary' }}>
+                      <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem', color: '#666666' }}>
                         📍 LOCATION
                       </Typography>
-                      <Typography variant="body2" sx={{ fontWeight: 500, color: 'text.primary' }}>
+                      <Typography variant="body2" sx={{ fontWeight: 500, color: '#212121' }}>
                         {accident.mountain || accident.location || accident.state || 'Unknown'}
                       </Typography>
                     </Grid>
                     <Grid size={{ xs: 6, sm: 3 }}>
-                      <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem', color: 'text.secondary' }}>
+                      <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem', color: '#666666' }}>
                         🧗 ROUTE
                       </Typography>
-                      <Typography variant="body2" sx={{ fontWeight: 500, color: 'text.primary' }}>
+                      <Typography variant="body2" sx={{ fontWeight: 500, color: '#212121' }}>
                         {accident.route_name || 'Unknown'}
                       </Typography>
                     </Grid>
                     <Grid size={{ xs: 6, sm: 3 }}>
-                      <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem', color: 'text.secondary' }}>
+                      <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem', color: '#666666' }}>
                         ⚡ ACTIVITY
                       </Typography>
-                      <Typography variant="body2" sx={{ fontWeight: 500, color: 'text.primary' }}>
+                      <Typography variant="body2" sx={{ fontWeight: 500, color: '#212121' }}>
                         {accident.activity || accident.accident_type || 'Unknown'}
                       </Typography>
                     </Grid>
                     <Grid size={{ xs: 6, sm: 3 }}>
-                      <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem', color: 'text.secondary' }}>
+                      <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem', color: '#666666' }}>
                         📰 SOURCE
                       </Typography>
-                      <Typography variant="body2" sx={{ fontWeight: 500, color: 'text.primary' }}>
+                      <Typography variant="body2" sx={{ fontWeight: 500, color: '#212121' }}>
                         {accident.source || 'Unknown'}
                       </Typography>
                     </Grid>
                   </Grid>
                   {/* Second row for additional details */}
                   {(accident.state || accident.elevation_meters || accident.age_range) && (
-                    <Grid container spacing={1} sx={{ mt: 1, pt: 1, borderTop: '1px solid', borderColor: 'divider' }}>
+                    <Grid container spacing={1} sx={{ mt: 1, pt: 1, borderTop: '1px solid #e0e0e0' }}>
                       {accident.state && (
                         <Grid size={{ xs: 6, sm: 3 }}>
-                          <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem', color: 'text.secondary' }}>
+                          <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem', color: '#666666' }}>
                             🏛️ STATE
                           </Typography>
-                          <Typography variant="body2" sx={{ fontWeight: 500, color: 'text.primary' }}>{accident.state}</Typography>
+                          <Typography variant="body2" sx={{ fontWeight: 500, color: '#212121' }}>{accident.state}</Typography>
                         </Grid>
                       )}
                       {accident.elevation_meters && (
                         <Grid size={{ xs: 6, sm: 3 }}>
-                          <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem', color: 'text.secondary' }}>
+                          <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem', color: '#666666' }}>
                             ⛰️ ELEVATION
                           </Typography>
-                          <Typography variant="body2" sx={{ fontWeight: 500, color: 'text.primary' }}>
+                          <Typography variant="body2" sx={{ fontWeight: 500, color: '#212121' }}>
                             {Math.round(accident.elevation_meters * 3.28084).toLocaleString()} ft
                           </Typography>
                         </Grid>
                       )}
                       {accident.age_range && (
                         <Grid size={{ xs: 6, sm: 3 }}>
-                          <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem', color: 'text.secondary' }}>
+                          <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem', color: '#666666' }}>
                             👤 AGE
                           </Typography>
-                          <Typography variant="body2" sx={{ fontWeight: 500, color: 'text.primary' }}>{accident.age_range}</Typography>
+                          <Typography variant="body2" sx={{ fontWeight: 500, color: '#212121' }}>{accident.age_range}</Typography>
                         </Grid>
                       )}
                       {accident.accident_type && accident.activity && accident.accident_type !== accident.activity && (
                         <Grid size={{ xs: 6, sm: 3 }}>
-                          <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem', color: 'text.secondary' }}>
+                          <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, fontSize: '0.65rem', color: '#666666' }}>
                             ⚠️ TYPE
                           </Typography>
-                          <Typography variant="body2" sx={{ fontWeight: 500, color: 'text.primary' }}>{accident.accident_type}</Typography>
+                          <Typography variant="body2" sx={{ fontWeight: 500, color: '#212121' }}>{accident.accident_type}</Typography>
                         </Grid>
                       )}
                     </Grid>
@@ -1185,10 +1185,10 @@ function AccidentsTab({ data, loading, routeData }) {
                 {/* Description */}
                 {accident.description && (
                   <Box sx={{ mb: 2 }}>
-                    <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, mb: 0.5, color: 'text.secondary' }}>
+                    <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, mb: 0.5, color: '#666666' }}>
                       📝 DESCRIPTION
                     </Typography>
-                    <Typography variant="body2" sx={{ lineHeight: 1.6, color: 'text.primary' }}>
+                    <Typography variant="body2" sx={{ lineHeight: 1.6, color: '#212121' }}>
                       {accident.description.length > 500 ? `${accident.description.substring(0, 500)}...` : accident.description}
                     </Typography>
                   </Box>
@@ -1197,12 +1197,12 @@ function AccidentsTab({ data, loading, routeData }) {
                 {/* Tags if available */}
                 {accident.tags && (
                   <Box sx={{ mb: 2 }}>
-                    <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, mb: 0.5, color: 'text.secondary' }}>
+                    <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, mb: 0.5, color: '#666666' }}>
                       🏷️ TAGS
                     </Typography>
                     <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
                       {accident.tags.split(',').map((tag, i) => (
-                        <Chip key={i} label={tag.trim()} size="small" variant="outlined" sx={{ fontSize: '0.7rem', color: 'text.primary' }} />
+                        <Chip key={i} label={tag.trim()} size="small" variant="outlined" sx={{ fontSize: '0.7rem', color: '#212121', borderColor: '#bdbdbd' }} />
                       ))}
                     </Box>
                   </Box>
@@ -1210,30 +1210,30 @@ function AccidentsTab({ data, loading, routeData }) {
 
                 {/* Weather Conditions */}
                 {accident.weather && (
-                  <Paper sx={{ p: 1.5, bgcolor: 'info.50', border: '1px solid', borderColor: 'info.200', borderRadius: 1 }}>
-                    <Typography variant="caption" fontWeight={600} sx={{ display: 'block', mb: 1, color: 'info.dark' }}>
+                  <Paper sx={{ p: 1.5, bgcolor: '#e3f2fd', border: '1px solid #90caf9', borderRadius: 1 }}>
+                    <Typography variant="caption" fontWeight={600} sx={{ display: 'block', mb: 1, color: '#1565c0' }}>
                       🌤️ WEATHER CONDITIONS ON ACCIDENT DATE
                     </Typography>
                     <Grid container spacing={2}>
                       <Grid size={3}>
-                        <Typography variant="caption" sx={{ color: 'text.secondary' }}>Temperature</Typography>
-                        <Typography variant="body2" fontWeight={600} sx={{ color: 'text.primary' }}>{accident.weather.temp || 'N/A'}</Typography>
+                        <Typography variant="caption" sx={{ color: '#666666' }}>Temperature</Typography>
+                        <Typography variant="body2" fontWeight={600} sx={{ color: '#212121' }}>{accident.weather.temp || 'N/A'}</Typography>
                       </Grid>
                       <Grid size={3}>
-                        <Typography variant="caption" sx={{ color: 'text.secondary' }}>Wind</Typography>
-                        <Typography variant="body2" fontWeight={600} sx={{ color: 'text.primary' }}>
+                        <Typography variant="caption" sx={{ color: '#666666' }}>Wind</Typography>
+                        <Typography variant="body2" fontWeight={600} sx={{ color: '#212121' }}>
                           {accident.weather.wind_speed ? `${accident.weather.wind_speed} m/s` : 'N/A'}
                         </Typography>
                       </Grid>
                       <Grid size={3}>
-                        <Typography variant="caption" sx={{ color: 'text.secondary' }}>Precipitation</Typography>
-                        <Typography variant="body2" fontWeight={600} sx={{ color: 'text.primary' }}>
+                        <Typography variant="caption" sx={{ color: '#666666' }}>Precipitation</Typography>
+                        <Typography variant="body2" fontWeight={600} sx={{ color: '#212121' }}>
                           {accident.weather.precipitation !== undefined && accident.weather.precipitation !== null ? `${accident.weather.precipitation} mm` : 'N/A'}
                         </Typography>
                       </Grid>
                       <Grid size={3}>
-                        <Typography variant="caption" sx={{ color: 'text.secondary' }}>Conditions</Typography>
-                        <Typography variant="body2" fontWeight={600} sx={{ color: 'text.primary' }}>{accident.weather.conditions || 'Unknown'}</Typography>
+                        <Typography variant="caption" sx={{ color: '#666666' }}>Conditions</Typography>
+                        <Typography variant="body2" fontWeight={600} sx={{ color: '#212121' }}>{accident.weather.conditions || 'Unknown'}</Typography>
                       </Grid>
                     </Grid>
                   </Paper>
