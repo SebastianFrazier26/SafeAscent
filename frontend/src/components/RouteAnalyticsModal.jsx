@@ -1188,19 +1188,19 @@ function AccidentsTab({ data, loading, routeData }) {
                   {/* Impact bar visualization with distance */}
                   <Box sx={{ width: 180, textAlign: 'right', flexShrink: 0 }}>
                     <Typography variant="caption" sx={{ fontSize: '0.7rem', color: 'text.secondary' }}>
-                      Proximity: {accident.impact_score ? `${Math.round(accident.impact_score)}%` : '—'}
+                      Proximity: {Number.isFinite(accident.impact_score) ? `${Math.round(accident.impact_score)}%` : '—'}
                     </Typography>
                     <Box sx={{ height: 6, bgcolor: 'grey.200', borderRadius: 1, overflow: 'hidden', mt: 0.5 }}>
                       <Box
                         sx={{
                           height: '100%',
-                          width: `${accident.impact_score || 10}%`,
-                          bgcolor: accident.same_route ? 'error.main' : accident.impact_score > 50 ? 'warning.main' : 'info.main',
+                          width: `${Number.isFinite(accident.impact_score) ? accident.impact_score : 10}%`,
+                          bgcolor: accident.same_route ? 'error.main' : (Number.isFinite(accident.impact_score) && accident.impact_score > 50 ? 'warning.main' : 'info.main'),
                         }}
                       />
                     </Box>
                     <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem' }}>
-                      {accident.distance_km !== undefined ? `${accident.distance_km.toFixed(1)} km away` : ''}
+                      {Number.isFinite(accident.distance_km) ? `${accident.distance_km.toFixed(1)} km away` : ''}
                     </Typography>
                   </Box>
                 </Box>
