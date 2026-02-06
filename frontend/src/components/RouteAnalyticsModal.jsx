@@ -34,6 +34,45 @@ const shimmer = keyframes`
   100% { background-position: 200% 0; }
 `;
 
+/**
+ * Get themed icon and color for route type
+ * Returns emoji + label + color theme for consistent route type display
+ */
+function getRouteTypeTheme(type) {
+  const normalizedType = (type || '').toLowerCase().trim();
+
+  const themes = {
+    'rock': { icon: '🪨', label: 'Rock', color: '#8B7355', bgColor: '#F5F0E8' },
+    'trad': { icon: '🪨', label: 'Trad', color: '#8B7355', bgColor: '#F5F0E8' },
+    'sport': { icon: '⚡', label: 'Sport', color: '#FF6B35', bgColor: '#FFF3EE' },
+    'alpine': { icon: '🏔️', label: 'Alpine', color: '#4A90A4', bgColor: '#E8F4F8' },
+    'ice': { icon: '🧊', label: 'Ice', color: '#00BCD4', bgColor: '#E0F7FA' },
+    'mixed': { icon: '🧊🪨', label: 'Mixed', color: '#7B68EE', bgColor: '#F0EBFF' },
+    'aid': { icon: '🔩', label: 'Aid', color: '#607D8B', bgColor: '#ECEFF1' },
+    'toprope': { icon: '🧗', label: 'Top Rope', color: '#4CAF50', bgColor: '#E8F5E9' },
+    'boulder': { icon: '💪', label: 'Boulder', color: '#FF9800', bgColor: '#FFF8E1' },
+  };
+
+  // Check for ice/mixed combinations
+  if (normalizedType.includes('ice') && normalizedType.includes('mixed')) {
+    return themes['mixed'];
+  }
+  if (normalizedType.includes('ice')) {
+    return themes['ice'];
+  }
+  if (normalizedType.includes('mixed')) {
+    return themes['mixed'];
+  }
+
+  // Direct matches
+  if (themes[normalizedType]) {
+    return themes[normalizedType];
+  }
+
+  // Default for unknown types
+  return { icon: '🧗', label: type || 'Unknown', color: '#9E9E9E', bgColor: '#F5F5F5' };
+}
+
 // Loading component with Material Design 3 styling
 function LoadingState({ message = 'Loading data...' }) {
   return (
@@ -253,7 +292,6 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
     routeDetails: null,
     accidents: null,
     breakdown: null,
-    seasonal: null,
     historical: null,
     timeOfDay: null,
     ascents: null,
@@ -277,7 +315,6 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
         routeDetails: null,
         accidents: null,
         breakdown: null,
-        seasonal: null,
         historical: null,
         timeOfDay: null,
         ascents: null,
@@ -343,24 +380,11 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
             }
             break;
 
-          case 4: // Seasonal Patterns
-            if (!data.seasonal) {
-              setLoading(prev => ({ ...prev, seasonal: true }));
-              const response = await fetch(
-                `${API_BASE}/mp-routes/${routeData.route_id}/seasonal-patterns`
-              );
-              if (!response.ok) throw new Error('Failed to fetch seasonal data');
-              const seasonalData = await response.json();
-              setData(prev => ({ ...prev, seasonal: seasonalData }));
-              setLoading(prev => ({ ...prev, seasonal: false }));
-            }
-            break;
-
-          case 5: // Historical Trends
+          case 4: // Risk Trends (Historical)
             if (!data.historical) {
               setLoading(prev => ({ ...prev, historical: true }));
               const response = await fetch(
-                `${API_BASE}/mp-routes/${routeData.route_id}/historical-trends?days=30`
+                `${API_BASE}/mp-routes/${routeData.route_id}/historical-trends?days=365`
               );
               if (!response.ok) throw new Error('Failed to fetch historical data');
               const historicalData = await response.json();
@@ -369,7 +393,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
             }
             break;
 
-          case 6: // Time of Day Analysis
+          case 5: // Time of Day Analysis
             if (!data.timeOfDay) {
               setLoading(prev => ({ ...prev, timeOfDay: true }));
               const response = await fetch(
@@ -382,7 +406,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
             }
             break;
 
-          case 7: // Ascent Analytics
+          case 6: // Ascent Analytics
             if (!data.ascents) {
               setLoading(prev => ({ ...prev, ascents: true }));
               const response = await fetch(
@@ -573,8 +597,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
           <Tab label="Route Details" />
           <Tab label="Accident Reports" />
           <Tab label="Risk Breakdown" />
-          <Tab label="Seasonal Patterns" />
-          <Tab label="Historical Trends" />
+          <Tab label="Risk Trends" />
           <Tab label="Time of Day" />
           <Tab label="Ascents" />
         </Tabs>
@@ -624,26 +647,17 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
           />
         </TabPanel>
 
-        {/* Tab 4: Seasonal Patterns */}
+        {/* Tab 4: Risk Trends (Historical) */}
         <TabPanel value={currentTab} index={4}>
-          <SeasonalTab
-            data={data.seasonal}
-            loading={loading.seasonal}
-            routeData={routeData}
-          />
-        </TabPanel>
-
-        {/* Tab 5: Historical Trends */}
-        <TabPanel value={currentTab} index={5}>
-          <HistoricalTab
+          <RiskTrendsTab
             data={data.historical}
             loading={loading.historical}
             routeData={routeData}
           />
         </TabPanel>
 
-        {/* Tab 6: Time of Day Analysis */}
-        <TabPanel value={currentTab} index={6}>
+        {/* Tab 5: Time of Day Analysis */}
+        <TabPanel value={currentTab} index={5}>
           <TimeOfDayTab
             data={data.timeOfDay}
             loading={loading.timeOfDay}
@@ -652,8 +666,8 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
           />
         </TabPanel>
 
-        {/* Tab 7: Ascent Analytics */}
-        <TabPanel value={currentTab} index={7}>
+        {/* Tab 6: Ascent Analytics */}
+        <TabPanel value={currentTab} index={6}>
           <AscentsTab
             data={data.ascents}
             loading={loading.ascents}
@@ -809,113 +823,141 @@ function RouteDetailsTab({ data, loading, routeData }) {
   }
 
   const details = data || routeData;
+  const routeTheme = getRouteTypeTheme(details.type);
+
+  // Format elevation display
+  const elevationDisplay = details.elevation_meters
+    ? `${Math.round(details.elevation_meters * 3.28084).toLocaleString()} ft (${Math.round(details.elevation_meters).toLocaleString()}m)`
+    : null;
+
+  // Format coordinates
+  const coordsDisplay = details.latitude && details.longitude
+    ? `${details.latitude.toFixed(4)}°, ${details.longitude.toFixed(4)}°`
+    : null;
 
   return (
-    <Grid container spacing={3}>
-      <Grid size={{ xs: 12, md: 6 }}>
-        <Card>
-          <CardContent>
-            <Typography variant="h6" gutterBottom fontWeight={600}>
-              📋 Basic Information
+    <Card elevation={2}>
+      <CardContent sx={{ p: 3 }}>
+        {/* Route Header with Type Badge */}
+        <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', mb: 3 }}>
+          <Box sx={{ flex: 1 }}>
+            <Typography variant="h5" fontWeight={700} gutterBottom>
+              {details.name}
             </Typography>
-            <Grid container spacing={2} sx={{ mt: 1 }}>
-              <Grid size={6}>
-                <Typography variant="body2" color="text.secondary">Route Name</Typography>
-                <Typography variant="body1" fontWeight={500}>{details.name}</Typography>
-              </Grid>
-              <Grid size={6}>
-                <Typography variant="body2" color="text.secondary">Location</Typography>
-                <Typography variant="body1" fontWeight={500}>{details.location_name || details.mountain_name || 'Unknown'}</Typography>
-              </Grid>
-              <Grid size={6}>
-                <Typography variant="body2" color="text.secondary">Route Type</Typography>
-                <Typography variant="body1" fontWeight={500}>{details.type}</Typography>
-              </Grid>
-              <Grid size={6}>
-                <Typography variant="body2" color="text.secondary">Grade</Typography>
-                <Typography variant="body1" fontWeight={500}>{details.grade || 'N/A'}</Typography>
-              </Grid>
-              <Grid size={6}>
-                <Typography variant="body2" color="text.secondary">Elevation</Typography>
-                <Typography variant="body1" fontWeight={500}>
-                  {details.elevation_meters ? `${Math.round(details.elevation_meters * 3.28084)} ft (${Math.round(details.elevation_meters)}m)` : 'N/A'}
-                </Typography>
-              </Grid>
-              <Grid size={6}>
-                <Typography variant="body2" color="text.secondary">Coordinates</Typography>
-                <Typography variant="body1" fontWeight={500}>
-                  {details.latitude?.toFixed(4)}, {details.longitude?.toFixed(4)}
-                </Typography>
-              </Grid>
-            </Grid>
-          </CardContent>
-        </Card>
-      </Grid>
+            <Typography variant="body1" color="text.secondary">
+              📍 {details.location_name || details.mountain_name || 'Unknown Location'}
+            </Typography>
+          </Box>
 
-      <Grid size={{ xs: 12, md: 6 }}>
-        <Card>
-          <CardContent>
-            <Typography variant="h6" gutterBottom fontWeight={600}>
-              🎯 Difficulty & Commitment
-            </Typography>
-            <Grid container spacing={2} sx={{ mt: 1 }}>
-              <Grid size={12}>
-                <Typography variant="body2" color="text.secondary">Technical Grade</Typography>
-                <Typography variant="body1" fontWeight={500}>{details.grade || 'Not rated'}</Typography>
-              </Grid>
-              <Grid size={12}>
-                <Typography variant="body2" color="text.secondary">Route Type</Typography>
-                <Typography variant="body1" fontWeight={500}>{details.type}</Typography>
-              </Grid>
-              {details.url && (
-                <Grid size={12}>
-                  <Typography variant="body2" color="text.secondary">Mountain Project</Typography>
-                  <Typography
-                    variant="body1"
-                    component="a"
-                    href={details.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    sx={{
-                      color: 'primary.main',
-                      textDecoration: 'none',
-                      fontWeight: 500,
-                      '&:hover': { textDecoration: 'underline' }
-                    }}
-                  >
-                    View on Mountain Project ↗
-                  </Typography>
-                </Grid>
-              )}
-            </Grid>
-          </CardContent>
-        </Card>
-      </Grid>
+          {/* Route Type Badge */}
+          <Chip
+            label={
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                <span style={{ fontSize: '1.1rem' }}>{routeTheme.icon}</span>
+                <span>{routeTheme.label}</span>
+              </Box>
+            }
+            sx={{
+              bgcolor: routeTheme.bgColor,
+              color: routeTheme.color,
+              fontWeight: 600,
+              fontSize: '0.95rem',
+              py: 2.5,
+              px: 1,
+              border: `1.5px solid ${routeTheme.color}20`,
+            }}
+          />
+        </Box>
 
-      <Grid size={12}>
-        <Card>
-          <CardContent>
-            <Typography variant="h6" gutterBottom fontWeight={600}>
-              🗺️ Location Details
+        <Divider sx={{ mb: 3 }} />
+
+        {/* Route Details Grid */}
+        <Grid container spacing={3}>
+          {/* Grade */}
+          <Grid size={{ xs: 6, sm: 3, md: 2.4 }}>
+            <Box sx={{ textAlign: 'center', p: 2, bgcolor: 'grey.50', borderRadius: 2 }}>
+              <Typography variant="h4" fontWeight={700} color="primary.main">
+                {details.grade || '—'}
+              </Typography>
+              <Typography variant="body2" color="text.secondary" fontWeight={500}>
+                🎯 Grade
+              </Typography>
+            </Box>
+          </Grid>
+
+          {/* Pitches */}
+          <Grid size={{ xs: 6, sm: 3, md: 2.4 }}>
+            <Box sx={{ textAlign: 'center', p: 2, bgcolor: 'grey.50', borderRadius: 2 }}>
+              <Typography variant="h4" fontWeight={700} color="text.primary">
+                {details.pitches ? Math.round(details.pitches) : 1}
+              </Typography>
+              <Typography variant="body2" color="text.secondary" fontWeight={500}>
+                📏 Pitches
+              </Typography>
+            </Box>
+          </Grid>
+
+          {/* Elevation */}
+          <Grid size={{ xs: 6, sm: 3, md: 2.4 }}>
+            <Box sx={{ textAlign: 'center', p: 2, bgcolor: 'grey.50', borderRadius: 2 }}>
+              <Typography variant="h4" fontWeight={700} color="text.primary">
+                {elevationDisplay ? elevationDisplay.split(' ')[0] : '—'}
+              </Typography>
+              <Typography variant="body2" color="text.secondary" fontWeight={500}>
+                ⛰️ Elevation
+              </Typography>
+            </Box>
+          </Grid>
+
+          {/* Coordinates */}
+          <Grid size={{ xs: 6, sm: 3, md: 4.8 }}>
+            <Box sx={{ textAlign: 'center', p: 2, bgcolor: 'grey.50', borderRadius: 2 }}>
+              <Typography variant="h6" fontWeight={600} color="text.primary" sx={{ fontFamily: 'monospace' }}>
+                {coordsDisplay || '—'}
+              </Typography>
+              <Typography variant="body2" color="text.secondary" fontWeight={500}>
+                🧭 GPS Coordinates
+              </Typography>
+            </Box>
+          </Grid>
+        </Grid>
+
+        {/* Mountain Project Link */}
+        {details.url && (
+          <Box sx={{ mt: 3, pt: 3, borderTop: '1px solid', borderColor: 'divider' }}>
+            <Button
+              component="a"
+              href={details.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              variant="outlined"
+              fullWidth
+              sx={{
+                py: 1.5,
+                fontSize: '1rem',
+                fontWeight: 600,
+                borderRadius: 2,
+                textTransform: 'none',
+              }}
+            >
+              🏔️ View on Mountain Project ↗
+            </Button>
+          </Box>
+        )}
+
+        {/* Approach Notes (if available) */}
+        {details.approach_notes && (
+          <Box sx={{ mt: 3, pt: 3, borderTop: '1px solid', borderColor: 'divider' }}>
+            <Typography variant="subtitle1" fontWeight={600} gutterBottom>
+              🥾 Approach Notes
             </Typography>
-            <Typography variant="body2" color="text.secondary" paragraph>
-              This route is located in {details.location_name || details.mountain_name || 'the area'} at coordinates {details.latitude?.toFixed(4)}, {details.longitude?.toFixed(4)}.
-              {details.elevation_meters && ` The route reaches an elevation of approximately ${Math.round(details.elevation_meters * 3.28084)} feet.`}
+            <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.7 }}>
+              {details.approach_notes}
             </Typography>
-            {details.approach_notes && (
-              <>
-                <Typography variant="subtitle2" fontWeight={600} sx={{ mt: 2 }}>
-                  Approach Notes:
-                </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  {details.approach_notes}
-                </Typography>
-              </>
-            )}
-          </CardContent>
-        </Card>
-      </Grid>
-    </Grid>
+          </Box>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -1170,144 +1212,23 @@ function RiskBreakdownTab({ data, loading, routeData }) {
   );
 }
 
-function SeasonalTab({ data, loading, routeData: _routeData }) {
+function RiskTrendsTab({ data, loading, routeData: _routeData }) {
   if (loading) {
-    return <LoadingState message="Loading seasonal patterns..." />;
+    return <LoadingState message="Loading risk trends..." />;
   }
 
-  if (!data || !data.monthly_patterns) {
-    return (
-      <Alert severity="info">
-        No seasonal pattern data available.
-      </Alert>
-    );
-  }
+  const daysOfData = data?.historical_predictions?.length || 0;
+  const MIN_DAYS_REQUIRED = 30;
 
-  return (
-    <Grid container spacing={3}>
-      <Grid size={12}>
-        <Card>
-          <CardContent>
-            <Typography variant="h6" gutterBottom fontWeight={600}>
-              📅 Seasonal Risk Patterns
-            </Typography>
-            <Typography variant="body2" color="text.secondary" paragraph>
-              Historical accident data aggregated by month to identify seasonal trends.
-            </Typography>
-            <ResponsiveContainer width="100%" height={350}>
-              <BarChart data={data.monthly_patterns}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="month" />
-                <YAxis yAxisId="left" orientation="left" stroke="#8884d8" />
-                <YAxis yAxisId="right" orientation="right" stroke="#82ca9d" />
-                <Tooltip />
-                <Legend />
-                <Bar
-                  yAxisId="left"
-                  dataKey="accident_count"
-                  fill="#f44336"
-                  name="Accidents"
-                  radius={[8, 8, 0, 0]}
-                />
-                <Bar
-                  yAxisId="right"
-                  dataKey="avg_risk_score"
-                  fill="#2196f3"
-                  name="Avg Risk Score"
-                  radius={[8, 8, 0, 0]}
-                />
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-      </Grid>
-
-      <Grid size={12}>
-        <Card>
-          <CardContent>
-            <Typography variant="h6" gutterBottom fontWeight={600}>
-              🌡️ Weather Patterns by Month
-            </Typography>
-            <ResponsiveContainer width="100%" height={300}>
-              <AreaChart data={data.monthly_patterns}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="month" />
-                <YAxis />
-                <Tooltip />
-                <Legend />
-                <Area
-                  type="monotone"
-                  dataKey="avg_temp"
-                  stackId="1"
-                  stroke="#ff9800"
-                  fill="#ff9800"
-                  name="Avg Temperature (°F)"
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-      </Grid>
-
-      <Grid size={12}>
-        <Card>
-          <CardContent>
-            <Typography variant="h6" gutterBottom fontWeight={600}>
-              💡 Best & Worst Climbing Months
-            </Typography>
-            <Grid container spacing={2} sx={{ mt: 1 }}>
-              <Grid size={{ xs: 12, md: 6 }}>
-                <Paper sx={{ p: 2, bgcolor: 'success.50' }}>
-                  <Typography variant="subtitle2" fontWeight={600} color="success.dark">
-                    ✅ Safest Months
-                  </Typography>
-                  <List dense>
-                    {data.best_months?.map((month, idx) => (
-                      <ListItem key={idx}>
-                        <ListItemText
-                          primary={month.name}
-                          secondary={`Avg Risk: ${month.avg_risk}/100 • ${month.accident_count} accidents`}
-                        />
-                      </ListItem>
-                    ))}
-                  </List>
-                </Paper>
-              </Grid>
-              <Grid size={{ xs: 12, md: 6 }}>
-                <Paper sx={{ p: 2, bgcolor: 'error.50' }}>
-                  <Typography variant="subtitle2" fontWeight={600} color="error.dark">
-                    ⚠️ Highest Risk Months
-                  </Typography>
-                  <List dense>
-                    {data.worst_months?.map((month, idx) => (
-                      <ListItem key={idx}>
-                        <ListItemText
-                          primary={month.name}
-                          secondary={`Avg Risk: ${month.avg_risk}/100 • ${month.accident_count} accidents`}
-                        />
-                      </ListItem>
-                    ))}
-                  </List>
-                </Paper>
-              </Grid>
-            </Grid>
-          </CardContent>
-        </Card>
-      </Grid>
-    </Grid>
-  );
-}
-
-function HistoricalTab({ data, loading, routeData: _routeData }) {
-  if (loading) {
-    return <LoadingState message="Loading historical trends..." />;
-  }
-
-  if (!data || !data.historical_predictions || data.historical_predictions.length === 0) {
+  // Show "coming soon" if no data or less than 30 days
+  if (!data || !data.historical_predictions || daysOfData < MIN_DAYS_REQUIRED) {
     return (
       <DataOnTheWay
-        title="Historical Data on its way!"
-        message="We're building up historical trends for this route. Our prediction models improve as we collect more data over time."
+        title="📈 Risk Trends Coming Soon!"
+        message={daysOfData > 0
+          ? `We're collecting historical data for this route. Currently tracking ${daysOfData} day${daysOfData === 1 ? '' : 's'} - need at least ${MIN_DAYS_REQUIRED} days for trend analysis. Check back soon!`
+          : "We're building up historical trends for this route. Our prediction models improve as we collect more data over time. Check back in a few weeks!"
+        }
       />
     );
   }
@@ -1318,10 +1239,10 @@ function HistoricalTab({ data, loading, routeData: _routeData }) {
         <Card>
           <CardContent>
             <Typography variant="h6" gutterBottom fontWeight={600}>
-              📈 30-Day Risk Score History
+              📈 Risk Score History
             </Typography>
             <Typography variant="body2" color="text.secondary" paragraph>
-              Historical risk scores calculated for the past 30 days based on actual weather conditions.
+              Historical risk scores based on actual weather conditions. Data is collected daily and stored for up to 1 year.
             </Typography>
             <ResponsiveContainer width="100%" height={350}>
               <AreaChart data={data.historical_predictions}>

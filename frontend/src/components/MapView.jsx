@@ -70,6 +70,10 @@ export default function MapView({ selectedRouteForZoom }) {
   // Season filter: 'rock' (default) or 'winter' (ice/mixed routes)
   const [seasonFilter, setSeasonFilter] = useState('rock');
 
+  // Track current zoom level for conditional heatmap rendering
+  const [currentZoom, setCurrentZoom] = useState(INITIAL_VIEW_STATE.zoom);
+  const HEATMAP_MIN_ZOOM = 6; // Only show heatmap when zoomed in past this level
+
   /**
    * Routes are now filtered server-side via the `season` query parameter.
    * This useMemo just passes through the data, but is kept for potential
@@ -408,7 +412,10 @@ export default function MapView({ selectedRouteForZoom }) {
         <MapGL
           ref={mapRef}
           {...viewState}
-          onMove={(evt) => setViewState(evt.viewState)}
+          onMove={(evt) => {
+            setViewState(evt.viewState);
+            setCurrentZoom(evt.viewState.zoom);
+          }}
           onLoad={handleMapLoad}
           onClick={handleMarkerClick}
           onMouseMove={handleMouseMove}
@@ -538,7 +545,8 @@ export default function MapView({ selectedRouteForZoom }) {
           )}
 
           {/* RISK COVERAGE VIEW MODE - Regional risk overlay with all individual routes */}
-          {routes && mapViewMode === 'risk' && (
+          {/* Only load data when zoomed in enough to prevent 160K point performance issues */}
+          {routes && mapViewMode === 'risk' && currentZoom >= HEATMAP_MIN_ZOOM && (
             <Source
               id="routes"
               type="geojson"
@@ -555,6 +563,7 @@ export default function MapView({ selectedRouteForZoom }) {
                 id="climbing-coverage-base"
                 type="heatmap"
                 source="routes"
+                minzoom={HEATMAP_MIN_ZOOM}
                 // No filter - ALL routes contribute to gray base
                 paint={{
                   'heatmap-weight': 1,
@@ -580,6 +589,7 @@ export default function MapView({ selectedRouteForZoom }) {
                 id="risk-low"
                 type="heatmap"
                 source="routes"
+                minzoom={HEATMAP_MIN_ZOOM}
                 filter={['all', ['has', 'risk_score'], ['<', ['get', 'risk_score'], 32]]}
                 paint={{
                   'heatmap-weight': 1,
@@ -612,6 +622,7 @@ export default function MapView({ selectedRouteForZoom }) {
                 id="risk-moderate"
                 type="heatmap"
                 source="routes"
+                minzoom={HEATMAP_MIN_ZOOM}
                 filter={['all', ['>=', ['get', 'risk_score'], 28], ['<', ['get', 'risk_score'], 52]]}
                 paint={{
                   'heatmap-weight': 1,
@@ -644,6 +655,7 @@ export default function MapView({ selectedRouteForZoom }) {
                 id="risk-elevated"
                 type="heatmap"
                 source="routes"
+                minzoom={HEATMAP_MIN_ZOOM}
                 filter={['all', ['>=', ['get', 'risk_score'], 48], ['<', ['get', 'risk_score'], 72]]}
                 paint={{
                   'heatmap-weight': 1,
@@ -676,6 +688,7 @@ export default function MapView({ selectedRouteForZoom }) {
                 id="risk-high"
                 type="heatmap"
                 source="routes"
+                minzoom={HEATMAP_MIN_ZOOM}
                 filter={['>=', ['get', 'risk_score'], 68]}
                 paint={{
                   'heatmap-weight': 1,
@@ -780,6 +793,37 @@ export default function MapView({ selectedRouteForZoom }) {
             </Popup>
           )}
         </MapGL>
+
+        {/* Zoom in prompt for Risk Coverage mode */}
+        {mapViewMode === 'risk' && currentZoom < HEATMAP_MIN_ZOOM && (
+          <Paper
+            elevation={4}
+            sx={{
+              position: 'absolute',
+              top: '50%',
+              left: '50%',
+              transform: 'translate(-50%, -50%)',
+              p: 3,
+              zIndex: 10,
+              bgcolor: 'background.paper',
+              borderRadius: 3,
+              textAlign: 'center',
+              maxWidth: 320,
+              boxShadow: '0 8px 32px rgba(0,0,0,0.15)',
+            }}
+          >
+            <Typography variant="h6" fontWeight={700} gutterBottom>
+              🔍 Zoom In to View Risk Heatmap
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+              The risk coverage heatmap displays best at closer zoom levels.
+              Zoom in to a specific region to see the risk overlay.
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              Current zoom: {currentZoom.toFixed(1)} • Required: {HEATMAP_MIN_ZOOM}+
+            </Typography>
+          </Paper>
+        )}
 
         {/* Date Picker - Controls safety score date */}
         <Paper

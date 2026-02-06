@@ -240,19 +240,24 @@ async def get_mp_routes_for_map(
 
     # Apply season filter (server-side route type filtering)
     # Winter = ice or mixed routes, Rock = everything else
+    # ALWAYS exclude 'unknown' type routes from display and calculations
     if season == "winter":
         query = query.where(
-            or_(
-                func.lower(MpRoute.type).contains('ice'),
-                func.lower(MpRoute.type).contains('mixed')
+            and_(
+                or_(
+                    func.lower(MpRoute.type).contains('ice'),
+                    func.lower(MpRoute.type).contains('mixed')
+                ),
+                func.lower(MpRoute.type) != 'unknown'
             )
         )
     else:
-        # Default: rock routes (everything except ice/mixed)
+        # Default: rock routes (everything except ice/mixed/unknown)
         query = query.where(
             and_(
                 not_(func.lower(MpRoute.type).contains('ice')),
-                not_(func.lower(MpRoute.type).contains('mixed'))
+                not_(func.lower(MpRoute.type).contains('mixed')),
+                func.lower(MpRoute.type) != 'unknown'
             )
         )
 
@@ -349,19 +354,24 @@ async def get_mp_routes_with_safety(
     )
 
     # Apply season filter
+    # ALWAYS exclude 'unknown' type routes from display and calculations
     if season == "winter":
         query = query.where(
-            or_(
-                func.lower(MpRoute.type).contains('ice'),
-                func.lower(MpRoute.type).contains('mixed')
+            and_(
+                or_(
+                    func.lower(MpRoute.type).contains('ice'),
+                    func.lower(MpRoute.type).contains('mixed')
+                ),
+                func.lower(MpRoute.type) != 'unknown'
             )
         )
     else:
-        # Default: rock routes (everything except ice/mixed)
+        # Default: rock routes (everything except ice/mixed/unknown)
         query = query.where(
             and_(
                 not_(func.lower(MpRoute.type).contains('ice')),
-                not_(func.lower(MpRoute.type).contains('mixed'))
+                not_(func.lower(MpRoute.type).contains('mixed')),
+                func.lower(MpRoute.type) != 'unknown'
             )
         )
 
