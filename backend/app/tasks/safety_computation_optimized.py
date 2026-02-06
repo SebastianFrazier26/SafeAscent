@@ -21,7 +21,7 @@ from datetime import date, timedelta
 from typing import Dict, List, Optional
 from collections import defaultdict
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import AsyncSessionLocal
@@ -118,6 +118,7 @@ async def load_locations_with_routes(db: AsyncSession) -> Dict[int, Dict]:
     logger.info("Loading locations with routes...")
 
     # Query locations and their routes
+    # Exclude 'unknown' type routes from calculations
     result = await db.execute(
         select(
             MpLocation.mp_id,
@@ -131,6 +132,7 @@ async def load_locations_with_routes(db: AsyncSession) -> Dict[int, Dict]:
         .where(
             MpLocation.latitude.isnot(None),
             MpLocation.longitude.isnot(None),
+            func.lower(MpRoute.type) != 'unknown',  # Exclude unknown routes
         )
     )
 
@@ -600,38 +602,65 @@ async def _save_to_historical(
     scores: Dict[int, Dict],
     target_date: date,
 ) -> None:
-    """Save scores to historical_predictions table."""
+    """
+    Save scores to historical_predictions table.
+
+    Uses batched inserts to avoid PostgreSQL parameter limits.
+    Also purges data older than 1 year for storage efficiency.
+    """
     if not scores:
         return
 
-    # Build batch insert
-    values_list = []
-    params = {}
+    BATCH_SIZE = 5000  # Stay well under PostgreSQL's 65535 param limit (4 params per row)
+    total_saved = 0
+    score_items = list(scores.items())
 
-    for i, (route_id, score) in enumerate(scores.items()):
-        values_list.append(f"(:route_id_{i}, :date_{i}, :risk_{i}, :color_{i})")
-        params[f"route_id_{i}"] = route_id
-        params[f"date_{i}"] = target_date
-        params[f"risk_{i}"] = score["risk_score"]
-        params[f"color_{i}"] = score["color_code"]
+    for batch_start in range(0, len(score_items), BATCH_SIZE):
+        batch = score_items[batch_start:batch_start + BATCH_SIZE]
 
-    values_sql = ", ".join(values_list)
+        # Build batch insert
+        values_list = []
+        params = {}
 
+        for i, (route_id, score) in enumerate(batch):
+            values_list.append(f"(:route_id_{i}, :date_{i}, :risk_{i}, :color_{i})")
+            params[f"route_id_{i}"] = route_id
+            params[f"date_{i}"] = target_date
+            params[f"risk_{i}"] = score["risk_score"]
+            params[f"color_{i}"] = score["color_code"]
+
+        values_sql = ", ".join(values_list)
+
+        try:
+            await db.execute(text(f"""
+                INSERT INTO historical_predictions
+                    (route_id, prediction_date, risk_score, color_code)
+                VALUES {values_sql}
+                ON CONFLICT (route_id, prediction_date)
+                DO UPDATE SET
+                    risk_score = EXCLUDED.risk_score,
+                    color_code = EXCLUDED.color_code,
+                    calculated_at = NOW()
+            """), params)
+            await db.commit()
+            total_saved += len(batch)
+        except Exception as e:
+            logger.error(f"Failed to save batch to historical_predictions: {e}")
+            await db.rollback()
+
+    logger.info(f"✓ Saved {total_saved:,} to historical_predictions for {target_date}")
+
+    # Purge data older than 1 year (run occasionally)
     try:
-        await db.execute(text(f"""
-            INSERT INTO historical_predictions
-                (route_id, prediction_date, risk_score, color_code)
-            VALUES {values_sql}
-            ON CONFLICT (route_id, prediction_date)
-            DO UPDATE SET
-                risk_score = EXCLUDED.risk_score,
-                color_code = EXCLUDED.color_code,
-                calculated_at = NOW()
-        """), params)
+        result = await db.execute(text("""
+            DELETE FROM historical_predictions
+            WHERE prediction_date < CURRENT_DATE - INTERVAL '1 year'
+        """))
         await db.commit()
-        logger.info(f"✓ Saved {len(scores):,} to historical_predictions")
+        if result.rowcount > 0:
+            logger.info(f"✓ Purged {result.rowcount:,} historical records older than 1 year")
     except Exception as e:
-        logger.error(f"Failed to save to historical_predictions: {e}")
+        logger.error(f"Failed to purge old historical data: {e}")
         await db.rollback()
 
 
