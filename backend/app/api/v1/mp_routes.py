@@ -1556,55 +1556,39 @@ async def get_ascent_analytics(
     # Build monthly ascent dict
     monthly_ascent_dict = {int(row[0]): int(row[1]) for row in monthly_ascent_rows}
 
-    # Get total accidents within 10km of this route
+    # Get accidents linked directly to this route_id (route-linked only)
     accident_count_query = text("""
         SELECT COUNT(*)
         FROM accidents
-        WHERE latitude IS NOT NULL AND longitude IS NOT NULL
-          AND (
-              6371 * acos(
-                  cos(radians(:lat)) * cos(radians(latitude)) *
-                  cos(radians(longitude) - radians(:lon)) +
-                  sin(radians(:lat)) * sin(radians(latitude))
-              )
-          ) < 10
+        WHERE route_id = :route_id
     """)
 
     total_accidents = 0
-    if route.latitude and route.longitude:
-        accident_result = await db.execute(
-            accident_count_query,
-            {"lat": route.latitude, "lon": route.longitude}
-        )
-        total_accidents = accident_result.scalar() or 0
+    accident_result = await db.execute(
+        accident_count_query,
+        {"route_id": mp_route_id}
+    )
+    total_accidents = accident_result.scalar() or 0
 
-    # Get monthly accident breakdown for this area
+    # Monthly accident breakdown for this route only
     monthly_accidents_query = text("""
         SELECT
             EXTRACT(MONTH FROM date) as month,
             COUNT(*) as accident_count
         FROM accidents
-        WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+        WHERE route_id = :route_id
           AND date IS NOT NULL
-          AND (
-              6371 * acos(
-                  cos(radians(:lat)) * cos(radians(latitude)) *
-                  cos(radians(longitude) - radians(:lon)) +
-                  sin(radians(:lat)) * sin(radians(latitude))
-              )
-          ) < 10
         GROUP BY EXTRACT(MONTH FROM date)
         ORDER BY month
     """)
 
     monthly_accident_dict = {}
-    if route.latitude and route.longitude:
-        monthly_acc_result = await db.execute(
-            monthly_accidents_query,
-            {"lat": route.latitude, "lon": route.longitude}
-        )
-        monthly_accident_rows = monthly_acc_result.fetchall()
-        monthly_accident_dict = {int(row[0]): int(row[1]) for row in monthly_accident_rows}
+    monthly_acc_result = await db.execute(
+        monthly_accidents_query,
+        {"route_id": mp_route_id}
+    )
+    monthly_accident_rows = monthly_acc_result.fetchall()
+    monthly_accident_dict = {int(row[0]): int(row[1]) for row in monthly_accident_rows}
 
     # Build monthly stats array with both ascents and accidents
     month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
