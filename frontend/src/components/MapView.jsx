@@ -104,6 +104,8 @@ export default function MapView({ selectedRouteForZoom }) {
   useEffect(() => {
     const fetchRoutesWithSafety = async () => {
       try {
+        // Clear old routes immediately to force clean re-render on season change
+        setRoutes(null);
         setLoading(true);
         setSafetyLoadingProgress({ loaded: 0, total: 0, isLoading: true });
 
