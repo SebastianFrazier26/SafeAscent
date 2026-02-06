@@ -77,7 +77,7 @@ export default function MapView({ selectedRouteForZoom }) {
   // Track map style loading state to prevent race conditions
   // When style changes, we need to wait for it to fully load before rendering routes
   const [styleReady, setStyleReady] = useState(true);
-  const previousStyleRef = useRef(currentMapStyle);
+  const previousStyleRef = useRef(MAP_STYLES.default);  // Initialize with default, not currentMapStyle (avoids TDZ error)
 
   /**
    * Detect style changes and mark style as not ready
