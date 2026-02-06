@@ -77,19 +77,7 @@ export default function MapView({ selectedRouteForZoom }) {
   // Track map style loading state to prevent race conditions
   // When style changes, we need to wait for it to fully load before rendering routes
   const [styleReady, setStyleReady] = useState(true);
-  const previousStyleRef = useRef(MAP_STYLES.default);  // Initialize with default, not currentMapStyle (avoids TDZ error)
-
-  /**
-   * Detect style changes and mark style as not ready
-   * This prevents race conditions when switching between summer/winter styles
-   */
-  useEffect(() => {
-    if (previousStyleRef.current !== currentMapStyle) {
-      console.log(`🎨 Style changing from ${previousStyleRef.current} to ${currentMapStyle}`);
-      setStyleReady(false);
-      previousStyleRef.current = currentMapStyle;
-    }
-  }, [currentMapStyle]);
+  const previousStyleRef = useRef(MAP_STYLES.default);
 
   /**
    * Routes are now filtered server-side via the `season` query parameter.
@@ -112,6 +100,19 @@ export default function MapView({ selectedRouteForZoom }) {
     }
     return MAP_STYLES.default;
   }, [seasonFilter]);
+
+  /**
+   * Detect style changes and mark style as not ready
+   * This prevents race conditions when switching between summer/winter styles
+   * NOTE: This useEffect must come AFTER currentMapStyle is defined
+   */
+  useEffect(() => {
+    if (previousStyleRef.current !== currentMapStyle) {
+      console.log(`🎨 Style changing from ${previousStyleRef.current} to ${currentMapStyle}`);
+      setStyleReady(false);
+      previousStyleRef.current = currentMapStyle;
+    }
+  }, [currentMapStyle]);
 
   /**
    * Fetch routes WITH pre-computed safety scores in a single request.
