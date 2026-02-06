@@ -74,10 +74,8 @@ export default function MapView({ selectedRouteForZoom }) {
   const [_currentZoom, setCurrentZoom] = useState(INITIAL_VIEW_STATE.zoom);
   const HEATMAP_MIN_ZOOM = 6; // Only show heatmap when zoomed in past this level
 
-  // Track map style loading state to prevent race conditions
-  // When style changes, we need to wait for it to fully load before rendering routes
-  const [styleReady, setStyleReady] = useState(true);
-  const previousStyleRef = useRef(MAP_STYLES.default);
+  // Map style changes are handled by the key prop on MapGL component
+  // This forces a full remount when style changes, avoiding race conditions
 
   /**
    * Routes are now filtered server-side via the `season` query parameter.
@@ -101,18 +99,6 @@ export default function MapView({ selectedRouteForZoom }) {
     return MAP_STYLES.default;
   }, [seasonFilter]);
 
-  /**
-   * Detect style changes and mark style as not ready
-   * This prevents race conditions when switching between summer/winter styles
-   * NOTE: This useEffect must come AFTER currentMapStyle is defined
-   */
-  useEffect(() => {
-    if (previousStyleRef.current !== currentMapStyle) {
-      console.log(`🎨 Style changing from ${previousStyleRef.current} to ${currentMapStyle}`);
-      setStyleReady(false);
-      previousStyleRef.current = currentMapStyle;
-    }
-  }, [currentMapStyle]);
 
   /**
    * Fetch routes WITH pre-computed safety scores in a single request.
@@ -451,30 +437,14 @@ export default function MapView({ selectedRouteForZoom }) {
     console.log('🗺️ Map loaded successfully');
     console.log(`Default view mode: ${mapViewMode}`);
     console.log('Toggle between Cluster and Risk Coverage views using the control panel');
-
-    // Mark style as ready on initial load
-    setStyleReady(true);
   }, [mapViewMode]);
 
-  /**
-   * Handle style data changes - fires when style finishes loading
-   * This is critical for preventing race conditions on season/style changes
-   */
-  const handleStyleData = useCallback(() => {
-    const map = mapRef.current?.getMap();
-    if (!map) return;
-
-    // Check if style is fully loaded
-    if (map.isStyleLoaded()) {
-      console.log('✅ Style fully loaded, routes can now render');
-      setStyleReady(true);
-    }
-  }, []);
 
   return (
     <LocalizationProvider dateAdapter={AdapterDateFns}>
       <Box sx={{ position: 'relative', width: '100%', height: '100%' }}>
         <MapGL
+          key={currentMapStyle}
           ref={mapRef}
           {...viewState}
           onMove={(evt) => {
@@ -482,7 +452,6 @@ export default function MapView({ selectedRouteForZoom }) {
             setCurrentZoom(evt.viewState.zoom);
           }}
           onLoad={handleMapLoad}
-          onStyleData={handleStyleData}
           onClick={handleMarkerClick}
           onMouseMove={handleMouseMove}
           onMouseLeave={handleMouseLeave}
@@ -501,7 +470,7 @@ export default function MapView({ selectedRouteForZoom }) {
           <ScaleControl position="bottom-right" />
 
           {/* CLUSTER VIEW MODE - Navigation with route aggregation */}
-          {routes && styleReady && mapViewMode === 'clusters' && (
+          {routes && mapViewMode === 'clusters' && (
             <Source
               key={`routes-clusters-${seasonFilter}`}
               id="routes"
@@ -613,7 +582,7 @@ export default function MapView({ selectedRouteForZoom }) {
 
           {/* RISK COVERAGE VIEW MODE - Regional risk overlay with all individual routes */}
           {/* Heatmap "heat" is always visible for overview; individual dots only when zoomed in */}
-          {routes && styleReady && mapViewMode === 'risk' && (
+          {routes && mapViewMode === 'risk' && (
             <Source
               key={`routes-risk-${seasonFilter}`}
               id="routes"
