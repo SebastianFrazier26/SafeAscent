@@ -1905,7 +1905,7 @@ function AscentsTab({ data, loading, routeData }) {
                   <Typography variant="h4" fontWeight={700} color="warning.dark">
                     {data.overall_accident_rate}%
                   </Typography>
-                  <Typography variant="caption" color="text.secondary">per 100 ascents</Typography>
+                  <Typography variant="caption" color="text.secondary">per 1000 ascents</Typography>
                 </Paper>
               </Grid>
               <Grid size={{ xs: 6, md: 2.4 }}>
@@ -2085,8 +2085,8 @@ function AscentsTab({ data, loading, routeData }) {
           <Typography variant="body2" fontWeight={600}>
             About Accident Rates
           </Typography>
-          <Typography variant="body2">
-            Accident rate is calculated as (accidents ÷ ascents × 100). A lower rate indicates
+            <Typography variant="body2">
+            Accident rate is calculated as (accidents ÷ ascents × 1000). A lower rate indicates
             safer conditions. Note that this data is based on reported ascents and accidents only,
             and may not represent all climbing activity on this route.
           </Typography>
