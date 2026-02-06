@@ -284,11 +284,11 @@ async def get_mp_routes_for_map(
     # Routes inherit coordinates from their location_id
     query = (
         select(
-            MpRoute.mp_route_id,
-            MpRoute.name,
-            MpRoute.grade,
-            MpRoute.type,
-            MpRoute.location_id,
+    MpRoute.mp_route_id,
+    MpRoute.name,
+    MpRoute.grade,
+    MpRoute.type,
+    MpRoute.location_id,
             MpLocation.latitude,
             MpLocation.longitude,
         )
@@ -297,6 +297,10 @@ async def get_mp_routes_for_map(
             MpLocation.latitude.isnot(None),
             MpLocation.longitude.isnot(None)
         )
+        .where(not_(func.lower(MpRoute.name).in_([
+            "itchy bitchy",
+            "rompin' with the rattlers",
+        ])))
     )
 
     # Apply season filter (server-side route type filtering)
@@ -435,6 +439,14 @@ async def get_mp_routes_with_safety(
                 func.lower(MpRoute.type) != 'unknown'
             )
         )
+
+    # Exclude known bad-coordinate routes
+    query = query.where(
+        not_(func.lower(MpRoute.name).in_([
+            "itchy bitchy",
+            "rompin' with the rattlers",
+        ]))
+    )
 
     result = await db.execute(query)
     rows = result.fetchall()
