@@ -981,29 +981,7 @@ export default function MapView({ selectedRouteForZoom }) {
           </Paper>
         )}
 
-        {/* Loading indicator */}
-        {loading && (
-          <Paper
-            elevation={3}
-            sx={{
-              position: 'absolute',
-              top: 16,
-              left: '50%',
-              transform: 'translateX(-50%)',
-              px: 3,
-              py: 2,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 2,
-              bgcolor: 'background.paper',
-            }}
-          >
-            <CircularProgress size={20} />
-            <Typography variant="body2">
-              Loading {routes?.features?.length || 0} routes...
-            </Typography>
-          </Paper>
-        )}
+        {/* Note: Main loading indicator removed - map shows its own loading state */}
 
         {/* Error message */}
         {error && (

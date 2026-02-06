@@ -355,7 +355,7 @@ def calculate_safety_score_vectorized(
     # Weather weighting (simplified - no weather similarity for now in vectorized version)
     # TODO: Vectorize weather similarity calculation
     weather_weights = np.full(n_accidents, 0.5)  # Neutral weight
-    weather_factor = weather_weights ** 2  # Quadratic
+    weather_factor = weather_weights ** 3  # Cubic for stronger weather influence
 
     # Total influence with weather
     total_influences = base_influences * weather_factor

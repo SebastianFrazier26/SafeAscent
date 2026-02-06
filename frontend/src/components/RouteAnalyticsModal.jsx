@@ -270,39 +270,68 @@ import { format } from 'date-fns';
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
 
 /**
- * Clean up malformed location names
- * Handles:
- * - Names ending with ", the" or starting with commas
- * - Names that are just numbers/slashes (e.g., "565/1,324/203/533")
- * - Empty or whitespace-only names
+ * Check if a string segment looks like malformed MP IDs (mostly numbers/slashes)
  */
-function cleanLocationName(name) {
-  if (!name || typeof name !== 'string') return null;
+function isMalformedSegment(segment) {
+  if (!segment || typeof segment !== 'string') return true;
+  const cleaned = segment.trim();
+  if (cleaned.length < 2) return true;
 
-  // Trim whitespace
-  let cleaned = name.trim();
-
-  // Check if it's mostly numbers and slashes (malformed MP IDs)
-  // Pattern: contains numbers, slashes, commas but very few letters
+  // Count letters vs digits/slashes/commas
   const letterCount = (cleaned.match(/[a-zA-Z]/g) || []).length;
   const digitSlashCount = (cleaned.match(/[0-9/,]/g) || []).length;
-  if (digitSlashCount > letterCount * 2 && digitSlashCount > 5) {
-    return null; // This looks like MP route IDs, not a real name
-  }
+
+  // If more than 2x as many digits/slashes as letters and more than 5 total, it's malformed
+  return digitSlashCount > letterCount * 2 && digitSlashCount > 5;
+}
+
+/**
+ * Clean a single location name segment
+ */
+function cleanSegment(segment) {
+  if (!segment || typeof segment !== 'string') return null;
+
+  let cleaned = segment.trim();
+
+  // Check if it's mostly numbers and slashes (malformed MP IDs)
+  if (isMalformedSegment(cleaned)) return null;
 
   // Remove trailing ", the" or ", The"
   cleaned = cleaned.replace(/,\s*[Tt]he\s*$/, '').trim();
 
-  // Remove leading commas
-  cleaned = cleaned.replace(/^,\s*/, '').trim();
-
-  // Remove trailing commas
-  cleaned = cleaned.replace(/,\s*$/, '').trim();
+  // Remove leading/trailing commas
+  cleaned = cleaned.replace(/^,\s*/, '').replace(/,\s*$/, '').trim();
 
   // If result is empty or just whitespace, return null
   if (!cleaned || cleaned.length < 2) return null;
 
   return cleaned;
+}
+
+/**
+ * Clean up malformed location names
+ * Handles:
+ * - Names ending with ", the" or starting with commas
+ * - Names that are just numbers/slashes (e.g., "565/1,324/203/533")
+ * - Breadcrumb paths with " → " separators (cleans each segment)
+ * - Empty or whitespace-only names
+ */
+function cleanLocationName(name) {
+  if (!name || typeof name !== 'string') return null;
+
+  // Check if it's a breadcrumb path (contains " → ")
+  if (name.includes(' → ')) {
+    const segments = name.split(' → ');
+    const cleanedSegments = segments
+      .map(seg => cleanSegment(seg))
+      .filter(seg => seg !== null);
+
+    if (cleanedSegments.length === 0) return null;
+    return cleanedSegments.join(' → ');
+  }
+
+  // Single segment - clean directly
+  return cleanSegment(name);
 }
 
 /**
@@ -1242,14 +1271,14 @@ function AccidentsTab({ data, loading, routeData }) {
 
                 {/* Description */}
                 {accident.description && (
-                  <Box sx={{ mb: 2 }}>
+                  <Paper sx={{ p: 1.5, bgcolor: '#fafafa', mb: 2, borderRadius: 1 }}>
                     <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, mb: 0.5, color: '#666666' }}>
                       📝 DESCRIPTION
                     </Typography>
                     <Typography variant="body2" sx={{ lineHeight: 1.6, color: '#212121' }}>
                       {accident.description.length > 500 ? `${accident.description.substring(0, 500)}...` : accident.description}
                     </Typography>
-                  </Box>
+                  </Paper>
                 )}
 
                 {/* Tags if available */}
