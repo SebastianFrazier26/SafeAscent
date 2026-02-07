@@ -361,7 +361,7 @@ async def _compute_single_route_safety(
             longitude=longitude,
             route_type=normalized_type,
             planned_date=target_date,
-            elevation_meters=None,  # Auto-detect from location
+            elevation_meters=None,  # Batch mode: skip external elevation lookups
         )
 
         # CRITICAL: Create a NEW session for each concurrent route calculation
@@ -375,6 +375,7 @@ async def _compute_single_route_safety(
                 prediction_request, route_db,
                 prefetched_weather=prefetched_weather,
                 route_grade=route_grade,
+                allow_elevation_lookup=False,
             )
 
             # Determine color code

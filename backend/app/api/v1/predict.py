@@ -56,6 +56,7 @@ async def predict_route_safety(
     db: AsyncSession,
     prefetched_weather: Optional[WeatherPattern] = None,
     route_grade: Optional[str] = None,
+    allow_elevation_lookup: bool = True,
 ):
     """
     Calculate safety prediction for a planned climbing route.
@@ -102,12 +103,14 @@ async def predict_route_safety(
     if request.elevation_meters is not None:
         route_elevation = request.elevation_meters
         logger.debug(f"Using provided elevation: {route_elevation}m")
-    else:
+    elif allow_elevation_lookup:
         # Auto-fetch elevation from coordinates
         route_elevation = fetch_elevation(request.latitude, request.longitude)
         if route_elevation is not None:
             logger.debug(f"Auto-detected elevation: {route_elevation}m")
         # Note: missing elevation is handled gracefully, no need to log every time
+    else:
+        route_elevation = None
 
     if not accidents:
         # No accidents found - return zero risk
