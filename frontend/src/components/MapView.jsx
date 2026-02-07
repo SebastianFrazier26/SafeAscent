@@ -106,6 +106,27 @@ export default function MapView({ selectedRouteForZoom }) {
    * with safety scores already embedded - no need for individual API calls!
    */
   useEffect(() => {
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    const fetchJsonWithRetry = async (url, attempts = 3) => {
+      let lastError = null;
+      for (let i = 0; i < attempts; i++) {
+        try {
+          const response = await fetch(url);
+          if (!response.ok) {
+            throw new Error(`Failed to fetch routes: ${response.status} ${response.statusText}`);
+          }
+          return await response.json();
+        } catch (error) {
+          lastError = error;
+          if (i < attempts - 1) {
+            await sleep((i + 1) * 800);
+          }
+        }
+      }
+      throw lastError;
+    };
+
     const fetchRoutesWithSafety = async () => {
       try {
         // Clear old routes immediately to force clean re-render on season change
@@ -116,24 +137,29 @@ export default function MapView({ selectedRouteForZoom }) {
         // Format date for API
         const dateStr = format(selectedDate, 'yyyy-MM-dd');
 
-        // BULK ENDPOINT: Returns routes WITH safety scores in single request
-        // This replaces 168K individual safety API calls with 1 request!
-        const response = await fetch(
-          `${API_BASE_URL}/mp-routes/map-with-safety?target_date=${dateStr}&season=${seasonFilter}`
-        );
-        if (!response.ok) {
-          throw new Error(`Failed to fetch routes: ${response.statusText}`);
+        let data = null;
+        try {
+          // BULK ENDPOINT: Returns routes WITH safety scores in single request
+          // This replaces 168K individual safety API calls with 1 request.
+          data = await fetchJsonWithRetry(
+            `${API_BASE_URL}/mp-routes/map-with-safety?target_date=${dateStr}&season=${seasonFilter}`,
+            3
+          );
+          const { meta } = data;
+          console.log(`📊 Bulk fetch stats: ${meta.cached_routes}/${meta.total_routes} cached, ${meta.missing_routes} missing`);
+        } catch (bulkError) {
+          console.warn('Bulk safety fetch failed; falling back to routes-only endpoint.', bulkError);
+          // Fallback keeps routes visible even if safety payload has transient network issues.
+          data = await fetchJsonWithRetry(
+            `${API_BASE_URL}/mp-routes/map?season=${seasonFilter}`,
+            2
+          );
         }
-        const data = await response.json();
-
-        // Log metadata about cache status
-        const { meta } = data;
-        console.log(`📊 Bulk fetch stats: ${meta.cached_routes}/${meta.total_routes} cached, ${meta.missing_routes} missing`);
 
         // Group routes by coordinates to handle overlapping points
         const coordMap = new Map();
 
-        data.routes.forEach((route) => {
+        (data.routes || []).forEach((route) => {
           const coordKey = `${route.latitude.toFixed(6)},${route.longitude.toFixed(6)}`;
 
           if (!coordMap.has(coordKey)) {
