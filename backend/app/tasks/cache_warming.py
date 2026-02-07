@@ -104,11 +104,15 @@ async def _warm_cache_async() -> dict:
                             longitude=route.longitude,
                             route_type=normalized_type,
                             planned_date=target_date,
-                            elevation_meters=None,  # Auto-detect
+                            elevation_meters=None,  # Batch mode: skip external elevation lookups
                         )
 
                         # Calculate safety score
-                        prediction = await predict_route_safety(prediction_request, db)
+                        prediction = await predict_route_safety(
+                            prediction_request,
+                            db,
+                            allow_elevation_lookup=False,
+                        )
 
                         # Determine color code
                         color_code = get_safety_color_code(prediction.risk_score)

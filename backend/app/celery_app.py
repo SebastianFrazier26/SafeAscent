@@ -23,8 +23,7 @@ celery_app = Celery(
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
     include=[
-        "app.tasks.safety_computation",           # Original computation task
-        "app.tasks.safety_computation_optimized", # Location-level optimized task
+        "app.tasks.safety_computation_optimized",  # Active location-level task
     ],
 )
 
@@ -37,6 +36,8 @@ celery_app.conf.update(
     enable_utc=True,
     # Task results expire after 24 hours
     result_expires=86400,
+    # Keep startup broker retry behavior explicit (Celery 6 compatibility)
+    broker_connection_retry_on_startup=True,
     # Only acknowledge tasks after they complete
     task_acks_late=True,
     # Don't retry failed tasks by default
