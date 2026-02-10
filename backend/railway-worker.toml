@@ -8,5 +8,5 @@ dockerfilePath = "Dockerfile.worker"
 [deploy]
 # No healthcheck for background workers
 restartPolicyType = "on_failure"
-restartPolicyMaxRetries = 3
+restartPolicyMaxRetries = 10
 numReplicas = 1

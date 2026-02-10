@@ -38,6 +38,9 @@ celery_app.conf.update(
     result_expires=86400,
     # Keep startup broker retry behavior explicit (Celery 6 compatibility)
     broker_connection_retry_on_startup=True,
+    # Prevent long-running tasks from being redelivered mid-run (Redis broker)
+    broker_transport_options={"visibility_timeout": 21600},  # 6 hours
+    result_backend_transport_options={"visibility_timeout": 21600},
     # Only acknowledge tasks after they complete
     task_acks_late=True,
     # Don't retry failed tasks by default

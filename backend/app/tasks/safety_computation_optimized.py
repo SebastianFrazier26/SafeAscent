@@ -17,8 +17,9 @@ This avoids redundant calculations when multiple routes share a location.
 import asyncio
 import time
 import logging
+import uuid
 from datetime import date, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
 
 from sqlalchemy import func, select, text
@@ -40,7 +41,7 @@ from app.services.weather_similarity import (
     calculate_weather_similarity,
 )
 from app.services.route_type_mapper import infer_route_type_from_accident
-from app.utils.cache import set_bulk_cached_safety_scores
+from app.utils.cache import get_redis_client, set_bulk_cached_safety_scores
 from app.models.weather import Weather
 
 # Note: SQLAlchemy/httpx loggers silenced in celery_app.py at worker startup
@@ -54,6 +55,59 @@ LOG_INTERVAL = 1000        # Log progress every N locations
 DAYS_TO_COMPUTE = 3        # Today + 2 days ahead (for trip planning)
 DATE_RETRY_ATTEMPTS = 3
 DATE_RETRY_BACKOFF_SECONDS = 20
+CACHE_POPULATION_LOCK_KEY = "safety:cache_population:optimized:lock"
+CACHE_POPULATION_LOCK_TTL_SECONDS = 6 * 60 * 60  # 6 hours
+
+
+def _acquire_population_lock(task_id: str) -> Tuple[bool, Optional[str]]:
+    """Acquire a distributed lock so only one optimized run executes at once."""
+    client = get_redis_client()
+    if client is None:
+        logger.warning("Redis unavailable; proceeding without optimized task lock")
+        return True, None
+
+    token = f"{task_id}:{uuid.uuid4()}"
+    acquired = client.set(
+        CACHE_POPULATION_LOCK_KEY,
+        token,
+        nx=True,
+        ex=CACHE_POPULATION_LOCK_TTL_SECONDS,
+    )
+    if acquired:
+        return True, token
+
+    existing = client.get(CACHE_POPULATION_LOCK_KEY)
+    logger.warning(
+        "Optimized cache run already in progress (lock=%s, task_id=%s); skipping duplicate trigger",
+        existing,
+        task_id,
+    )
+    return False, None
+
+
+def _release_population_lock(lock_token: Optional[str]) -> None:
+    """Release the distributed lock only if this task still owns it."""
+    if lock_token is None:
+        return
+
+    client = get_redis_client()
+    if client is None:
+        return
+
+    try:
+        client.eval(
+            """
+            if redis.call('get', KEYS[1]) == ARGV[1] then
+                return redis.call('del', KEYS[1])
+            end
+            return 0
+            """,
+            1,
+            CACHE_POPULATION_LOCK_KEY,
+            lock_token,
+        )
+    except Exception as exc:
+        logger.warning("Failed to release optimized task lock: %s", exc)
 
 
 async def load_all_accidents(db: AsyncSession) -> List[Dict]:
@@ -719,6 +773,15 @@ def compute_daily_safety_scores_optimized():
     logger.warning(f"Settings: LOCATION_BATCH_SIZE={LOCATION_BATCH_SIZE}")
     logger.warning("=" * 60)
 
+    task_id = getattr(compute_daily_safety_scores_optimized.request, "id", "unknown")
+    lock_acquired, lock_token = _acquire_population_lock(task_id)
+    if not lock_acquired:
+        return {
+            "status": "skipped",
+            "reason": "optimized_cache_population_already_running",
+            "task_id": task_id,
+        }
+
     try:
         logger.warning("Creating event loop...")
         loop = asyncio.new_event_loop()
@@ -737,6 +800,8 @@ def compute_daily_safety_scores_optimized():
     except Exception as e:
         logger.error(f"Optimized computation failed: {e}", exc_info=True)
         raise
+    finally:
+        _release_population_lock(lock_token)
 
 
 async def _compute_all_dates_async() -> Dict:
