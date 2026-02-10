@@ -572,6 +572,10 @@ async def get_mp_route(
 async def calculate_mp_route_safety(
     mp_route_id: int,
     target_date: date = Query(..., description="Target date for safety calculation (YYYY-MM-DD)"),
+    bypass_cache: bool = Query(
+        default=False,
+        description="If true, always recompute score and skip Redis cache read/write.",
+    ),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -610,19 +614,20 @@ async def calculate_mp_route_safety(
             detail="Route's location has no coordinates - cannot calculate safety score"
         )
 
-    # Check cache first (cache_get is sync, not async)
+    # Check cache first (cache_get is sync, not async), unless bypass requested
     date_str = target_date.isoformat()
     cache_key = build_safety_score_key(mp_route_id, date_str)
-    cached_result = cache_get(cache_key)
-    if cached_result:
-        # Merge cached safety data with route info from database
-        return MpRouteSafetyResponse(
-            route_id=mp_route_id,
-            route_name=route.name,
-            target_date=date_str,
-            risk_score=cached_result.get("risk_score", 0),
-            color_code=cached_result.get("color_code", "gray"),
-        )
+    if not bypass_cache:
+        cached_result = cache_get(cache_key)
+        if cached_result:
+            # Merge cached safety data with route info from database
+            return MpRouteSafetyResponse(
+                route_id=mp_route_id,
+                route_name=route.name,
+                target_date=date_str,
+                risk_score=cached_result.get("risk_score", 0),
+                color_code=cached_result.get("color_code", "gray"),
+            )
 
     # Build prediction request
     normalized_type = normalize_route_type(route.type)
@@ -646,7 +651,8 @@ async def calculate_mp_route_safety(
     )
 
     # Cache the result (1 hour TTL) - cache_set is sync, not async
-    cache_set(cache_key, response.model_dump(), ttl_seconds=3600)
+    if not bypass_cache:
+        cache_set(cache_key, response.model_dump(), ttl_seconds=3600)
 
     return response
 
@@ -1346,18 +1352,23 @@ async def get_time_of_day_analysis(
                     conditions.append("Cautious")
 
             is_daylight = 6 <= hour <= 18
-            is_climbable = hourly_risk < 70 and (precip is None or precip < 5) and (wind is None or wind < 20)
+            is_climbable = (
+                hourly_risk < 70
+                and (precip is None or precip < 5)
+                and (wind is None or wind < 20)
+                and (gust is None or gust < 20)
+            )
 
             hourly_data.append({
                 "hour": hour,
                 "time": times[i],
                 "risk_score": round(hourly_risk, 1),
-                "temperature": round(temp, 1) if temp else None,
-                "precipitation": round(precip, 2) if precip else None,
-                "wind_speed": round(wind, 1) if wind else None,
-                "wind_gusts": round(gust, 1) if gust else None,
-                "cloud_cover": round(cloud, 0) if cloud else None,
-                "visibility": round(visibility, 0) if visibility else None,
+                "temperature": round(temp, 1) if temp is not None else None,
+                "precipitation": round(precip, 2) if precip is not None else None,
+                "wind_speed": round(wind, 1) if wind is not None else None,
+                "wind_gusts": round(gust, 1) if gust is not None else None,
+                "cloud_cover": round(cloud, 0) if cloud is not None else None,
+                "visibility": round(visibility, 0) if visibility is not None else None,
                 "conditions_summary": ", ".join(conditions),
                 "is_daylight": is_daylight,
                 "is_climbable": is_climbable and is_daylight,

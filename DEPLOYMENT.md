@@ -80,8 +80,8 @@
 
 ### Cache (Railway Redis)
 - **Purpose:** Safety score caching, weather data caching
-- **TTL:** 24 hours for safety scores, 6 hours for weather
-- **Pattern:** `safety:{route_id}:{date}` for pre-computed scores
+- **TTL:** 7 days for bulk precomputed safety keys, 1 hour for on-demand single-route safety responses, 6 hours for weather patterns
+- **Pattern:** `safety:route:{route_id}:date:{date}` for route safety scores
 
 ---
 
@@ -91,21 +91,21 @@
 ```
 1. User requests route safety → Frontend
 2. Frontend calls /api/v1/mp-routes/{id}/safety → Backend
-3. Backend checks Redis cache for pre-computed score
-4. If cache miss: calculates fresh using algorithm services
+3. Backend checks Redis cache for pre-computed score (unless `bypass_cache=true`)
+4. If cache miss or bypass requested: calculates fresh using algorithm services
 5. Algorithm queries Neon for accidents within spatial bandwidth
 6. Weather similarity computed against current forecast
-7. Score returned and cached for 24 hours
+7. Score returned (and cached for 1 hour when cache bypass is not used)
 ```
 
 ### Nightly Pre-computation (Celery Beat)
 ```
 1. 2:00 AM UTC: Celery Beat triggers compute task
-2. Backend fetches all ~168K routes from Neon
-3. For each route: calculates safety score for next 3 days
-4. Scores stored in Redis cache with 48-hour TTL
+2. Backend computes location-level batch scores and fans out to routes
+3. Calculates safety scores for today + next 2 days
+4. Scores stored in Redis cache with 7-day TTL
 5. Scores also saved to historical_predictions table in Neon
-6. Total runtime: ~2-3 hours
+6. Runtime depends on worker resources and weather API responsiveness
 ```
 
 ---
