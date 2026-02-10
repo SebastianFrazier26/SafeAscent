@@ -2,11 +2,6 @@
 
 **Stack:** Railway (hosting) + Neon (PostgreSQL + PostGIS) + Redis (caching) + Porkbun (domain)
 
-**Monthly Cost:** ~$11/month
-- Railway: ~$10/mo (backend, frontend, Redis)
-- Neon: $0 (free tier)
-- Domain: ~$1/mo ($10.87/year)
-
 ---
 
 ## Architecture Overview
@@ -36,7 +31,7 @@
                           ▼                              ▼
                  ┌──────────────────┐          ┌──────────────────┐
                  │     RAILWAY      │          │      NEON        │
-                 │      Redis       │          │ PostgreSQL+PostGIS│
+                 │      Redis       │          │    PostgreSQL    │
                  │   (Caching)      │          │   (Database)     │
                  └──────────────────┘          └──────────────────┘
 ```
@@ -70,7 +65,6 @@
 ### Database (Neon)
 - **Engine:** PostgreSQL 16 with PostGIS extension
 - **Region:** US East (Ohio) - us-east-2
-- **Tier:** Free (0.5 GB storage, 100 hours compute/month)
 - **Connection:** SSL required, async via asyncpg driver
 
 **PostGIS Functions Used:**
@@ -137,12 +131,10 @@
 ### Open-Meteo Weather API
 - **Endpoint:** api.open-meteo.com (free) or customer-api.open-meteo.com (commercial)
 - **Data:** Hourly forecasts, historical weather
-- **Rate Limits:** 10,000 requests/day (free), unlimited (commercial)
 - **Used For:** Real-time forecasts, historical accident weather
 
 ### Mapbox GL JS
 - **Purpose:** Interactive 3D terrain maps
-- **Tier:** Free (50,000 map loads/month)
 - **Features:** Clustering, heatmaps, custom styles
 
 ---
@@ -152,48 +144,5 @@
 - **Provider:** Railway (automatic via Let's Encrypt)
 - **Renewal:** Automatic
 - **Coverage:** All custom domains (safeascent.us, api.safeascent.us)
-
----
-
-## Monitoring
-
-### Railway Dashboard
-- CPU/Memory usage per service
-- Request logs and error tracking
-- Deployment history
-
-### Application Logs
-- Backend: Structured logging via Python logging module
-- Celery: Task execution logs with timing
-- Errors: Stack traces for failed requests
-
----
-
-## Cost Breakdown
-
-| Service | Provider | Monthly Cost |
-|---------|----------|--------------|
-| Frontend | Railway | ~$2 |
-| Backend | Railway | ~$5 |
-| Redis | Railway | ~$3 |
-| PostgreSQL + PostGIS | Neon | $0 (free tier) |
-| Domain | Porkbun | ~$0.90 |
-| **Total** | | **~$11/month** |
-
----
-
-## Scaling Considerations
-
-### Current Limitations (Hobby Tier)
-- Single backend worker (no horizontal scaling)
-- 512MB memory limit per service
-- Neon free tier: 100 compute hours/month
-
-### Future Scaling Options
-- Railway Pro: Multiple workers, more memory
-- Neon Pro: Autoscaling compute, more storage
-- CDN: CloudFlare for static assets and caching
-
----
 
 *Last Updated: February 2026*
