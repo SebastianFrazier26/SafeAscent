@@ -154,7 +154,7 @@ frontend/MATERIAL_DESIGN_MIGRATION_COMPLETE.md
 scripts/
 
 # =============================================================================
-# Claude Code / MCP
+# Local automation metadata
 # =============================================================================
 .claude/
 .playwright-mcp/

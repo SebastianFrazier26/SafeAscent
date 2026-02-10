@@ -386,6 +386,12 @@ function formatRouteNameWithType(name, routeType) {
   return safeName;
 }
 
+function formatRiskScore(score) {
+  const numericScore = Number(score);
+  if (!Number.isFinite(numericScore)) return '0.0';
+  return numericScore.toFixed(1);
+}
+
 // Tab panel component
 function TabPanel({ children, value, index, ...other }) {
   return (
@@ -416,6 +422,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
   const [error, setError] = useState(null);
   const [exportMenuAnchor, setExportMenuAnchor] = useState(null);
   const displayRouteName = formatRouteNameWithType(routeData?.name, routeData?.type);
+  const formattedRouteRiskScore = formatRiskScore(routeData?.risk_score);
 
   // Reset tab when modal opens - default to Route Details (tab 1)
   useEffect(() => {
@@ -670,7 +677,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
             </Typography>
           </Box>
           <Chip
-            label={`Risk: ${routeData.risk_score}/100`}
+            label={`Risk: ${formattedRouteRiskScore}/100`}
             sx={{
               bgcolor: routeData.color_code === 'green' ? 'success.main' :
                        routeData.color_code === 'yellow' ? 'warning.main' :
@@ -745,6 +752,9 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
       </Box>
 
       <DialogContent sx={{ bgcolor: 'grey.50', overflow: 'auto' }}>
+        <Alert severity="info" sx={{ mb: 2, fontWeight: 600 }}>
+          CHECK ROUTE PAGE FOR MOST UP-TO-DATE AND PRECISE INFORMATION
+        </Alert>
         {error && (
           <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
             {error}
@@ -1434,7 +1444,7 @@ function RiskBreakdownTab({ data, loading, routeData }) {
         <Card elevation={3}>
           <CardContent>
             <Typography variant="h6" gutterBottom fontWeight={600}>
-              📊 Risk Score: {effectiveRiskScore}/100
+              📊 Risk Score: {formatRiskScore(effectiveRiskScore)}/100
             </Typography>
             <Typography variant="body2" color="text.secondary" paragraph>
               This risk score is calculated using statistical analysis of historical accident data,
