@@ -752,9 +752,6 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
       </Box>
 
       <DialogContent sx={{ bgcolor: 'grey.50', overflow: 'auto' }}>
-        <Alert severity="info" sx={{ mb: 2, fontWeight: 600 }}>
-          CHECK ROUTE PAGE FOR MOST UP-TO-DATE AND PRECISE INFORMATION
-        </Alert>
         {error && (
           <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
             {error}
