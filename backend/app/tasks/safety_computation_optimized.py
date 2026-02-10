@@ -52,6 +52,8 @@ LOCATION_BATCH_SIZE = 100  # Process locations in batches
 WEATHER_CONCURRENCY = 10   # Concurrent weather fetches
 LOG_INTERVAL = 1000        # Log progress every N locations
 DAYS_TO_COMPUTE = 3        # Today + 2 days ahead (for trip planning)
+DATE_RETRY_ATTEMPTS = 3
+DATE_RETRY_BACKOFF_SECONDS = 20
 
 
 async def load_all_accidents(db: AsyncSession) -> List[Dict]:
@@ -433,13 +435,14 @@ async def compute_safety_scores_optimized(
             "total_routes": total_routes,
             "locations_processed": 0,
             "routes_computed": 0,
+            "cached_routes": 0,
             "failed": 0,
             "weather_buckets": len(weather_cache),
             "weather_fetch_time": round(weather_elapsed, 1),
         }
 
         location_ids = list(locations.keys())
-        all_route_scores = {}
+        all_route_scores = {} if save_to_historical else None
 
         compute_start = time.time()
         for batch_start in range(0, total_locations, LOCATION_BATCH_SIZE):
@@ -452,9 +455,22 @@ async def compute_safety_scores_optimized(
                 accident_weather_patterns, accident_arrays
             )
 
-            all_route_scores.update(batch_scores)
             stats["locations_processed"] += len(batch_ids)
             stats["routes_computed"] += len(batch_scores)
+
+            # Cache incrementally per batch to avoid all-or-nothing loss on late failures
+            if batch_scores:
+                cached_count = set_bulk_cached_safety_scores(batch_scores, date_str)
+                if cached_count != len(batch_scores):
+                    raise RuntimeError(
+                        f"Batch cache write incomplete for {date_str}: "
+                        f"{cached_count}/{len(batch_scores)} routes cached"
+                    )
+                stats["cached_routes"] += cached_count
+
+            # Only keep full in-memory score map when historical save is needed (today)
+            if save_to_historical and all_route_scores is not None:
+                all_route_scores.update(batch_scores)
 
             # Progress logging
             if stats["locations_processed"] % LOG_INTERVAL == 0 or stats["locations_processed"] == total_locations:
@@ -462,18 +478,25 @@ async def compute_safety_scores_optimized(
                 rate = stats["locations_processed"] / compute_elapsed if compute_elapsed > 0 else 0
                 pct = (stats["locations_processed"] / total_locations) * 100
                 logger.info(
-                    f"  Progress: {stats['locations_processed']:,}/{total_locations:,} locations "
-                    f"({pct:.1f}%, {rate:.0f} loc/sec)"
+                        f"  Progress: {stats['locations_processed']:,}/{total_locations:,} locations "
+                        f"({pct:.1f}%, {rate:.0f} loc/sec)"
                 )
 
-        # Step 3: Cache all results
-        if all_route_scores:
-            set_bulk_cached_safety_scores(all_route_scores, date_str)
-            logger.info(f"✓ Cached {len(all_route_scores):,} route scores for {date_str}")
+        if stats["routes_computed"] != total_routes:
+            raise RuntimeError(
+                f"Computed routes mismatch for {date_str}: "
+                f"{stats['routes_computed']}/{total_routes}"
+            )
 
-            # Save to historical if requested
-            if save_to_historical:
-                await _save_to_historical(db, all_route_scores, target_date)
+        if stats["cached_routes"] != total_routes:
+            raise RuntimeError(
+                f"Cached routes mismatch for {date_str}: "
+                f"{stats['cached_routes']}/{total_routes}"
+            )
+
+        # Save to historical if requested
+        if save_to_historical and all_route_scores:
+            await _save_to_historical(db, all_route_scores, target_date)
 
         # Final stats
         elapsed = time.time() - start_time
@@ -725,21 +748,56 @@ async def _compute_all_dates_async() -> Dict:
 
     all_stats = {
         "dates_computed": len(dates_to_compute),
+        "dates_succeeded": 0,
         "total_routes": 0,
         "total_time": 0,
+        "failed_dates": [],
+        "retry_attempts": {},
     }
 
     for target_date in dates_to_compute:
+        date_str = target_date.isoformat()
         is_today = (target_date == today)
-        logger.info(f"Computing for {target_date.isoformat()}{' (saving historical)' if is_today else ''}")
+        logger.info(f"Computing for {date_str}{' (saving historical)' if is_today else ''}")
 
-        stats = await compute_safety_scores_optimized(
-            target_date=target_date,
-            save_to_historical=is_today,
-        )
+        date_success = False
+        for attempt in range(1, DATE_RETRY_ATTEMPTS + 1):
+            all_stats["retry_attempts"][date_str] = attempt
+            try:
+                stats = await compute_safety_scores_optimized(
+                    target_date=target_date,
+                    save_to_historical=is_today,
+                )
+                all_stats["total_routes"] = stats.get("total_routes", 0)
+                all_stats["total_time"] += stats.get("elapsed_seconds", 0)
+                all_stats["dates_succeeded"] += 1
+                date_success = True
+                break
+            except Exception as exc:
+                logger.error(
+                    f"Failed computing {date_str} (attempt {attempt}/{DATE_RETRY_ATTEMPTS}): {exc}",
+                    exc_info=True,
+                )
+                if attempt < DATE_RETRY_ATTEMPTS:
+                    delay_seconds = DATE_RETRY_BACKOFF_SECONDS * attempt
+                    logger.warning(f"Retrying {date_str} in {delay_seconds}s")
+                    await asyncio.sleep(delay_seconds)
+                else:
+                    all_stats["failed_dates"].append({
+                        "date": date_str,
+                        "error": str(exc),
+                    })
 
-        all_stats["total_routes"] = stats.get("total_routes", 0)
-        all_stats["total_time"] += stats.get("elapsed_seconds", 0)
+        if not date_success:
+            logger.error(f"All retry attempts exhausted for {date_str}")
 
     all_stats["total_time"] = round(all_stats["total_time"], 1)
+    if all_stats["failed_dates"]:
+        all_stats["status"] = "failed"
+        raise RuntimeError(
+            f"Failed dates during optimized cache computation: "
+            f"{', '.join(item['date'] for item in all_stats['failed_dates'])}"
+        )
+
+    all_stats["status"] = "completed"
     return all_stats

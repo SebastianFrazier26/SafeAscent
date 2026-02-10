@@ -1693,8 +1693,8 @@ async def trigger_cache_population(
     Returns immediately with task ID. Check Railway logs for progress.
 
     **Options:**
-    - No params: Compute all 7 days (takes 10-20 minutes)
-    - `target_date=2026-02-05`: Compute single date (takes 2-3 minutes)
+    - No params: Compute optimized 3-day window (today + 2)
+    - `target_date` is currently ignored by the optimized task (kept for backward compatibility)
 
     **Returns:** Task ID and status message (task runs in background).
     """
@@ -1707,15 +1707,15 @@ async def trigger_cache_population(
     logger.info("=" * 60)
 
     try:
-        # Use optimized location-level computation (today only)
-        # target_date parameter is ignored - optimized task always computes today
+        # Use optimized location-level computation (3-day window: today + 2)
+        # target_date parameter is ignored - optimized task computes configured range
         logger.info("Triggering OPTIMIZED Celery task (location-level computation)...")
         task = compute_daily_safety_scores_optimized.delay()
         return {
             "status": "started",
-            "message": "Optimized cache population started (today only). Check Railway logs for progress.",
+            "message": "Optimized cache population started (3-day window). Check Railway logs for progress.",
             "task_id": task.id,
-            "estimated_time": "5-10 minutes",
+            "estimated_time": "5-15 minutes",
         }
 
     except Exception as e:
