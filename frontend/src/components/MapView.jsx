@@ -346,12 +346,15 @@ export default function MapView({ selectedRouteForZoom }) {
       return;
     }
 
+    let ignoreResponse = false;
+
     const fetchSafety = async () => {
       try {
+        setSafetyData(null); // Prevent stale score flash from previously selected route
         setLoadingSafety(true);
         const dateStr = format(selectedDate, 'yyyy-MM-dd');
         const response = await fetch(
-          `${API_BASE_URL}/mp-routes/${selectedRoute.properties.id}/safety?target_date=${dateStr}`,
+          `${API_BASE_URL}/mp-routes/${selectedRoute.properties.id}/safety?target_date=${dateStr}&bypass_cache=true`,
           { method: 'POST' }
         );
 
@@ -360,16 +363,26 @@ export default function MapView({ selectedRouteForZoom }) {
         }
 
         const data = await response.json();
-        setSafetyData(data);
+        if (!ignoreResponse) {
+          setSafetyData(data);
+        }
       } catch (err) {
-        console.error('Error fetching safety score:', err);
-        setSafetyData({ error: err.message });
+        if (!ignoreResponse) {
+          console.error('Error fetching safety score:', err);
+          setSafetyData({ error: err.message });
+        }
       } finally {
-        setLoadingSafety(false);
+        if (!ignoreResponse) {
+          setLoadingSafety(false);
+        }
       }
     };
 
     fetchSafety();
+
+    return () => {
+      ignoreResponse = true;
+    };
   }, [selectedRoute, selectedDate]);
 
   /**

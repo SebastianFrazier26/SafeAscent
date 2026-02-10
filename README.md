@@ -95,13 +95,17 @@ For detailed algorithm documentation, see [ALGORITHM_DESIGN.md](./ALGORITHM_DESI
 - `GET /api/v1/mountains` - List mountains
 
 **Route Analytics**
-- `GET /api/v1/routes/{id}/safety` - Safety score for date
-- `GET /api/v1/routes/{id}/forecast` - 7-day forecast
-- `GET /api/v1/routes/{id}/accidents` - Accident history
-- `GET /api/v1/routes/{id}/risk-breakdown` - Factor analysis
-- `GET /api/v1/routes/{id}/seasonal-patterns` - Monthly patterns
-- `GET /api/v1/routes/{id}/time-of-day` - Hourly analysis
-- `GET /api/v1/routes/{id}/ascent-analytics` - Monthly ascent/accident rates
+- `POST /api/v1/mp-routes/{id}/safety` - Safety score for date (`bypass_cache=true` available for forced live recompute)
+- `GET /api/v1/mp-routes/{id}/forecast` - 7-day forecast
+- `GET /api/v1/mp-routes/{id}/accidents` - Accident history
+- `GET /api/v1/mp-routes/{id}/risk-breakdown` - Factor analysis
+- `GET /api/v1/mp-routes/{id}/time-of-day` - Hourly analysis
+- `GET /api/v1/mp-routes/{id}/historical-trends` - Historical risk trend series
+- `GET /api/v1/mp-routes/{id}/ascent-analytics` - Monthly ascent/accident rates
+
+**Scoring Strategy**
+- Map rendering uses bulk precomputed cached scores (`/mp-routes/map-with-safety`) for scale.
+- Route analytics/details fetches can request live recomputed score (`/mp-routes/{id}/safety?bypass_cache=true`) for higher-fidelity route-level display.
 
 ---
 

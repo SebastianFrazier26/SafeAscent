@@ -358,6 +358,34 @@ function getBestLocationName(sources) {
   return 'Location unavailable';
 }
 
+/**
+ * Display-only cleanup for winter route titles where type suffix lacks separator.
+ * Example: "North Face Ice" -> "North Face - Ice"
+ */
+function formatRouteNameWithType(name, routeType) {
+  const safeName = (name || '').trim();
+  const safeType = (routeType || '').trim();
+
+  if (!safeName || !safeType) return safeName || 'Unknown Route';
+
+  const normalizedType = safeType.toLowerCase();
+  if (!['ice', 'mixed'].includes(normalizedType)) {
+    return safeName;
+  }
+
+  const dashedSuffix = new RegExp(`\\s[-–—]\\s${normalizedType}\\b\\s*$`, 'i');
+  if (dashedSuffix.test(safeName)) {
+    return safeName;
+  }
+
+  const spacedSuffix = new RegExp(`\\s+${normalizedType}\\b\\s*$`, 'i');
+  if (spacedSuffix.test(safeName)) {
+    return safeName.replace(spacedSuffix, ` - ${safeType}`);
+  }
+
+  return safeName;
+}
+
 // Tab panel component
 function TabPanel({ children, value, index, ...other }) {
   return (
@@ -387,6 +415,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
   });
   const [error, setError] = useState(null);
   const [exportMenuAnchor, setExportMenuAnchor] = useState(null);
+  const displayRouteName = formatRouteNameWithType(routeData?.name, routeData?.type);
 
   // Reset tab when modal opens - default to Route Details (tab 1)
   useEffect(() => {
@@ -570,7 +599,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `${routeData.name.replace(/[^a-z0-9]/gi, '_')}_analytics_${selectedDate}.json`;
+    link.download = `${displayRouteName.replace(/[^a-z0-9]/gi, '_')}_analytics_${selectedDate}.json`;
     link.click();
     URL.revokeObjectURL(url);
     handleExportClose();
@@ -579,7 +608,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
   const exportAsCSV = () => {
     // Build CSV with key metrics
     let csv = 'SafeAscent Route Analytics Export\n\n';
-    csv += `Route Name,${routeData.name}\n`;
+    csv += `Route Name,${displayRouteName}\n`;
     csv += `Location,${getBestLocationName([data.routeDetails?.location_name, routeData.mountain_name, routeData.location_name])}\n`;
     csv += `Type,${routeData.type}\n`;
     csv += `Grade,${routeData.grade}\n`;
@@ -609,7 +638,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `${routeData.name.replace(/[^a-z0-9]/gi, '_')}_analytics_${selectedDate}.csv`;
+    link.download = `${displayRouteName.replace(/[^a-z0-9]/gi, '_')}_analytics_${selectedDate}.csv`;
     link.click();
     URL.revokeObjectURL(url);
     handleExportClose();
@@ -634,7 +663,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', pr: 8 }}>
           <Box sx={{ flex: 1 }}>
             <Typography variant="h5" component="div" fontWeight={600}>
-              {routeData.name}
+              {displayRouteName}
             </Typography>
             <Typography variant="body2" sx={{ opacity: 0.9, mt: 0.5 }}>
               {getBestLocationName([data.routeDetails?.location_name, routeData.mountain_name, routeData.location_name])} • {routeData.type} • Grade {routeData.grade}
@@ -981,6 +1010,7 @@ function RouteDetailsTab({ data, loading, routeData }) {
 
   const details = data || routeData;
   const routeTheme = getRouteTypeTheme(details.type);
+  const displayDetailsName = formatRouteNameWithType(details.name, details.type);
 
   // Format elevation display
   const elevationDisplay = details.elevation_meters
@@ -999,7 +1029,7 @@ function RouteDetailsTab({ data, loading, routeData }) {
         <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', mb: 3 }}>
           <Box sx={{ flex: 1 }}>
             <Typography variant="h5" fontWeight={700} gutterBottom>
-              {details.name}
+              {displayDetailsName}
             </Typography>
             <Typography variant="body1" color="text.secondary">
               📍 {getBestLocationName([details.location_name, details.mountain_name])}
@@ -1139,7 +1169,7 @@ function AccidentsTab({ data, loading, routeData }) {
   return (
     <Box>
       <Typography variant="h6" gutterBottom fontWeight={600}>
-        ⚠️ Accident Reports for {getBestLocationName([data.location_name, routeData.mountain_name, routeData.name])}
+        ⚠️ Accident Reports for {getBestLocationName([data.location_name, routeData.mountain_name, formatRouteNameWithType(routeData.name, routeData.type)])}
       </Typography>
       <Typography variant="body2" color="text.secondary" paragraph>
         Showing {displayedAccidents.length} of {data.accidents.length} accidents.
@@ -1386,10 +1416,13 @@ function RiskBreakdownTab({ data, loading, routeData }) {
     );
   }
 
+  const effectiveRiskScore = data.risk_score ?? routeData.risk_score ?? 0;
+
   // Prepare data for pie chart showing factor contributions
   const factorData = data.factors?.map(factor => ({
     name: factor.name,
     value: factor.contribution,
+    scorePoints: Number(((effectiveRiskScore * factor.contribution) / 100).toFixed(1)),
     description: factor.description,
   })) || [];
 
@@ -1401,7 +1434,7 @@ function RiskBreakdownTab({ data, loading, routeData }) {
         <Card elevation={3}>
           <CardContent>
             <Typography variant="h6" gutterBottom fontWeight={600}>
-              📊 Risk Score: {data.risk_score ?? routeData.risk_score}/100
+              📊 Risk Score: {effectiveRiskScore}/100
             </Typography>
             <Typography variant="body2" color="text.secondary" paragraph>
               This risk score is calculated using statistical analysis of historical accident data,
@@ -1434,7 +1467,12 @@ function RiskBreakdownTab({ data, loading, routeData }) {
                     <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                   ))}
                 </Pie>
-                <Tooltip />
+                <Tooltip
+                  formatter={(value, _name, item) => [
+                    `${value}% (~${item?.payload?.scorePoints ?? 0} pts)`,
+                    'Contribution',
+                  ]}
+                />
               </PieChart>
             </ResponsiveContainer>
           </CardContent>
@@ -1457,11 +1495,18 @@ function RiskBreakdownTab({ data, loading, routeData }) {
                           <Typography variant="body1" fontWeight={600}>
                             {factor.name}
                           </Typography>
-                          <Chip
-                            label={`+${factor.contribution}`}
-                            size="small"
-                            color={factor.contribution > 20 ? 'error' : factor.contribution > 10 ? 'warning' : 'default'}
-                          />
+                          <Box sx={{ display: 'flex', gap: 1 }}>
+                            <Chip
+                              label={`+${factor.contribution}%`}
+                              size="small"
+                              color={factor.contribution > 20 ? 'error' : factor.contribution > 10 ? 'warning' : 'default'}
+                            />
+                            <Chip
+                              label={`+${((effectiveRiskScore * factor.contribution) / 100).toFixed(1)} pts`}
+                              size="small"
+                              variant="outlined"
+                            />
+                          </Box>
                         </Box>
                       }
                       secondary={factor.description}
@@ -1771,7 +1816,7 @@ function TimeOfDayTab({ data, loading, routeData: _routeData, selectedDate }) {
                         {hour.conditions_summary}
                       </Typography>
                       <Typography variant="caption" display="block" sx={{ mt: 0.5, color: '#212121' }}>
-                        🌡️ {hour.temperature}°C | 💨 {hour.wind_speed} m/s | 🌧️ {hour.precipitation !== null && hour.precipitation !== undefined ? hour.precipitation : 0} mm
+                        🌡️ {celsiusToFahrenheit(hour.temperature) !== null ? `${celsiusToFahrenheit(hour.temperature)}°F` : 'N/A'} | 💨 {hour.wind_speed} m/s | 🌧️ {hour.precipitation !== null && hour.precipitation !== undefined ? hour.precipitation : 0} mm
                       </Typography>
                     </Paper>
                   </Grid>
@@ -1877,7 +1922,7 @@ function AscentsTab({ data, loading, routeData }) {
         <Card elevation={3}>
           <CardContent>
             <Typography variant="h6" gutterBottom fontWeight={600}>
-              🧗 Ascent Analytics for {routeData.name}
+              🧗 Ascent Analytics for {formatRouteNameWithType(routeData.name, routeData.type)}
             </Typography>
             <Typography variant="body2" color="text.secondary" paragraph>
               Monthly breakdown of recorded ascents and accident rates.

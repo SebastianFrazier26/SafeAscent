@@ -115,7 +115,7 @@ frontend/
 *Overlapping brackets create smooth color transitions*
 
 ### Route Analytics Modal
-8-tab analytics dashboard (click any route marker):
+7-tab analytics dashboard (click any route marker):
 
 | Tab | Content |
 |-----|---------|
@@ -123,10 +123,14 @@ frontend/
 | Route Details | Basic info, grade, location |
 | Accident Reports | Historical accidents on mountain |
 | Risk Breakdown | Factor contributions (spatial, temporal, weather) |
-| Seasonal Patterns | Monthly accident distribution |
 | Historical Trends | 30-day risk score history |
 | Time of Day | Hourly conditions and climbing windows |
 | **Ascents** | Monthly breakdown of ascents vs accidents |
+
+Notes:
+- Map markers/colors come from bulk cached scores for performance.
+- Route modal header score is fetched per-route and can be forced to live recompute.
+- Hourly conditions display temperature in Fahrenheit.
 
 ### Ascents Analytics Tab
 - Total ascents, accidents, and accident rate (per 100 ascents)
