@@ -29,11 +29,9 @@ where:
 
 ---
 
-## Design Decisions Log
+## Design Decisions
 
 ### Decision #1: Spatial Influence Strategy
-**Date**: 2026-01-28
-**Status**: ✅ Decided
 
 **Question**: Should we use a hard cutoff radius or continuous decay with weather override?
 
@@ -55,13 +53,11 @@ spatial_weight = exp(-distance² / spatial_bandwidth²)
 - No maximum distance cutoff
 
 **Key Insight**:
-> "If the weather conditions between Area A and Area B are identical, even if the areas are 500 km apart, the information about accidents in Area B is probably still relevant to Area A as they occurred during the same weather conditions." - Sebastian
+> If the weather conditions between Area A and Area B are identical, even if the areas are 500 km apart, the information about accidents in Area B is probably still relevant to Area A as they occurred during the same weather conditions.
 
 ---
 
 ### Decision #2: Route Type Weighting Strategy
-**Date**: 2026-01-28
-**Status**: ✅ Decided (MVP), 🔮 Future Enhancement Planned
 
 **Question**: How should accidents of different route types influence each other?
 
@@ -93,37 +89,9 @@ ROUTE_TYPE_WEIGHTS = {
 }
 ```
 
-**Future Enhancement (Option B): Weather-Conditional Weighting**
-
-```python
-def calculate_route_type_weight(planning_type, accident_type, accident_weather_severity):
-    """
-    accident_weather_severity: 0.0 (perfect) to 1.0 (terrible)
-    """
-    if planning_type == "alpine":
-        if accident_type == "sport":
-            if accident_weather_severity > 0.7:  # Bad weather
-                return 1.2  # AMPLIFY! Sport accident in bad weather = strong alpine danger signal
-            else:  # Good weather
-                return 0.4  # Sport accident in good weather = less relevant to alpine
-        elif accident_type == "alpine":
-            return 1.0  # Direct match
-
-    # ... (full logic in design notes)
-```
-
-**Why defer Option B**:
-- Option A is simpler to implement and explain
-- Option B requires tuning "bad weather" thresholds with real data
-- Code should be structured to easily swap in Option B later
-
-**TODO**: Implement Option B after initial algorithm validation and testing
-
 ---
 
 ### Decision #3: Spatial Bandwidth by Route Type
-**Date**: 2026-01-28
-**Status**: ✅ Decided
 
 **Question**: Should different route types have different spatial influence radii?
 
@@ -154,8 +122,6 @@ SPATIAL_BANDWIDTH = {
 ---
 
 ### Decision #4: Temporal Decay Strategy
-**Date**: 2026-01-28
-**Status**: ✅ Decided
 
 **Question**: How quickly should accidents fade in relevance over time?
 
@@ -169,7 +135,7 @@ Climbing safety is fundamentally different from financial volatility:
 - **Seasonal patterns repeat**: Winter avalanche conditions from 10 years ago are more relevant to this winter than last summer's conditions
 
 **Key Insight**:
-> "Climbing safety updates do matter but change far far slower than any sort of financial model. I like general stability with slight decay over longer periods to account for climbing safety updates (like new gear/bolting/etc.)" - Sebastian
+> Climbing safety updates do matter but change far far slower than any sort of financial model. I like general stability with slight decay over longer periods to account for climbing safety updates (like new gear/bolting/etc.)
 
 **Formula**:
 ```python
@@ -241,8 +207,6 @@ def calculate_seasonal_boost(accident_date, current_date):
 ---
 
 ### Decision #5: Weather Similarity Metric
-**Date**: 2026-01-28
-**Status**: ✅ Decided (MVP implementation), 🔮 Post-MVP optimization planned
 
 **Question**: How do we quantify weather pattern similarity between current conditions and pre-accident weather?
 
@@ -278,7 +242,7 @@ Both have average temp = 51°F
 - Erratic weather creates unpredictable hazards → pattern stability matters
 
 **Key Insight**:
-> "All weather factors matter relatively equally. Temperature is certainly important but so is wind speed, precip, visibility, and everything else." - Sebastian
+> All weather factors matter relatively equally. Temperature is certainly important but so is wind speed, precip, visibility, and everything else.
 
 **Weather Data Verified**:
 - ✅ Database contains 25,591 weather records
@@ -489,7 +453,7 @@ def find_optimal_within_window_decay(accidents, weather_data):
 ```
 
 **Why data-driven optimization**:
-> "Is there any way to more scientifically determine the ratio by which we should rate the day or is it just a judgement call... I'd like a more direct method of figuring out what number to use here" - Sebastian
+> Is there any way to more scientifically determine the ratio by which we should rate the day or is it just a judgement call... I'd like a more direct method of figuring out what number to use here
 
 By designing for backtesting, we avoid overfitting while enabling empirical optimization later.
 
@@ -617,8 +581,6 @@ Where:
 ---
 
 ### Decision #6: Accident Severity Weighting
-**Date**: 2026-01-28
-**Status**: ✅ Decided (General Risk Scoring), 🔮 Post-MVP Feature Planned (Per-Route Analytics)
 
 **Question**: Should all accidents count equally, or should we weight by severity (fatal, serious, minor)?
 
@@ -641,7 +603,7 @@ Fatal accidents carry *slightly* more signal about dangerous conditions, but the
 - **Bias risk**: Over-emphasizing fatalities could miss important patterns in non-fatal accidents
 
 **Key Insight**:
-> "Fatal outcomes can be a little more informative (it is telling of if a route/area is steep enough for instance to cause fatal accidents) and may more strongly correlate to larger avalanches/worse weather etc. As such, I think we should use marginal weighting (nowhere near 5X) but maybe like a 'booster' linear score for fatal accidents rather than some accidental multiplier." - Sebastian
+> Fatal outcomes can be a little more informative (it is telling of if a route/area is steep enough for instance to cause fatal accidents) and may more strongly correlate to larger avalanches/worse weather etc. As such, I think we should use marginal weighting (nowhere near 5X) but maybe like a 'booster' linear score for fatal accidents rather than some accidental multiplier
 
 **Severity data distribution:**
 ```
@@ -706,9 +668,7 @@ accident_influence = (spatial: 0.9) × (temporal: 0.8) × (weather: 0.95) ×
 - Avoids introducing bias toward higher severity
 
 **Design principle:**
-> "The booster values may be somewhat arbitrary but they are conservative enough to be relevant without overpowering our algo" - Sebastian
-
-These subtle boosters acknowledge severity information without letting it dominate the sophisticated spatial/temporal/weather weighting system.
+> The booster values may be somewhat arbitrary but they are conservative enough to be relevant without overpowering our algo
 
 ---
 
@@ -764,501 +724,6 @@ Minor Injury Risk:    35/100 (Low)
 - General risk score sufficient for MVP safety predictions
 - Can validate general algorithm first, then add granularity
 
----
-
-### Decision #7: Confidence Scoring System
-**Date**: 2026-01-28
-**Status**: ✅ Decided
-
-**Question**: How do we communicate certainty/uncertainty in our risk predictions to users?
-
-**Decision**: **Multi-factor confidence scoring** (Option C) with full transparency and detailed UI breakdowns
-
-**Rationale**:
-
-Confidence is **critically important** for a safety algorithm - perhaps more important than the risk score itself:
-
-**Examples illustrating why confidence matters:**
-```
-Route A: Risk = 65/100, Confidence = 85% (47 nearby accidents, strong weather matches)
-→ "Stay off this route - strong evidence of danger"
-
-Route B: Risk = 65/100, Confidence = 25% (2 distant accidents, weak matches)
-→ "Proceed with extreme caution - limited data but concerning signals"
-
-Route C: Risk = 20/100, Confidence = 15% (zero nearby accidents)
-→ "We don't have enough data to assess this route reliably"
-```
-
-Users need to know when to trust the algorithm vs. rely on their own judgment.
-
-**Key Insight**:
-> "Confidence (for a safety algorithm) is an EXTREMELY important aspect of our operation. Further, confidence is something that applies more to a particular route/area than it will to our general map presentation so it provides another category for analytic reporting." - Sebastian
-
-**Why Multi-Factor (Option C) over simpler approaches:**
-- Safety decisions require understanding WHAT makes us confident or uncertain
-- Transparency builds trust in the algorithm
-- Different quality indicators reveal different data gaps
-- Enables users to make informed decisions about risk assessment validity
-
----
-
-### Five Confidence Quality Indicators
-
-Each factor scored 0.0 to 1.0, combined with weighted average:
-
-#### **1. Sample Size (Weight: 30%)**
-
-**Measures**: Number of accidents contributing to the risk score
-
-```python
-sample_size_score = min(n_total_accidents / 30.0, 1.0)
-
-# 30+ accidents = maximum confidence in sample size
-# 15 accidents = 50% confidence
-# 5 accidents = 17% confidence
-```
-
-**Returns**:
-```python
-{
-    'score': 0.0-1.0,
-    'total_accidents': int,
-    'significant_accidents': int,  # Accidents with influence > 0.3
-    'interpretation': 'Excellent' | 'Good' | 'Moderate' | 'Limited'
-}
-```
-
-**Why it matters**: More data points = more reliable statistical inference
-
----
-
-#### **2. Match Quality (Weight: 30%)**
-
-**Measures**: Average strength of accident matches (spatial + temporal + weather + route type)
-
-```python
-influences = [accident.total_influence for accident in all_accidents]
-quality_score = mean(influences)  # Already 0-1 from normalized weights
-```
-
-**Returns**:
-```python
-{
-    'score': 0.0-1.0,
-    'avg_match_strength': float,
-    'best_match_strength': float,
-    'top_10_accidents': [list of highest-influence accidents],
-    'interpretation': 'Excellent matches' | 'Good matches' | 'Moderate matches' | 'Weak matches'
-}
-```
-
-**Why it matters**: High-quality matches (nearby, recent, similar weather) are more predictive than distant, old, different-weather accidents
-
----
-
-#### **3. Spatial Coverage (Weight: 20%)**
-
-**Measures**: Geographic distribution of accidents around the route
-
-```python
-# Bearing spread: Are accidents on all sides, or clustered on one side?
-accident_bearings = [calculate_bearing(route, accident) for accident in accidents]
-bearing_std = std(accident_bearings)
-bearing_score = min(bearing_std / 90.0, 1.0)  # 90° spread = good coverage
-
-# Distance variety: Mix of close and distant accidents
-distance_variety = std(distances) / mean(distances)
-distance_score = min(distance_variety, 1.0)
-
-coverage_score = (bearing_score + distance_score) / 2.0
-```
-
-**Returns**:
-```python
-{
-    'score': 0.0-1.0,
-    'bearing_spread': float,  # Degrees
-    'avg_distance_km': float,
-    'closest_accident_km': float,
-    'farthest_accident_km': float,
-    'interpretation': 'Excellent coverage' | 'Good coverage' | 'Limited coverage' | 'Poor coverage (clustered)'
-}
-```
-
-**Why it matters**: Accidents clustered on one side might miss hazards on other aspects of the route
-
----
-
-#### **4. Temporal Recency (Weight: 10%)**
-
-**Measures**: How recent is the most recent accident
-
-```python
-most_recent_days = min([(current_date - accident.date).days for accident in accidents])
-
-if most_recent_days < 365:        # Within last year
-    recency_score = 1.0
-elif most_recent_days < 365 * 3:  # Within 3 years
-    recency_score = 0.8
-elif most_recent_days < 365 * 5:  # Within 5 years
-    recency_score = 0.6
-elif most_recent_days < 365 * 10: # Within 10 years
-    recency_score = 0.4
-else:                              # Older than 10 years
-    recency_score = 0.2
-```
-
-**Returns**:
-```python
-{
-    'score': 0.0-1.0,
-    'most_recent_days': int,
-    'most_recent_date': date,
-    'avg_accident_age_years': float,
-    'accidents_last_year': int,
-    'accidents_last_5_years': int,
-    'interpretation': 'Very recent data' | 'Recent data' | 'Moderately dated' | 'Historical data'
-}
-```
-
-**Why it matters**: Recent accidents are more reliable indicators because conditions haven't changed (routes don't get rebolted, mountains don't change, but safety equipment evolves slowly)
-
----
-
-#### **5. Weather Data Quality (Weight: 10%)**
-
-**Measures**: Completeness of weather data for pattern matching
-
-```python
-accidents_with_weather = [a for a in accidents if a.has_7day_weather]
-weather_coverage = len(accidents_with_weather) / len(accidents)
-
-weather_similarities = [a.weather_weight for a in accidents_with_weather]
-avg_weather_sim = mean(weather_similarities)
-
-weather_quality_score = (weather_coverage + avg_weather_sim) / 2.0
-```
-
-**Returns**:
-```python
-{
-    'score': 0.0-1.0,
-    'accidents_with_weather': int,
-    'weather_coverage_pct': float,
-    'avg_weather_similarity': float,
-    'interpretation': 'Excellent weather data' | 'Good weather data' | 'Limited weather data' | 'Poor weather data'
-}
-```
-
-**Why it matters**: Weather similarity is a key component of our algorithm; missing weather data reduces prediction quality
-
----
-
-### Overall Confidence Formula
-
-```python
-overall_confidence = (
-    0.30 * sample_size_score +      # Most important: how much data do we have?
-    0.30 * quality_score +           # Most important: how good are the matches?
-    0.20 * coverage_score +          # Important: is coverage comprehensive?
-    0.10 * recency_score +           # Moderate: are accidents recent?
-    0.10 * weather_quality_score     # Moderate: do we have weather data?
-)
-
-# Returns: 0.0 to 1.0
-```
-
-**Weight rationale:**
-- **Sample size + quality = 60%**: These directly determine statistical reliability
-- **Coverage = 20%**: Important but less critical than having enough good matches
-- **Recency + weather = 20%**: Moderate importance due to our year-scale temporal decay (old accidents still valuable)
-
----
-
-### UI/UX Design: Displaying Confidence
-
-**Key Principle**:
-> "Displaying what influenced the confidence score (timelines, proximity, num incidents, similarity, etc.) is key info to the user which we can pull up on particular routes." - Sebastian
-
-#### **Route Detail Page - Primary Display**
-
-**Numerical + Visual (Battery-Style)**:
-```
-┌────────────────────────────────────────────┐
-│ CONFIDENCE                                  │
-│ ┌────────────────────────────────────────┐ │
-│ │ ██████████████████████████████████░░ 85│ │ ⚡⚡⚡ High
-│ └────────────────────────────────────────┘ │
-│ ✓ High confidence - based on 34 accidents  │
-└────────────────────────────────────────────┘
-```
-
-**Material Design 3 Components**:
-- Linear progress indicator (filled to 85%)
-- Lightning bolt icons (⚡⚡⚡ for high, ⚡⚡ for medium, ⚡ for low)
-- Color coding:
-  - Green: 70-100% (high confidence)
-  - Yellow/Orange: 40-69% (moderate confidence)
-  - Red: 0-39% (low confidence)
-
-#### **Expandable Confidence Breakdown**
-
-**Five-Factor Breakdown with Visual Progress Bars**:
-```
-┌─── WHY THIS CONFIDENCE SCORE? ────────────┐
-│                                            │
-│ Sample Size           [████████░] 90%     │
-│ 34 total accidents                         │
-│ 18 high-quality matches                    │
-│                                            │
-│ Match Quality         [███████░░] 72%     │
-│ Strong weather & proximity matches         │
-│ Top match: 0.89 similarity                 │
-│                                            │
-│ Geographic Coverage   [█████░░░░] 58%     │
-│ Accidents spread across east face          │
-│ Limited coverage on west side              │
-│                                            │
-│ Data Recency          [████████░] 95%     │
-│ Most recent: 6 months ago                  │
-│ 12 accidents in last 3 years               │
-│                                            │
-│ Weather Data          [███████░░] 78%     │
-│ 28/34 accidents have full weather data     │
-│ Avg weather similarity: 0.74               │
-│                                            │
-│ [View Contributing Accidents →]           │
-└────────────────────────────────────────────┘
-```
-
-**Each factor shows**:
-- Visual progress bar
-- Percentage score
-- 2-3 key statistics
-- Human-readable interpretation
-
-#### **Contributing Accidents List (Expandable)**
-
-**Sorted by influence, color-coded by strength**:
-```
-┌─── CONTRIBUTING ACCIDENTS (34 total) ──────┐
-│                                             │
-│ #1 - Fatal (Feb 15, 2024)  ████████ 0.89  │
-│ Distance: 3.2km | Weather: 92% | 6mo ago   │
-│ Temp 28°F, winds 35mph, heavy snow         │
-│ [View Full Report →]                       │
-│                                             │
-│ #2 - Serious (Jan 8, 2024) ███████░ 0.84  │
-│ Distance: 5.1km | Weather: 88% | 7mo ago   │
-│ Temp 32°F, winds 28mph, moderate snow      │
-│ [View Full Report →]                       │
-│                                             │
-│ #3 - Fatal (Dec 20, 2023)  ██████░░ 0.76  │
-│ Distance: 8.7km | Weather: 81% | 1yr ago   │
-│ Temp 25°F, winds 42mph, blizzard           │
-│ [View Full Report →]                       │
-│                                             │
-│ [Load more... 31 remaining]                │
-│                                             │
-│ Color Legend:                              │
-│ ████ Dark Red (>0.7) = High influence      │
-│ ████ Orange (0.4-0.7) = Moderate influence │
-│ ░░░░ Gray (<0.4) = Low influence           │
-└─────────────────────────────────────────────┘
-```
-
-**Features**:
-- Top 10 accidents shown initially
-- Each accident card clickable to full accident report
-- Visual influence bars with color coding
-- Key stats: distance, weather match, time ago
-- Weather conditions summary
-
-#### **Map Overview (Simplified Display)**
-
-For general map markers/popups:
-```
-┌────────────────────────────┐
-│ Longs Peak - Keyhole       │
-├────────────────────────────┤
-│ Risk: 68/100 (High) ⚠️     │
-│ Confidence: 85% ⚡⚡⚡       │
-│                            │
-│ [View Details →]           │
-└────────────────────────────┘
-```
-
-Simple, glanceable information. Details accessible via click-through.
-
----
-
-### Handling Edge Cases
-
-#### **Zero-Accident Routes**
-
-Routes with no nearby accidents naturally get low risk + low confidence:
-
-```python
-# Example: Remote route, no accidents within 100km
-# System searches wider (200km, 300km) but weights are very low
-
-Risk Score: 15/100 (Low)
-Confidence: 12% ⚡ (Very Low)
-
-UI Display:
-┌────────────────────────────────────────────┐
-│ ⚠️ LIMITED DATA AVAILABLE                  │
-│                                            │
-│ Risk assessment is uncertain due to lack   │
-│ of nearby accident history.                │
-│                                            │
-│ Recommendation:                            │
-│ • Use standard alpine safety protocols     │
-│ • Rely on your own route assessment        │
-│ • Check local climbing forums/guides       │
-│ • Consider weather forecasts independently │
-│                                            │
-│ Why low confidence?                        │
-│ • Only 3 accidents within 150km            │
-│ • All accidents distant (>100km)           │
-│ • Limited weather pattern matches          │
-└────────────────────────────────────────────┘
-```
-
-**Philosophy**: Honest uncertainty is valuable information. Users should know when the algorithm can't help them.
-
-#### **Routes with Many Old Accidents**
-
-```
-Risk Score: 55/100 (Moderate)
-Confidence: 48% ⚡⚡ (Moderate)
-
-Confidence breakdown shows:
-Sample Size:     [████████░] 85% (good - 42 accidents)
-Match Quality:   [██████░░░] 65% (moderate)
-Coverage:        [███████░░] 72% (good)
-Data Recency:    [██░░░░░░░] 25% (poor - oldest: 15 years ago)
-Weather Data:    [████████░] 88% (excellent)
-
-Overall: Moderate confidence
-→ Good amount of data, but dated. Conditions may have changed.
-```
-
----
-
-### Implementation Notes
-
-**Database queries needed**:
-1. Fetch all accidents within reasonable search radius (200km max)
-2. Calculate individual accident influences (already needed for risk score)
-3. Compute confidence metrics from accident set
-4. Store breakdown for UI display
-
-**Response format** (API endpoint):
-```json
-{
-  "route_id": 123,
-  "risk_score": 68,
-  "confidence": {
-    "overall": 0.85,
-    "breakdown": {
-      "sample_size": {
-        "score": 0.90,
-        "total_accidents": 34,
-        "significant_accidents": 18,
-        "interpretation": "Excellent"
-      },
-      "match_quality": { ... },
-      "spatial_coverage": { ... },
-      "temporal_recency": { ... },
-      "weather_data_quality": { ... }
-    },
-    "contributing_accidents": [
-      {
-        "accident_id": 4215,
-        "influence": 0.89,
-        "distance_km": 3.2,
-        "days_ago": 180,
-        "weather_similarity": 0.92,
-        "severity": "fatal",
-        "date": "2024-02-15"
-      },
-      // ... top 50 accidents
-    ]
-  }
-}
-```
-
-**Frontend implementation**:
-- Material-UI LinearProgress component for bars
-- Custom color mapping based on score ranges
-- Expandable Accordion components for breakdowns
-- List component with infinite scroll for accident history
-
-**Performance considerations**:
-- Confidence calculation adds minimal overhead (uses same accident data as risk scoring)
-- Contributing accident list should be limited to top 50 for UI performance
-- Full list available via pagination if user requests
-
----
-
-### Post-MVP Enhancements
-
-**Planned improvements**:
-
-1. **Confidence-adjusted risk scores**:
-   ```
-   Conservative estimate = risk_score * confidence
-   Example: 65/100 risk × 0.85 confidence = 55/100 conservative risk
-   ```
-
-2. **Route comparison confidence**:
-   ```
-   "Route A has higher confidence (85%) than Route B (42%),
-    so we trust Route A's risk score more"
-   ```
-
-3. **Confidence trends over time**:
-   ```
-   Graph showing how confidence changes as new accidents are added
-   "Confidence has increased 15% in the last year due to 8 new accidents"
-   ```
-
-4. **Regional confidence heatmaps**:
-   ```
-   Map overlay showing which areas have high vs low data coverage
-   Helps identify data gaps for future collection efforts
-   ```
-
----
-
-## Additional Notes
-
-The following parameters need to be determined in subsequent design sessions:
-
-### Temporal Decay
-- [x] **λ (lambda)**: Exponential decay factor - DECIDED (see Decision #4)
-- [x] **Seasonal boost**: 1.5× multiplier for same-season accidents - DECIDED (see Decision #4)
-
-### Weather Similarity
-- [x] **Weather distance metric**: Pattern correlation approach - DECIDED (see Decision #5)
-- [x] **Factor weighting**: Equal weighting across all 6 factors - DECIDED (see Decision #5)
-- [x] **Extreme weather threshold**: 2.0 SD for all metrics - DECIDED (see Decision #5)
-- [x] **Within-window decay**: 0.85 default (post-MVP backtesting planned) - DECIDED (see Decision #5)
-- [x] **Time window**: 7-day pre-accident window confirmed - DECIDED (see Decision #5)
-
-### Accident Severity
-- [x] **Severity weighting strategy**: Subtle linear boosters - DECIDED (see Decision #6)
-- [x] **Per-route analytics**: Separate severity breakdowns for route detail pages - PLANNED (post-MVP)
-
-### Confidence Scoring
-- [x] **Confidence calculation method**: Multi-factor scoring (5 quality indicators) - DECIDED (see Decision #7)
-- [x] **UI display**: Numerical + visual (battery-style) with detailed breakdown - DECIDED (see Decision #7)
-- [x] **Zero-accident handling**: Natural low confidence via weighting system - DECIDED (see Decision #7)
-
----
-
 ## Research References
 
 ### Financial Volatility Models (GARCH, EWMA)
@@ -1296,17 +761,6 @@ The following parameters need to be determined in subsequent design sessions:
 - Optimize with spatial indexing (PostGIS GIST indexes already in place)
 - Consider pre-filtering accidents by bounding box before detailed calculations
 
-### Code Structure (Proposed)
-```
-backend/app/services/
-├── safety_algorithm.py          # Main algorithm orchestration
-├── spatial_weighting.py         # Distance-based weight calculations
-├── temporal_weighting.py        # Time-based decay calculations
-├── weather_similarity.py        # Weather pattern matching
-├── route_type_weighting.py      # Route type asymmetric weights
-└── risk_scoring.py              # Final score normalization and confidence
-```
-
 ---
 
 ## Testing Strategy
@@ -1314,7 +768,7 @@ backend/app/services/
 ### Validation Approach
 1. **Backtesting**: Use known accident dates to predict risk, see if high-risk scores correlate with actual accidents
 2. **Geographic validation**: Routes with many accidents should score higher than routes with few
-3. **Weather validation**: Same route should have different scores under different weather conditions
+3. **Weather validation**: Same route should have (potentially very) different scores under different weather conditions
 4. **Temporal validation**: Risk scores should decay as accidents age
 5. **Edge cases**: Test with sparse data (remote routes), dense data (popular peaks), extreme weather
 
@@ -1326,105 +780,17 @@ backend/app/services/
 
 ---
 
-## Open Questions
-
-Questions to address in future design sessions:
-
-1. **Temporal decay rate**: How fast should accident relevance fade?
-2. **Weather similarity metric**: Which weather factors matter most?
-3. **Severity weighting**: Equal or proportional to injury severity?
-4. **Confidence scoring**: How to communicate uncertainty to users?
-5. **Seasonal adjustments**: Should we only compare to same-season historical data?
-6. **Route popularity bias**: Popular routes have more accidents simply due to traffic - how to adjust?
-7. **Zero-accident routes**: How to score routes with no nearby historical accidents?
-
----
-
-### Route Database Expansion Strategy
-**Date**: 2026-01-28
-**Status**: ✅ Decided - Defer to Post-MVP
-
-**Current State**:
-- 622 routes in database (from initial Mountain Project scraping)
-- 4,319 accidents in database
-- Only 16.9% of accidents linked to specific routes (729/4,319)
-
-**Decision**: **Defer comprehensive route scraping** until post-MVP
-
-**Rationale**:
-- Risk calculation works for ANY coordinates (user can click anywhere on map)
-- Existing 622 routes sufficient for route detail pages in MVP
-- Pre-indexed routes not required for core algorithm functionality
-- Can expand based on user demand and usage patterns
-
-**MVP Approach**:
-- Use existing 622 routes for named route lookups
-- Allow risk calculation for arbitrary lat/lon coordinates
-- Display route details when available, generic location info otherwise
-
-**Post-MVP Expansion Plan**:
-- Target popular climbing areas (Yosemite, RMNP, North Cascades, etc.)
-- Prioritize routes with accident history (we know these matter)
-- Scrape 2,000-5,000 additional routes from Mountain Project
-- Consider alternative sources (OpenBeta, PeakBagger) for non-technical routes
-
-**Key Insight**:
-> "We may need to do some additional route scraping from MP more comprehensively given this approach... we can always push that off for later though" - Sebastian
-
-**Why this works**: Algorithm calculates risk for any location; route database is just metadata for display/search, not core functionality.
-
----
-
-## Next Steps
-
-### Algorithm Design (Complete! ✅)
-- [x] ✅ Decide on spatial influence strategy (Question #1) - Decision #1
-- [x] ✅ Decide on route type weighting strategy (Question #2) - Decision #2, #3
-- [x] ✅ Decide on temporal decay parameters (Question #3) - Decision #4
-- [x] ✅ Design weather similarity metric (Question #4) - Decision #5
-- [x] ✅ Decide on severity weighting strategy (Question #5) - Decision #6
-- [x] ✅ Design confidence scoring system (Question #6) - Decision #7
-- [x] ✅ Decide on route database expansion strategy - Defer to post-MVP
-
-### Implementation (Complete! ✅)
-- [x] ✅ Write complete algorithm pseudocode (all components integrated)
-- [x] ✅ Implement in Python (backend/app/services/)
-  - [x] ✅ spatial_weighting.py
-  - [x] ✅ temporal_weighting.py
-  - [x] ✅ weather_similarity.py
-  - [x] ✅ route_type_weighting.py
-  - [x] ✅ confidence_scoring.py
-  - [x] ✅ safety_algorithm.py (orchestrator)
-  - [x] ✅ algorithm_config.py (all parameters)
-  - [x] ✅ severity_weighting.py
-- [x] ✅ Create preprocessing script for weather_statistics table
-- [x] ✅ Create API endpoint: POST /api/v1/predict
-- [x] ✅ Create test cases for each component (50/50 passing)
-- [x] ✅ Validate with historical data
-
-### Post-MVP Optimizations
-- [ ] Optimize within-window temporal decay via backtesting (Decision #5)
-- [ ] Implement weather-conditional route type weighting (Decision #2, Option B)
-- [x] ✅ Expand route database (196,000+ routes scraped from Mountain Project)
-- [ ] Add severity-specific risk scores for route analytics (Decision #6)
-- [ ] Implement confidence-adjusted risk scores
-- [ ] Create regional confidence heatmaps
-
----
-
 ## Algorithm Design Summary
 
 ### Complete Formula (All Components Integrated)
 
 ```python
-def calculate_route_risk_and_confidence(route_location, route_type, current_weather, current_date):
+def calculate_route_risk(route_location, route_type, current_weather, current_date):
     """
     Master safety prediction algorithm combining all 7 decision components.
 
     Returns: {
         'risk_score': 0-100,
-        'confidence': 0.0-1.0,
-        'confidence_breakdown': {...},
         'contributing_accidents': [...]
     }
     """
@@ -1507,48 +873,13 @@ def calculate_route_risk_and_confidence(route_location, route_type, current_weat
     total_risk = sum([ai['influence'] for ai in accident_influences])
   risk_score = min(total_risk * 7.0, 100)  # Normalize (tuned: 7.0 surfaces moderate/high risk)
 
-    # 8. Calculate confidence score (multi-factor - Decision #7)
-    confidence_data = calculate_confidence(
-        accidents=[ai['accident'] for ai in accident_influences],
-        route_location=route_location,
-        current_date=current_date
-    )
-
-    return {
-        'risk_score': risk_score,
-        'confidence': confidence_data['overall_confidence'],
-        'confidence_breakdown': confidence_data['breakdown'],
-        'contributing_accidents': sorted(
-            accident_influences,
-            key=lambda x: x['influence'],
-            reverse=True
-        )[:50]  # Top 50 for UI
-    }
 ```
-
-### Decision Summary Table
-
-| Component | Decision | Key Parameters | Status |
-|-----------|----------|----------------|--------|
-| **Spatial Weighting** | Gaussian decay, no hard cutoff | bandwidth varies by route type | ✅ Complete |
-| **Spatial Bandwidth** | Alpine 75km, Trad 40km, Sport 25km | Tunable per route type | ✅ Complete |
-| **Route Type Matrix** | Asymmetric (alpine ← sport: 0.9, sport ← alpine: 0.3) | 9 weight combinations | ✅ Complete |
-| **Temporal Decay** | Year-scale (λ=0.9998 to 0.999) | Route-type-specific | ✅ Complete |
-| **Seasonal Boost** | 1.5× multiplier for same season | Winter/Spring/Summer/Fall | ✅ Complete |
-| **Weather Similarity** | Pattern correlation (equal weighting) | 6 factors, 2.0 SD extreme threshold | ✅ Complete |
-| **Weather Power** | **Cubic (weather³)** | 27× sunny/stormy variation | ✅ Tuned |
-| **Weather Exclusion** | Disabled (cubic handles naturally) | N/A | ✅ Tuned |
-| **Within-Window Decay** | 0.85 default (2.5× Day-0 vs Day-6) | Post-MVP backtesting planned | ✅ Complete |
-| **Severity Weighting** | Subtle boosters (1.3×, 1.1×, 1.0×) | Fatal, Serious, Minor/Unknown | ✅ Complete |
-| **Confidence Scoring** | Multi-factor (5 indicators) | Weighted 30/30/20/10/10 | ✅ Complete |
-| **Normalization Factor** | **7.0** (was 5.0) | Surfaces moderate/high risk while retaining headroom | ✅ Tuned |
 
 ### Algorithm Characteristics
 
 **Strengths**:
 - ✅ No arbitrary cutoffs (all data contributes proportionally)
 - ✅ Multi-dimensional similarity (space + time + weather + route type)
-- ✅ Transparent confidence scoring (users know when to trust predictions)
 - ✅ Adaptive to data density (works with sparse or rich data)
 - ✅ Research-backed design (GARCH, STKDE, DTW methodologies)
 - ✅ Tunable parameters (can optimize via backtesting)
@@ -1557,15 +888,8 @@ def calculate_route_risk_and_confidence(route_location, route_type, current_weat
 - Requires comprehensive weather data (91% coverage achieved)
 - Computationally expensive for real-time queries (4,000 calculations per route)
 - Assumes historical patterns predict future risk (not guaranteed)
-- Cannot account for route-specific changes (new bolts, rockfall cleaning)
+- Cannot necessarily account for route-specific changes (new bolts, rockfall cleaning)
 - Limited by accident reporting bias (minor injuries underreported)
-
-**Mitigation strategies**:
-- Pre-compute risk scores for known routes (cache results)
-- Use spatial indexing (PostGIS GIST) to pre-filter accidents
-- Display confidence prominently to communicate uncertainty
-- Update risk scores when conditions change significantly
-- Supplement with real-time avalanche forecasts, weather alerts
 
 ### Expected Performance
 
@@ -1578,22 +902,11 @@ Time: June 15, 2026 (summer)
 Processing:
 1. Fetch accidents within 200km: ~150 accidents (PostGIS index: <50ms)
 2. Calculate 150 influence scores: ~200ms
-3. Calculate confidence metrics: ~50ms
-4. Sort and format response: ~20ms
+3. Sort and format response: ~20ms
 
 Total: ~320ms response time
 ```
 
-**Optimization opportunities**:
+**Optimization**:
 - Cache weather statistics (location + season) - saves 50ms
-- Pre-compute for popular routes - serves from cache
-- Parallel processing of accident influences - reduces to 100ms
-
----
-
-*This is a living document. Update as design decisions are made or implementation reveals new insights.*
-
-**Design Phase Complete**: 2026-01-28
-**Implementation Complete**: 2026-01-30
-**Testing Complete**: 2026-01-30 (50/50 tests passing, 100%)
-**Last Updated**: 2026-02-06
+- Pre-compute daily & cache
