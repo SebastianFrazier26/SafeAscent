@@ -1701,12 +1701,36 @@ async def trigger_cache_population(
     from app.tasks.safety_computation_optimized import (
         compute_daily_safety_scores_optimized,
     )
+    from app.celery_app import celery_app
 
     logger.info("=" * 60)
     logger.info("MANUAL CACHE POPULATION TRIGGERED VIA API")
     logger.info("=" * 60)
 
     try:
+        # Refuse duplicate manual triggers while optimized computation is active
+        inspect = celery_app.control.inspect()
+        active_workers = inspect.active() or {}
+        optimized_task_name = (
+            "app.tasks.safety_computation_optimized.compute_daily_safety_scores_optimized"
+        )
+        active_optimized_task_ids = []
+        for worker_tasks in active_workers.values():
+            for task in worker_tasks or []:
+                if task.get("name") == optimized_task_name:
+                    active_optimized_task_ids.append(task.get("id"))
+
+        if active_optimized_task_ids:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "status": "already_running",
+                    "message": "Optimized cache population already active; refusing duplicate trigger.",
+                    "active_count": len(active_optimized_task_ids),
+                    "active_task_ids": active_optimized_task_ids[:10],
+                },
+            )
+
         # Use optimized location-level computation (3-day window: today + 2)
         # target_date parameter is ignored - optimized task computes configured range
         logger.info("Triggering OPTIMIZED Celery task (location-level computation)...")
