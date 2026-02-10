@@ -77,6 +77,17 @@ function App() {
             <Typography variant="caption" sx={{ color: 'primary.50' }}>
               route safety predictions & weather reporting
             </Typography>
+            <Typography
+              variant="caption"
+              sx={{
+                display: 'block',
+                color: 'warning.light',
+                fontWeight: 700,
+                letterSpacing: 0.3,
+              }}
+            >
+              CHECK ROUTE PAGE FOR MOST UP-TO-DATE AND PRECISE INFORMATION
+            </Typography>
           </Box>
           <Box sx={{ display: { xs: 'none', md: 'flex' }, alignItems: 'center', gap: 2 }}>
             <Box
