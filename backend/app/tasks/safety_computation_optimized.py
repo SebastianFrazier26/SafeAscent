@@ -15,6 +15,7 @@ Architecture:
 This avoids redundant calculations when multiple routes share a location.
 """
 import asyncio
+import json
 import time
 import logging
 import uuid
@@ -57,6 +58,131 @@ DATE_RETRY_ATTEMPTS = 3
 DATE_RETRY_BACKOFF_SECONDS = 20
 CACHE_POPULATION_LOCK_KEY = "safety:cache_population:optimized:lock"
 CACHE_POPULATION_LOCK_TTL_SECONDS = 6 * 60 * 60  # 6 hours
+CACHE_POPULATION_STALE_AFTER_SECONDS = 30 * 60   # 30 minutes
+OPTIMIZED_TASK_NAME = "app.tasks.safety_computation_optimized.compute_daily_safety_scores_optimized"
+
+
+def _parse_lock_payload(raw_value: Optional[str]) -> Dict[str, Optional[object]]:
+    """Parse lock payload from Redis (supports legacy task_id:uuid format)."""
+    if not raw_value:
+        return {"task_id": None, "acquired_at": None}
+
+    try:
+        payload = json.loads(raw_value)
+        if isinstance(payload, dict):
+            acquired_at = payload.get("acquired_at")
+            if isinstance(acquired_at, (int, float)):
+                acquired_at = int(acquired_at)
+            else:
+                acquired_at = None
+            return {
+                "task_id": payload.get("task_id"),
+                "acquired_at": acquired_at,
+            }
+    except (TypeError, ValueError, json.JSONDecodeError):
+        pass
+
+    # Legacy payload format: "<task_id>:<uuid>"
+    # Keep compatibility so stale pre-patch locks can be recovered.
+    task_id = raw_value.split(":", 1)[0] if ":" in raw_value else None
+    return {"task_id": task_id, "acquired_at": None}
+
+
+def _get_active_optimized_task_ids() -> set[str]:
+    """Return active optimized task IDs currently executing in Celery workers."""
+    try:
+        inspect = celery_app.control.inspect(timeout=1)
+        active_workers = inspect.active() or {}
+    except Exception as exc:
+        logger.warning("Could not inspect Celery active tasks during lock check: %s", exc)
+        return set()
+
+    active_task_ids: set[str] = set()
+    for worker_tasks in active_workers.values():
+        for task in worker_tasks or []:
+            if task.get("name") == OPTIMIZED_TASK_NAME and task.get("id"):
+                active_task_ids.add(task["id"])
+    return active_task_ids
+
+
+def _delete_lock_if_unchanged(lock_value: str) -> bool:
+    """Delete lock only if Redis still contains the expected lock value."""
+    client = get_redis_client()
+    if client is None:
+        return False
+
+    try:
+        deleted = client.eval(
+            """
+            if redis.call('get', KEYS[1]) == ARGV[1] then
+                return redis.call('del', KEYS[1])
+            end
+            return 0
+            """,
+            1,
+            CACHE_POPULATION_LOCK_KEY,
+            lock_value,
+        )
+        return bool(deleted)
+    except Exception as exc:
+        logger.warning("Failed to conditionally clear optimized task lock: %s", exc)
+        return False
+
+
+def _try_recover_stale_lock(existing_lock_value: str) -> bool:
+    """Recover lock if owner is not active and lock appears stale/terminal."""
+    client = get_redis_client()
+    if client is None:
+        return False
+
+    payload = _parse_lock_payload(existing_lock_value)
+    owner_task_id = payload.get("task_id")
+    acquired_at = payload.get("acquired_at")
+    lock_ttl_seconds = client.ttl(CACHE_POPULATION_LOCK_KEY)
+    now_ts = int(time.time())
+
+    active_ids = _get_active_optimized_task_ids()
+    if owner_task_id and owner_task_id in active_ids:
+        return False
+    if not owner_task_id and active_ids:
+        return False
+
+    stale_reason = None
+
+    if owner_task_id:
+        try:
+            owner_state = str(celery_app.AsyncResult(owner_task_id).state or "").upper()
+        except Exception as exc:
+            logger.warning("Could not fetch owner task state (%s): %s", owner_task_id, exc)
+            owner_state = "UNKNOWN"
+
+        if owner_state in {"SUCCESS", "FAILURE", "REVOKED"}:
+            stale_reason = f"owner_task_terminal:{owner_state.lower()}"
+
+    if stale_reason is None:
+        lock_age = None
+        if isinstance(acquired_at, int):
+            lock_age = max(0, now_ts - acquired_at)
+        elif isinstance(lock_ttl_seconds, int) and lock_ttl_seconds >= 0:
+            # Infer age for legacy lock payloads from known initial TTL.
+            lock_age = max(0, CACHE_POPULATION_LOCK_TTL_SECONDS - lock_ttl_seconds)
+
+        if lock_age is not None and lock_age >= CACHE_POPULATION_STALE_AFTER_SECONDS:
+            stale_reason = f"lock_age:{lock_age}s"
+
+    if stale_reason is None:
+        return False
+
+    if _delete_lock_if_unchanged(existing_lock_value):
+        logger.warning(
+            "Recovered stale optimized cache lock (reason=%s, owner_task_id=%s, ttl=%s)",
+            stale_reason,
+            owner_task_id,
+            lock_ttl_seconds,
+        )
+        return True
+
+    return False
 
 
 def _acquire_population_lock(task_id: str) -> Tuple[bool, Optional[str]]:
@@ -66,7 +192,12 @@ def _acquire_population_lock(task_id: str) -> Tuple[bool, Optional[str]]:
         logger.warning("Redis unavailable; proceeding without optimized task lock")
         return True, None
 
-    token = f"{task_id}:{uuid.uuid4()}"
+    token_payload = {
+        "task_id": task_id,
+        "token": str(uuid.uuid4()),
+        "acquired_at": int(time.time()),
+    }
+    token = json.dumps(token_payload, separators=(",", ":"))
     acquired = client.set(
         CACHE_POPULATION_LOCK_KEY,
         token,
@@ -77,9 +208,24 @@ def _acquire_population_lock(task_id: str) -> Tuple[bool, Optional[str]]:
         return True, token
 
     existing = client.get(CACHE_POPULATION_LOCK_KEY)
+    if existing and _try_recover_stale_lock(existing):
+        reacquired = client.set(
+            CACHE_POPULATION_LOCK_KEY,
+            token,
+            nx=True,
+            ex=CACHE_POPULATION_LOCK_TTL_SECONDS,
+        )
+        if reacquired:
+            logger.warning("Re-acquired optimized cache lock after stale-lock recovery")
+            return True, token
+        existing = client.get(CACHE_POPULATION_LOCK_KEY)
+
+    existing_payload = _parse_lock_payload(existing)
+    existing_ttl = client.ttl(CACHE_POPULATION_LOCK_KEY)
     logger.warning(
-        "Optimized cache run already in progress (lock=%s, task_id=%s); skipping duplicate trigger",
-        existing,
+        "Optimized cache run already in progress (owner_task_id=%s, ttl=%s, task_id=%s); skipping duplicate trigger",
+        existing_payload.get("task_id"),
+        existing_ttl,
         task_id,
     )
     return False, None
@@ -763,13 +909,10 @@ def compute_daily_safety_scores_optimized():
     Uses location-level pre-computation for ~6× speedup.
     """
     import sys
-    print("=" * 60, flush=True)
-    print("OPTIMIZED TASK STARTING", flush=True)
-    print(f"Python: {sys.version}", flush=True)
-    print("=" * 60, flush=True)
 
     logger.warning("=" * 60)
     logger.warning("STARTING OPTIMIZED SAFETY SCORE COMPUTATION")
+    logger.warning(f"Python: {sys.version}")
     logger.warning(f"Settings: LOCATION_BATCH_SIZE={LOCATION_BATCH_SIZE}")
     logger.warning("=" * 60)
 

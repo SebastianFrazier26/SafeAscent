@@ -54,6 +54,8 @@ celery_app.conf.beat_schedule = {
     "compute-daily-safety-scores": {
         "task": "app.tasks.safety_computation_optimized.compute_daily_safety_scores_optimized",
         "schedule": crontab(minute=0, hour=2),  # 2:00 AM UTC daily
-        "options": {"expires": 14400},  # Task expires after 4 hours if not picked up
+        # Keep expiry beyond Redis visibility timeout (6h) so a redelivery after
+        # worker restart can still execute and finish the overnight run.
+        "options": {"expires": 28800},  # 8 hours
     },
 }
