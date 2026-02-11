@@ -28,19 +28,19 @@ from app.utils.cache import (
     build_weather_stats_key,
 )
 
+# Configure logging
+logger = logging.getLogger(__name__)
+
 # Open-Meteo API endpoint (commercial API if key provided, otherwise free)
 OPEN_METEO_API_KEY = os.getenv("OPEN_METEO_API_KEY")
 if OPEN_METEO_API_KEY:
     WEATHER_API_URL = "https://customer-api.open-meteo.com/v1/forecast"
     ARCHIVE_WEATHER_API_URL = "https://customer-archive-api.open-meteo.com/v1/archive"
-    print(f"[WeatherService] Using COMMERCIAL Open-Meteo API (key configured: {OPEN_METEO_API_KEY[:8]}...)")
+    logger.info("[WeatherService] Using commercial Open-Meteo API")
 else:
     WEATHER_API_URL = "https://api.open-meteo.com/v1/forecast"
     ARCHIVE_WEATHER_API_URL = "https://archive-api.open-meteo.com/v1/archive"
-    print("[WeatherService] WARNING: No API key - using FREE Open-Meteo API (rate limited!)")
-
-# Configure logging
-logger = logging.getLogger(__name__)
+    logger.warning("[WeatherService] No API key configured; using public Open-Meteo API")
 
 # Cache TTLs (Time To Live)
 WEATHER_PATTERN_TTL = 6 * 3600  # 6 hours (forecasts change slowly)
