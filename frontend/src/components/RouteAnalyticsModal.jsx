@@ -266,6 +266,7 @@ import {
   PieChart,
   Pie,
   Cell,
+  ReferenceLine,
 } from 'recharts';
 import { format } from 'date-fns';
 
@@ -514,10 +515,10 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
             break;
 
           case 4: // Risk Trends (Historical)
-            if (!data.historical) {
+            if (!data.historical || data.historical.reference_date !== selectedDate) {
               setLoading(prev => ({ ...prev, historical: true }));
               const response = await fetch(
-                `${API_BASE}/mp-routes/${routeData.route_id}/historical-trends?days=365`
+                `${API_BASE}/mp-routes/${routeData.route_id}/historical-trends?days=365&target_date=${encodeURIComponent(selectedDate)}`
               );
               if (!response.ok) throw new Error('Failed to fetch historical data');
               const historicalData = await response.json();
@@ -802,6 +803,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
             data={data.historical}
             loading={loading.historical}
             routeData={routeData}
+            selectedDate={selectedDate}
           />
         </TabPanel>
 
@@ -1424,6 +1426,10 @@ function RiskBreakdownTab({ data, loading, routeData }) {
   }
 
   const effectiveRiskScore = data.risk_score ?? routeData.risk_score ?? 0;
+  const extremeWeather = data.extreme_weather || null;
+  const triggeredFactors = (extremeWeather?.triggered_factors || []).map((factor) =>
+    factor.replace(/_/g, ' ')
+  );
 
   // Prepare data for pie chart showing factor contributions
   const factorData = data.factors?.map(factor => ({
@@ -1448,6 +1454,29 @@ function RiskBreakdownTab({ data, loading, routeData }) {
               weather patterns, and route characteristics. Below is a breakdown of factors that
               contributed to this score.
             </Typography>
+            {extremeWeather?.available ? (
+              <Alert
+                severity={extremeWeather.is_extreme ? 'error' : 'info'}
+                sx={{ mt: 2 }}
+              >
+                <Typography variant="body2" fontWeight={700}>
+                  {extremeWeather.is_extreme ? 'Extreme weather amplification active' : 'No extreme weather amplification detected'}
+                </Typography>
+                <Typography variant="body2">
+                  Weather component multiplier: x{Number(extremeWeather.multiplier || 1).toFixed(2)}
+                  {triggeredFactors.length > 0 ? ` | Triggered factors: ${triggeredFactors.join(', ')}` : ''}
+                </Typography>
+              </Alert>
+            ) : (
+              <Alert severity="info" sx={{ mt: 2 }}>
+                <Typography variant="body2" fontWeight={700}>
+                  Extreme-weather signal unavailable
+                </Typography>
+                <Typography variant="body2">
+                  Risk still includes weather similarity, but extreme/volatility amplification is excluded for this calculation.
+                </Typography>
+              </Alert>
+            )}
           </CardContent>
         </Card>
       </Grid>
@@ -1543,127 +1572,235 @@ function RiskBreakdownTab({ data, loading, routeData }) {
   );
 }
 
-function RiskTrendsTab({ data, loading, routeData: _routeData }) {
+function RiskTrendsTab({ data, loading, routeData: _routeData, selectedDate }) {
   if (loading) {
     return <LoadingState message="Loading risk trends..." />;
   }
 
   const daysOfData = data?.historical_predictions?.length || 0;
   const MIN_DAYS_REQUIRED = 30;
+  const hasRiskData = Boolean(data?.historical_predictions && daysOfData >= MIN_DAYS_REQUIRED);
+  const weatherVolatility = data?.weather_volatility;
+  const hasVolatilityData = Boolean(
+    weatherVolatility?.available &&
+    Array.isArray(weatherVolatility?.months) &&
+    weatherVolatility.months.length > 0
+  );
 
-  // Show "coming soon" if no data or less than 30 days
-  if (!data || !data.historical_predictions || daysOfData < MIN_DAYS_REQUIRED) {
+  if (!hasRiskData && !hasVolatilityData) {
     return (
       <DataOnTheWay
-        title="📈 Risk Trends Coming Soon!"
+        title="📈 Risk Scores Coming Soon!"
         message={daysOfData > 0
           ? `We're collecting historical data for this route. Currently tracking ${daysOfData} day${daysOfData === 1 ? '' : 's'} - need at least ${MIN_DAYS_REQUIRED} days for trend analysis. Check back soon!`
-          : "We're building up historical trends for this route. Our prediction models improve as we collect more data over time. Check back in a few weeks!"
+          : (weatherVolatility?.message || "We're building up historical trends for this route. Our prediction models improve as we collect more data over time. Check back in a few weeks!")
         }
       />
     );
   }
 
+  const monthlyVolatilityData = weatherVolatility?.months || [];
+  const currentValues = weatherVolatility?.current_values || {};
+  const factorCharts = [
+    {
+      title: 'Temperature Volatility by Month',
+      valueKey: 'temperature_std',
+      current: currentValues.temperature,
+      unit: '°C',
+      color: '#ef6c00',
+    },
+    {
+      title: 'Precipitation Volatility by Month',
+      valueKey: 'precipitation_std',
+      current: currentValues.precipitation,
+      unit: 'mm',
+      color: '#1565c0',
+    },
+    {
+      title: 'Wind Volatility by Month',
+      valueKey: 'wind_speed_std',
+      current: currentValues.wind_speed,
+      unit: 'm/s',
+      color: '#2e7d32',
+    },
+  ];
+
   return (
     <Grid container spacing={3}>
-      <Grid size={12}>
-        <Card>
-          <CardContent>
-            <Typography variant="h6" gutterBottom fontWeight={600}>
-              📈 Risk Score History
-            </Typography>
-            <Typography variant="body2" color="text.secondary" paragraph>
-              Historical risk scores based on actual weather conditions. Data is collected daily and stored for up to 1 year.
-            </Typography>
-            <ResponsiveContainer width="100%" height={350}>
-              <AreaChart data={data.historical_predictions}>
-                <defs>
-                  <linearGradient id="colorRisk" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#2196f3" stopOpacity={0.8} />
-                    <stop offset="95%" stopColor="#2196f3" stopOpacity={0.1} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis
-                  dataKey="date"
-                  tickFormatter={(date) => format(new Date(date), 'M/d')}
-                />
-                <YAxis domain={[0, 100]} />
-                <Tooltip
-                  labelFormatter={(date) => format(new Date(date), 'MMM d, yyyy')}
-                  formatter={(value) => [`${value}/100`, 'Risk Score']}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="risk_score"
-                  stroke="#2196f3"
-                  strokeWidth={2}
-                  fillOpacity={1}
-                  fill="url(#colorRisk)"
-                  name="Risk Score"
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-      </Grid>
+      {!hasRiskData && (
+        <Grid size={12}>
+          <DataOnTheWay
+            title="📈 Risk Scores Coming Soon!"
+            message={daysOfData > 0
+              ? `We're collecting historical risk scores for this route. Currently tracking ${daysOfData} day${daysOfData === 1 ? '' : 's'} - need at least ${MIN_DAYS_REQUIRED} days for trend analysis.`
+              : "Risk score trends are still being collected for this route. Weather volatility analytics are available below."}
+          />
+        </Grid>
+      )}
 
-      <Grid size={{ xs: 12, md: 6 }}>
-        <Card>
-          <CardContent>
-            <Typography variant="h6" gutterBottom fontWeight={600}>
-              📊 Summary Statistics
-            </Typography>
-            <Grid container spacing={2} sx={{ mt: 1 }}>
-              <Grid size={6}>
-                <Typography variant="body2" color="text.secondary">Average Risk</Typography>
-                <Typography variant="h5" fontWeight={600}>
-                  {data.summary?.avg_risk}/100
+      {hasRiskData && (
+        <>
+          <Grid size={12}>
+            <Card>
+              <CardContent>
+                <Typography variant="h6" gutterBottom fontWeight={600}>
+                  📈 Risk Score History
                 </Typography>
-              </Grid>
-              <Grid size={6}>
-                <Typography variant="body2" color="text.secondary">Peak Risk</Typography>
-                <Typography variant="h5" fontWeight={600}>
-                  {data.summary?.max_risk}/100
+                <Typography variant="body2" color="text.secondary" paragraph>
+                  Historical risk scores based on actual weather conditions. Data is collected daily and stored for up to 1 year.
                 </Typography>
-              </Grid>
-              <Grid size={6}>
-                <Typography variant="body2" color="text.secondary">Minimum Risk</Typography>
-                <Typography variant="h5" fontWeight={600}>
-                  {data.summary?.min_risk}/100
+                <ResponsiveContainer width="100%" height={350}>
+                  <AreaChart data={data.historical_predictions}>
+                    <defs>
+                      <linearGradient id="colorRisk" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#2196f3" stopOpacity={0.8} />
+                        <stop offset="95%" stopColor="#2196f3" stopOpacity={0.1} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis
+                      dataKey="date"
+                      tickFormatter={(date) => format(new Date(date), 'M/d')}
+                    />
+                    <YAxis domain={[0, 100]} />
+                    <Tooltip
+                      labelFormatter={(date) => format(new Date(date), 'MMM d, yyyy')}
+                      formatter={(value) => [`${value}/100`, 'Risk Score']}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="risk_score"
+                      stroke="#2196f3"
+                      strokeWidth={2}
+                      fillOpacity={1}
+                      fill="url(#colorRisk)"
+                      name="Risk Score"
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+          </Grid>
+
+          <Grid size={{ xs: 12, md: 6 }}>
+            <Card>
+              <CardContent>
+                <Typography variant="h6" gutterBottom fontWeight={600}>
+                  📊 Summary Statistics
                 </Typography>
-              </Grid>
-              <Grid size={6}>
-                <Typography variant="body2" color="text.secondary">Days Tracked</Typography>
-                <Typography variant="h5" fontWeight={600}>
-                  {data.historical_predictions?.length || 0}
+                <Grid container spacing={2} sx={{ mt: 1 }}>
+                  <Grid size={6}>
+                    <Typography variant="body2" color="text.secondary">Average Risk</Typography>
+                    <Typography variant="h5" fontWeight={600}>
+                      {data.summary?.avg_risk}/100
+                    </Typography>
+                  </Grid>
+                  <Grid size={6}>
+                    <Typography variant="body2" color="text.secondary">Peak Risk</Typography>
+                    <Typography variant="h5" fontWeight={600}>
+                      {data.summary?.max_risk}/100
+                    </Typography>
+                  </Grid>
+                  <Grid size={6}>
+                    <Typography variant="body2" color="text.secondary">Minimum Risk</Typography>
+                    <Typography variant="h5" fontWeight={600}>
+                      {data.summary?.min_risk}/100
+                    </Typography>
+                  </Grid>
+                  <Grid size={6}>
+                    <Typography variant="body2" color="text.secondary">Days Tracked</Typography>
+                    <Typography variant="h5" fontWeight={600}>
+                      {data.historical_predictions?.length || 0}
+                    </Typography>
+                  </Grid>
+                </Grid>
+              </CardContent>
+            </Card>
+          </Grid>
+
+          <Grid size={{ xs: 12, md: 6 }}>
+            <Card>
+              <CardContent>
+                <Typography variant="h6" gutterBottom fontWeight={600}>
+                  📉 Trend Analysis
                 </Typography>
-              </Grid>
+                <Typography variant="body2" color="text.secondary" paragraph>
+                  {data.trend?.direction === 'increasing' &&
+                    '⚠️ Risk has been trending upward over the past 30 days.'}
+                  {data.trend?.direction === 'decreasing' &&
+                    '✅ Risk has been trending downward over the past 30 days.'}
+                  {data.trend?.direction === 'stable' &&
+                    '➡️ Risk has remained relatively stable over the past 30 days.'}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {data.trend?.description || 'Trend analysis not available.'}
+                </Typography>
+              </CardContent>
+            </Card>
+          </Grid>
+        </>
+      )}
+
+      {hasVolatilityData ? (
+        <>
+          <Grid size={12}>
+            <Card>
+              <CardContent>
+                <Typography variant="h6" gutterBottom fontWeight={600}>
+                  🌦️ Weather Volatility by Month
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Month-level volatility is grouped across years (e.g., all January observations combined). The dashed line marks conditions for {format(new Date(selectedDate), 'MMM d, yyyy')}.
+                </Typography>
+              </CardContent>
+            </Card>
+          </Grid>
+          {factorCharts.map((factor) => (
+            <Grid key={factor.valueKey} size={{ xs: 12, md: 4 }}>
+              <Card>
+                <CardContent>
+                  <Typography variant="subtitle1" fontWeight={600} gutterBottom>
+                    {factor.title}
+                  </Typography>
+                  <ResponsiveContainer width="100%" height={260}>
+                    <BarChart data={monthlyVolatilityData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="month_label" />
+                      <YAxis />
+                      <Tooltip
+                        formatter={(value, name) => {
+                          if (name === 'std_dev') return [`${value ?? 'N/A'} ${factor.unit}`, 'Monthly volatility (std dev)'];
+                          return [`${value ?? 'N/A'} ${factor.unit}`, 'Current day value'];
+                        }}
+                      />
+                      <Bar dataKey={factor.valueKey} name="std_dev" fill={factor.color} radius={[4, 4, 0, 0]} />
+                      {typeof factor.current === 'number' && (
+                        <ReferenceLine
+                          y={factor.current}
+                          stroke="#d32f2f"
+                          strokeDasharray="6 6"
+                          label={{ value: `Current ${factor.current} ${factor.unit}`, fill: '#d32f2f', position: 'insideTopRight' }}
+                        />
+                      )}
+                    </BarChart>
+                  </ResponsiveContainer>
+                </CardContent>
+              </Card>
             </Grid>
-          </CardContent>
-        </Card>
-      </Grid>
-
-      <Grid size={{ xs: 12, md: 6 }}>
-        <Card>
-          <CardContent>
-            <Typography variant="h6" gutterBottom fontWeight={600}>
-              📉 Trend Analysis
+          ))}
+        </>
+      ) : (
+        <Grid size={12}>
+          <Alert severity="info">
+            <Typography variant="body2" fontWeight={600}>
+              Historical weather data unavailable right now.
             </Typography>
-            <Typography variant="body2" color="text.secondary" paragraph>
-              {data.trend?.direction === 'increasing' &&
-                '⚠️ Risk has been trending upward over the past 30 days.'}
-              {data.trend?.direction === 'decreasing' &&
-                '✅ Risk has been trending downward over the past 30 days.'}
-              {data.trend?.direction === 'stable' &&
-                '➡️ Risk has remained relatively stable over the past 30 days.'}
+            <Typography variant="body2">
+              {weatherVolatility?.message || 'Weather volatility analytics could not be loaded for this route and date.'}
             </Typography>
-            <Typography variant="body2" color="text.secondary">
-              {data.trend?.description || 'Trend analysis not available.'}
-            </Typography>
-          </CardContent>
-        </Card>
-      </Grid>
+          </Alert>
+        </Grid>
+      )}
     </Grid>
   );
 }

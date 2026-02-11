@@ -34,7 +34,13 @@ from app.utils.cache import (
     build_safety_score_key,
     get_bulk_cached_safety_scores,
 )
-from app.services.weather_service import WEATHER_API_URL, OPEN_METEO_API_KEY
+from app.services.weather_service import (
+    WEATHER_API_URL,
+    OPEN_METEO_API_KEY,
+    fetch_current_weather_pattern,
+    fetch_weather_statistics,
+)
+from app.utils.time_utils import get_season
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -1022,6 +1028,7 @@ async def get_risk_breakdown(
     )
 
     prediction = await predict_route_safety(prediction_request, db)
+    extreme_weather = prediction.metadata.get("extreme_weather", {})
 
     # Extract actual factor contributions from top contributing accidents
     spatial_weights = [acc.spatial_weight for acc in prediction.top_contributing_accidents[:10]]
@@ -1074,7 +1081,14 @@ async def get_risk_breakdown(
         factors.append({
             "name": "Weather Similarity",
             "contribution": round(avg_weather, 1),
-            "description": "Pattern matching between forecast and accident conditions"
+            "description": (
+                "Pattern matching between forecast and accident conditions"
+                + (
+                    f" (extreme weather amplification x{extreme_weather.get('multiplier', 1.0):.2f})"
+                    if extreme_weather.get("available")
+                    else " (extreme-weather signal unavailable)"
+                )
+            ),
         })
 
         factors.append({
@@ -1096,6 +1110,7 @@ async def get_risk_breakdown(
         "target_date": target_date.isoformat(),
         "risk_score": round(prediction.risk_score, 1),
         "num_contributing_accidents": prediction.num_contributing_accidents,
+        "extreme_weather": extreme_weather,
         "factors": factors,
         "top_accidents": [
             {
@@ -1428,6 +1443,7 @@ async def get_time_of_day_analysis(
 async def get_historical_trends(
     mp_route_id: int,
     days: int = Query(30, ge=1, le=365, description="Number of days of history to return"),
+    target_date: Optional[date] = Query(None, description="Reference date for weather volatility (YYYY-MM-DD)"),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -1435,13 +1451,75 @@ async def get_historical_trends(
 
     Requires historical_predictions table to be populated via backfill script.
     """
-    # Fetch route
-    route_query = select(MpRoute).where(MpRoute.mp_route_id == mp_route_id)
-    route_result = await db.execute(route_query)
-    route = route_result.scalar_one_or_none()
+    # Fetch route with inherited location coordinates
+    route = await get_route_with_location_coords(db, mp_route_id)
 
     if not route:
         raise HTTPException(status_code=404, detail="Route not found")
+
+    reference_date = target_date or date.today()
+    weather_volatility = {
+        "available": False,
+        "reference_date": reference_date.isoformat(),
+        "message": "Historical weather data unavailable right now.",
+    }
+
+    if route.latitude is not None and route.longitude is not None:
+        try:
+            season = get_season(reference_date)
+            weather_stats = await fetch_weather_statistics(
+                latitude=route.latitude,
+                longitude=route.longitude,
+                elevation_meters=3000.0,
+                season=season,
+                reference_date=reference_date,
+            )
+
+            if weather_stats and weather_stats.get("monthly_volatility"):
+                current_weather = fetch_current_weather_pattern(
+                    latitude=route.latitude,
+                    longitude=route.longitude,
+                    target_date=reference_date,
+                )
+                current_values = {
+                    "temperature": round(float(current_weather.temperature[-1]), 1)
+                    if current_weather and current_weather.temperature else None,
+                    "precipitation": round(float(current_weather.precipitation[-1]), 2)
+                    if current_weather and current_weather.precipitation else None,
+                    "wind_speed": round(float(current_weather.wind_speed[-1]), 2)
+                    if current_weather and current_weather.wind_speed else None,
+                }
+
+                months = []
+                for month in range(1, 13):
+                    temp = weather_stats["monthly_volatility"]["temperature"].get(str(month), {})
+                    precip = weather_stats["monthly_volatility"]["precipitation"].get(str(month), {})
+                    wind = weather_stats["monthly_volatility"]["wind_speed"].get(str(month), {})
+                    months.append({
+                        "month": month,
+                        "month_label": calendar.month_abbr[month],
+                        "temperature_mean": round(float(temp["mean"]), 2) if temp.get("mean") is not None else None,
+                        "temperature_std": round(float(temp["std_dev"]), 2) if temp.get("std_dev") is not None else None,
+                        "temperature_sample_count": temp.get("sample_count"),
+                        "precipitation_mean": round(float(precip["mean"]), 2) if precip.get("mean") is not None else None,
+                        "precipitation_std": round(float(precip["std_dev"]), 2) if precip.get("std_dev") is not None else None,
+                        "precipitation_sample_count": precip.get("sample_count"),
+                        "wind_speed_mean": round(float(wind["mean"]), 2) if wind.get("mean") is not None else None,
+                        "wind_speed_std": round(float(wind["std_dev"]), 2) if wind.get("std_dev") is not None else None,
+                        "wind_speed_sample_count": wind.get("sample_count"),
+                    })
+
+                weather_volatility = {
+                    "available": True,
+                    "reference_date": reference_date.isoformat(),
+                    "source": weather_stats.get("source"),
+                    "lookback_years": weather_stats.get("lookback_years"),
+                    "temporal_decay": weather_stats.get("temporal_decay"),
+                    "current_values": current_values,
+                    "months": months,
+                }
+        except Exception as weather_err:
+            logger.warning(f"Weather volatility data unavailable for route {mp_route_id}: {weather_err}")
 
     # Fetch historical predictions
     historical_query = text("""
@@ -1466,6 +1544,8 @@ async def get_historical_trends(
                 "historical_predictions": [],
                 "summary": None,
                 "trend": None,
+                "reference_date": reference_date.isoformat(),
+                "weather_volatility": weather_volatility,
                 "message": "Historical data not yet available. Run backfill script to collect historical predictions."
             }
 
@@ -1504,6 +1584,8 @@ async def get_historical_trends(
             "historical_predictions": predictions,
             "summary": summary,
             "trend": trend,
+            "reference_date": reference_date.isoformat(),
+            "weather_volatility": weather_volatility,
         }
 
     except Exception as e:
@@ -1514,6 +1596,8 @@ async def get_historical_trends(
             "historical_predictions": [],
             "summary": None,
             "trend": None,
+            "reference_date": reference_date.isoformat(),
+            "weather_volatility": weather_volatility,
             "error": "Historical predictions table may not exist. Run backfill script first."
         }
 

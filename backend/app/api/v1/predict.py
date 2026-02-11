@@ -25,7 +25,10 @@ from app.services.safety_algorithm import (
     AccidentData,
 )
 from app.services.safety_algorithm_vectorized import calculate_safety_score_vectorized
-from app.services.weather_similarity import WeatherPattern
+from app.services.weather_similarity import (
+    WeatherPattern,
+    calculate_extreme_weather_analysis,
+)
 from app.services.algorithm_config import MAX_SEARCH_RADIUS_KM, SPATIAL_BANDWIDTH
 from app.services.route_type_mapper import infer_route_type_from_accident
 from app.services.weather_service import (
@@ -245,7 +248,24 @@ async def predict_route_safety(
         elevation_meters=weather_stats_elevation,
         season=route_season,
         db=db,  # Pass the async session to avoid blocking
+        reference_date=request.planned_date,
     )
+
+    if current_weather is not None and historical_weather_stats is not None:
+        extreme_weather = calculate_extreme_weather_analysis(
+            current_pattern=current_weather,
+            historical_stats=historical_weather_stats,
+        )
+    else:
+        extreme_weather = {
+            "enabled": False,
+            "available": False,
+            "multiplier": 1.0,
+            "is_extreme": False,
+            "triggered_factors": [],
+            "factor_details": {},
+            "reason": "historical_weather_unavailable",
+        }
 
     # Step 6: Calculate safety prediction
     # Feature flag: Use vectorized algorithm if enabled (default: True)
@@ -303,6 +323,7 @@ async def predict_route_safety(
     # Add search radius to metadata
     metadata = prediction.metadata.copy()
     metadata["search_radius_km"] = search_radius_km
+    metadata["extreme_weather"] = extreme_weather
 
     response = PredictionResponse(
         risk_score=prediction.risk_score,

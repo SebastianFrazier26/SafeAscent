@@ -14,7 +14,7 @@ Six factors weighted equally:
 
 Mathematical basis: Pearson correlation + extreme weather amplification
 """
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Any
 
 from app.services.algorithm_config import (
     WEATHER_FACTOR_WEIGHTS,
@@ -222,8 +222,16 @@ def calculate_extreme_weather_multiplier(
     current_pattern: WeatherPattern,
     historical_stats: Dict[str, Tuple[float, float]],
 ) -> float:
+    """Backward-compatible multiplier wrapper around detailed analysis."""
+    return calculate_extreme_weather_analysis(current_pattern, historical_stats)["multiplier"]
+
+
+def calculate_extreme_weather_analysis(
+    current_pattern: WeatherPattern,
+    historical_stats: Optional[Dict[str, Tuple[float, float]]],
+) -> Dict[str, Any]:
     """
-    Calculate risk multiplier based on extreme weather conditions.
+    Analyze extreme weather contribution based on historical statistics.
 
     If current weather is >2.0 SD above mean, amplify risk proportionally.
 
@@ -232,23 +240,18 @@ def calculate_extreme_weather_multiplier(
         historical_stats: Dict of {factor: (mean, std)} for location/season
 
     Returns:
-        Multiplier >= 1.0 (1.0 = normal, >1.0 = extreme weather amplification)
-
-    Example:
-        >>> # Normal weather
-        >>> multiplier = calculate_extreme_weather_multiplier(
-        ...     pattern, {"wind_speed": (10.0, 5.0), ...}
-        ... )
-        >>> print(multiplier)
-        1.0  # No amplification
-
-        >>> # Extreme winds: current=30, mean=10, std=5 → 4.0 SD
-        >>> multiplier = calculate_extreme_weather_multiplier(
-        ...     extreme_pattern, {"wind_speed": (10.0, 5.0), ...}
-        ... )
-        >>> print(multiplier)
-        1.4  # 40% amplification (2.0 SD × 20% per SD)
+        Dictionary with multiplier and per-factor diagnostics.
     """
+    if not historical_stats:
+        return {
+            "enabled": False,
+            "available": False,
+            "multiplier": 1.0,
+            "is_extreme": False,
+            "triggered_factors": [],
+            "factor_details": {},
+        }
+
     multiplier = 1.0
 
     # Check each factor for extremes
@@ -259,34 +262,86 @@ def calculate_extreme_weather_multiplier(
         "visibility": mean(current_pattern.visibility),
     }
 
+    factor_details = {}
+    triggered_factors = []
+
     for factor, current_value in factors_to_check.items():
         if factor not in historical_stats:
             continue
 
-        mean_val, std_val = historical_stats[factor]
+        factor_stat = historical_stats.get(factor)
+        if not isinstance(factor_stat, (list, tuple)) or len(factor_stat) != 2:
+            continue
+
+        mean_val, std_val = factor_stat
+        factor_multiplier = 1.0
 
         # Skip if no variance
-        if std_val == 0:
+        if std_val in (None, 0):
+            factor_details[factor] = {
+                "current_value": current_value,
+                "mean": mean_val,
+                "std_dev": std_val,
+                "z_score": None,
+                "is_extreme": False,
+                "factor_multiplier": factor_multiplier,
+            }
             continue
 
         # Calculate z-score
         try:
             z = z_score(current_value, mean_val, std_val)
         except ValueError:
+            factor_details[factor] = {
+                "current_value": current_value,
+                "mean": mean_val,
+                "std_dev": std_val,
+                "z_score": None,
+                "is_extreme": False,
+                "factor_multiplier": factor_multiplier,
+            }
             continue
 
         # Check if extreme (beyond threshold)
+        is_extreme = False
+        sds_beyond = 0.0
+        penalty_per_sd = EXTREME_PENALTY_MULTIPLIERS.get(factor, 0.20)
         if abs(z) > EXTREME_WEATHER_SD_THRESHOLD:
+            is_extreme = True
             # Calculate how many SDs beyond threshold
             sds_beyond = abs(z) - EXTREME_WEATHER_SD_THRESHOLD
 
             # Get penalty multiplier for this factor
-            penalty_per_sd = EXTREME_PENALTY_MULTIPLIERS.get(factor, 0.20)
-
-            # Add to multiplier
+            factor_multiplier += sds_beyond * penalty_per_sd
             multiplier += sds_beyond * penalty_per_sd
+            triggered_factors.append(factor)
 
-    return multiplier
+        factor_details[factor] = {
+            "current_value": current_value,
+            "mean": mean_val,
+            "std_dev": std_val,
+            "z_score": z,
+            "is_extreme": is_extreme,
+            "sds_beyond_threshold": sds_beyond,
+            "penalty_per_sd": penalty_per_sd,
+            "factor_multiplier": factor_multiplier,
+        }
+
+    source = historical_stats.get("source") if isinstance(historical_stats, dict) else None
+    volatility = historical_stats.get("volatility") if isinstance(historical_stats, dict) else None
+    reference_month = historical_stats.get("reference_month") if isinstance(historical_stats, dict) else None
+
+    return {
+        "enabled": True,
+        "available": True,
+        "multiplier": multiplier,
+        "is_extreme": multiplier > 1.0,
+        "triggered_factors": triggered_factors,
+        "factor_details": factor_details,
+        "source": source,
+        "volatility": volatility,
+        "reference_month": reference_month,
+    }
 
 
 def calculate_weather_similarity_detailed(
