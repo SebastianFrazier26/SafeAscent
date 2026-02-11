@@ -59,6 +59,13 @@ TEMPORAL_LAMBDA = {
     "default": 0.9996,  # Default (~4.8 year half-life)
 }
 
+# Recency influence shaping
+# Keep recency as a modest factor: recent accidents stay near neutral weight,
+# while very old accidents still decay meaningfully.
+TEMPORAL_DECAY_IMPACT = 0.35      # Max penalty from recency aging (~35%)
+TEMPORAL_DECAY_SHAPE = 1.5        # >1 emphasizes penalties for very old accidents
+TEMPORAL_SEASONAL_IMPACT = 0.10   # Apply only 10% of configured seasonal boost
+
 # Seasonal boost multiplier
 # Applied when accident occurred in same season as current date
 SEASONAL_BOOST = 1.5  # 50% boost for same-season accidents

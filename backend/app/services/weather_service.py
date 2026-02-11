@@ -122,7 +122,7 @@ def _fetch_archive_weather_daily(
     Tries commercial archive endpoint first when API key is configured.
     Falls back to public archive endpoint if commercial archive is unavailable.
     """
-    params = {
+    base_params = {
         "latitude": latitude,
         "longitude": longitude,
         "start_date": start_date.isoformat(),
@@ -138,20 +138,28 @@ def _fetch_archive_weather_daily(
         "precipitation_unit": "mm",
         "timezone": "auto",
     }
+
+    archive_requests = []
+    public_archive_url = "https://archive-api.open-meteo.com/v1/archive"
+
     if OPEN_METEO_API_KEY:
-        params["apikey"] = OPEN_METEO_API_KEY
+        archive_requests.append((ARCHIVE_WEATHER_API_URL, True))
+        if ARCHIVE_WEATHER_API_URL != public_archive_url:
+            archive_requests.append((public_archive_url, False))
+    else:
+        archive_requests.append((ARCHIVE_WEATHER_API_URL, False))
 
-    archive_urls = [ARCHIVE_WEATHER_API_URL]
-    if ARCHIVE_WEATHER_API_URL != "https://archive-api.open-meteo.com/v1/archive":
-        archive_urls.append("https://archive-api.open-meteo.com/v1/archive")
-
-    for archive_url in archive_urls:
+    for archive_url, include_api_key in archive_requests:
+        request_params = dict(base_params)
+        if include_api_key and OPEN_METEO_API_KEY:
+            request_params["apikey"] = OPEN_METEO_API_KEY
         try:
-            response = requests.get(archive_url, params=params, timeout=15)
+            response = requests.get(archive_url, params=request_params, timeout=15)
             response.raise_for_status()
             payload = response.json()
             if "daily" in payload:
                 return payload
+            logger.warning(f"Archive weather payload missing daily data ({archive_url})")
         except requests.exceptions.RequestException as exc:
             logger.warning(f"Archive weather fetch failed ({archive_url}): {exc}")
         except ValueError as exc:

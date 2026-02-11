@@ -1,13 +1,17 @@
 # SafeAscent Safety Prediction Algorithm - Design Document
 
-**Status**: ✅ Implemented and Tested (50/50 tests passing)
-**Last Updated**: 2026-02-06
+**Status**: ✅ Implemented and Tested
+**Last Updated**: 2026-02-11
 **Author**: Sebastian Frazier
 
 > **Note**: This document captures design decisions. The algorithm is now fully implemented in `backend/app/services/`. Key tuning updates since design:
 > - Weather power: Uses **cubic (27×)** for strong weather influence
 > - Normalization factor: **7.0** (increased from 5.0) to surface moderate/high risk better
 > - Elevation decay constants: Doubled (2×) to reduce elevation's dominance vs weather/proximity
+> - Temporal influence: Recency is now **damped** (small overall impact), while very old accidents still decay
+> - Weather stats source: Pulled from **Open-Meteo archive API** (5-year lookback) with Redis caching; no persistent `weather_statistics` table required
+> - Archive fallback: Try commercial archive first; if unavailable/denied, retry public archive **without** API key
+> - Historical trends endpoint now bootstraps `historical_predictions` table if missing (avoids first-run error path)
 
 ---
 
@@ -125,7 +129,7 @@ SPATIAL_BANDWIDTH = {
 
 **Question**: How quickly should accidents fade in relevance over time?
 
-**Decision**: **Very slow, year-scale decay** with route-type-specific rates and seasonal boosting
+**Decision**: **Very slow, year-scale decay** with route-type-specific rates, but with **damped overall temporal impact** and mild seasonal scaling
 
 **Rationale**:
 Climbing safety is fundamentally different from financial volatility:
@@ -139,11 +143,16 @@ Climbing safety is fundamentally different from financial volatility:
 
 **Formula**:
 ```python
-temporal_weight = (lambda_by_route_type ** days_elapsed) × seasonal_boost
+base_decay = lambda_by_route_type ** days_elapsed
+base_temporal = 1.0 - TEMPORAL_DECAY_IMPACT * (1.0 - (base_decay ** TEMPORAL_DECAY_SHAPE))
+seasonal_multiplier = 1.0 + ((SEASONAL_BOOST - 1.0) * TEMPORAL_SEASONAL_IMPACT) if same_season else 1.0
+temporal_weight = base_temporal * seasonal_multiplier
 
 where:
   days_elapsed = (current_date - accident_date).days
-  seasonal_boost = 1.5 if same_season else 1.0
+  TEMPORAL_DECAY_IMPACT = 0.35
+  TEMPORAL_DECAY_SHAPE = 1.5
+  TEMPORAL_SEASONAL_IMPACT = 0.10
 ```
 
 **Parameters by Route Type**:
@@ -169,20 +178,26 @@ TEMPORAL_LAMBDA = {
 
     "default": 0.9996,  # Default (~4.8 year half-life)
 }
+
+# Additional temporal shaping parameters
+TEMPORAL_DECAY_IMPACT = 0.35      # Max recency-driven penalty (~35%)
+TEMPORAL_DECAY_SHAPE = 1.5        # >1 penalizes very old accidents more than recent ones
+TEMPORAL_SEASONAL_IMPACT = 0.10   # Only 10% of the configured seasonal boost is applied
 ```
 
-**Weight Examples (Alpine, λ=0.9998)**:
-- 1 year ago: weight = 0.93 (93%)
-- 3 years ago: weight = 0.80 (80%)
-- 5 years ago: weight = 0.70 (70%)
-- 10 years ago: weight = 0.49 (49%)
-- 10 years ago + same season: weight = 0.49 × 1.5 = 0.74 (74%)
+**Weight Examples (Alpine, λ=0.9998, damped model)**:
+- 1 year ago (different season): weight ≈ 0.96
+- 1 year ago (same season): weight ≈ 1.01
+- 3 years ago (different season): weight ≈ 0.90
+- 5 years ago (different season): weight ≈ 0.85
+- 10 years ago (different season): weight ≈ 0.77
+- 10 years ago (same season): weight ≈ 0.81
 
 **Seasonal Boost Logic**:
 ```python
-def calculate_seasonal_boost(accident_date, current_date):
+def calculate_seasonal_multiplier(accident_date, current_date):
     """
-    Boost weight if accident occurred in same season, even years ago.
+    Apply a mild seasonal multiplier if accident occurred in same season.
 
     Seasons (Northern Hemisphere):
     - Winter: Dec, Jan, Feb
@@ -190,15 +205,15 @@ def calculate_seasonal_boost(accident_date, current_date):
     - Summer: Jun, Jul, Aug
     - Fall: Sep, Oct, Nov
 
-    Returns: 1.5 (same season) or 1.0 (different season)
+    Returns: 1.05 (same season) or 1.0 (different season)
     """
     # Implementation in code
 ```
 
 **Effect of Seasonal Boost**:
-- A 10-year-old winter accident evaluated in winter gets weighted like a 3-year-old accident
+- A 10-year-old winter accident evaluated in winter gets a modest bump (about +5%)
 - A 5-year-old summer accident evaluated in winter gets no boost (different season)
-- This captures seasonal risk patterns that repeat year after year
+- This preserves seasonal signal without letting seasonality dominate total influence
 
 **Why route-type-specific decay**:
 - Alpine routes have stable objective hazards → slower decay
@@ -493,46 +508,21 @@ def calculate_weather_similarity(current_weather, accident_weather, location_sta
 
 ### Database Requirements
 
-**New table for historical weather statistics:**
+**Implementation update**: No persistent `weather_statistics` table is required.
 
-```sql
-CREATE TABLE weather_statistics (
-    stat_id SERIAL PRIMARY KEY,
-    latitude NUMERIC(8,2),    -- Rounded to ~1km precision (matches weather table)
-    longitude NUMERIC(8,2),
-    season VARCHAR(10),        -- 'winter', 'spring', 'summer', 'fall'
+Historical weather statistics are now derived directly from Open-Meteo archive data and cached in Redis.
 
-    -- Temperature statistics
-    temp_mean FLOAT,
-    temp_std FLOAT,
-    temp_min FLOAT,           -- Historical extremes
-    temp_max FLOAT,
+**Current weather stats pipeline**:
+1. Request 5 years of daily archive data for the route coordinates
+2. Compute weighted means/std dev using cyclical month distance decay
+3. Build month-grouped volatility aggregates (all Januaries together, etc.)
+4. Cache result in Redis (24h TTL) keyed by lat/lon/elevation/season/reference month
+5. Reuse cached stats for repeated route analytics/risk calls
 
-    -- Precipitation statistics
-    precip_mean FLOAT,
-    precip_std FLOAT,
-
-    -- Wind statistics
-    wind_mean FLOAT,
-    wind_std FLOAT,
-
-    -- Visibility statistics
-    vis_mean FLOAT,
-    vis_std FLOAT,
-
-    -- Cloud cover statistics
-    cloud_mean FLOAT,
-    cloud_std FLOAT,
-
-    -- Metadata
-    sample_size INT,          -- How many days used to compute these stats
-    last_updated DATE,        -- When statistics were last recomputed
-
-    UNIQUE(latitude, longitude, season)
-);
-
-CREATE INDEX idx_weather_stats_location ON weather_statistics(latitude, longitude);
-```
+**Archive API fallback behavior**:
+1. Try commercial archive endpoint with configured API key
+2. If commercial archive fails/unavailable, retry public archive endpoint
+3. Public fallback request is sent **without** `apikey` to avoid invalid-key rejection
 
 **Seasons definition (Northern Hemisphere):**
 - Winter: December, January, February
@@ -540,17 +530,10 @@ CREATE INDEX idx_weather_stats_location ON weather_statistics(latitude, longitud
 - Summer: June, July, August
 - Fall: September, October, November
 
-**Preprocessing pipeline:**
-1. Group all weather records by location (lat/lon rounded to 0.01°) and season
-2. Compute mean and standard deviation for each weather variable
-3. Store in `weather_statistics` table
-4. **Update frequency**: Yearly when new accident data is added
-5. Requires ~4,000 location-season combinations (441 mountains × 4 seasons, with some overlap)
-
-**Query optimization**:
-- When calculating risk for a route, lookup historical stats for that location+season once
-- Cache in memory during batch risk calculations
-- Pre-join weather_statistics with routes table for faster lookups
+**Historical risk trends storage**:
+- `historical_predictions` remains the persisted table for route risk-over-time snapshots
+- Overnight optimized task writes `today` scores to this table
+- Historical trends endpoint now ensures the table exists before querying (first-run-safe)
 
 ---
 
@@ -806,19 +789,20 @@ def calculate_route_risk(route_location, route_type, current_weather, current_da
         distance_km = haversine_distance(route_location, accident.coordinates)
         spatial_weight = exp(-distance_km² / (2 * spatial_bandwidth²))
 
-        # 3. Temporal weighting (year-scale decay with seasonal boost - Decision #4)
+        # 3. Temporal weighting (year-scale decay, damped impact, mild seasonality - Decision #4)
         days_elapsed = (current_date - accident.date).days
         lambda_decay = TEMPORAL_LAMBDA[route_type]  # 0.9998 alpine, 0.999 sport, etc.
-        temporal_weight = lambda_decay ** days_elapsed
+        base_decay = lambda_decay ** days_elapsed
+        temporal_weight = 1.0 - TEMPORAL_DECAY_IMPACT * (1.0 - (base_decay ** TEMPORAL_DECAY_SHAPE))
 
-        # Seasonal boost (1.5× if same season)
-        seasonal_boost = 1.5 if same_season(accident.date, current_date) else 1.0
-        temporal_weight *= seasonal_boost
+        # Mild seasonal multiplier (1.05× if same season)
+        seasonal_multiplier = 1.05 if same_season(accident.date, current_date) else 1.0
+        temporal_weight *= seasonal_multiplier
 
         # 4. Weather similarity (pattern correlation + extreme detection - Decision #5)
         accident_7day_weather = get_7day_weather(accident)
         current_7day_weather = current_weather  # Includes forecast
-        location_stats = get_weather_statistics(route_location, current_season)
+        location_stats = get_archive_weather_statistics(route_location, current_season)
 
         # Pattern correlation (equal weighting: temp, precip, wind, visibility, clouds, freeze-thaw)
         pattern_similarity = calculate_pattern_similarity(current_7day_weather, accident_7day_weather)
@@ -852,7 +836,7 @@ def calculate_route_risk(route_location, route_type, current_weather, current_da
         total_influence = (
             spatial_weight *
             temporal_weight *
-            weather_factor *  # Now quadratic
+            weather_factor *  # Cubic weather influence
             route_type_weight *
             severity_weight
         )

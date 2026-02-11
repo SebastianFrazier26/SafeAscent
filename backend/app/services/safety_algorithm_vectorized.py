@@ -23,6 +23,9 @@ from app.services.algorithm_config import (
     MAX_CONTRIBUTING_ACCIDENTS_UI,
     SPATIAL_BANDWIDTH,
     TEMPORAL_LAMBDA,
+    TEMPORAL_DECAY_IMPACT,
+    TEMPORAL_DECAY_SHAPE,
+    TEMPORAL_SEASONAL_IMPACT,
     SEASONAL_BOOST,
     ELEVATION_DECAY_CONSTANT,
     ELEVATION_BONUS_MAX,
@@ -130,19 +133,21 @@ def calculate_temporal_weights_vectorized(
     # Calculate days elapsed for each accident
     days_elapsed = np.array([(current_date - acc_date).days for acc_date in accident_dates])
 
-    # Exponential decay: lambda^days
-    base_weights = lambda_val ** days_elapsed
+    # Exponential decay baseline and damped temporal contribution
+    base_decay = lambda_val ** days_elapsed
+    base_weights = 1.0 - TEMPORAL_DECAY_IMPACT * (1.0 - np.power(base_decay, TEMPORAL_DECAY_SHAPE))
 
-    # Apply seasonal boost
+    # Apply mild seasonal boost
     current_month = current_date.month
     seasonal_boosts = np.ones(len(accident_dates))
+    seasonal_multiplier = 1.0 + ((SEASONAL_BOOST - 1.0) * TEMPORAL_SEASONAL_IMPACT)
 
     for i, acc_date in enumerate(accident_dates):
         acc_month = acc_date.month
         # Check if same season
         for season_months in SEASONS.values():
             if current_month in season_months and acc_month in season_months:
-                seasonal_boosts[i] = SEASONAL_BOOST
+                seasonal_boosts[i] = seasonal_multiplier
                 break
 
     weights = base_weights * seasonal_boosts

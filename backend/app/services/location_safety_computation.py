@@ -45,6 +45,9 @@ from app.services.algorithm_config import (
     DEFAULT_SEVERITY_WEIGHT,
     SPATIAL_BANDWIDTH,
     TEMPORAL_LAMBDA,
+    TEMPORAL_DECAY_IMPACT,
+    TEMPORAL_DECAY_SHAPE,
+    TEMPORAL_SEASONAL_IMPACT,
 )
 from app.services.grade_weighting import parse_grade
 
@@ -167,6 +170,7 @@ def compute_location_base_score(
 
     # Current season for seasonal boost
     current_season = get_season(target_date.month)
+    seasonal_multiplier = 1.0 + ((SEASONAL_BOOST - 1.0) * TEMPORAL_SEASONAL_IMPACT)
 
     # Weather parameters - cubic for stronger weather sensitivity
     WEATHER_POWER = 3
@@ -190,12 +194,13 @@ def compute_location_base_score(
             # Future accident (shouldn't happen, but handle gracefully)
             temporal_weight = 0.0
         else:
-            base_temporal = lambda_val ** days_elapsed
+            base_decay = lambda_val ** days_elapsed
+            base_temporal = 1.0 - TEMPORAL_DECAY_IMPACT * (1.0 - (base_decay ** TEMPORAL_DECAY_SHAPE))
 
             # Seasonal boost
             accident_season = get_season(accident["accident_date"].month)
             if accident_season == current_season:
-                temporal_weight = base_temporal * SEASONAL_BOOST
+                temporal_weight = base_temporal * seasonal_multiplier
             else:
                 temporal_weight = base_temporal
 
@@ -357,11 +362,13 @@ def compute_location_base_score_vectorized(
     # 4. VECTORIZED TEMPORAL WEIGHT
     days_elapsed = target_days - days_since_epoch
     days_elapsed = np.clip(days_elapsed, 0, None)  # No negative values
-    temporal_weights = lambda_val ** days_elapsed
+    base_decay = lambda_val ** days_elapsed
+    temporal_weights = 1.0 - TEMPORAL_DECAY_IMPACT * (1.0 - np.power(base_decay, TEMPORAL_DECAY_SHAPE))
 
     # Seasonal boost - apply average boost for speed (skip exact month matching)
-    # Average of 1.0 (different season) and 1.5 (same season) = 1.125
-    seasonal_boost = np.full(n, 1.125, dtype=np.float64)
+    # Assume ~25% of accidents are same-season in aggregate.
+    avg_seasonal_boost = 1.0 + ((SEASONAL_BOOST - 1.0) * TEMPORAL_SEASONAL_IMPACT * 0.25)
+    seasonal_boost = np.full(n, avg_seasonal_boost, dtype=np.float64)
 
     temporal_weights *= seasonal_boost
 
