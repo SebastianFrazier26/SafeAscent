@@ -33,6 +33,9 @@ class Settings(BaseSettings):
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
+    CACHE_REDIS_URL: str | None = None
+    CELERY_BROKER_URL: str | None = None
+    CELERY_RESULT_BACKEND: str | None = None
 
     # API
     API_V1_PREFIX: str = "/api/v1"
@@ -48,6 +51,21 @@ class Settings(BaseSettings):
         env_file=".env",
         case_sensitive=True,
     )
+
+    @property
+    def cache_redis_url(self) -> str:
+        """Redis URL for application cache operations."""
+        return self.CACHE_REDIS_URL or self.REDIS_URL
+
+    @property
+    def celery_broker_url(self) -> str:
+        """Redis URL for Celery broker."""
+        return self.CELERY_BROKER_URL or self.REDIS_URL
+
+    @property
+    def celery_result_backend(self) -> str:
+        """Redis URL for Celery result backend."""
+        return self.CELERY_RESULT_BACKEND or self.REDIS_URL
 
 
 # Global settings instance

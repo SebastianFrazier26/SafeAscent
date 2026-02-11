@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 _redis_client: Optional[redis.Redis] = None
 
 # Cache TTL constants
-SAFETY_SCORE_TTL = 7 * 24 * 60 * 60  # 7 days in seconds (we compute 7 days ahead)
+SAFETY_SCORE_TTL = 2 * 24 * 60 * 60  # 2 days in seconds
 WEATHER_PATTERN_TTL = 6 * 60 * 60    # 6 hours for weather data
 WEATHER_STATS_TTL = 24 * 60 * 60     # 24 hours for weather statistics
 
@@ -43,7 +43,7 @@ def get_redis_client() -> Optional[redis.Redis]:
             from app.config import settings
 
             # Parse Redis URL (supports both localhost and Railway format)
-            redis_url = settings.REDIS_URL
+            redis_url = settings.cache_redis_url
             parsed = urlparse(redis_url)
 
             _redis_client = redis.Redis(
@@ -57,7 +57,11 @@ def get_redis_client() -> Optional[redis.Redis]:
             )
             # Test connection
             _redis_client.ping()
-            logger.info(f"Redis connection established: {parsed.hostname}:{parsed.port}")
+            logger.info(
+                "Redis cache connection established: %s:%s",
+                parsed.hostname,
+                parsed.port,
+            )
         except (redis.ConnectionError, redis.TimeoutError) as e:
             logger.warning(f"Redis unavailable, caching disabled: {e}")
             _redis_client = None
@@ -468,3 +472,53 @@ def get_safety_cache_stats(target_date: str) -> Dict:
     except redis.RedisError as e:
         logger.error(f"Safety cache stats error: {e}")
         return {"status": "error", "error": str(e), "cached_count": 0}
+
+
+def clear_stale_safety_score_keys(keep_dates: List[str]) -> int:
+    """
+    Remove stale route safety keys while preserving selected date buckets.
+
+    This is intentionally targeted to `safety:route:*:date:*` keys and does
+    not flush Redis globally, so Celery broker/result data is untouched.
+
+    Args:
+        keep_dates: ISO date strings (YYYY-MM-DD) to retain
+
+    Returns:
+        Number of deleted safety keys
+    """
+    client = get_redis_client()
+    if client is None:
+        return 0
+
+    keep_date_set = set(keep_dates)
+    deleted = 0
+    batch: List[str] = []
+
+    try:
+        for key in client.scan_iter(match="safety:route:*:date:*", count=1000):
+            date_marker = ":date:"
+            if date_marker not in key:
+                continue
+
+            key_date = key.rsplit(date_marker, 1)[-1]
+            if key_date in keep_date_set:
+                continue
+
+            batch.append(key)
+            if len(batch) >= 1000:
+                deleted += int(client.delete(*batch))
+                batch.clear()
+
+        if batch:
+            deleted += int(client.delete(*batch))
+
+        logger.info(
+            "Safety cache cleanup complete: deleted=%s keep_dates=%s",
+            deleted,
+            sorted(keep_date_set),
+        )
+        return deleted
+    except redis.RedisError as e:
+        logger.error(f"Safety cache cleanup error: {e}")
+        return 0

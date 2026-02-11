@@ -1,6 +1,6 @@
 """
 Celery application configuration for background tasks.
-Uses Redis as both broker and result backend.
+Supports dedicated Redis endpoints for broker/result backend.
 """
 import logging
 
@@ -20,8 +20,8 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 # Create Celery app
 celery_app = Celery(
     "safeascent",
-    broker=settings.REDIS_URL,
-    backend=settings.REDIS_URL,
+    broker=settings.celery_broker_url,
+    backend=settings.celery_result_backend,
     include=[
         "app.tasks.safety_computation_optimized",  # Active location-level task
     ],

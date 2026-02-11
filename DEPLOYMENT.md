@@ -58,7 +58,10 @@
 
 **Key Environment Variables:**
 - `DATABASE_URL` - Neon PostgreSQL connection (postgresql+asyncpg://...)
-- `REDIS_URL` - Railway Redis internal URL
+- `REDIS_URL` - Fallback Redis URL (used if specific URLs below are unset)
+- `CACHE_REDIS_URL` - Redis URL for API/cache keys (recommended dedicated instance)
+- `CELERY_BROKER_URL` - Redis URL for Celery broker (recommended dedicated instance)
+- `CELERY_RESULT_BACKEND` - Redis URL for Celery task results
 - `CORS_ORIGINS` - Allowed frontend origins
 - `OPEN_METEO_API_KEY` - Commercial weather API key (optional)
 
@@ -74,7 +77,7 @@
 
 ### Cache (Railway Redis)
 - **Purpose:** Safety score caching, weather data caching
-- **TTL:** 7 days for bulk precomputed safety keys, 1 hour for on-demand single-route safety responses, 6 hours for weather patterns
+- **TTL:** 2 days for bulk precomputed safety keys, 1 hour for on-demand single-route safety responses, 6 hours for weather patterns
 - **Pattern:** `safety:route:{route_id}:date:{date}` for route safety scores
 
 ---
@@ -95,11 +98,12 @@
 ### Nightly Pre-computation (Celery Beat)
 ```
 1. 2:00 AM UTC: Celery Beat triggers compute task
-2. Backend computes location-level batch scores and fans out to routes
-3. Calculates safety scores for today + next 2 days
-4. Scores stored in Redis cache with 7-day TTL
-5. Scores also saved to historical_predictions table in Neon
-6. Runtime depends on worker resources and weather API responsiveness
+2. Task clears stale `safety:route:*` keys outside active computation dates (targeted cleanup only)
+3. Backend computes location-level batch scores and fans out to routes
+4. Calculates safety scores for today + next 2 days
+5. Scores stored in Redis cache with 2-day TTL
+6. Scores also saved to historical_predictions table in Neon
+7. Runtime depends on worker resources and weather API responsiveness
 ```
 
 ---
