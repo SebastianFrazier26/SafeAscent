@@ -2,16 +2,20 @@
 Temporal Weighting Module - SafeAscent Safety Algorithm
 
 Calculates temporal influence of accidents based on time elapsed.
-Uses year-scale exponential decay with seasonal boosting.
+Uses year-scale exponential decay with damped impact and mild seasonal boosting.
 
-Mathematical basis: EWMA (Exponentially Weighted Moving Average) from GARCH models
-Formula: weight = lambda^days × seasonal_boost
-where lambda is route-type-specific (alpine = 0.9998, sport = 0.999, etc.)
+Formula:
+  base_decay = lambda^days
+  base_weight = 1 - impact * (1 - base_decay^shape)
+  weight = base_weight * mild_seasonal_multiplier
 """
 from datetime import date
 
 from app.services.algorithm_config import (
     TEMPORAL_LAMBDA,
+    TEMPORAL_DECAY_IMPACT,
+    TEMPORAL_DECAY_SHAPE,
+    TEMPORAL_SEASONAL_IMPACT,
     SEASONAL_BOOST,
 )
 from app.utils.time_utils import days_between, is_same_season
@@ -44,12 +48,12 @@ def calculate_temporal_weight(
         >>> accident = date(2023, 7, 10)  # Summer, 1 year ago
         >>> weight = calculate_temporal_weight(current, accident, "alpine")
         >>> print(f"{weight:.3f}")
-        1.287  # High weight: recent + same season
+        1.0xx  # Near-neutral: recent + mild same-season boost
 
         >>> accident_winter = date(2023, 1, 10)  # Winter, 6 months earlier
         >>> weight = calculate_temporal_weight(current, accident_winter, "alpine")
         >>> print(f"{weight:.3f}")
-        0.917  # Lower: no seasonal boost
+        0.9xx  # Lower: no seasonal boost
     """
     # Calculate days elapsed
     days_elapsed = days_between(accident_date, current_date)
@@ -57,12 +61,18 @@ def calculate_temporal_weight(
     # Get route-type-specific lambda
     lambda_value = TEMPORAL_LAMBDA.get(route_type.lower(), TEMPORAL_LAMBDA["default"])
 
-    # Exponential decay: lambda^days
-    base_weight = lambda_value ** days_elapsed
+    # Exponential decay baseline
+    base_decay = lambda_value ** days_elapsed
+
+    # Re-center around neutral weight so recency stays a modest contributor:
+    # - recent accidents remain close to 1.0
+    # - very old accidents still decay meaningfully
+    base_weight = 1.0 - TEMPORAL_DECAY_IMPACT * (1.0 - (base_decay ** TEMPORAL_DECAY_SHAPE))
 
     # Apply seasonal boost if same season
     if apply_seasonal_boost and is_same_season(current_date, accident_date):
-        weight = base_weight * SEASONAL_BOOST
+        seasonal_multiplier = 1.0 + ((SEASONAL_BOOST - 1.0) * TEMPORAL_SEASONAL_IMPACT)
+        weight = base_weight * seasonal_multiplier
     else:
         weight = base_weight
 
@@ -88,7 +98,9 @@ def calculate_temporal_weight_detailed(
         Dictionary with keys:
         - 'days_elapsed': int
         - 'base_weight': float (before seasonal boost)
+        - 'base_decay': float (raw lambda^days decay)
         - 'seasonal_boost_applied': bool
+        - 'seasonal_multiplier': float
         - 'final_weight': float (after seasonal boost if applicable)
         - 'lambda_value': float
         - 'current_season': str
@@ -102,9 +114,9 @@ def calculate_temporal_weight_detailed(
         >>> print(result)
         {
             'days_elapsed': 370,
-            'base_weight': 0.858,
+            'base_weight': 0.96,
             'seasonal_boost_applied': True,
-            'final_weight': 1.287,
+            'final_weight': 1.01,
             'lambda_value': 0.9998,
             'current_season': 'summer',
             'accident_season': 'summer'
@@ -120,17 +132,25 @@ def calculate_temporal_weight_detailed(
     current_season = get_season(current_date)
     accident_season = get_season(accident_date)
 
-    # Calculate base weight
-    base_weight = lambda_value ** days_elapsed
+    # Calculate baseline decay and damped temporal effect
+    base_decay = lambda_value ** days_elapsed
+    base_weight = 1.0 - TEMPORAL_DECAY_IMPACT * (1.0 - (base_decay ** TEMPORAL_DECAY_SHAPE))
 
     # Check seasonal boost
     same_season = current_season == accident_season
-    final_weight = base_weight * SEASONAL_BOOST if same_season else base_weight
+    seasonal_multiplier = (
+        1.0 + ((SEASONAL_BOOST - 1.0) * TEMPORAL_SEASONAL_IMPACT)
+        if same_season
+        else 1.0
+    )
+    final_weight = base_weight * seasonal_multiplier
 
     return {
         "days_elapsed": days_elapsed,
         "base_weight": base_weight,
+        "base_decay": base_decay,
         "seasonal_boost_applied": same_season,
+        "seasonal_multiplier": seasonal_multiplier,
         "final_weight": final_weight,
         "lambda_value": lambda_value,
         "current_season": current_season,

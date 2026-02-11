@@ -17,18 +17,19 @@ from app.services.temporal_weighting import (
     get_temporal_lambda,
     get_temporal_half_life,
 )
+from app.services.algorithm_config import SEASONAL_BOOST, TEMPORAL_SEASONAL_IMPACT
 
 
 class TestCalculateTemporalWeight:
     """Tests for basic temporal weight calculation"""
 
     def test_same_date_returns_one(self):
-        """Same date should return weight of 1.0 (or 1.5 with seasonal boost)"""
+        """Same date should stay near neutral with mild seasonal boost."""
         current = date(2024, 7, 15)
         accident = date(2024, 7, 15)
         weight = calculate_temporal_weight(current, accident, "alpine")
-        # Same date, same season → 1.0 × 1.5 = 1.5
-        assert weight == pytest.approx(1.5, abs=0.01)
+        expected = 1.0 + ((SEASONAL_BOOST - 1.0) * TEMPORAL_SEASONAL_IMPACT)
+        assert weight == pytest.approx(expected, abs=0.01)
 
     def test_same_date_no_seasonal_boost(self):
         """Same date without seasonal boost should return 1.0"""
@@ -46,7 +47,7 @@ class TestCalculateTemporalWeight:
         weight = calculate_temporal_weight(current, accident, "alpine")
         # Should be high (>0.8) due to seasonal boost
         assert weight > 0.8
-        assert weight <= 1.5
+        assert weight <= 1.1
 
     def test_one_year_ago_different_season(self):
         """Accident 1 year ago, different season should have moderate weight"""
@@ -57,12 +58,11 @@ class TestCalculateTemporalWeight:
         assert 0.5 < weight < 1.0
 
     def test_very_old_accident_low_weight(self):
-        """Very old accident should have low weight"""
+        """Very old accident should decay, but remain a modest contributor."""
         current = date(2024, 7, 15)
         accident = date(2004, 7, 15)  # 20 years ago
         weight = calculate_temporal_weight(current, accident, "alpine")
-        # Should be very low but non-zero (alpine decays slowly)
-        assert 0.0 < weight < 0.5
+        assert 0.6 < weight < 0.8
 
     def test_alpine_slower_decay_than_sport(self):
         """Alpine should decay slower than sport climbing"""
@@ -80,7 +80,7 @@ class TestCalculateTemporalWeight:
         assert alpine_weight > sport_weight
 
     def test_seasonal_boost_applied_correctly(self):
-        """Seasonal boost should multiply weight by 1.5"""
+        """Seasonal boost should apply only a mild multiplier."""
         current = date(2024, 7, 15)  # Summer
         accident = date(2023, 7, 15)  # Summer
 
@@ -91,8 +91,8 @@ class TestCalculateTemporalWeight:
             current, accident, "alpine", apply_seasonal_boost=False
         )
 
-        # Should be exactly 1.5× difference
-        assert with_boost == pytest.approx(without_boost * 1.5, abs=0.01)
+        expected_multiplier = 1.0 + ((SEASONAL_BOOST - 1.0) * TEMPORAL_SEASONAL_IMPACT)
+        assert with_boost == pytest.approx(without_boost * expected_multiplier, abs=0.01)
 
     def test_default_route_type_handled(self):
         """Unknown route type should use default lambda"""
@@ -100,7 +100,7 @@ class TestCalculateTemporalWeight:
         accident = date(2023, 7, 15)
         weight = calculate_temporal_weight(current, accident, "unknown_type")
         # Should work without error
-        assert 0.0 < weight <= 1.5
+        assert 0.0 < weight <= 1.1
 
 
 class TestCalculateTemporalWeightDetailed:
@@ -180,10 +180,11 @@ class TestCalculateTemporalWeightDetailed:
         accident = date(2023, 7, 15)
         result = calculate_temporal_weight_detailed(current, accident, "alpine")
 
-        # If seasonal boost applied, final should be base × 1.5
+        expected_multiplier = 1.0 + ((SEASONAL_BOOST - 1.0) * TEMPORAL_SEASONAL_IMPACT)
+        # If seasonal boost applied, final should be base × mild seasonal multiplier
         if result["seasonal_boost_applied"]:
             assert result["final_weight"] == pytest.approx(
-                result["base_weight"] * 1.5, abs=0.001
+                result["base_weight"] * expected_multiplier, abs=0.001
             )
         else:
             assert result["final_weight"] == pytest.approx(
@@ -299,9 +300,8 @@ class TestEdgeCases:
         current = date(2024, 7, 15)
         accident = date(1900, 1, 1)  # 124 years ago
         weight = calculate_temporal_weight(current, accident, "alpine")
-        # Should be extremely close to 0 but not crash
-        assert weight >= 0.0
-        assert weight < 0.01
+        # Should decay to a bounded floor (small but non-zero overall influence)
+        assert 0.6 < weight < 0.7
 
     def test_empty_route_type_uses_default(self):
         """Empty string route type should use default"""
@@ -309,7 +309,7 @@ class TestEdgeCases:
         accident = date(2023, 7, 15)
         weight = calculate_temporal_weight(current, accident, "")
         # Should work without error
-        assert 0.0 < weight <= 1.5
+        assert 0.0 < weight <= 1.1
 
     def test_leap_year_handling(self):
         """Leap years should be handled correctly"""

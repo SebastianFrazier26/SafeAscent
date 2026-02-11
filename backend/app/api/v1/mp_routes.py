@@ -1521,6 +1521,26 @@ async def get_historical_trends(
         except Exception as weather_err:
             logger.warning(f"Weather volatility data unavailable for route {mp_route_id}: {weather_err}")
 
+    # Ensure historical table exists so first-run routes don't hard-error.
+    # If permissions prevent table creation, continue and let the normal
+    # query/error path report availability.
+    try:
+        await db.execute(text("""
+            CREATE TABLE IF NOT EXISTS historical_predictions (
+                id SERIAL PRIMARY KEY,
+                route_id INTEGER NOT NULL,
+                prediction_date DATE NOT NULL,
+                risk_score FLOAT,
+                color_code VARCHAR(20),
+                calculated_at TIMESTAMP DEFAULT NOW(),
+                UNIQUE(route_id, prediction_date)
+            )
+        """))
+        await db.commit()
+    except Exception as table_err:
+        await db.rollback()
+        logger.warning(f"Could not ensure historical_predictions table exists: {table_err}")
+
     # Fetch historical predictions
     historical_query = text("""
         SELECT

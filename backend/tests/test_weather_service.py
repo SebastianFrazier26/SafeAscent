@@ -181,6 +181,45 @@ class TestFetchWeatherStatistics:
         assert stats is None
 
     @pytest.mark.asyncio
+    @patch("app.services.weather_service.OPEN_METEO_API_KEY", "test_key")
+    @patch("app.services.weather_service.ARCHIVE_WEATHER_API_URL", "https://customer-archive-api.open-meteo.com/v1/archive")
+    @patch("app.services.weather_service.cache_get")
+    @patch("app.services.weather_service.cache_set")
+    @patch("app.services.weather_service.requests.get")
+    async def test_fetch_weather_statistics_public_fallback_drops_api_key(
+        self,
+        mock_get,
+        _mock_cache_set,
+        mock_cache_get,
+    ):
+        """If commercial archive fails, public fallback must be called without apikey."""
+        import requests
+
+        mock_cache_get.return_value = None
+
+        commercial_response = MagicMock()
+        commercial_response.raise_for_status.side_effect = requests.exceptions.HTTPError("400 invalid key")
+
+        public_response = MagicMock()
+        public_response.raise_for_status = MagicMock()
+        public_response.json.return_value = self._mock_archive_response(days=45)
+
+        mock_get.side_effect = [commercial_response, public_response]
+
+        stats = await fetch_weather_statistics(
+            latitude=40.3,
+            longitude=-105.7,
+            elevation_meters=2500.0,
+            season="winter",
+            reference_date=date(2025, 1, 15),
+        )
+
+        assert stats is not None
+        assert len(mock_get.call_args_list) == 2
+        assert mock_get.call_args_list[0].kwargs["params"].get("apikey") == "test_key"
+        assert "apikey" not in mock_get.call_args_list[1].kwargs["params"]
+
+    @pytest.mark.asyncio
     @patch("app.services.weather_service.requests.get")
     @patch("app.services.weather_service.cache_get")
     async def test_fetch_weather_statistics_cache_hit(self, mock_cache_get, mock_get):
