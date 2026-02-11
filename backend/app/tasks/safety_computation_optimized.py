@@ -42,7 +42,11 @@ from app.services.weather_similarity import (
     calculate_weather_similarity,
 )
 from app.services.route_type_mapper import infer_route_type_from_accident
-from app.utils.cache import get_redis_client, set_bulk_cached_safety_scores
+from app.utils.cache import (
+    clear_stale_safety_score_keys,
+    get_redis_client,
+    set_bulk_cached_safety_scores,
+)
 from app.models.weather import Weather
 
 # Note: SQLAlchemy/httpx loggers silenced in celery_app.py at worker startup
@@ -953,6 +957,9 @@ async def _compute_all_dates_async() -> Dict:
     today = date.today()
     logger.warning(f"Today: {today}, DAYS_TO_COMPUTE: {DAYS_TO_COMPUTE}")
     dates_to_compute = [today + timedelta(days=i) for i in range(DAYS_TO_COMPUTE)]
+    keep_dates = [d.isoformat() for d in dates_to_compute]
+    stale_deleted = clear_stale_safety_score_keys(keep_dates)
+    logger.info("Pre-run safety cache cleanup deleted %s stale keys", stale_deleted)
 
     all_stats = {
         "dates_computed": len(dates_to_compute),
@@ -961,6 +968,7 @@ async def _compute_all_dates_async() -> Dict:
         "total_time": 0,
         "failed_dates": [],
         "retry_attempts": {},
+        "stale_keys_deleted": stale_deleted,
     }
 
     for target_date in dates_to_compute:

@@ -36,7 +36,7 @@ For detailed algorithm documentation, see [ALGORITHM_DESIGN.md](./ALGORITHM_DESI
 ### Backend
 - **FastAPI** - Async Python API framework
 - **PostgreSQL** - Primary database with PostGIS
-- **Redis** - Caching (7-day TTL for safety scores, 6-hour for weather forecasts)
+- **Redis** - Caching (2-day TTL for nightly safety scores, 6-hour for weather forecasts)
 - **Open-Meteo** - Weather API (free, no key required)
 
 ### Frontend
