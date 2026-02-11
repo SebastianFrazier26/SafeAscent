@@ -10,3 +10,4 @@ dockerfilePath = "Dockerfile.worker"
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 10
 numReplicas = 1
+startCommand = "celery -A app.celery_app worker --beat --loglevel=info --concurrency=1"
