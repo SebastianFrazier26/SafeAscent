@@ -269,7 +269,7 @@ import {
   ReferenceLine,
   ReferenceDot,
 } from 'recharts';
-import { format } from 'date-fns';
+import { format, parseISO } from 'date-fns';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
 
@@ -847,6 +847,47 @@ const msToMph = (ms) => {
   return Math.round(ms * 2.237);
 };
 
+// Helper to convert Celsius to Fahrenheit without integer rounding (for chart math)
+const celsiusToFahrenheitPrecise = (celsius) => {
+  if (celsius === null || celsius === undefined || Number.isNaN(Number(celsius))) return null;
+  return (Number(celsius) * 9) / 5 + 32;
+};
+
+// Parse YYYY-MM-DD as local date to avoid timezone day-shift in UI labels.
+const parseDateForDisplay = (value) => {
+  if (!value) return null;
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+
+  if (typeof value === 'string') {
+    const dateOnlyMatch = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (dateOnlyMatch) {
+      const year = Number(dateOnlyMatch[1]);
+      const month = Number(dateOnlyMatch[2]);
+      const day = Number(dateOnlyMatch[3]);
+      return new Date(year, month - 1, day);
+    }
+
+    const parsedIso = parseISO(value);
+    if (!Number.isNaN(parsedIso.getTime())) {
+      return parsedIso;
+    }
+
+    const fallback = new Date(value);
+    if (!Number.isNaN(fallback.getTime())) {
+      return fallback;
+    }
+  }
+
+  return null;
+};
+
+const formatDateForDisplay = (value, pattern, fallback = 'N/A') => {
+  const parsed = parseDateForDisplay(value);
+  return parsed ? format(parsed, pattern) : fallback;
+};
+
 function ForecastTab({ data, loading, selectedDate: _selectedDate, routeData, routeDetails }) {
   if (loading) {
     return <LoadingState message="Loading forecast data..." />;
@@ -937,7 +978,7 @@ function ForecastTab({ data, loading, selectedDate: _selectedDate, routeData, ro
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis
                   dataKey="date"
-                  tickFormatter={(date) => format(new Date(date), 'EEE M/d')}
+                  tickFormatter={(date) => formatDateForDisplay(date, 'EEE M/d', String(date))}
                 />
                 <YAxis
                   domain={[
@@ -947,7 +988,7 @@ function ForecastTab({ data, loading, selectedDate: _selectedDate, routeData, ro
                   tickCount={6}
                 />
                 <Tooltip
-                  labelFormatter={(date) => format(new Date(date), 'EEEE, MMM d')}
+                  labelFormatter={(date) => formatDateForDisplay(date, 'EEEE, MMM d', String(date))}
                   formatter={(value) => [`${value}/100`, 'Risk Score']}
                 />
                 <Legend />
@@ -980,7 +1021,7 @@ function ForecastTab({ data, loading, selectedDate: _selectedDate, routeData, ro
                       primary={
                         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                           <Typography variant="body1" fontWeight={500}>
-                            {format(new Date(day.date), 'EEE M/d')}
+                            {formatDateForDisplay(day.date, 'EEE M/d', String(day.date))}
                           </Typography>
                           <Chip
                             size="small"
@@ -1203,7 +1244,7 @@ function AccidentsTab({ data, loading, routeData }) {
                   <Box sx={{ flex: 1 }}>
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mb: 1 }}>
                       <Typography variant="subtitle1" fontWeight={700} sx={{ color: 'text.primary' }}>
-                        📅 {accident.date ? format(new Date(accident.date), 'MMMM d, yyyy') : 'Date unknown'}
+                        📅 {accident.date ? formatDateForDisplay(accident.date, 'MMMM d, yyyy', 'Date unknown') : 'Date unknown'}
                       </Typography>
                       {accident.same_route && (
                         <Chip label="SAME ROUTE" size="small" color="error" sx={{ fontWeight: 600 }} />
@@ -1602,8 +1643,8 @@ function RiskTrendsTab({ data, loading, routeData: _routeData, selectedDate }) {
 
   const monthlyVolatilityData = weatherVolatility?.months || [];
   const currentValues = weatherVolatility?.current_values || {};
-  const parsedSelectedDate = new Date(`${selectedDate}T00:00:00`);
-  const selectedMonthNumber = Number.isNaN(parsedSelectedDate.getTime()) ? null : parsedSelectedDate.getMonth() + 1;
+  const parsedSelectedDate = parseDateForDisplay(selectedDate);
+  const selectedMonthNumber = parsedSelectedDate ? parsedSelectedDate.getMonth() + 1 : null;
 
   const factorCharts = [
     {
@@ -1611,8 +1652,11 @@ function RiskTrendsTab({ data, loading, routeData: _routeData, selectedDate }) {
       stdKey: 'temperature_std',
       meanKey: 'temperature_mean',
       current: currentValues.temperature,
-      unit: '°C',
+      unit: '°F',
       color: '#ef6c00',
+      transformMean: celsiusToFahrenheitPrecise,
+      transformStd: (value) => Number(value) * 1.8,
+      transformCurrent: celsiusToFahrenheitPrecise,
     },
     {
       title: 'Precipitation Volatility by Month',
@@ -1621,6 +1665,9 @@ function RiskTrendsTab({ data, loading, routeData: _routeData, selectedDate }) {
       current: currentValues.precipitation,
       unit: 'mm',
       color: '#1565c0',
+      transformMean: (value) => Number(value),
+      transformStd: (value) => Number(value),
+      transformCurrent: (value) => Number(value),
     },
     {
       title: 'Wind Volatility by Month',
@@ -1629,58 +1676,76 @@ function RiskTrendsTab({ data, loading, routeData: _routeData, selectedDate }) {
       current: currentValues.wind_speed,
       unit: 'm/s',
       color: '#2e7d32',
+      transformMean: (value) => Number(value),
+      transformStd: (value) => Number(value),
+      transformCurrent: (value) => Number(value),
     },
   ].map((factor) => {
+    const transformedCurrentRaw = typeof factor.current === 'number'
+      ? factor.transformCurrent(factor.current)
+      : null;
+    const transformedCurrent = Number.isFinite(transformedCurrentRaw) ? transformedCurrentRaw : null;
+
     const chartData = monthlyVolatilityData.map((monthData) => {
-      const stdRaw = Number(monthData[factor.stdKey]);
-      const meanRaw = Number(monthData[factor.meanKey]);
-      const std = Number.isFinite(stdRaw) ? stdRaw : null;
+      const stdSource = Number(monthData[factor.stdKey]);
+      const meanSource = Number(monthData[factor.meanKey]);
+
+      const meanRaw = Number.isFinite(meanSource) ? factor.transformMean(meanSource) : null;
+      const stdRaw = Number.isFinite(stdSource) ? factor.transformStd(stdSource) : null;
       const mean = Number.isFinite(meanRaw) ? meanRaw : null;
-      const deviation = (typeof factor.current === 'number' && mean !== null)
-        ? Math.abs(factor.current - mean)
-        : null;
-      const sigma = (std !== null && std > 0 && deviation !== null)
-        ? deviation / std
-        : null;
+      const std = Number.isFinite(stdRaw) ? stdRaw : null;
+
+      const oneSigmaLower = (mean !== null && std !== null) ? mean - std : null;
+      const oneSigmaUpper = (mean !== null && std !== null) ? mean + std : null;
+      const twoSigmaLower = (mean !== null && std !== null) ? mean - (2 * std) : null;
+      const twoSigmaUpper = (mean !== null && std !== null) ? mean + (2 * std) : null;
 
       return {
         ...monthData,
-        std,
         mean,
-        deviation,
-        sigma,
-        shade_base: std,
-        shade_1sigma: (sigma !== null && sigma >= 1) ? std : null,
-        shade_2sigma: (sigma !== null && sigma >= 2) ? std : null,
+        std,
+        one_sigma_lower: oneSigmaLower,
+        one_sigma_upper: oneSigmaUpper,
+        two_sigma_lower: twoSigmaLower,
+        two_sigma_upper: twoSigmaUpper,
+        inner_band_base: oneSigmaLower,
+        inner_band_range: (oneSigmaLower !== null && oneSigmaUpper !== null) ? oneSigmaUpper - oneSigmaLower : null,
+        outer_low_band_base: twoSigmaLower,
+        outer_low_band_range: (twoSigmaLower !== null && oneSigmaLower !== null) ? oneSigmaLower - twoSigmaLower : null,
+        outer_high_band_base: oneSigmaUpper,
+        outer_high_band_range: (oneSigmaUpper !== null && twoSigmaUpper !== null) ? twoSigmaUpper - oneSigmaUpper : null,
       };
     });
 
     const selectedMonthPoint = selectedMonthNumber !== null
       ? chartData.find((monthData) => monthData.month === selectedMonthNumber)
       : null;
+    const minBandValue = chartData.reduce((minValue, monthData) => (
+      monthData.two_sigma_lower !== null && monthData.two_sigma_lower < minValue ? monthData.two_sigma_lower : minValue
+    ), Number.POSITIVE_INFINITY);
+    const maxBandValue = chartData.reduce((maxValue, monthData) => (
+      monthData.two_sigma_upper !== null && monthData.two_sigma_upper > maxValue ? monthData.two_sigma_upper : maxValue
+    ), Number.NEGATIVE_INFINITY);
 
-    const markerValue = (selectedMonthPoint && Number.isFinite(selectedMonthPoint.deviation))
-      ? Number(selectedMonthPoint.deviation)
-      : null;
-    const markerSigma = (selectedMonthPoint && Number.isFinite(selectedMonthPoint.sigma))
-      ? Number(selectedMonthPoint.sigma)
-      : null;
+    const minWithCurrent = transformedCurrent !== null
+      ? Math.min(minBandValue, transformedCurrent)
+      : minBandValue;
+    const maxWithCurrent = transformedCurrent !== null
+      ? Math.max(maxBandValue, transformedCurrent)
+      : maxBandValue;
 
-    const maxStd = chartData.reduce((maxValue, monthData) => (
-      monthData.std !== null && monthData.std > maxValue ? monthData.std : maxValue
-    ), 0);
-    const maxDeviation = chartData.reduce((maxValue, monthData) => (
-      monthData.deviation !== null && monthData.deviation > maxValue ? monthData.deviation : maxValue
-    ), 0);
-    const yDomainMax = Math.max(maxStd, maxDeviation, 0.1) * 1.2;
+    const safeMin = Number.isFinite(minWithCurrent) ? minWithCurrent : 0;
+    const safeMax = Number.isFinite(maxWithCurrent) ? maxWithCurrent : 1;
+    const spread = Math.max(safeMax - safeMin, 1);
+    const padding = spread * 0.12;
 
     return {
       ...factor,
       chartData,
-      markerValue,
-      markerSigma,
+      markerValue: transformedCurrent,
       markerMonthLabel: selectedMonthPoint?.month_label ?? null,
-      yDomainMax: Number.isFinite(yDomainMax) ? yDomainMax : 1,
+      yDomainMin: safeMin - padding,
+      yDomainMax: safeMax + padding,
     };
   });
 
@@ -1719,11 +1784,11 @@ function RiskTrendsTab({ data, loading, routeData: _routeData, selectedDate }) {
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis
                       dataKey="date"
-                      tickFormatter={(date) => format(new Date(date), 'M/d')}
+                      tickFormatter={(date) => formatDateForDisplay(date, 'M/d', String(date))}
                     />
                     <YAxis domain={[0, 100]} />
                     <Tooltip
-                      labelFormatter={(date) => format(new Date(date), 'MMM d, yyyy')}
+                      labelFormatter={(date) => formatDateForDisplay(date, 'MMM d, yyyy', String(date))}
                       formatter={(value) => [`${value}/100`, 'Risk Score']}
                     />
                     <Area
@@ -1809,7 +1874,7 @@ function RiskTrendsTab({ data, loading, routeData: _routeData, selectedDate }) {
                   🌦️ Weather Volatility by Month
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
-                  Month-level volatility is grouped across years (e.g., all January observations combined). The line shows monthly volatility, shading darkens where current conditions are at least 1σ and 2σ away from each month mean, and the red marker shows selected-day deviation for {format(new Date(selectedDate), 'MMM d, yyyy')}.
+                  Month-level volatility is grouped across years (e.g., all January observations combined). The solid line is the monthly mean; shaded bands show ±1σ (lighter) and ±2σ (darker) around that mean; the red marker/line shows selected-day conditions for {formatDateForDisplay(selectedDate, 'MMM d, yyyy', selectedDate)}.
                 </Typography>
               </CardContent>
             </Card>
@@ -1825,48 +1890,89 @@ function RiskTrendsTab({ data, loading, routeData: _routeData, selectedDate }) {
                     <ComposedChart data={factor.chartData}>
                       <CartesianGrid strokeDasharray="3 3" />
                       <XAxis dataKey="month_label" />
-                      <YAxis domain={[0, factor.yDomainMax]} />
+                      <YAxis domain={[factor.yDomainMin, factor.yDomainMax]} />
                       <Tooltip
-                        formatter={(value, name) => {
-                          if (name === 'std') return [`${value ?? 'N/A'} ${factor.unit}`, 'Monthly volatility (std dev)'];
-                          if (name === 'mean') return [`${value ?? 'N/A'} ${factor.unit}`, 'Monthly mean'];
-                          if (name === 'deviation') return [`${value ?? 'N/A'} ${factor.unit}`, 'Selected-day deviation'];
-                          if (name === 'sigma') return [`${value ?? 'N/A'}σ`, 'Distance from monthly mean'];
-                          return [value, name];
+                        content={({ active, payload, label }) => {
+                          if (!active || !payload || payload.length === 0) return null;
+                          const point = payload[0].payload;
+
+                          const formatMetric = (value) => (
+                            Number.isFinite(value) ? `${Number(value).toFixed(2)} ${factor.unit}` : 'N/A'
+                          );
+
+                          return (
+                            <Paper sx={{ p: 1.25, border: '1px solid', borderColor: 'divider' }}>
+                              <Typography variant="caption" fontWeight={700} display="block">
+                                {label}
+                              </Typography>
+                              <Typography variant="caption" display="block">
+                                Mean: {formatMetric(point.mean)}
+                              </Typography>
+                              <Typography variant="caption" display="block">
+                                Std Dev: {formatMetric(point.std)}
+                              </Typography>
+                              <Typography variant="caption" display="block">
+                                Selected day: {formatMetric(factor.markerValue)}
+                              </Typography>
+                            </Paper>
+                          );
                         }}
                       />
                       <Area
                         type="monotone"
-                        dataKey="shade_base"
+                        dataKey="outer_low_band_base"
+                        stackId="outerLowBand"
+                        stroke="none"
+                        fill="transparent"
+                        isAnimationActive={false}
+                        connectNulls
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="outer_low_band_range"
+                        stackId="outerLowBand"
+                        stroke="none"
+                        fill={factor.color}
+                        fillOpacity={0.26}
+                        isAnimationActive={false}
+                        connectNulls
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="inner_band_base"
+                        stackId="innerBand"
+                        stroke="none"
+                        fill="transparent"
+                        isAnimationActive={false}
+                        connectNulls
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="inner_band_range"
+                        stackId="innerBand"
                         stroke="none"
                         fill={factor.color}
                         fillOpacity={0.14}
+                        isAnimationActive={false}
                         connectNulls
                       />
                       <Area
                         type="monotone"
-                        dataKey="shade_1sigma"
+                        dataKey="outer_high_band_base"
+                        stackId="outerHighBand"
                         stroke="none"
-                        fill={factor.color}
-                        fillOpacity={0.24}
+                        fill="transparent"
+                        isAnimationActive={false}
                         connectNulls
                       />
                       <Area
                         type="monotone"
-                        dataKey="shade_2sigma"
+                        dataKey="outer_high_band_range"
+                        stackId="outerHighBand"
                         stroke="none"
                         fill={factor.color}
-                        fillOpacity={0.34}
-                        connectNulls
-                      />
-                      <Line
-                        type="monotone"
-                        dataKey="std"
-                        name="std"
-                        stroke={factor.color}
-                        strokeWidth={3}
-                        dot={{ r: 2, fill: factor.color, stroke: factor.color }}
-                        activeDot={{ r: 5 }}
+                        fillOpacity={0.26}
+                        isAnimationActive={false}
                         connectNulls
                       />
                       <Line
@@ -1874,10 +1980,9 @@ function RiskTrendsTab({ data, loading, routeData: _routeData, selectedDate }) {
                         dataKey="mean"
                         name="mean"
                         stroke={factor.color}
-                        strokeWidth={1.5}
-                        strokeDasharray="5 5"
-                        dot={false}
-                        opacity={0.55}
+                        strokeWidth={3}
+                        dot={{ r: 2, fill: factor.color, stroke: factor.color }}
+                        activeDot={{ r: 5 }}
                         connectNulls
                       />
                       {typeof factor.markerValue === 'number' && (
@@ -1886,9 +1991,7 @@ function RiskTrendsTab({ data, loading, routeData: _routeData, selectedDate }) {
                           stroke="#d32f2f"
                           strokeDasharray="5 5"
                           label={{
-                            value: factor.markerSigma !== null
-                              ? `Current ${factor.markerValue.toFixed(2)} ${factor.unit} (${factor.markerSigma.toFixed(1)}σ)`
-                              : `Current ${factor.markerValue.toFixed(2)} ${factor.unit}`,
+                            value: `Current ${factor.markerValue.toFixed(2)} ${factor.unit}`,
                             fill: '#d32f2f',
                             position: 'insideTopRight',
                           }}
@@ -1961,7 +2064,7 @@ function TimeOfDayTab({ data, loading, routeData: _routeData, selectedDate }) {
         <Card elevation={3}>
           <CardContent>
             <Typography variant="h6" gutterBottom fontWeight={600}>
-              ⏰ Hourly Risk Score Analysis for {format(new Date(selectedDate), 'MMM d, yyyy')}
+              ⏰ Hourly Risk Score Analysis for {formatDateForDisplay(selectedDate, 'MMM d, yyyy', selectedDate)}
             </Typography>
             <Typography variant="body2" color="text.secondary" paragraph>
               Find the optimal climbing window by analyzing how conditions vary throughout the day.
