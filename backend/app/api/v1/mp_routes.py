@@ -1846,6 +1846,8 @@ async def trigger_cache_population(
             "estimated_time": "5-15 minutes",
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to trigger cache population: {e}", exc_info=True)
         raise HTTPException(
