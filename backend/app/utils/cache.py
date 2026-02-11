@@ -239,7 +239,8 @@ def build_weather_stats_key(
     latitude: float,
     longitude: float,
     elevation_meters: float,
-    season: str
+    season: str,
+    reference_month: Optional[int] = None,
 ) -> str:
     """
     Build cache key for weather statistics.
@@ -249,6 +250,7 @@ def build_weather_stats_key(
         longitude: Longitude (will be rounded to 1 decimal)
         elevation_meters: Elevation in meters (will be rounded to nearest 100m)
         season: Season name (winter, spring, summer, fall)
+        reference_month: Optional reference month (1-12) for cyclical temporal weighting
 
     Returns:
         Cache key string
@@ -256,7 +258,9 @@ def build_weather_stats_key(
     lat = round(latitude, 1)
     lon = round(longitude, 1)
     elev = round(elevation_meters / 100) * 100  # Round to nearest 100m
-    return f"weather:stats:{lat}:{lon}:{elev}:{season}"
+    if reference_month is None:
+        return f"weather:stats:{lat}:{lon}:{elev}:{season}"
+    return f"weather:stats:{lat}:{lon}:{elev}:{season}:m{int(reference_month)}"
 
 
 def build_safety_score_key(route_id: int, target_date: str) -> str:

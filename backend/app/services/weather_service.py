@@ -16,7 +16,8 @@ Caching (Phase 8):
 import os
 import requests
 from datetime import date, timedelta
-from typing import Optional, Dict, Any
+from math import exp, sqrt
+from typing import Optional, Dict, Any, List, Tuple
 import logging
 
 from app.services.weather_similarity import WeatherPattern
@@ -31,9 +32,11 @@ from app.utils.cache import (
 OPEN_METEO_API_KEY = os.getenv("OPEN_METEO_API_KEY")
 if OPEN_METEO_API_KEY:
     WEATHER_API_URL = "https://customer-api.open-meteo.com/v1/forecast"
+    ARCHIVE_WEATHER_API_URL = "https://customer-archive-api.open-meteo.com/v1/archive"
     print(f"[WeatherService] Using COMMERCIAL Open-Meteo API (key configured: {OPEN_METEO_API_KEY[:8]}...)")
 else:
     WEATHER_API_URL = "https://api.open-meteo.com/v1/forecast"
+    ARCHIVE_WEATHER_API_URL = "https://archive-api.open-meteo.com/v1/archive"
     print("[WeatherService] WARNING: No API key - using FREE Open-Meteo API (rate limited!)")
 
 # Configure logging
@@ -42,6 +45,9 @@ logger = logging.getLogger(__name__)
 # Cache TTLs (Time To Live)
 WEATHER_PATTERN_TTL = 6 * 3600  # 6 hours (forecasts change slowly)
 WEATHER_STATS_TTL = 24 * 3600  # 24 hours (historical data is static)
+WEATHER_STATS_LOOKBACK_YEARS = 5
+WEATHER_STATS_LOOKBACK_DAYS = WEATHER_STATS_LOOKBACK_YEARS * 365
+WEATHER_STATS_MONTH_DECAY = 2.0  # Lower = stronger emphasis on nearby months
 
 
 def _weather_pattern_to_dict(pattern: WeatherPattern) -> Dict[str, Any]:
@@ -82,6 +88,76 @@ def _dict_to_weather_pattern(data: Dict[str, Any]) -> WeatherPattern:
         cloud_cover=data["cloud_cover"],
         daily_temps=[tuple(t) for t in data["daily_temps"]],  # Convert lists back to tuples
     )
+
+
+def _month_distance(month_a: int, month_b: int) -> int:
+    """Cyclical month distance (e.g., Jan vs Dec = 1)."""
+    diff = abs(month_a - month_b)
+    return min(diff, 12 - diff)
+
+
+def _weighted_mean_and_std(values: List[float], weights: List[float]) -> Tuple[Optional[float], Optional[float]]:
+    """Compute weighted mean/std with population-style variance."""
+    if not values or not weights or len(values) != len(weights):
+        return None, None
+
+    total_weight = sum(weights)
+    if total_weight <= 0:
+        return None, None
+
+    weighted_mean = sum(v * w for v, w in zip(values, weights)) / total_weight
+    weighted_var = sum(w * ((v - weighted_mean) ** 2) for v, w in zip(values, weights)) / total_weight
+    return weighted_mean, sqrt(max(weighted_var, 0.0))
+
+
+def _fetch_archive_weather_daily(
+    latitude: float,
+    longitude: float,
+    start_date: date,
+    end_date: date,
+) -> Optional[Dict[str, Any]]:
+    """
+    Fetch historical daily weather from Open-Meteo archive API.
+
+    Tries commercial archive endpoint first when API key is configured.
+    Falls back to public archive endpoint if commercial archive is unavailable.
+    """
+    params = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "daily": [
+            "temperature_2m_mean",
+            "precipitation_sum",
+            "wind_speed_10m_max",
+            "cloud_cover_mean",
+        ],
+        "temperature_unit": "celsius",
+        "wind_speed_unit": "ms",
+        "precipitation_unit": "mm",
+        "timezone": "auto",
+    }
+    if OPEN_METEO_API_KEY:
+        params["apikey"] = OPEN_METEO_API_KEY
+
+    archive_urls = [ARCHIVE_WEATHER_API_URL]
+    if ARCHIVE_WEATHER_API_URL != "https://archive-api.open-meteo.com/v1/archive":
+        archive_urls.append("https://archive-api.open-meteo.com/v1/archive")
+
+    for archive_url in archive_urls:
+        try:
+            response = requests.get(archive_url, params=params, timeout=15)
+            response.raise_for_status()
+            payload = response.json()
+            if "daily" in payload:
+                return payload
+        except requests.exceptions.RequestException as exc:
+            logger.warning(f"Archive weather fetch failed ({archive_url}): {exc}")
+        except ValueError as exc:
+            logger.warning(f"Archive weather response parse failed ({archive_url}): {exc}")
+
+    return None
 
 
 def fetch_current_weather_pattern(
@@ -210,158 +286,185 @@ async def fetch_weather_statistics(
     elevation_meters: float,
     season: str,
     db=None,
+    reference_date: Optional[date] = None,
 ) -> Optional[dict]:
     """
-    Fetch historical weather statistics for a location/elevation/season (CACHED).
+    Fetch weather statistics from Open-Meteo archive (CACHED).
 
-    Queries the weather_statistics table computed in Phase 6.
+    This replaces DB-table dependence for extreme weather detection by deriving
+    statistics directly from multi-year daily weather at the route
+    location. A cyclical month-based temporal decay is applied so months closer
+    to the planned month contribute more to volatility estimates.
 
-    NOTE: If SKIP_WEATHER_STATISTICS env var is set, returns None immediately
-    to avoid database errors when the table doesn't exist.
-
-    **Caching**: Results cached for 24 hours (historical data is static).
-    Cache key: weather:stats:{lat}:{lon}:{elevation}:{season}
-
-    **IMPORTANT**: This is now an async function using SQLAlchemy to avoid
-    blocking the event loop under concurrent load.
+    If archive calls fail, returns None so extreme-weather amplification is
+    skipped safely.
 
     Args:
         latitude: Location latitude
         longitude: Location longitude
         elevation_meters: Elevation in meters
         season: Season name (winter, spring, summer, fall)
-        db: Optional database session (if not provided, creates one)
+        db: Unused; kept for backward compatibility
+        reference_date: Date used for cyclical month weighting (defaults to today)
 
     Returns:
-        Dictionary with statistical means/stds, or None if not found
+        Dictionary with weighted means/stds and volatility metadata, or None
+        if unavailable.
 
     Example:
-        >>> stats = await fetch_weather_statistics(40.25, -105.64, 4000, "summer", db)
+        >>> stats = await fetch_weather_statistics(40.25, -105.64, 4000, "summer")
         >>> print(f"Mean temp: {stats['temperature'][0]:.1f}°C")
-        Mean temp: 12.8°C
+        Mean temp: 11.3°C
     """
-    import os
-    # Skip if weather_statistics table doesn't exist (avoids DB errors)
     if os.getenv("SKIP_WEATHER_STATISTICS", "false").lower() == "true":
         return None
 
-    # Check cache first (sync operation, but fast)
-    cache_key = build_weather_stats_key(latitude, longitude, elevation_meters, season)
+    target_date = reference_date or date.today()
+    reference_month = target_date.month
+
+    cache_key = build_weather_stats_key(
+        latitude=latitude,
+        longitude=longitude,
+        elevation_meters=elevation_meters,
+        season=season,
+        reference_month=reference_month,
+    )
     cached = cache_get(cache_key)
     if cached:
-        logger.debug(f"Weather stats cache HIT for {latitude}, {longitude}, {elevation_meters}m, {season}")
+        logger.debug(
+            f"Weather stats cache HIT for {latitude}, {longitude}, {elevation_meters}m,"
+            f" {season}, month={reference_month}"
+        )
         return cached
 
-    logger.debug("Weather stats cache MISS, querying database")
+    logger.debug(
+        f"Weather stats cache MISS for {latitude}, {longitude}, {elevation_meters}m,"
+        f" {season}, month={reference_month}"
+    )
 
-    # Round lat/lon to 0.1° bucket
-    lat_bucket = round(latitude, 1)
-    lon_bucket = round(longitude, 1)
-
-    # Determine elevation band
-    elevation_bands = [
-        (0, 2438),
-        (2438, 3048),
-        (3048, 3658),
-        (3658, 4267),
-        (4267, 10000),
-    ]
-
-    elev_min, elev_max = None, None
-    for band_min, band_max in elevation_bands:
-        if band_min <= elevation_meters < band_max:
-            elev_min, elev_max = band_min, band_max
-            break
-
-    if elev_min is None:
-        logger.warning(f"Elevation {elevation_meters}m outside known bands")
-        return None
-
-    # Query database using async SQLAlchemy (non-blocking!)
     try:
-        from sqlalchemy import text
-        from app.db.session import AsyncSessionLocal
-
-        # Use provided session or create a new one
-        if db is not None:
-            # Use the provided session
-            result = await db.execute(
-                text("""
-                    SELECT
-                        temperature_mean, temperature_std,
-                        precipitation_mean, precipitation_std,
-                        wind_speed_mean, wind_speed_std,
-                        visibility_mean, visibility_std,
-                        sample_count
-                    FROM weather_statistics
-                    WHERE lat_bucket = :lat_bucket
-                      AND lon_bucket = :lon_bucket
-                      AND elevation_min_m = :elev_min
-                      AND elevation_max_m = :elev_max
-                      AND season = :season
-                    LIMIT 1;
-                """),
-                {
-                    "lat_bucket": lat_bucket,
-                    "lon_bucket": lon_bucket,
-                    "elev_min": elev_min,
-                    "elev_max": elev_max,
-                    "season": season,
-                }
+        window_end = target_date
+        window_start = window_end - timedelta(days=WEATHER_STATS_LOOKBACK_DAYS - 1)
+        archive_payload = _fetch_archive_weather_daily(
+            latitude=latitude,
+            longitude=longitude,
+            start_date=window_start,
+            end_date=window_end,
+        )
+        if archive_payload is None:
+            logger.warning(
+                f"No archive weather data for {latitude}, {longitude};"
+                " skipping extreme-weather amplification."
             )
-            row = result.fetchone()
-        else:
-            # Create a new session
-            async with AsyncSessionLocal() as session:
-                result = await session.execute(
-                    text("""
-                        SELECT
-                            temperature_mean, temperature_std,
-                            precipitation_mean, precipitation_std,
-                            wind_speed_mean, wind_speed_std,
-                            visibility_mean, visibility_std,
-                            sample_count
-                        FROM weather_statistics
-                        WHERE lat_bucket = :lat_bucket
-                          AND lon_bucket = :lon_bucket
-                          AND elevation_min_m = :elev_min
-                          AND elevation_max_m = :elev_max
-                          AND season = :season
-                        LIMIT 1;
-                    """),
-                    {
-                        "lat_bucket": lat_bucket,
-                        "lon_bucket": lon_bucket,
-                        "elev_min": elev_min,
-                        "elev_max": elev_max,
-                        "season": season,
-                    }
-                )
-                row = result.fetchone()
-
-        if row:
-            stats_dict = {
-                "temperature": (row[0], row[1]),
-                "precipitation": (row[2], row[3]),
-                "wind_speed": (row[4], row[5]),
-                "visibility": (row[6], row[7]),
-                "sample_count": row[8],
-            }
-            # Cache the result
-            cache_set(cache_key, stats_dict, ttl_seconds=WEATHER_STATS_TTL)
-            logger.debug("Weather stats cached for 24 hours")
-            return stats_dict
-        else:
-            logger.debug(f"No statistics found for bucket: {lat_bucket}, {lon_bucket}, {elev_min}-{elev_max}m, {season}")
             return None
 
-    except Exception as e:
-        logger.error(f"Failed to fetch weather statistics: {e}")
-        # CRITICAL: Rollback the transaction to clear the aborted state
-        # Otherwise all subsequent queries on this session will fail
-        if db is not None:
+        daily = archive_payload.get("daily", {})
+        time_values = daily.get("time", [])
+        if not time_values:
+            logger.warning("Archive weather response missing daily time series")
+            return None
+
+        months = []
+        for day_str in time_values:
             try:
-                await db.rollback()
-            except Exception:
-                pass  # Ignore rollback errors
+                months.append(int(str(day_str)[5:7]))
+            except (TypeError, ValueError):
+                months.append(reference_month)
+
+        base_weights = [
+            exp(-_month_distance(month, reference_month) / WEATHER_STATS_MONTH_DECAY)
+            for month in months
+        ]
+
+        factors = {
+            "temperature": daily.get("temperature_2m_mean", []),
+            "precipitation": daily.get("precipitation_sum", []),
+            "wind_speed": daily.get("wind_speed_10m_max", []),
+        }
+
+        weighted_stats: Dict[str, Tuple[float, float]] = {}
+        volatility: Dict[str, float] = {}
+        monthly_volatility: Dict[str, Dict[str, Dict[str, float]]] = {}
+        minimum_points_required = 30
+
+        for factor_name, series in factors.items():
+            grouped: Dict[int, List[float]] = {month: [] for month in range(1, 13)}
+            for value, month in zip(series, months):
+                if value is None:
+                    continue
+                try:
+                    grouped[month].append(float(value))
+                except (TypeError, ValueError):
+                    continue
+
+            monthly_volatility[factor_name] = {}
+            for month in range(1, 13):
+                month_values = grouped[month]
+                if len(month_values) < 2:
+                    monthly_volatility[factor_name][str(month)] = {
+                        "mean": None,
+                        "std_dev": None,
+                        "sample_count": len(month_values),
+                    }
+                    continue
+                month_mean, month_std = _weighted_mean_and_std(month_values, [1.0] * len(month_values))
+                monthly_volatility[factor_name][str(month)] = {
+                    "mean": month_mean,
+                    "std_dev": month_std,
+                    "sample_count": len(month_values),
+                }
+
+        for factor_name, series in factors.items():
+            values: List[float] = []
+            weights: List[float] = []
+            for value, weight in zip(series, base_weights):
+                if value is None:
+                    continue
+                try:
+                    values.append(float(value))
+                    weights.append(float(weight))
+                except (TypeError, ValueError):
+                    continue
+
+            if len(values) < minimum_points_required:
+                logger.warning(
+                    f"Insufficient archive samples for {factor_name}: {len(values)} "
+                    f"(required {minimum_points_required})"
+                )
+                return None
+
+            weighted_mean, weighted_std = _weighted_mean_and_std(values, weights)
+            if weighted_mean is None or weighted_std is None:
+                return None
+            weighted_stats[factor_name] = (weighted_mean, weighted_std)
+            volatility[factor_name] = weighted_std
+
+        sample_count = min(len(factors["temperature"]), len(factors["precipitation"]), len(factors["wind_speed"]))
+        stats_dict = {
+            "temperature": weighted_stats["temperature"],
+            "precipitation": weighted_stats["precipitation"],
+            "wind_speed": weighted_stats["wind_speed"],
+            "visibility": (10000.0, 0.0),  # Open-Meteo archive does not provide visibility
+            "sample_count": sample_count,
+            "source": "open_meteo_archive",
+            "season": season,
+            "reference_date": target_date.isoformat(),
+            "reference_month": reference_month,
+            "window_start": window_start.isoformat(),
+            "window_end": window_end.isoformat(),
+            "lookback_years": WEATHER_STATS_LOOKBACK_YEARS,
+            "lookback_days": WEATHER_STATS_LOOKBACK_DAYS,
+            "temporal_decay": {
+                "model": "cyclical_month_exponential",
+                "decay_constant_months": WEATHER_STATS_MONTH_DECAY,
+            },
+            "volatility": volatility,
+            "monthly_volatility": monthly_volatility,
+        }
+
+        cache_set(cache_key, stats_dict, ttl_seconds=WEATHER_STATS_TTL)
+        logger.debug("Weather stats cached for 24 hours")
+        return stats_dict
+    except Exception as exc:
+        logger.error(f"Failed to compute weather statistics from archive API: {exc}")
         return None
