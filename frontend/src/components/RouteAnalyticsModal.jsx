@@ -267,6 +267,7 @@ import {
   Pie,
   Cell,
   ReferenceLine,
+  ReferenceDot,
 } from 'recharts';
 import { format } from 'date-fns';
 
@@ -1601,29 +1602,87 @@ function RiskTrendsTab({ data, loading, routeData: _routeData, selectedDate }) {
 
   const monthlyVolatilityData = weatherVolatility?.months || [];
   const currentValues = weatherVolatility?.current_values || {};
+  const parsedSelectedDate = new Date(`${selectedDate}T00:00:00`);
+  const selectedMonthNumber = Number.isNaN(parsedSelectedDate.getTime()) ? null : parsedSelectedDate.getMonth() + 1;
+
   const factorCharts = [
     {
       title: 'Temperature Volatility by Month',
-      valueKey: 'temperature_std',
+      stdKey: 'temperature_std',
+      meanKey: 'temperature_mean',
       current: currentValues.temperature,
       unit: '°C',
       color: '#ef6c00',
     },
     {
       title: 'Precipitation Volatility by Month',
-      valueKey: 'precipitation_std',
+      stdKey: 'precipitation_std',
+      meanKey: 'precipitation_mean',
       current: currentValues.precipitation,
       unit: 'mm',
       color: '#1565c0',
     },
     {
       title: 'Wind Volatility by Month',
-      valueKey: 'wind_speed_std',
+      stdKey: 'wind_speed_std',
+      meanKey: 'wind_speed_mean',
       current: currentValues.wind_speed,
       unit: 'm/s',
       color: '#2e7d32',
     },
-  ];
+  ].map((factor) => {
+    const chartData = monthlyVolatilityData.map((monthData) => {
+      const stdRaw = Number(monthData[factor.stdKey]);
+      const meanRaw = Number(monthData[factor.meanKey]);
+      const std = Number.isFinite(stdRaw) ? stdRaw : null;
+      const mean = Number.isFinite(meanRaw) ? meanRaw : null;
+      const deviation = (typeof factor.current === 'number' && mean !== null)
+        ? Math.abs(factor.current - mean)
+        : null;
+      const sigma = (std !== null && std > 0 && deviation !== null)
+        ? deviation / std
+        : null;
+
+      return {
+        ...monthData,
+        std,
+        mean,
+        deviation,
+        sigma,
+        shade_base: std,
+        shade_1sigma: (sigma !== null && sigma >= 1) ? std : null,
+        shade_2sigma: (sigma !== null && sigma >= 2) ? std : null,
+      };
+    });
+
+    const selectedMonthPoint = selectedMonthNumber !== null
+      ? chartData.find((monthData) => monthData.month === selectedMonthNumber)
+      : null;
+
+    const markerValue = (selectedMonthPoint && Number.isFinite(selectedMonthPoint.deviation))
+      ? Number(selectedMonthPoint.deviation)
+      : null;
+    const markerSigma = (selectedMonthPoint && Number.isFinite(selectedMonthPoint.sigma))
+      ? Number(selectedMonthPoint.sigma)
+      : null;
+
+    const maxStd = chartData.reduce((maxValue, monthData) => (
+      monthData.std !== null && monthData.std > maxValue ? monthData.std : maxValue
+    ), 0);
+    const maxDeviation = chartData.reduce((maxValue, monthData) => (
+      monthData.deviation !== null && monthData.deviation > maxValue ? monthData.deviation : maxValue
+    ), 0);
+    const yDomainMax = Math.max(maxStd, maxDeviation, 0.1) * 1.2;
+
+    return {
+      ...factor,
+      chartData,
+      markerValue,
+      markerSigma,
+      markerMonthLabel: selectedMonthPoint?.month_label ?? null,
+      yDomainMax: Number.isFinite(yDomainMax) ? yDomainMax : 1,
+    };
+  });
 
   return (
     <Grid container spacing={3}>
@@ -1750,39 +1809,102 @@ function RiskTrendsTab({ data, loading, routeData: _routeData, selectedDate }) {
                   🌦️ Weather Volatility by Month
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
-                  Month-level volatility is grouped across years (e.g., all January observations combined). The dashed line marks conditions for {format(new Date(selectedDate), 'MMM d, yyyy')}.
+                  Month-level volatility is grouped across years (e.g., all January observations combined). The line shows monthly volatility, shading darkens where current conditions are at least 1σ and 2σ away from each month mean, and the red marker shows selected-day deviation for {format(new Date(selectedDate), 'MMM d, yyyy')}.
                 </Typography>
               </CardContent>
             </Card>
           </Grid>
           {factorCharts.map((factor) => (
-            <Grid key={factor.valueKey} size={{ xs: 12, md: 4 }}>
+            <Grid key={factor.stdKey} size={{ xs: 12, md: 4 }}>
               <Card>
                 <CardContent>
                   <Typography variant="subtitle1" fontWeight={600} gutterBottom>
                     {factor.title}
                   </Typography>
                   <ResponsiveContainer width="100%" height={260}>
-                    <BarChart data={monthlyVolatilityData}>
+                    <ComposedChart data={factor.chartData}>
                       <CartesianGrid strokeDasharray="3 3" />
                       <XAxis dataKey="month_label" />
-                      <YAxis />
+                      <YAxis domain={[0, factor.yDomainMax]} />
                       <Tooltip
                         formatter={(value, name) => {
-                          if (name === 'std_dev') return [`${value ?? 'N/A'} ${factor.unit}`, 'Monthly volatility (std dev)'];
-                          return [`${value ?? 'N/A'} ${factor.unit}`, 'Current day value'];
+                          if (name === 'std') return [`${value ?? 'N/A'} ${factor.unit}`, 'Monthly volatility (std dev)'];
+                          if (name === 'mean') return [`${value ?? 'N/A'} ${factor.unit}`, 'Monthly mean'];
+                          if (name === 'deviation') return [`${value ?? 'N/A'} ${factor.unit}`, 'Selected-day deviation'];
+                          if (name === 'sigma') return [`${value ?? 'N/A'}σ`, 'Distance from monthly mean'];
+                          return [value, name];
                         }}
                       />
-                      <Bar dataKey={factor.valueKey} name="std_dev" fill={factor.color} radius={[4, 4, 0, 0]} />
-                      {typeof factor.current === 'number' && (
+                      <Area
+                        type="monotone"
+                        dataKey="shade_base"
+                        stroke="none"
+                        fill={factor.color}
+                        fillOpacity={0.14}
+                        connectNulls
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="shade_1sigma"
+                        stroke="none"
+                        fill={factor.color}
+                        fillOpacity={0.24}
+                        connectNulls
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="shade_2sigma"
+                        stroke="none"
+                        fill={factor.color}
+                        fillOpacity={0.34}
+                        connectNulls
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="std"
+                        name="std"
+                        stroke={factor.color}
+                        strokeWidth={3}
+                        dot={{ r: 2, fill: factor.color, stroke: factor.color }}
+                        activeDot={{ r: 5 }}
+                        connectNulls
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="mean"
+                        name="mean"
+                        stroke={factor.color}
+                        strokeWidth={1.5}
+                        strokeDasharray="5 5"
+                        dot={false}
+                        opacity={0.55}
+                        connectNulls
+                      />
+                      {typeof factor.markerValue === 'number' && (
                         <ReferenceLine
-                          y={factor.current}
+                          y={factor.markerValue}
                           stroke="#d32f2f"
-                          strokeDasharray="6 6"
-                          label={{ value: `Current ${factor.current} ${factor.unit}`, fill: '#d32f2f', position: 'insideTopRight' }}
+                          strokeDasharray="5 5"
+                          label={{
+                            value: factor.markerSigma !== null
+                              ? `Current ${factor.markerValue.toFixed(2)} ${factor.unit} (${factor.markerSigma.toFixed(1)}σ)`
+                              : `Current ${factor.markerValue.toFixed(2)} ${factor.unit}`,
+                            fill: '#d32f2f',
+                            position: 'insideTopRight',
+                          }}
                         />
                       )}
-                    </BarChart>
+                      {typeof factor.markerValue === 'number' && factor.markerMonthLabel && (
+                        <ReferenceDot
+                          x={factor.markerMonthLabel}
+                          y={factor.markerValue}
+                          r={6}
+                          fill="#d32f2f"
+                          stroke="#ffffff"
+                          strokeWidth={2}
+                        />
+                      )}
+                    </ComposedChart>
                   </ResponsiveContainer>
                 </CardContent>
               </Card>
