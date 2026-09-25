@@ -66,8 +66,19 @@ jobs:
       - name: Run linting
         working-directory: backend
         run: |
-          pip install ruff
+          # Pinned to match backend/ruff.toml's rule set; unpinned installs have
+          # picked up hundreds of new findings across ruff releases.
+          pip install ruff==0.8.4
           ruff check app/
+
+      - name: Dependency audit
+        working-directory: backend
+        run: |
+          # Audits the environment installed above (with transitive deps already
+          # resolved) rather than `-r requirements.txt`, which re-resolves in an
+          # isolated venv and misses nothing but is slower and duplicates work.
+          pip install pip-audit
+          pip-audit
 
       - name: Run tests
         working-directory: backend
@@ -123,6 +134,10 @@ jobs:
       - name: Run linting
         working-directory: frontend
         run: npm run lint
+
+      - name: Dependency audit
+        working-directory: frontend
+        run: npm audit --omit=dev --audit-level=high
 
       - name: Run tests
         working-directory: frontend

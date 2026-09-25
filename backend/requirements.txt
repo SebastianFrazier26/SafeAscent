@@ -1,6 +1,6 @@
 # FastAPI and ASGI server
-fastapi==0.115.0
-uvicorn[standard]==0.32.0
+fastapi==0.141.1
+uvicorn[standard]==0.53.0
 
 # Database
 sqlalchemy==2.0.36
@@ -15,19 +15,19 @@ celery[redis]==5.4.0
 
 # HTTP client
 httpx==0.28.1
-requests==2.32.3
+requests==2.34.2
 
 # Scientific computing
 numpy==2.2.1
 
 # Configuration
-python-dotenv==1.0.1
-pydantic-settings==2.6.1
+python-dotenv==1.2.3
+pydantic-settings==2.15.0
 
 # Testing
-pytest==8.3.4
-pytest-asyncio==0.24.0
+pytest==9.1.1
+pytest-asyncio==1.4.0
 pytest-cov==7.0.0
 
 # CORS
-python-multipart==0.0.18
+python-multipart==0.0.32

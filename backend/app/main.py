@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.api.v1 import accidents, predict, locations, mp_routes
+from app.api.v1 import accidents, predict, locations, mp_routes, admin
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -55,6 +55,10 @@ app.include_router(mp_routes.router, prefix=settings.API_V1_PREFIX, tags=["route
 # Core endpoints
 app.include_router(accidents.router, prefix=settings.API_V1_PREFIX, tags=["accidents"])
 app.include_router(predict.router, prefix=settings.API_V1_PREFIX, tags=["predictions"])
+
+# Admin endpoints (queue/cache management) - not web-exposed unless explicitly enabled
+if settings.ENABLE_ADMIN_ROUTES:
+    app.include_router(admin.router, prefix=settings.API_V1_PREFIX, tags=["admin"])
 
 
 if __name__ == "__main__":

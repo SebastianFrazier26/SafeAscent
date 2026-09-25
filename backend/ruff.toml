@@ -1,0 +1,9 @@
+# Pins CI's ruff behavior explicitly. Before this file existed, `pip install ruff`
+# in CI floated to whatever latest was and picked up ~471 new errors; CI itself
+# is now pinned to ruff==0.8.4 (see .github/workflows/ci.yml), and this file
+# locks in the rule set ruff 0.8.4 already enforces by default so intent is
+# explicit rather than implicit in an unpinned tool version.
+target-version = "py312"
+
+[lint]
+select = ["E4", "E7", "E9", "F"]
