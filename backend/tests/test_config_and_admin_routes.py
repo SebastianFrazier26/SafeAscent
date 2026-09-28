@@ -40,7 +40,8 @@ def test_cors_origins_empty_string_is_empty_list(monkeypatch):
 
 def test_cors_origins_unset_uses_default(monkeypatch):
     monkeypatch.delenv("CORS_ORIGINS", raising=False)
-    assert Settings().CORS_ORIGINS == DEFAULT_CORS_ORIGINS
+    # A developer's backend/.env commonly sets CORS_ORIGINS; the default is what is under test.
+    assert Settings(_env_file=None).CORS_ORIGINS == DEFAULT_CORS_ORIGINS
 
 
 def test_cors_default_is_production_origins_only():
