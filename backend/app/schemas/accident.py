@@ -26,6 +26,7 @@ class AccidentBase(BaseModel):
     tags: Optional[str] = None
     mountain_id: Optional[int] = None
     route_id: Optional[int] = None
+    mp_route_id: Optional[int] = None
 
 
 class AccidentResponse(AccidentBase):

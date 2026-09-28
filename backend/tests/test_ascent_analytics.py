@@ -12,13 +12,19 @@ import asyncpg
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
+from httpx import ASGITransport, AsyncClient
+
 from app.api.v1.mp_routes import get_ascent_analytics
+from app.db.session import get_db
+from app.main import app
 from tests.test_migrations import ADMIN_URL, _alembic_cfg, _db_url, _execute
 
 pytestmark = pytest.mark.skipif(not ADMIN_URL, reason="MIGRATIONS_TEST_ADMIN_URL not set")
 
 ROUTE = 111
 OTHER_ROUTE = 222
+THIRD_ROUTE = 333
+FOURTH_ROUTE = 444
 
 # Accident 1 is the mislink the old join counted: legacy route_id collides with this
 # route's MP id while mp_route_id points at another route.
@@ -26,7 +32,9 @@ SEED_SQL = f"""
 INSERT INTO mp_locations (mp_id, name, latitude, longitude) VALUES (10, 'Fixture Crag', 40.0, -105.0);
 INSERT INTO mp_routes (mp_route_id, name, location_id, type) VALUES
     ({ROUTE}, 'Fixture Route', 10, 'Trad'),
-    ({OTHER_ROUTE}, 'Other Route', 10, 'Trad');
+    ({OTHER_ROUTE}, 'Other Route', 10, 'Trad'),
+    ({THIRD_ROUTE}, 'Third Route', 10, 'Trad'),
+    ({FOURTH_ROUTE}, 'Fourth Route', 10, 'Trad');
 INSERT INTO routes (route_id, name) VALUES ({ROUTE}, 'Legacy Route');
 INSERT INTO mp_ticks (tick_id, route_id, climber_name, tick_date) VALUES
     (1, '{ROUTE}', 'climber-a', '2025-01-04'),
@@ -37,7 +45,14 @@ INSERT INTO accidents (accident_id, date, route_id, mp_route_id) VALUES
     (1, '2020-01-05', {ROUTE}, {OTHER_ROUTE}),
     (2, '2019-07-10', NULL, {ROUTE}),
     (4, '2008-03-02', NULL, {ROUTE}),
+    (5, '3901-01-20', NULL, {ROUTE}),
     (3, NULL, NULL, {ROUTE});
+-- Nearby accidents for the route-accidents endpoint (Third Route, ~1 km away).
+INSERT INTO accidents (accident_id, date, route, mp_route_id, latitude, longitude) VALUES
+    (11, '2015-05-01', 'Unrelated Name', {THIRD_ROUTE}, 40.005, -105.0),
+    (12, '2016-05-01', 'Third Route Direct', {FOURTH_ROUTE}, 40.006, -105.0),
+    (13, '2017-05-01', 'Third Route', NULL, 40.007, -105.0),
+    (14, '3901-05-01', 'Third Route', {THIRD_ROUTE}, 40.008, -105.0);
 """
 
 
@@ -124,3 +139,64 @@ def test_year_span_is_null_when_a_side_is_empty(seeded_db):
     data = asyncio.run(_analytics(seeded_db, OTHER_ROUTE))
     assert data["accident_years"] == {"first": 2020, "last": 2020}
     assert data["ascent_years"] is None
+
+
+def test_future_dated_accidents_are_excluded_from_ascent_analytics(seeded_db):
+    data = asyncio.run(_analytics(seeded_db, ROUTE))
+
+    # Accident 5 (3901-01-20) would otherwise add to the total, January and the span.
+    assert data["total_accidents"] == 3
+    assert {m["month"]: m for m in data["monthly_stats"]}["Jan"]["accident_count"] == 0
+    assert data["accident_years"]["last"] == 2019
+
+
+async def _get(dbname: str, path: str, **params: Any) -> Any:
+    engine = create_async_engine(_db_url(dbname).replace("postgresql://", "postgresql+asyncpg://", 1))
+
+    async def override() -> Any:
+        async with AsyncSession(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_db] = override
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get(path, params=params)
+        assert response.status_code == 200, response.text
+        return response.json()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        await engine.dispose()
+
+
+@pytest.fixture
+def no_weather_calls(monkeypatch):
+    import requests
+
+    def refuse(*args: Any, **kwargs: Any) -> Any:
+        raise requests.ConnectionError("network disabled in tests")
+
+    monkeypatch.setattr(requests, "get", refuse)
+
+
+def test_same_route_is_fk_equality_not_name_matching(seeded_db, no_weather_calls):
+    data = asyncio.run(_get(seeded_db, f"/api/v1/mp-routes/{THIRD_ROUTE}/accidents"))
+
+    same = {a["accident_id"]: a["same_route"] for a in data["accidents"]}
+    assert same[11] is True  # FK match, unrelated name
+    assert same[12] is False  # similar name, different mp_route_id
+    assert same[13] is False  # exact name, NULL mp_route_id
+
+
+def test_route_accidents_exclude_future_dates(seeded_db, no_weather_calls):
+    data = asyncio.run(_get(seeded_db, f"/api/v1/mp-routes/{THIRD_ROUTE}/accidents"))
+
+    assert 14 not in {a["accident_id"] for a in data["accidents"]}
+
+
+def test_accident_list_filters_by_mp_route_id_not_legacy_route_id(seeded_db):
+    data = asyncio.run(_get(seeded_db, "/api/v1/accidents", mp_route_id=ROUTE))
+
+    ids = {a["accident_id"] for a in data["data"]}
+    assert 1 not in ids  # legacy route_id == ROUTE, mp_route_id elsewhere
+    assert {2, 3, 4} <= ids
+    assert all(a["mp_route_id"] == ROUTE for a in data["data"])

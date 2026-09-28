@@ -823,7 +823,7 @@ async def get_route_accidents(
 
     Returns accidents with:
     - impact_score: Relevance based on proximity (closer = higher score)
-    - same_route: True if accident occurred on the exact same route
+    - same_route: True only when accidents.mp_route_id is this route
     - weather: Historical weather conditions on accident date
     """
     import requests
@@ -846,6 +846,7 @@ async def get_route_accidents(
             accident_id, date, latitude, longitude, description,
             accident_type, injury_severity, location, route as route_name,
             source, state, mountain, activity, age_range, tags, elevation_meters,
+            mp_route_id,
             (
                 6371 * acos(
                     cos(radians(:lat)) * cos(radians(latitude)) *
@@ -855,6 +856,7 @@ async def get_route_accidents(
             ) as distance_km
         FROM accidents
         WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+          AND (date IS NULL OR date <= :today)
           AND (
               6371 * acos(
                   cos(radians(:lat)) * cos(radians(latitude)) *
@@ -868,7 +870,12 @@ async def get_route_accidents(
 
     accidents_result = await db.execute(
         accidents_query,
-        {"lat": route.latitude, "lon": route.longitude, "limit": limit}
+        {
+            "lat": route.latitude,
+            "lon": route.longitude,
+            "limit": limit,
+            "today": datetime.now(timezone.utc).date(),
+        }
     )
     accidents = accidents_result.fetchall()
 
@@ -877,25 +884,16 @@ async def get_route_accidents(
     for accident in accidents:
         (accident_id, acc_date, acc_lat, acc_lon, description, acc_type, severity,
          location, route_name, source, state, mountain, activity, age_range,
-         tags, elevation_m, distance_km) = accident
+         tags, elevation_m, acc_mp_route_id, distance_km) = accident
 
         # Calculate impact score based on proximity (closer = higher score)
         # Using exponential decay: 100 * e^(-distance/10)
         # At 0km = 100, at 10km ≈ 37, at 20km ≈ 14, at 50km ≈ 0.7
         impact_score = round(100 * math.exp(-distance_km / 10), 1)
 
-        # Check if accident occurred on the same route (fuzzy name matching)
-        same_route = False
-        if route_name and route.name:
-            # Normalize both names for comparison
-            route_name_lower = route_name.lower().strip()
-            current_route_lower = route.name.lower().strip()
-            # Check for exact match or if one contains the other
-            same_route = (
-                route_name_lower == current_route_lower or
-                route_name_lower in current_route_lower or
-                current_route_lower in route_name_lower
-            )
+        # FK equality only: name matching labelled nearby routes with similar names
+        # (e.g. "X" vs "X Direct") as this route.
+        same_route = acc_mp_route_id is not None and int(acc_mp_route_id) == mp_route_id
 
         # Fetch historical weather for accident date
         weather_data = None
@@ -1677,8 +1675,10 @@ async def get_ascent_analytics(
     # mp_ticks.route_id is text holding the MP route id.
     route_id_str = str(mp_route_id)
     # Some ticks carry impossible future dates (years up to 3901); they are data errors,
-    # not ascents. Undated ticks still count toward the total.
-    tick_params = {"route_id": route_id_str, "today": datetime.now(timezone.utc).date()}
+    # not ascents. Undated rows still count toward the totals. Accidents get the same cutoff.
+    today = datetime.now(timezone.utc).date()
+    tick_params = {"route_id": route_id_str, "today": today}
+    accident_params = {"mp_route_id": mp_route_id, "today": today}
     total_ascents_query = text("""
         SELECT COUNT(*) FROM mp_ticks
         WHERE route_id = :route_id
@@ -1707,8 +1707,9 @@ async def get_ascent_analytics(
         SELECT COUNT(*)
         FROM accidents
         WHERE mp_route_id = :mp_route_id
+          AND (date IS NULL OR date <= :today)
     """)
-    accident_result = await db.execute(accident_count_query, {"mp_route_id": mp_route_id})
+    accident_result = await db.execute(accident_count_query, accident_params)
     total_accidents = accident_result.scalar() or 0
 
     monthly_accidents_query = text("""
@@ -1718,10 +1719,11 @@ async def get_ascent_analytics(
         FROM accidents
         WHERE mp_route_id = :mp_route_id
           AND date IS NOT NULL
+          AND date <= :today
         GROUP BY EXTRACT(MONTH FROM date)
         ORDER BY month
     """)
-    monthly_acc_result = await db.execute(monthly_accidents_query, {"mp_route_id": mp_route_id})
+    monthly_acc_result = await db.execute(monthly_accidents_query, accident_params)
     monthly_accident_dict = {int(row[0]): int(row[1]) for row in monthly_acc_result.fetchall()}
 
     # The two sides cover very different spans (accidents back decades, ticks a few
@@ -1740,10 +1742,9 @@ async def get_ascent_analytics(
         FROM accidents
         WHERE mp_route_id = :mp_route_id
           AND date IS NOT NULL
+          AND date <= :today
     """)
-    accident_years = _year_span(
-        (await db.execute(accident_years_query, {"mp_route_id": mp_route_id})).one()
-    )
+    accident_years = _year_span((await db.execute(accident_years_query, accident_params)).one())
 
     month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']

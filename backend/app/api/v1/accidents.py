@@ -35,7 +35,7 @@ async def list_accidents(
     end_date: Optional[date] = Query(None, description="End date (YYYY-MM-DD)"),
     # Foreign key filters
     mountain_id: Optional[int] = Query(None, description="Filter by mountain ID"),
-    route_id: Optional[int] = Query(None, description="Filter by route ID"),
+    mp_route_id: Optional[int] = Query(None, description="Filter by Mountain Project route ID"),
     # Pagination
     limit: int = Query(100, ge=1, le=1000, description="Number of results to return"),
     offset: int = Query(0, ge=0, description="Number of results to skip"),
@@ -109,8 +109,8 @@ async def list_accidents(
     # Foreign key filters
     if mountain_id is not None:
         query = query.where(Accident.mountain_id == mountain_id)
-    if route_id is not None:
-        query = query.where(Accident.route_id == route_id)
+    if mp_route_id is not None:
+        query = query.where(Accident.mp_route_id == mp_route_id)
 
     # Order by date descending (most recent first)
     query = query.order_by(Accident.date.desc().nullslast())
