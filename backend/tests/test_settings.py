@@ -42,6 +42,39 @@ def test_importing_config_without_database_url_fails_loudly(tmp_path):
     assert "DATABASE_URL" in result.stderr
 
 
+def test_missing_database_url_error_does_not_leak_other_secrets(tmp_path):
+    """Regression: pydantic's ValidationError embeds the whole resolved input
+    dict in `input_value` for a missing required field. Without
+    hide_input_in_errors, a credential in any other field (REDIS_URL,
+    CELERY_BROKER_URL, ...) leaks into stderr alongside the DATABASE_URL
+    fail-loud message."""
+    # pydantic truncates a long `input_value` repr, which would hide the
+    # marker in the middle and make this test pass even without the fix.
+    # Drop every other Settings field from the child's env (conftest.py's
+    # ENVIRONMENT=test would otherwise pad the dict past the truncation
+    # threshold) so the untruncated repr is short and the marker, if present
+    # at all, can only come from REDIS_URL leaking.
+    marker = "leakcanary"
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in Settings.model_fields
+    }
+    env["PYTHONPATH"] = str(BACKEND_DIR)
+    env["REDIS_URL"] = f"redis://:{marker}@x/0"
+    result = subprocess.run(
+        [sys.executable, "-c", "import app.config"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "DATABASE_URL" in result.stderr
+    assert marker not in result.stderr
+    assert marker not in result.stdout
+
+
 def test_environment_defaults_to_production(monkeypatch):
     assert _settings(monkeypatch, DATABASE_URL=TEST_DB_URL).ENVIRONMENT == "production"
 

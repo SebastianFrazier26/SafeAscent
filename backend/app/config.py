@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     ENVIRONMENT: Literal["development", "test", "production"] = "production"
     SQL_ECHO: bool = False
 
+    # Admin queue/cache routes (backend/app/api/v1/admin.py) are off by
+    # default and only mounted when this is set.
     ENABLE_ADMIN_ROUTES: bool = False
 
     # CORS - accepts comma-separated or JSON array.
@@ -58,6 +60,11 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         case_sensitive=True,
+        # A ValidationError's "missing field" message embeds the whole
+        # resolved input dict, so without this, a credential in any other
+        # field (REDIS_URL, CELERY_BROKER_URL, ...) leaks into the
+        # DATABASE_URL fail-loud error at import time.
+        hide_input_in_errors=True,
     )
 
     @field_validator("CORS_ORIGINS", mode="before")
