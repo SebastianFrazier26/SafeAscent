@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Phase 1 PR6 — 2026-09-27
+
+- New `backend/app/healthchecks.py`: `ping(url, suffix, *, transport=None, timeout=10.0)` sends a dead-man's-switch ping to healthchecks.io (`/start` before a job, bare success ping, `/fail` on error) so the nightly safety job — which previously hung for a month unnoticed — reports its own liveness. It never raises: an unset URL is skipped with a WARNING and makes no outbound call, and any `httpx.HTTPError` (network failure or non-2xx status) is caught, logged by exception type only, and returns `False`. The ping URL itself is never logged, since it is the check's credential. New `backend/tests/test_healthchecks.py` covers suffix handling, the unset-URL skip, HTTP error statuses, and that a network error is swallowed without the URL leaking into logs; all cases inject an `httpx.MockTransport` so no real network call is made.
+
 ### Phase 1 PR5 — 2026-09-27
 
 - Alembic added (`backend/alembic.ini`, async `backend/alembic/env.py`). Migrations read `MIGRATOR_DATABASE_URL` from the environment, never the app's `DATABASE_URL`/`Settings`, and run as an explicit step, never at app startup.
