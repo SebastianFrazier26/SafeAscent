@@ -17,7 +17,7 @@ Replace the hand-tuned kernel model with a model whose parameters are **fit from
 - Personalization by climber experience (v3; see M13).
 - Scoring bouldering (see M10).
 - Using an LLM or hosted model for scoring. Jev is approved only for Phase 4 incident-report triage.
-- Displaying or redistributing Mountain Project data beyond the ice/mixed route facts Phase 2 P2-1 allows (see M11). MP tick data enters only as optional, removable internal exposure components (see M5).
+- Displaying or redistributing MP descriptions or other prose, ever (see M11). Ice/mixed route facts, rock routes, and MP tick aggregates may be displayed (owner decision 2026-09-28; `DATA_LICENSE.md` wording pending legal review); MP tick data also enters as optional, removable internal exposure components (see M5).
 
 ## Data reality (from the 2026-09-27 audit)
 
@@ -249,7 +249,7 @@ MP ticks alone cannot serve as exposure (see Data reality): they cover CA/NV roc
 - NPS recreational visitation for cells in parks
 - climbing permit counts where parks publish them (for example Denali and Rainier)
 - objective popularity (Wikidata sitelinks)
-- **optional internal MP components:** `mp_tick_count` (existing rock ticks, CA/NV) and `mp_ice_mixed_ticks` (Phase 2 P2-14 `mp_tick_aggregates`). Internal only, never displayed. Removable: dropping the table and retraining leaves them missing-flagged, and the gate decides whether the retrained model is promoted.
+- **optional internal MP components:** `mp_tick_count` (existing rock ticks, CA/NV) and `mp_ice_mixed_ticks` (Phase 2 P2-14 `mp_tick_aggregates`). Used here as internal exposure covariates, not as displayed content; tick aggregates may separately be displayed (owner decision 2026-09-28; see M11). Removable: dropping the table and retraining leaves them missing-flagged, and the gate decides whether the retrained model is promoted.
 - in-app ticks, later
 
 The components enter the model **as covariates with estimated coefficients**. No coefficient is fixed at 1, and no single hand-built formula is used:
@@ -340,7 +340,7 @@ The issue body contains, in this order so the owner's review starts where it mat
 - **Rock** (`sport`, `trad`, rock `alpine`): **OpenBeta (CC0)**, the public primary source.
 - **`ice` and `mixed`:** **MP route facts** (name, grade, location, type) are displayed, per the owner's rationale that MP compiled them from published guidebooks. Never MP descriptions, photos, comments, or other MP prose.
 - **Mountaineering and glaciated objectives:** the Phase 2 **Objective layer** (GNIS, Wikidata, NPS/USFS-curated CC0 routes), scored at objective level where route-level data is missing (see Objective-level scoring).
-- All other MP data (rock routes, ticks, tick aggregates) is **internal only**, for modeling and matching; never displayed, served, redistributed, or sent to third parties.
+- MP rock routes and tick aggregates (ascent counts by season/month) may be displayed; ticks are public (owner decision 2026-09-28; `DATA_LICENSE.md` wording pending legal review). MP descriptions and other prose are never displayed, served, redistributed, or sent to third parties.
 - Where coverage is still thin, routes, areas and type groups show "insufficient data" with a coverage warning rather than being silently absent or scored low (see Definitions and M6).
 
 ### M12 — Lightning: **NLDN tiles 1989–2017 + GOES GLM 2018+** (DECIDED)
