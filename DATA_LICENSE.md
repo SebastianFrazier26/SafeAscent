@@ -32,4 +32,4 @@ Facts submitted by users about incidents are planned to be released under **CC0*
 
 ## No scrapers
 
-No scraper code is committed to any GitHub repository. Open-API clients (OpenBeta GraphQL, Open-Meteo, NOAA, USGS, Macrostrat, NWS, AirNow, SNOTEL) are fine. CI's `no-scrapers` guard enforces this.
+No scraper code is committed to any GitHub repository. Open-API clients (OpenBeta GraphQL, Open-Meteo, NOAA, USGS, Macrostrat, NWS, AirNow, SNOTEL) are fine. CI's `guards` job (`scripts/check_no_scrapers.py`) enforces this.

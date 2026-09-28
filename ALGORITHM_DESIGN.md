@@ -11,7 +11,8 @@
 > - Temporal influence: Recency is now **damped** (small overall impact), while very old accidents still decay
 > - Weather stats source: Pulled from **Open-Meteo archive API** (5-year lookback) with Redis caching; no persistent `weather_statistics` table required
 > - Archive fallback: Try commercial archive first; if unavailable/denied, retry public archive **without** API key
-> - Historical trends endpoint now bootstraps `historical_predictions` table if missing (avoids first-run error path)
+> - `historical_predictions` is created by Alembic migrations only; the app no longer runs DDL (2026-09-27, Phase 1 PR5)
+> - Display (2026-09-28): one set of bands, 25/50/75, lower-inclusive; a missing score is shown as "Unavailable", never 0; no contributing accident or a raw score below 0.05 shows "Too little evidence to estimate risk yet" (interim until the Phase 3 model). See `backend/app/services/risk_bands.py`
 
 ---
 

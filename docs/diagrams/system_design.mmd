@@ -1,0 +1,24 @@
+flowchart LR
+  user([Browser])
+  subgraph railway [Railway]
+    fe[frontend<br/>nginx serving the React 19 build]
+    api[api<br/>FastAPI]
+    beat[beat<br/>Celery beat, exactly 1 replica]
+    worker[worker<br/>Celery prefork, concurrency 2]
+    redis[(Redis<br/>broker + results + score cache)]
+  end
+  neon[(Neon<br/>Postgres 16 + PostGIS<br/>schema owned by Alembic)]
+  hc[[healthchecks.io]]
+  meteo[[Open-Meteo]]
+
+  user -->|safeascent.us| fe
+  user -->|api.safeascent.us/api/v1| api
+  beat -->|enqueue: nightly 02:00 UTC,<br/>beat_heartbeat every 15 min| redis
+  redis -->|consume| worker
+  worker -->|scores, 2-day TTL;<br/>worker heartbeat key| redis
+  worker -->|writes historical_predictions| neon
+  worker -->|nightly start / success / fail;<br/>beat check every 15 min| hc
+  api -->|cached scores;<br/>/health/worker reads heartbeat| redis
+  api -->|reads only| neon
+  api --> meteo
+  worker --> meteo

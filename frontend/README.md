@@ -1,279 +1,78 @@
-# SafeAscent Frontend
+# SafeAscent frontend
 
-React + Vite frontend for SafeAscent climbing safety predictions.
+The map and route-analytics UI for SafeAscent. See the [root README](../README.md) for what the project is and how the pieces fit.
 
-*Last Updated: February 2026*
+## Stack
 
-## Tech Stack
-
-- **React 18** - UI framework
-- **Vite** - Fast build tool and dev server
-- **Material-UI (MUI)** - Component library (Material Design 3)
-- **Mapbox GL JS** - Interactive 3D terrain maps
-- **React-Map-GL** - React wrapper for Mapbox
-- **Axios** - HTTP client for API calls
-- **Date-fns** - Date utilities
+- **React 19** + **Vite 7**
+- **TypeScript, incrementally:** `tsconfig.json` has `allowJs` with strict checking for `.ts`/`.tsx`. New modules are TypeScript; a `.js`/`.jsx` file is converted when it is substantially changed. Already TS: the API client, risk utilities, colour helpers, and the `useRouteSafety` hook.
+- **MUI 7** (dark theme in `src/theme.js`), **Mapbox GL JS** via `react-map-gl`, **Recharts**, **axios**, **date-fns**
+- **Vitest** + Testing Library; ESLint (with `typescript-eslint` for TS files)
 
 ## Setup
 
-### 1. Install Dependencies
+Requires Node 22 and the backend API running (see the root README's quickstart).
 
 ```bash
-npm install
+grep '^VITE_' ../.env.example > .env   # then set a real Mapbox *public* token (pk.…)
+npm ci
+npm run dev                            # http://localhost:5173
 ```
 
-### 2. Get Mapbox Access Token
+Build-time variables (read via `import.meta.env`, baked into the bundle):
 
-1. Go to https://account.mapbox.com/
-2. Sign up for a free account (50,000 map loads/month free)
-3. Copy your default public token
+| Variable | Purpose | Local default |
+|---|---|---|
+| `VITE_API_BASE_URL` | Backend base URL including `/api/v1` | `http://localhost:8000/api/v1` |
+| `VITE_MAPBOX_TOKEN` | Mapbox public access token | none; the map does not load without it |
 
-### 3. Configure Environment
+The backend only allows the origins in its `CORS_ORIGINS` setting; for local dev that must include `http://localhost:5173`.
 
-Edit the `.env` file:
-
-```env
-# Your Mapbox token from https://account.mapbox.com/
-VITE_MAPBOX_TOKEN=pk.ey...your_token_here
-
-# Backend API URL (default: local development)
-VITE_API_BASE_URL=http://localhost:8000/api/v1
-```
-
-### 4. Start Backend (Required)
-
-The frontend needs the backend API running:
+## Commands
 
 ```bash
-cd ../backend
-uvicorn app.main:app --reload
+npm run dev          # dev server with HMR
+npm test             # Vitest, watch mode
+npm run test:run     # Vitest, single run (what CI runs)
+npm run lint         # ESLint
+npm run typecheck    # tsc --noEmit
+npm run build        # production build into dist/
+npm run preview      # serve the production build
 ```
 
-Backend should be running on http://localhost:8000
+`docker-tests/test_images.sh all` builds the Docker image in both `MAINTENANCE_MODE` variants and checks their HTTP behaviour (CI runs it too).
 
-### 5. Start Frontend Dev Server
-
-```bash
-npm run dev
-```
-
-Frontend will be available at http://localhost:5173
-
-## Project Structure
+## Layout
 
 ```
-frontend/
-├── public/
-│   └── safeascent.svg           # Custom favicon (mountain + safety checkmark)
-├── src/
-│   ├── components/       # React components
-│   │   ├── MapView.jsx          # Interactive map (cluster/risk views, season filter)
-│   │   ├── RouteAnalyticsModal.jsx  # 8-tab analytics dashboard
-│   │   ├── PredictionForm.jsx   # Route configuration form
-│   │   └── PredictionResult.jsx # Risk score display
-│   ├── services/         # API and external services
-│   │   └── api.js               # Backend API client
-│   ├── utils/            # Utility functions
-│   │   └── riskUtils.js         # Risk interpretation helpers
-│   ├── theme.js          # Material-UI custom theme
-│   ├── App.jsx           # Main application
-│   ├── main.jsx          # React entry point (ThemeProvider)
-│   └── index.css         # Global styles (Mapbox overrides)
-├── index.html            # Entry HTML (favicon link)
-├── .env                  # Environment variables
-├── package.json          # Dependencies
-└── vite.config.js        # Vite configuration
+src/
+├── App.jsx, main.jsx, theme.js
+├── components/
+│   ├── MapView.jsx               # map, clusters, heatmap layers, season filter
+│   ├── RiskLegend.jsx            # band and "insufficient data" legend
+│   ├── RouteAnalyticsModal.jsx   # per-route tabs: forecast, details, accidents, breakdown, trends, time of day, ascents
+│   ├── PredictionForm.jsx
+│   └── PredictionResult.jsx
+├── hooks/useRouteSafety.ts       # per-route score state: loading | error | insufficient | ok
+├── services/api.ts               # typed, validated API client
+└── utils/
+    ├── riskUtils.ts              # risk bands, palette, formatting
+    └── color.ts                  # contrast helpers
+maintenance/                      # static 503 page and nginx config for maintenance mode
+nginx.conf                        # production nginx (serves dist/, /health, www → apex redirect)
 ```
 
-## Features
+## Risk display rules
 
-### Two-View Map System
-| View | Purpose | Implementation |
-|------|---------|----------------|
-| **Cluster View** | Navigation | Mapbox native clustering, color-coded by avg risk |
-| **Risk Coverage** | Safety Analysis | 5 stratified heatmap layers |
+- One band definition: `RISK_BAND_THRESHOLDS = [25, 50, 75]` in `src/utils/riskUtils.ts`, lower-inclusive (green below 25, yellow from 25, orange from 50, red from 75). It mirrors `backend/app/services/risk_bands.py`, and a backend test fails if they drift, so change both together.
+- A score is never fabricated. A missing, malformed, or failed score renders "Unavailable" (or an em-dash in compact chips) in neutral gray. No `|| 0` / `?? 0` on a risk value; `riskUtils.test.ts` and `riskPalette.test.ts` guard this.
+- When the backend reports `data_status: "insufficient_data"` (no contributing accidents, or a raw score below 0.05), the UI shows "Too little evidence to estimate risk yet" in gray instead of a number. This is interim until the Phase 3 model.
+- Map colours come from the nightly precomputed scores; the route modal fetches a live score for the selected route and date.
 
-### Interactive Map
-- 3D terrain visualization
-- Click-to-select route locations
-- Search by route/mountain name
-- Date picker for 7-day forecast
-- Hover tooltips with route details
-- **Tight grid clustering** for overlapping coordinates (4.4m spacing)
-- **Season filter**: All / Summer (rock) / Winter (ice/mixed)
-- **Season-specific map styles**: Warm outdoors (summer) / Cool winter theme
-- Progress bar during safety score loading
-- Boulder routes excluded (different risk profile)
+## Deployment
 
-### Stratified Heatmap Layers
-1. Gray base - All routes (shows climbing area coverage)
-2. Green - Risk 0-32 (low)
-3. Yellow - Risk 28-52 (moderate)
-4. Orange - Risk 48-72 (elevated)
-5. Red - Risk 68+ (high)
-
-*Overlapping brackets create smooth color transitions*
-
-### Route Analytics Modal
-7-tab analytics dashboard (click any route marker):
-
-| Tab | Content |
-|-----|---------|
-| 7-Day Forecast | Risk scores and weather for next week |
-| Route Details | Basic info, grade, location |
-| Accident Reports | Historical accidents on mountain |
-| Risk Breakdown | Factor contributions (spatial, temporal, weather) |
-| Historical Trends | 30-day risk score history |
-| Time of Day | Hourly conditions and climbing windows |
-| **Ascents** | Monthly breakdown of ascents vs accidents |
-
-Notes:
-- Map markers/colors come from bulk cached scores for performance.
-- Route modal header score is fetched per-route and can be forced to live recompute.
-- Hourly conditions display temperature in Fahrenheit.
-
-### Ascents Analytics Tab
-- Total ascents, accidents, and accident rate (per 100 ascents)
-- Monthly bar chart comparing ascent counts to accident counts
-- Best/worst months by accident rate
-- Peak activity month (most popular)
-- Boulder routes excluded with explanation
-
-### Prediction Form
-- Route type selection (alpine, trad, sport, ice, mixed, aid)
-- Date picker (next 7 days)
-- Optional elevation input (auto-detected if omitted)
-- Real-time validation
-
-### Results Display
-- Risk score (0-100) with color coding
-- Confidence level
-- Top contributing accidents
-- Print-friendly report
-
-## Development
-
-### Available Commands
-
-```bash
-npm run dev      # Start dev server (with HMR)
-npm run build    # Build for production
-npm run preview  # Preview production build
-npm run lint     # Run ESLint
-```
-
-### Hot Module Replacement (HMR)
-
-The dev server supports HMR - changes to components will update instantly without page reload.
-
-### Building for Production
-
-```bash
-npm run build
-```
-
-Optimized files will be in `dist/` directory.
-
-## API Integration
-
-The frontend communicates with the FastAPI backend at `/api/v1/predict`:
-
-**Request:**
-```json
-{
-  "latitude": 40.255,
-  "longitude": -105.615,
-  "route_type": "alpine",
-  "planned_date": "2026-02-15",
-  "elevation_meters": 4346  // optional
-}
-```
-
-**Response:**
-```json
-{
-  "risk_score": 75.2,
-  "confidence": 82.5,
-  "num_contributing_accidents": 42,
-  "top_contributing_accidents": [...],
-  "confidence_breakdown": {...},
-  "metadata": {...}
-}
-```
-
-## Styling
-
-Uses Material-UI with custom **dark mode** theme (`src/theme.js`):
-
-```js
-// Dark mode climbing theme
-palette: {
-  mode: 'dark',
-  primary: { main: '#42a5f5' },      // Lighter blue for dark mode
-  secondary: { main: '#4caf50' },    // Green - safety
-  background: {
-    default: '#121212',
-    paper: '#1e1e1e',
-  },
-  // Risk-specific colors (adjusted for dark mode visibility)
-  risk: {
-    low: '#4ade80',       // brighter green
-    moderate: '#fbbf24',  // brighter yellow
-    high: '#f87171',      // brighter red
-    extreme: '#dc2626',   // brighter dark red
-  }
-}
-```
-
-### Season-Specific Map Styles
-
-| Season | Mapbox Style | Description |
-|--------|--------------|-------------|
-| All/Summer | `outdoors-v12` | Warm greens, standard topographic |
-| Winter | Custom Outdoors Winter | Cool grays/blues, muted winter aesthetic |
-
-## Browser Support
-
-- Chrome/Edge (latest)
-- Firefox (latest)
-- Safari (latest)
-- Mobile browsers (iOS Safari, Chrome Android)
-
-## Troubleshooting
-
-### Mapbox Not Loading
-
-1. Check your token in `.env` - should start with `pk.`
-2. Verify token is public (not secret token)
-3. Check browser console for errors
-
-### Backend Connection Failed
-
-1. Ensure backend is running: http://localhost:8000
-2. Check CORS is enabled in backend
-3. Verify `VITE_API_BASE_URL` in `.env`
-
-### Build Errors
-
-```bash
-rm -rf node_modules
-rm package-lock.json
-npm install
-```
-
-## Next Steps
-
-- [ ] Add route history/favorites
-- [ ] Multi-day forecast view
-- [ ] Share prediction links
-- [ ] Mobile-optimized layout
-- [ ] Offline mode
-- [ ] Add accident markers on map
+The Dockerfile builds with Node 22 and serves the bundle with nginx on Railway. The `MAINTENANCE_MODE` build arg switches to a static 503 page (with `/health` still 200). See [`DEPLOYMENT.md`](../DEPLOYMENT.md).
 
 ## License
 
-MIT
-
-## Contact
-
-For issues or questions, contact the SafeAscent team.
+Code: Apache-2.0, see the root [`LICENSE`](../LICENSE). Data is not covered by the code license; see [`DATA_LICENSE.md`](../DATA_LICENSE.md).
