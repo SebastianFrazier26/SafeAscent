@@ -150,3 +150,15 @@
 - **Coverage:** All custom domains (safeascent.us, api.safeascent.us)
 
 *Last Updated: February 2026*
+
+---
+
+## Maintenance mode
+
+The frontend image takes a `MAINTENANCE_MODE` build arg (Railway service variable on `frontend`).
+
+- `MAINTENANCE_MODE=true`: every path returns `503` with `Retry-After: 3600` and `Cache-Control: no-store`, serving `frontend/maintenance/index.html`. `/health` still returns `200` for the Railway healthcheck.
+- `MAINTENANCE_MODE=false` (default): the React app.
+- Both modes redirect `www.safeascent.us` to `https://safeascent.us` with a 301.
+
+To flip: set the variable on the `frontend` service and redeploy. Locally: `frontend/docker-tests/test_images.sh all` checks both modes.

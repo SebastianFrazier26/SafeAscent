@@ -150,6 +150,10 @@ jobs:
           VITE_MAPBOX_TOKEN: pk.test_token_for_ci
         run: npm run build
 
+      - name: Image tests (app and maintenance mode)
+        working-directory: frontend
+        run: ./docker-tests/test_images.sh all
+
   # ===========================================================================
   # Build and Push Docker Images
   # ===========================================================================
