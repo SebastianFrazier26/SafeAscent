@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Phase 1 PR4 — 2026-09-27
+
+- `Settings` is now the single source of runtime config: `DATABASE_URL` is required (module import raises `pydantic.ValidationError` and fails loudly if unset, instead of silently falling back to a guessed local database), `ENVIRONMENT` defaults to `"production"` (was `"development"`) so an unset variable on a deployed service never enables dev-only behavior, and SQL echo is now the explicit `SQL_ECHO` flag (default off) rather than implied by `ENVIRONMENT == "development"`. New fields land on `Settings`: `OPEN_METEO_API_KEY`, `USE_VECTORIZED_ALGORITHM`, `SKIP_WEATHER_STATISTICS`, `HEALTHCHECKS_NIGHTLY_URL`, `HEALTHCHECKS_BEAT_URL`, `WORKER_HEARTBEAT_TTL_SECONDS` (default `120`) — these move existing `os.getenv` reads onto `Settings` in a later task of this PR.
+- `backend/tests/conftest.py` sets a dummy `DATABASE_URL`/`ENVIRONMENT=test` via `os.environ.setdefault` before importing `app`, so the test suite runs without `.env` or a real database URL.
+- `app.config` added to the mypy strict allowlist in `backend/pyproject.toml`.
+- New `backend/tests/test_settings.py` covers the required field, the production default, explicit `SQL_ECHO`, the new fields' defaults, and (not yet fixed — next task in this PR) a repo-wide rule that `app/` never calls `os.getenv`/`os.environ` directly.
+
 ### Phase 1 PR3 — 2026-09-27
 
 - No-scraper CI guard (D9): `scripts/check_no_scrapers.py` (stdlib only) scans every `git ls-files`-tracked path for scraper code — file names matching `scrape*`/`*scraper*`, mentions of banned climbing-data host names in source, banned Python/JS HTML-parsing or browser-automation imports, and those same packages in `backend/uv.lock`/`frontend/package-lock.json` — and exits 1 with one `path: [rule] detail` line per hit. Scrapers stay in the private local workspace, never this repo. `backend/tests/test_check_no_scrapers.py` covers all four rules plus the git-tracked-files-only behavior. `.gitignore`'s blanket `scripts/` rule narrowed to `/scripts/*` with an exception for the guard file, so the script itself can be tracked; other one-off scripts stay ignored.

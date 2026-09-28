@@ -1,9 +1,13 @@
 """
 Application configuration settings.
-Reads from environment variables and .env file.
+
+Settings is the single source of runtime configuration: application code reads
+`settings.<FIELD>` and never the process environment directly. `.env.example`
+at the repo root must list exactly these fields plus the frontend `VITE_*`
+build args (enforced by tests/test_env_example_parity.py).
 """
 import json
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -19,29 +23,37 @@ DEFAULT_CORS_ORIGINS = [
 class Settings(BaseSettings):
     """Application settings."""
 
-    # Database
-    DATABASE_URL: str = "postgresql+asyncpg://sebastianfrazier@localhost:5432/safeascent"
+    # Required, no default: a missing value must fail startup rather than fall
+    # back to a guessed local database.
+    DATABASE_URL: str
 
-    # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
     CACHE_REDIS_URL: str | None = None
     CELERY_BROKER_URL: str | None = None
     CELERY_RESULT_BACKEND: str | None = None
 
-    # API
     API_V1_PREFIX: str = "/api/v1"
     PROJECT_NAME: str = "SafeAscent"
 
-    # Environment
-    ENVIRONMENT: str = "development"
+    # Defaults to production so an unset variable on a deployed service never
+    # enables development-only behavior.
+    ENVIRONMENT: Literal["development", "test", "production"] = "production"
+    SQL_ECHO: bool = False
 
-    # Admin routes (queue/cache management) - off by default, gated behind flag
     ENABLE_ADMIN_ROUTES: bool = False
 
-    # CORS - accepts comma-separated (documented in .env.example) or JSON array.
+    # CORS - accepts comma-separated or JSON array.
     # NoDecode: pydantic-settings otherwise JSON-decodes list-typed env vars
     # before validators run, which raises SettingsError on comma-separated input.
     CORS_ORIGINS: Annotated[list[str], NoDecode] = DEFAULT_CORS_ORIGINS
+
+    OPEN_METEO_API_KEY: str | None = None
+    USE_VECTORIZED_ALGORITHM: bool = True
+    SKIP_WEATHER_STATISTICS: bool = False
+
+    HEALTHCHECKS_NIGHTLY_URL: str | None = None
+    HEALTHCHECKS_BEAT_URL: str | None = None
+    WORKER_HEARTBEAT_TTL_SECONDS: int = 120
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -58,7 +70,8 @@ class Settings(BaseSettings):
         if not stripped:
             return []
         if stripped.startswith("["):
-            return json.loads(stripped)
+            parsed: list[str] = json.loads(stripped)
+            return parsed
         return [origin.strip() for origin in stripped.split(",") if origin.strip()]
 
     @property
@@ -77,5 +90,4 @@ class Settings(BaseSettings):
         return self.CELERY_RESULT_BACKEND or self.REDIS_URL
 
 
-# Global settings instance
 settings = Settings()

@@ -70,6 +70,6 @@ ignore_errors = true
 
 # Strict allowlist. Append modules here as they become strict-clean.
 [[tool.mypy.overrides]]
-module = []
+module = ["app.config"]
 ignore_errors = false
 strict = true

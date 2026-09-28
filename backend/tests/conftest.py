@@ -6,6 +6,16 @@ Provides:
 - test_db: Test database session
 - sample_data: Reusable test data fixtures
 """
+# ruff: noqa: E402
+import os
+
+# Settings() is built at import time and DATABASE_URL is required, so this must
+# run before any `app` import. setdefault keeps CI's service URL when set.
+os.environ.setdefault(
+    "DATABASE_URL", "postgresql+asyncpg://test_user:test_password@localhost:5432/safeascent_test"
+)
+os.environ.setdefault("ENVIRONMENT", "test")
+
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
