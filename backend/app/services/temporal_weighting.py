@@ -19,7 +19,7 @@ from app.services.algorithm_config import (
     TEMPORAL_SEASONAL_IMPACT,
     SEASONAL_BOOST,
 )
-from app.utils.time_utils import days_between, is_same_season
+from app.utils.time_utils import is_same_season
 
 
 def utc_today() -> date:
@@ -71,7 +71,8 @@ def calculate_temporal_weight(
         0.9xx  # Lower: no seasonal boost
     """
     # Calculate days elapsed
-    days_elapsed = days_between(accident_date, current_date)
+    # Clipped, not abs(): an accident after a past current_date gets the most-recent weight.
+    days_elapsed = max(0, (current_date - accident_date).days)
 
     # Get route-type-specific lambda
     lambda_value = TEMPORAL_LAMBDA.get(route_type.lower(), TEMPORAL_LAMBDA["default"])
@@ -140,7 +141,8 @@ def calculate_temporal_weight_detailed(
     from app.utils.time_utils import get_season
 
     # Calculate days elapsed
-    days_elapsed = days_between(accident_date, current_date)
+    # Clipped, not abs(): an accident after a past current_date gets the most-recent weight.
+    days_elapsed = max(0, (current_date - accident_date).days)
 
     # Get lambda and seasons
     lambda_value = TEMPORAL_LAMBDA.get(route_type.lower(), TEMPORAL_LAMBDA["default"])

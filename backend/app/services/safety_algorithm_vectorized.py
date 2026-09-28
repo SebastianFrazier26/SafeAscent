@@ -136,7 +136,9 @@ def calculate_temporal_weights_vectorized(
 
     # Calculate days elapsed for each accident
     today = today or utc_today()
-    days_elapsed = np.array([(current_date - acc_date).days for acc_date in accident_dates])
+    # An accident after a past target date but not after today is real: clip it to the
+    # most-recent weight rather than let lambda**negative exceed 1.
+    days_elapsed = np.clip(np.array([(current_date - acc_date).days for acc_date in accident_dates]), 0, None)
     future = np.array([is_future_dated(acc_date, today) for acc_date in accident_dates], dtype=bool)
 
     # Exponential decay baseline and damped temporal contribution

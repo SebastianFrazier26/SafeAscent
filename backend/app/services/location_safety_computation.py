@@ -195,8 +195,10 @@ def compute_location_base_score(
         spatial_weight = calculate_spatial_weight(distance_km, bandwidth)
 
         # 2. Temporal weight (exponential decay + seasonal boost)
-        days_elapsed = (target_date - accident["accident_date"]).days
-        if days_elapsed < 0 or is_future_dated(accident["accident_date"], today):
+        # Clipped like the vectorized path: after a past target date but not after today is
+        # a real accident at the most-recent weight.
+        days_elapsed = max(0, (target_date - accident["accident_date"]).days)
+        if is_future_dated(accident["accident_date"], today):
             temporal_weight = 0.0
         else:
             base_decay = lambda_val ** days_elapsed
