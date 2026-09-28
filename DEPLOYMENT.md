@@ -162,3 +162,13 @@ The frontend image takes a `MAINTENANCE_MODE` build arg (Railway service variabl
 - Both modes redirect `www.safeascent.us` to `https://safeascent.us` with a 301.
 
 To flip: set the variable on the `frontend` service and redeploy. Locally: `frontend/docker-tests/test_images.sh all` checks both modes.
+
+---
+
+## Deploy pipeline
+
+- CI (`.github/workflows/ci.yml`) runs on every PR and every push to `main`. Jobs: `backend` (uv sync, ruff, mypy, pip-audit, pytest, image build), `frontend` (npm ci, lint, npm audit, vitest, build, image tests), `guards` (`scripts/check_no_scrapers.py`) and `ci-ok`.
+- `ci-ok` is the one required check. It fails unless every other job succeeded. Keep its name stable, because Railway "Wait for CI" and branch protection both key on it.
+- Railway builds its own images from GitHub `main` with "Wait for CI" on. A red commit on `main` never deploys. No image registry and no deploy token are involved.
+- `main` is protected: a PR and a green `ci-ok` are required, admins included, and force-pushes are blocked.
+- Scraper code (anything fetching and parsing HTML pages) is never committed (D9). The `guards` job enforces this.

@@ -1,7 +1,4 @@
-# SafeAscent CI/CD Pipeline
-# Runs on push to main and pull requests
-
-name: CI/CD Pipeline
+name: CI
 
 on:
   push:
@@ -9,18 +6,15 @@ on:
   pull_request:
     branches: [main]
 
-env:
-  REGISTRY: ghcr.io
-  BACKEND_IMAGE_NAME: ${{ github.repository }}/backend
-  FRONTEND_IMAGE_NAME: ${{ github.repository }}/frontend
+permissions:
+  contents: read
 
 jobs:
-  # ===========================================================================
-  # Backend Tests
-  # ===========================================================================
-  backend-test:
-    name: Backend Tests
+  backend:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
 
     services:
       postgres:
@@ -36,7 +30,6 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-
       redis:
         image: redis:7-alpine
         ports:
@@ -46,6 +39,12 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://test_user:test_password@localhost:5432/safeascent_test
+      REDIS_URL: redis://localhost:6379/0
+      ENVIRONMENT: test
+      MP_TABLES_AVAILABLE: "false"
 
     steps:
       - uses: actions/checkout@v4
@@ -57,193 +56,90 @@ jobs:
           enable-cache: true
           cache-dependency-glob: backend/uv.lock
 
-      - name: Install dependencies
-        working-directory: backend
+      - name: Install
         run: uv sync --frozen
 
-      - name: Run linting
-        working-directory: backend
-        run: uv run ruff check app/
+      - name: Lint
+        run: uv run ruff check app/ ../scripts/
+
+      - name: Type check
+        run: uv run mypy
 
       - name: Dependency audit
-        working-directory: backend
         run: |
           uv export --frozen --no-dev --no-emit-project --format requirements.txt \
             | uv run pip-audit -r /dev/stdin --require-hashes --disable-pip
 
-      - name: Run tests
-        working-directory: backend
-        env:
-          DATABASE_URL: postgresql+asyncpg://test_user:test_password@localhost:5432/safeascent_test
-          REDIS_URL: redis://localhost:6379/0
-          # MP tables not available in CI test database
-          MP_TABLES_AVAILABLE: "false"
-        run: |
-          # Run unit tests that work without production data:
-          # - API endpoint validation (test_api_endpoints.py)
-          # - Weather service with mocks (test_weather_service.py)
-          # - Route type mapping logic (test_route_type_mapper.py)
-          # - Temporal weighting logic (test_temporal_weighting.py)
-          # - Daily variation logic (test_daily_variation.py)
-          # - Safety algorithm unit tests (test_safety_algorithm.py)
-          #
-          # Excluded from CI (require production accident data):
-          # - test_predict_integration.py, test_prediction_integration.py
-          # - test_known_outcomes_validation.py, test_edge_cases_performance.py
-          # - test_performance.py, test_weather_caching.py (performance-sensitive)
-          uv run pytest tests/test_api_endpoints.py \
-                 tests/test_weather_service.py \
-                 tests/test_route_type_mapper.py \
-                 tests/test_temporal_weighting.py \
-                 tests/test_daily_variation.py \
-                 tests/test_safety_algorithm.py \
-                 -v --tb=short \
-                 --ignore=tests/benchmark_* \
-                 --ignore=tests/profile_*
+      - name: Test
+        run: uv run pytest
 
-  # ===========================================================================
-  # Frontend Tests
-  # ===========================================================================
-  frontend-test:
-    name: Frontend Tests
+      - name: Build image and smoke-test imports
+        run: |
+          docker build -t safeascent-backend:ci .
+          docker run --rm -e DATABASE_URL="$DATABASE_URL" safeascent-backend:ci \
+            python -c "import app.main, app.celery_app"
+
+  frontend:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: 'npm'
           cache-dependency-path: 'frontend/package-lock.json'
 
-      - name: Install dependencies
-        working-directory: frontend
+      - name: Install
         run: npm ci
 
-      - name: Run linting
-        working-directory: frontend
+      - name: Lint
         run: npm run lint
 
       - name: Dependency audit
-        working-directory: frontend
         run: npm audit --omit=dev --audit-level=high
 
-      - name: Run tests
-        working-directory: frontend
+      - name: Test
         run: npm run test:run
 
-      - name: Build frontend
-        working-directory: frontend
+      - name: Build
         env:
           VITE_API_BASE_URL: http://localhost:8000/api/v1
           VITE_MAPBOX_TOKEN: pk.test_token_for_ci
         run: npm run build
 
       - name: Image tests (app and maintenance mode)
-        working-directory: frontend
         run: ./docker-tests/test_images.sh all
 
-  # ===========================================================================
-  # Build and Push Docker Images
-  # ===========================================================================
-  build-images:
-    name: Build Docker Images
+  guards:
     runs-on: ubuntu-latest
-    needs: [backend-test, frontend-test]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
-    permissions:
-      contents: read
-      packages: write
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to Container Registry
-        uses: docker/login-action@v3
+      - uses: actions/setup-python@v5
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          python-version: '3.12'
 
-      - name: Extract metadata (backend)
-        id: meta-backend
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE_NAME }}
-          tags: |
-            type=sha,prefix=
-            type=raw,value=latest
+      - name: No scraper code (D9)
+        run: python scripts/check_no_scrapers.py
 
-      - name: Build and push backend image
-        uses: docker/build-push-action@v5
-        with:
-          context: ./backend
-          push: true
-          tags: ${{ steps.meta-backend.outputs.tags }}
-          labels: ${{ steps.meta-backend.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Extract metadata (frontend)
-        id: meta-frontend
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE_NAME }}
-          tags: |
-            type=sha,prefix=
-            type=raw,value=latest
-
-      - name: Build and push frontend image
-        uses: docker/build-push-action@v5
-        with:
-          context: ./frontend
-          push: true
-          tags: ${{ steps.meta-frontend.outputs.tags }}
-          labels: ${{ steps.meta-frontend.outputs.labels }}
-          build-args: |
-            VITE_API_BASE_URL=${{ vars.VITE_API_BASE_URL || 'http://localhost:8000/api/v1' }}
-            VITE_MAPBOX_TOKEN=${{ secrets.VITE_MAPBOX_TOKEN }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  # ===========================================================================
-  # Deploy to Production (manual trigger)
-  # ===========================================================================
-  deploy:
-    name: Deploy to Production
+  # The single required status check (branch protection and Railway "Wait for
+  # CI" key on this name). always() so a failed or skipped dependency reports
+  # as a failure here instead of leaving the check pending forever.
+  ci-ok:
+    if: always()
+    needs: [backend, frontend, guards]
     runs-on: ubuntu-latest
-    needs: [build-images]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    environment: production
-
     steps:
-      - name: Deploy notification
+      - name: All required jobs succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
-          echo "Deployment would happen here."
-          echo "Configure your deployment target (AWS, GCP, DigitalOcean, etc.)"
-          echo "Image tags available:"
-          echo "  - Backend: ${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE_NAME }}:latest"
-          echo "  - Frontend: ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE_NAME }}:latest"
-
-      # Uncomment and configure for your deployment target:
-      #
-      # Example: Deploy to DigitalOcean App Platform
-      # - name: Deploy to DigitalOcean
-      #   uses: digitalocean/app_action@v1.1.5
-      #   with:
-      #     app_name: safeascent
-      #     token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
-      #
-      # Example: Deploy to AWS ECS
-      # - name: Deploy to AWS ECS
-      #   uses: aws-actions/amazon-ecs-deploy-task-definition@v1
-      #   with:
-      #     task-definition: task-definition.json
-      #     service: safeascent-service
-      #     cluster: safeascent-cluster
+          echo "job results: $RESULTS"
+          for result in $RESULTS; do
+            [ "$result" = "success" ] || exit 1
+          done

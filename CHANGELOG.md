@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - No-scraper CI guard (D9): `scripts/check_no_scrapers.py` (stdlib only) scans every `git ls-files`-tracked path for scraper code — file names matching `scrape*`/`*scraper*`, mentions of banned climbing-data host names in source, banned Python/JS HTML-parsing or browser-automation imports, and those same packages in `backend/uv.lock`/`frontend/package-lock.json` — and exits 1 with one `path: [rule] detail` line per hit. Scrapers stay in the private local workspace, never this repo. `backend/tests/test_check_no_scrapers.py` covers all four rules plus the git-tracked-files-only behavior. `.gitignore`'s blanket `scripts/` rule narrowed to `/scripts/*` with an exception for the guard file, so the script itself can be tracked; other one-off scripts stay ignored.
 - Fix round 1 (review): the `import`/`host` rules now match case-insensitively (`import BS4` resolves to the real `bs4` package on macOS's case-insensitive filesystem); `cheerio` and `jsdom` added to the banned JS import list; the banned-host set expanded from just `mountainproject.com` to `mountainproject.com`, `thecrag.com`, `8a.nu`, `ukclimbing.com`, matched with word-boundary guards so `8a.nu` doesn't misfire on lookalike strings like `v8a.number`. `jsdom` is deliberately kept out of the npm-lockfile banlist (same precedent as `lxml` for Python) — it's a mainstream Vitest/Jest DOM test-environment devDependency (this repo's own `frontend/package-lock.json` has it), not a scraping tool; its actual *use* is still caught by the import rule.
+- CI rebuilt into `backend`, `frontend`, `guards` and a single required `ci-ok` job; the unused GHCR `build-images` job and placeholder `deploy` job are removed (Railway builds from GitHub with "Wait for CI").
+- Backend CI runs the whole default suite (`uv run pytest`); tests needing production data or live services are marked `needs_data` and deselected by default.
+- The `guards` job runs the no-scraper check above in CI.
+- mypy runs in CI.
 
 ### Phase 1 PR2 — 2026-09-27
 
