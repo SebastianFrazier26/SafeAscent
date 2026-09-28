@@ -29,7 +29,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from app.services.risk_bands import INSUFFICIENT_DATA_COLOR, color_code_for, has_evidence
+from app.services.risk_bands import INSUFFICIENT_DATA_COLOR, color_code_for, estimable_score
 from app.services.algorithm_config import (
     EARTH_RADIUS_KM,
     ELEVATION_DECAY_CONSTANT,
@@ -405,7 +405,9 @@ def compute_location_base_score_vectorized(
     )
 
     # Store results (only for significant influences to save memory)
-    threshold = 1e-6  # Minimum influence to track
+    # Memory filter that is part of the nightly score as shipped (dropping it would shift
+    # scores); whether a route has enough evidence is decided by risk_bands.estimable_score.
+    threshold = 1e-6
     significant_mask = base_influences > threshold
 
     for i in np.where(significant_mask)[0]:
@@ -441,8 +443,8 @@ def compute_route_risk_score(
         route_grade: Route grade (e.g., "5.10a", None = neutral weight)
 
     Returns:
-        Tuple of (risk_score, contributing_accidents_list); risk_score is None when no
-        accident contributes evidence (see risk_bands.has_evidence), never 0.0.
+        Tuple of (risk_score, contributing_accidents_list); risk_score is None when there is
+        too little evidence (see risk_bands.estimable_score), never 0.0.
     """
     route_type_lower = route_type.lower()
 
@@ -501,11 +503,11 @@ def compute_route_risk_score(
                 "days_ago": metadata.get("days_ago", 0),
             })
 
-    if not has_evidence(len(contributing_accidents), total_influence):
-        return None, []
-
     # Normalize to risk score (0-100)
     risk_score = min(MAX_RISK_SCORE, max(0.0, total_influence * RISK_NORMALIZATION_FACTOR))
+
+    if estimable_score(len(contributing_accidents), risk_score) is None:
+        return None, []
 
     # Sort contributing accidents by influence
     contributing_accidents.sort(key=lambda x: x["total_influence"], reverse=True)

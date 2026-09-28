@@ -36,7 +36,12 @@ from app.services.weather_service import (
     fetch_weather_statistics,
 )
 from app.services.elevation_service import fetch_elevation
-from app.services.risk_bands import INSUFFICIENT_DATA_COLOR, color_code_for, has_evidence
+from app.services.risk_bands import (
+    INSUFFICIENT_DATA_COLOR,
+    INSUFFICIENT_DATA_MESSAGE,
+    color_code_for,
+    estimable_score,
+)
 from app.utils.time_utils import get_season
 from app.utils.geo_utils import haversine_distance
 
@@ -122,7 +127,7 @@ async def predict_route_safety(
             num_contributing_accidents=0,
             top_contributing_accidents=[],
             metadata={
-                "message": f"No historical accidents found within {search_radius_km:.0f}km",
+                "reason": f"No historical accidents found within {search_radius_km:.0f}km",
                 "route_type": request.route_type,
                 "search_date": request.planned_date.isoformat(),
                 "search_radius_km": search_radius_km,
@@ -177,7 +182,7 @@ async def predict_route_safety(
             num_contributing_accidents=0,
             top_contributing_accidents=[],
             metadata={
-                "message": "No compatible accidents found after route type filtering",
+                "reason": "No compatible accidents found after route type filtering",
                 "route_type": request.route_type,
                 "search_date": request.planned_date.isoformat(),
             },
@@ -324,20 +329,21 @@ async def predict_route_safety(
     metadata["search_radius_km"] = search_radius_km
     metadata["extreme_weather"] = extreme_weather
 
-    total_influence = metadata.get("total_influence_sum")
-    if not has_evidence(
-        prediction.num_contributing_accidents,
-        float(total_influence) if total_influence is not None else None,
-    ):
+    raw_score = estimable_score(prediction.num_contributing_accidents, float(prediction.risk_score))
+    if raw_score is None:
         return _insufficient_response(
             num_contributing_accidents=prediction.num_contributing_accidents,
             top_contributing_accidents=contributing_accidents,
             metadata=metadata,
         )
 
+    # Every surface shows the 1-decimal value with the colour of that value (the nightly
+    # batch and cache already did); the unrounded formula output stays in metadata.
+    metadata["raw_risk_score"] = raw_score
+    shown_score = round(raw_score, 1)
     response = PredictionResponse(
-        risk_score=prediction.risk_score,
-        color_code=color_code_for(prediction.risk_score),
+        risk_score=shown_score,
+        color_code=color_code_for(shown_score),
         data_status="ok",
         num_contributing_accidents=prediction.num_contributing_accidents,
         top_contributing_accidents=contributing_accidents,
@@ -352,6 +358,7 @@ def _insufficient_response(
     top_contributing_accidents: List[ContributingAccident],
     metadata: Dict,
 ) -> PredictionResponse:
+    metadata = {**metadata, "message": INSUFFICIENT_DATA_MESSAGE}
     return PredictionResponse(
         risk_score=None,
         color_code=INSUFFICIENT_DATA_COLOR,

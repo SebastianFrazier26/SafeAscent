@@ -118,28 +118,50 @@ def test_0002_refuses_to_drop_non_empty_tables(fresh_db):
     assert _fetch_row(fresh_db, "SELECT to_regclass('public.ascents')::text") == ["ascents"]
 
 
+async def _insert_history(url: str, rows: list[tuple[int, object, str]]) -> None:
+    # Bound parameters, like the nightly job's text() insert: None must reach the column as NULL.
+    conn = await asyncpg.connect(url)
+    try:
+        await conn.executemany(
+            "INSERT INTO historical_predictions (route_id, prediction_date, risk_score, color_code) "
+            "VALUES ($1, '2026-09-28', $2, $3)",
+            rows,
+        )
+    finally:
+        await conn.close()
+
+
 def test_0003_stores_insufficient_days_as_null_gray_and_rejects_mixed_pairs(fresh_db):
     cfg = _alembic_cfg(fresh_db)
     command.upgrade(cfg, "head")
-    _run(
-        fresh_db,
-        "INSERT INTO historical_predictions (route_id, prediction_date, risk_score, color_code) "
-        "VALUES (1, '2026-09-28', NULL, 'gray'), (2, '2026-09-28', 30.0, 'yellow')",
-    )
-    for values in ("(3, '2026-09-28', NULL, 'yellow')", "(4, '2026-09-28', 12.0, 'gray')"):
+    url = _db_url(fresh_db)
+    asyncio.run(_insert_history(url, [(1, None, "gray"), (2, 30.0, "yellow")]))
+    assert _fetch_row(fresh_db, "SELECT risk_score FROM historical_predictions WHERE route_id = 1") == [None]
+    for row in [(3, None, "yellow"), (4, 12.0, "gray")]:
         with pytest.raises(asyncpg.CheckViolationError):
-            _run(
-                fresh_db,
-                "INSERT INTO historical_predictions (route_id, prediction_date, risk_score, color_code) "
-                f"VALUES {values}",
-            )
+            asyncio.run(_insert_history(url, [row]))
+
+
+def test_0003_downgrade_refuses_while_null_scores_exist(fresh_db):
+    cfg = _alembic_cfg(fresh_db)
+    command.upgrade(cfg, "head")
+    asyncio.run(_insert_history(_db_url(fresh_db), [(1, None, "gray"), (2, 30.0, "yellow")]))
+    with pytest.raises(RuntimeError, match="refusing to downgrade 0003"):
+        command.downgrade(cfg, "0002_drop_ascents_climbers")
+    # Nothing was deleted and the column is still nullable.
+    assert _fetch_row(fresh_db, "SELECT count(*) FROM historical_predictions") == [2]
+
+    _run(fresh_db, "DELETE FROM historical_predictions WHERE risk_score IS NULL")
     command.downgrade(cfg, "0002_drop_ascents_climbers")
-    assert _fetch_row(fresh_db, "SELECT count(*), bool_and(risk_score IS NOT NULL) FROM historical_predictions") == [1, True]
     assert _fetch_row(
         fresh_db,
         "SELECT is_nullable FROM information_schema.columns "
         "WHERE table_name = 'historical_predictions' AND column_name = 'risk_score'",
     ) == ["NO"]
+    assert _fetch_row(
+        fresh_db,
+        "SELECT count(*) FROM pg_constraint WHERE conname = 'historical_predictions_score_status_check'",
+    ) == [0]
 
 
 def test_models_no_longer_define_dropped_tables():

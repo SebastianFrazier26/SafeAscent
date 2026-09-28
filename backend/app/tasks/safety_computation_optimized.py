@@ -862,6 +862,7 @@ async def _save_to_historical(
 
     BATCH_SIZE = 5000  # Stay well under PostgreSQL's 65535 param limit (4 params per row)
     total_saved = 0
+    failed_batches = 0
     score_items = list(scores.items())
 
     for batch_start in range(0, len(score_items), BATCH_SIZE):
@@ -896,6 +897,7 @@ async def _save_to_historical(
         except Exception as e:
             logger.error(f"Failed to save batch to historical_predictions: {e}")
             await db.rollback()
+            failed_batches += 1
 
     logger.info(f"✓ Saved {total_saved:,} to historical_predictions for {target_date}")
 
@@ -911,6 +913,13 @@ async def _save_to_historical(
     except Exception as e:
         logger.error(f"Failed to purge old historical data: {e}")
         await db.rollback()
+
+    # Raised after the purge so one bad batch doesn't skip it; the task then fails loudly
+    # (healthchecks /fail) like the cache-count check, instead of logging and moving on.
+    if failed_batches:
+        raise RuntimeError(
+            f"{failed_batches} historical_predictions batch(es) failed to save for {target_date}"
+        )
 
 
 @celery_app.task(

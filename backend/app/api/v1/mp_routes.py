@@ -43,9 +43,11 @@ from app.services.weather_service import (
 from app.utils.time_utils import get_season
 from app.services.risk_bands import (
     INSUFFICIENT_DATA_COLOR,
+    INSUFFICIENT_DATA_MESSAGE,
     RISK_BAND_THRESHOLDS,
     cached_safety,
     color_code_for,
+    displayed_risk,
     valid_risk_score,
 )
 
@@ -162,31 +164,19 @@ def get_safety_color_code(risk_score: float) -> str:
 
 
 def _safety_response(route_id: int, route_name: str, date_str: str, risk_score: Optional[float]) -> MpRouteSafetyResponse:
-    if risk_score is None:
-        return MpRouteSafetyResponse(
-            route_id=route_id,
-            route_name=route_name,
-            target_date=date_str,
-            risk_score=None,
-            color_code=INSUFFICIENT_DATA_COLOR,
-            data_status="insufficient_data",
-        )
     return MpRouteSafetyResponse(
         route_id=route_id,
         route_name=route_name,
         target_date=date_str,
-        risk_score=risk_score,
-        color_code=color_code_for(risk_score),
-        data_status="ok",
+        **_rounded_risk_fields(risk_score),
     )
 
 
 def _rounded_risk_fields(risk_score: Optional[float]) -> dict:
-    """risk_score/color_code/data_status for analytics payloads; None means insufficient_data."""
-    if risk_score is None:
-        return {"risk_score": None, "color_code": INSUFFICIENT_DATA_COLOR, "data_status": "insufficient_data"}
-    stored = round(risk_score, 1)
-    return {"risk_score": stored, "color_code": color_code_for(stored), "data_status": "ok"}
+    """risk_score/color_code/data_status as every surface shows them (1 decimal, colour of
+    that value); None or a score that would show as 0.0 is insufficient_data."""
+    score, color_code, data_status = displayed_risk(risk_score)
+    return {"risk_score": score, "color_code": color_code, "data_status": data_status}
 
 
 async def get_route_with_location_coords(db: AsyncSession, mp_route_id: int):
@@ -1119,18 +1109,14 @@ async def get_risk_breakdown(
             "description": f"Climbing discipline similarity ({route.type} routes). "
                           f"Asymmetric weighting accounts for shared risk factors"
         })
-    else:
-        factors.append({
-            "name": "No Data",
-            "contribution": 0,
-            "description": "Insufficient accident data for risk calculation"
-        })
 
     return {
         "route_id": mp_route_id,
         "route_name": route.name,
         "target_date": target_date.isoformat(),
         **_rounded_risk_fields(prediction.risk_score),
+        # Insufficient: no factors at all (a zero-contribution "factor" read like a result).
+        **({"message": INSUFFICIENT_DATA_MESSAGE} if prediction.risk_score is None else {}),
         "num_contributing_accidents": prediction.num_contributing_accidents,
         "extreme_weather": extreme_weather,
         "factors": factors,
@@ -1385,7 +1371,7 @@ async def get_time_of_day_analysis(
             if not conditions and hourly_risk is None:
                 conditions.append("No risk estimate")
             elif not conditions:
-                band = color_code_for(hourly_risk)
+                band = displayed_risk(hourly_risk)[1]
                 if band == "green":
                     conditions.append("Good Conditions")
                 elif band == "yellow":
@@ -1463,7 +1449,7 @@ async def get_time_of_day_analysis(
             "climbing_windows": windows,
             "best_window": windows[0] if windows else None,
             "recommendation": (
-                "Not enough data to estimate risk for this route yet."
+                f"{INSUFFICIENT_DATA_MESSAGE}."
                 if base_risk is None
                 else (
                     f"Best window: {windows[0]['start_hour']:02d}:00-{windows[0]['end_hour']:02d}:00 "
@@ -1599,7 +1585,8 @@ async def get_historical_trends(
             predictions.append({
                 "date": row[0].isoformat(),
                 # Colour re-derived rather than trusting the stored column, so rows written
-                # under older band sets can never disagree with the live marker colour.
+                # under older band sets can never disagree with the live marker colour; rows
+                # stored as 0.0 before 0003 ("no evidence") read as insufficient. No rewrites.
                 **_rounded_risk_fields(stored_score),
             })
 
@@ -1616,12 +1603,14 @@ async def get_historical_trends(
             recent_avg = sum(risk_scores[-7:]) / 7
             older_avg = sum(risk_scores[:7]) / 7
 
+            # Windows are scored days, not calendar weeks: insufficient days carry no number.
+            window = "the latest 7 scored days vs the earliest 7 scored days"
             if recent_avg > older_avg + 5:
-                trend = {"direction": "increasing", "description": "Risk has increased over the past week"}
+                trend = {"direction": "increasing", "description": f"Risk is higher in {window}"}
             elif recent_avg < older_avg - 5:
-                trend = {"direction": "decreasing", "description": "Risk has decreased over the past week"}
+                trend = {"direction": "decreasing", "description": f"Risk is lower in {window}"}
             else:
-                trend = {"direction": "stable", "description": "Risk has remained relatively stable"}
+                trend = {"direction": "stable", "description": f"Risk is about the same in {window}"}
 
         return {
             "route_id": mp_route_id,

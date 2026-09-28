@@ -1,5 +1,6 @@
-"""Owner decision 2026-09-28: a route with no contributing evidence is "insufficient data"
-(null score, gray), never a 0.0 green. Interim until the Phase 3 similarity-based model,
+"""Owner decision 2026-09-28: a route with too little evidence (no contributing accident, or a
+raw score < 0.05 that would display as 0.0) is "insufficient data" (null score, gray), never a
+0.0 green. Interim until the Phase 3 similarity-based model,
 which can borrow evidence from characteristically similar routes anywhere.
 """
 from datetime import date
@@ -15,9 +16,10 @@ from app.schemas.mp_route import MpRouteSafetyResponse, SafetyScore
 from app.schemas.prediction import PredictionRequest, PredictionResponse
 from app.services.location_safety_computation import LocationBaseScore, compute_batch_route_scores
 from app.services.risk_bands import (
-    MIN_EVIDENCE_INFLUENCE,
+    INSUFFICIENT_DATA_MESSAGE,
+    MIN_ESTIMABLE_SCORE,
     cached_safety,
-    has_evidence,
+    estimable_score,
 )
 from app.services.safety_algorithm import SafetyPrediction
 from app.services.weather_similarity import WeatherPattern
@@ -63,21 +65,27 @@ def offline_predict(monkeypatch):
 
 # --- evidence rule ---------------------------------------------------------------------
 
+def test_owner_threshold_is_the_display_rounding_edge():
+    assert MIN_ESTIMABLE_SCORE == 0.05
+    assert INSUFFICIENT_DATA_MESSAGE == "Too little evidence to estimate risk yet"
+
+
 @pytest.mark.parametrize(
-    "count,total,expected",
+    "count,raw,expected",
     [
-        (0, None, False),
-        (0, 5.0, False),
-        (3, 0.0, False),
-        (3, MIN_EVIDENCE_INFLUENCE, False),
-        (3, float("nan"), False),
-        (3, MIN_EVIDENCE_INFLUENCE * 2, True),
-        (1, None, True),
-        (47, 6.8, True),
+        (0, 42.0, None),
+        (3, None, None),
+        (3, 0.0, None),
+        (3, 1e-9, None),
+        (3, 0.0499, None),
+        (3, float("nan"), None),
+        (3, 0.05, 0.05),
+        (47, 68.4, 68.4),
+        (1, 100.0, 100.0),
     ],
 )
-def test_has_evidence(count, total, expected):
-    assert has_evidence(count, total) is expected
+def test_estimable_score(count, raw, expected):
+    assert estimable_score(count, raw) == expected
 
 
 @pytest.mark.parametrize(
@@ -86,6 +94,11 @@ def test_has_evidence(count, total, expected):
         (INSUFFICIENT, (None, "gray", "insufficient_data")),
         ({"risk_score": 27.0, "color_code": "green"}, (27.0, "yellow", "ok")),
         ({"risk_score": 27.0, "color_code": "yellow", "data_status": "ok"}, (27.0, "yellow", "ok")),
+        # Pre-deploy entries stored a 0.0 green for no evidence; they read as insufficient.
+        ({"risk_score": 0.0, "color_code": "green"}, (None, "gray", "insufficient_data")),
+        ({"risk_score": 0.0, "color_code": "green", "data_status": "ok"}, (None, "gray", "insufficient_data")),
+        ({"risk_score": 0.04, "color_code": "green"}, (None, "gray", "insufficient_data")),
+        ({"risk_score": 0.1, "color_code": "green"}, (0.1, "green", "ok")),
         # No explicit status: a null score is a miss, never insufficient and never 0.
         ({"risk_score": None, "color_code": "gray"}, None),
         # Contradictions are misses.
@@ -154,18 +167,20 @@ async def test_predict_with_no_accidents_is_insufficient(monkeypatch, offline_pr
     assert body.color_code == "gray"
 
 
-async def test_predict_with_zero_total_influence_is_insufficient(monkeypatch, offline_predict):
+@pytest.mark.parametrize("raw", [0.0, 0.0499])
+async def test_predict_below_display_threshold_is_insufficient(monkeypatch, offline_predict, raw):
     zero = SafetyPrediction(
-        risk_score=0.0,
+        risk_score=raw,
         num_contributing_accidents=2,
         top_contributing_accidents=[],
-        metadata={"route_type": "trad", "search_date": "2026-07-15", "total_influence_sum": 0.0},
+        metadata={"route_type": "trad", "search_date": "2026-07-15", "total_influence_sum": raw / 7},
     )
     monkeypatch.setattr(predict_module, "calculate_safety_score_vectorized", lambda **_: zero)
     body = await predict_module.predict_route_safety(_request(), db=None, prefetched_weather=_weather())
     assert body.data_status == "insufficient_data"
     assert body.risk_score is None
     assert body.color_code == "gray"
+    assert body.metadata["message"] == INSUFFICIENT_DATA_MESSAGE
     # Counts stay truthful even when the score is withheld.
     assert body.num_contributing_accidents == 2
 
@@ -184,8 +199,10 @@ async def test_predict_far_away_accidents_are_insufficient(monkeypatch, offline_
 async def test_predict_with_evidence_is_unchanged(offline_predict):
     body = await predict_module.predict_route_safety(_request(), db=None, prefetched_weather=_weather())
     assert body.data_status == "ok"
-    # Captured on 1c5a30f (before this change) with the same fixture.
-    assert body.risk_score == pytest.approx(8.90009896995113, rel=1e-12)
+    # Raw value captured on 1c5a30f (before this change) with the same fixture: the formula
+    # is untouched; the response carries the 1-decimal value every surface shows.
+    assert body.metadata["raw_risk_score"] == 8.90009896995113
+    assert body.risk_score == 8.9
     assert body.color_code == "green"
     assert body.num_contributing_accidents == 2
 
@@ -209,14 +226,23 @@ def test_batch_route_with_no_contributing_accidents_is_insufficient():
     assert result[5] == INSUFFICIENT
 
 
-def test_batch_route_with_negligible_influence_is_insufficient():
-    base = LocationBaseScore(
+def _single_accident_base(influence: float) -> LocationBaseScore:
+    return LocationBaseScore(
         location_id=1, latitude=64.0, longitude=-150.0, elevation_m=None,
-        accident_base_influences={1: MIN_EVIDENCE_INFLUENCE / 10},
-        accident_metadata={1: {"route_type": "trad", "grade": None, "distance_km": 900.0, "days_ago": 10}},
+        accident_base_influences={1: influence},
+        accident_metadata={1: {"route_type": "trad", "grade": None, "distance_km": 90.0, "days_ago": 10}},
     )
-    result = compute_batch_route_scores(base, [{"route_id": 5, "route_type": "trad", "grade": None}])
+
+
+def test_batch_route_below_display_threshold_is_insufficient():
+    # trad/trad weight 1.0, no grades: raw = 0.007 * 7 = 0.049 < 0.05.
+    result = compute_batch_route_scores(_single_accident_base(0.007), [{"route_id": 5, "route_type": "trad", "grade": None}])
     assert result[5] == INSUFFICIENT
+
+
+def test_batch_route_at_display_threshold_is_scored():
+    result = compute_batch_route_scores(_single_accident_base(0.0072), [{"route_id": 5, "route_type": "trad", "grade": None}])
+    assert result[5] == {"risk_score": 0.1, "color_code": "green", "data_status": "ok"}
 
 
 def test_batch_route_with_evidence_is_unchanged():
@@ -263,6 +289,16 @@ def test_bulk_cache_writer_still_skips_null_score_without_status(monkeypatch):
     )
     assert written == 0
     pipe.setex.assert_not_called()
+
+
+async def test_historical_save_raises_after_failed_batches():
+    db = MagicMock()
+    db.execute = AsyncMock(side_effect=[RuntimeError("insert failed"), SimpleNamespace(rowcount=0)])
+    db.commit = AsyncMock()
+    db.rollback = AsyncMock()
+    with pytest.raises(RuntimeError, match="1 historical_predictions batch"):
+        await safety_computation_optimized._save_to_historical(db, {5: dict(INSUFFICIENT)}, date(2026, 9, 28))
+    db.rollback.assert_awaited()
 
 
 async def test_historical_save_writes_null_score_and_gray():
@@ -312,6 +348,31 @@ async def test_live_safety_insufficient_is_returned_and_cached_explicitly(monkey
 
     assert (body.risk_score, body.color_code, body.data_status) == (None, "gray", "insufficient_data")
     assert cached and cached[0]["data_status"] == "insufficient_data" and cached[0]["risk_score"] is None
+
+
+async def test_live_safety_returns_the_rounded_score_and_its_colour(monkeypatch):
+    monkeypatch.setattr(mp_routes, "cache_get", lambda _key: None)
+    monkeypatch.setattr(mp_routes, "cache_set", lambda *a, **k: True)
+    monkeypatch.setattr(mp_routes, "predict_route_safety", AsyncMock(return_value=SimpleNamespace(risk_score=24.96)))
+
+    body = await mp_routes.calculate_mp_route_safety(
+        7, target_date=date(2026, 9, 28), bypass_cache=False, db=_db_returning(_safety_route_result())
+    )
+
+    assert (body.risk_score, body.color_code, body.data_status) == (25.0, "yellow", "ok")
+
+
+async def test_live_safety_serves_stale_cached_zero_as_insufficient(monkeypatch):
+    monkeypatch.setattr(mp_routes, "cache_get", lambda _key: {"risk_score": 0.0, "color_code": "green", "status": "cached"})
+    predict = AsyncMock()
+    monkeypatch.setattr(mp_routes, "predict_route_safety", predict)
+
+    body = await mp_routes.calculate_mp_route_safety(
+        7, target_date=date(2026, 9, 28), bypass_cache=False, db=_db_returning(_safety_route_result())
+    )
+
+    predict.assert_not_awaited()
+    assert (body.risk_score, body.color_code, body.data_status) == (None, "gray", "insufficient_data")
 
 
 async def test_live_safety_serves_cached_insufficient_without_recompute(monkeypatch):
@@ -415,6 +476,7 @@ async def test_hourly_without_evidence_has_no_risk_and_unknown_climbability(monk
     assert body["base_daily_risk"] is None
     assert body["climbing_windows"] == []
     assert body["best_window"] is None
+    assert body["recommendation"] == INSUFFICIENT_DATA_MESSAGE + "."
     for hour in body["hourly_data"]:
         assert hour["risk_score"] is None
         assert hour["is_climbable"] is None
@@ -430,6 +492,8 @@ async def test_risk_breakdown_without_evidence_has_no_score(monkeypatch):
 
     assert body["risk_score"] is None
     assert body["data_status"] == "insufficient_data"
+    assert body["factors"] == []
+    assert body["message"] == INSUFFICIENT_DATA_MESSAGE
 
 
 async def test_historical_trends_reports_insufficient_days_without_scoring_them(monkeypatch):
@@ -442,15 +506,39 @@ async def test_historical_trends_reports_insufficient_days_without_scoring_them(
     result.fetchall.return_value = [
         (date(2026, 9, 1), None, "gray"),
         (date(2026, 9, 2), 30.0, "yellow"),
+        # Rows written before 0003 stored "no evidence" as 0.0 green: read as insufficient.
+        (date(2026, 9, 3), 0.0, "green"),
     ]
 
     body = await mp_routes.get_historical_trends(1, days=30, target_date=date(2026, 9, 4), db=_db_returning(result))
 
+    insufficient = {"risk_score": None, "color_code": "gray", "data_status": "insufficient_data"}
     assert body["historical_predictions"] == [
-        {"date": "2026-09-01", "risk_score": None, "color_code": "gray", "data_status": "insufficient_data"},
+        {"date": "2026-09-01", **insufficient},
         {"date": "2026-09-02", "risk_score": 30.0, "color_code": "yellow", "data_status": "ok"},
+        {"date": "2026-09-03", **insufficient},
     ]
     assert body["summary"] == {"avg_risk": 30.0, "min_risk": 30.0, "max_risk": 30.0}
+    assert body["days_available"] == 1
+
+
+async def test_historical_trend_compares_first_and_last_seven_scored_days(monkeypatch):
+    monkeypatch.setattr(
+        mp_routes,
+        "get_route_with_location_coords",
+        AsyncMock(return_value=SimpleNamespace(name="R", latitude=None, longitude=None)),
+    )
+    rows = [(date(2026, 8, d), 10.0, "green") for d in range(1, 8)]
+    rows += [(date(2026, 8, 8 + d), 0.0, "green") for d in range(5)]  # legacy no-evidence days
+    rows += [(date(2026, 8, 20 + d), 40.0, "yellow") for d in range(7)]
+    result = MagicMock()
+    result.fetchall.return_value = rows
+
+    body = await mp_routes.get_historical_trends(1, days=60, target_date=date(2026, 8, 30), db=_db_returning(result))
+
+    assert body["days_available"] == 14
+    assert body["trend"]["direction"] == "increasing"
+    assert "7 scored days" in body["trend"]["description"]
 
 
 # --- cache warming ---------------------------------------------------------------------

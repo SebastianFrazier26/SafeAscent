@@ -6,6 +6,7 @@ can only mean gray and gray can only mean a NULL score. NOT VALID: it guards eve
 write without scanning (or failing on) rows written before this change.
 """
 
+import sqlalchemy as sa
 from alembic import op
 
 revision = "0003_hist_insufficient_data"
@@ -25,7 +26,15 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Same convention as 0002: refuse rather than delete data. Insufficient days have no score
+    # to restore, so an operator must decide what happens to them before NOT NULL returns.
+    bind = op.get_bind()
+    nulls = bind.execute(
+        sa.text("SELECT count(*) FROM historical_predictions WHERE risk_score IS NULL")
+    ).scalar_one()
+    if nulls != 0:
+        raise RuntimeError(
+            f"refusing to downgrade 0003: {nulls} historical_predictions rows have a NULL risk_score"
+        )
     op.drop_constraint(CONSTRAINT, "historical_predictions", type_="check")
-    # Insufficient days carry no score to restore; NOT NULL cannot come back while they exist.
-    op.execute("DELETE FROM historical_predictions WHERE risk_score IS NULL")
     op.alter_column("historical_predictions", "risk_score", nullable=False)
