@@ -19,8 +19,6 @@ import pytest
 from alembic import command
 from alembic.config import Config
 
-from scripts.write_role_url import scram_verifier
-
 ADMIN_URL = os.environ.get("MIGRATIONS_TEST_ADMIN_URL")
 BACKEND = Path(__file__).resolve().parents[1]
 
@@ -45,14 +43,6 @@ async def _fetchrow(url: str, sql: str) -> list[object]:
     try:
         record = await conn.fetchrow(sql)
         return list(record) if record is not None else []
-    finally:
-        await conn.close()
-
-
-async def _fetchall(url: str, sql: str) -> list[str]:
-    conn = await asyncpg.connect(url)
-    try:
-        return [str(record[0]) for record in await conn.fetch(sql)]
     finally:
         await conn.close()
 
@@ -201,13 +191,20 @@ ROLES_DIR = BACKEND / "db" / "roles"
 # test sees PG16's automatic ADMIN grant to a role's creator, as prod will.
 OWNER_ROLE = "sa_test_owner"
 TEST_ROLES = ("migrator", "app", "analyst", OWNER_ROLE)
-PASSWORDS = {"owner": "test-owner-pw", "migrator": "test-migrator-pw", "app": "test-app-pw"}
+PASSWORDS = {
+    "owner": "test-owner-pw",
+    "migrator": "test-migrator-password-0123456789abcdef",
+    "app": "test-app-password-0123456789abcdef0123",
+}
+ROLE_PASSWORD_ENV = {"MIGRATOR_PASSWORD": PASSWORDS["migrator"], "APP_PASSWORD": PASSWORDS["app"]}
 
 ANALYST_FIXTURE_SQL = """
 CREATE ROLE analyst LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD 'test-analyst-pw';
 ALTER ROLE analyst SET default_transaction_read_only = on;
 GRANT USAGE ON SCHEMA public TO analyst;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO analyst;
+-- Prod's owner has this too (Neon rehearsal 2026-09-28); create_roles.sql must clear it.
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO analyst;
 """
 
 
@@ -241,9 +238,9 @@ def _role_url(dbname: str, role: str, password: str) -> str:
     return f"postgresql://{role}:{password}@{base}"
 
 
-def _psql(url: str, script: Path, env_extra: dict[str, str], *flags: str) -> subprocess.CompletedProcess[str]:
+def _psql(url: str, script: Path, env_extra: dict[str, str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [_require_psql(), url, "-X", "-q", *flags, "-f", str(script)],
+        [_require_psql(), url, "-X", "-q", "-f", str(script)],
         env={**os.environ, **env_extra},
         capture_output=True,
         text=True,
@@ -260,55 +257,43 @@ def _denied(url: str, sql: str) -> None:
         _as(url, sql)
 
 
-def _stat_statements_enabled(dbname: str) -> bool:
-    row = _fetch_row(dbname, "SELECT current_setting('shared_preload_libraries')")
-    return "pg_stat_statements" in str(row[0])
+def _owner_db(dbname: str) -> str:
+    _run(
+        dbname,
+        f"CREATE ROLE {OWNER_ROLE} LOGIN NOSUPERUSER CREATEROLE PASSWORD '{PASSWORDS['owner']}';"
+        f'ALTER DATABASE "{dbname}" OWNER TO {OWNER_ROLE};'
+        # PostGIS is not a trusted extension; on Neon it predates the owner's objects too.
+        "CREATE EXTENSION postgis;",
+    )
+    return _role_url(dbname, OWNER_ROLE, PASSWORDS["owner"])
+
+
+def _alembic_cfg_as(dbname: str, url: str) -> Config:
+    cfg = _alembic_cfg(dbname)
+    cfg.set_main_option("sqlalchemy.url", url.replace("postgresql://", "postgresql+asyncpg://", 1))
+    return cfg
 
 
 def test_role_scripts_create_least_privilege_roles(role_cleanup, fresh_db):
     _require_psql()
-    _run(
-        fresh_db,
-        f"CREATE ROLE {OWNER_ROLE} LOGIN NOSUPERUSER CREATEROLE PASSWORD '{PASSWORDS['owner']}';"
-        f'ALTER DATABASE "{fresh_db}" OWNER TO {OWNER_ROLE};'
-        # PostGIS is not a trusted extension; on Neon it predates the owner's objects too.
-        "CREATE EXTENSION postgis;",
-    )
-    owner_url = _role_url(fresh_db, OWNER_ROLE, PASSWORDS["owner"])
-    cfg = _alembic_cfg(fresh_db)
-    cfg.set_main_option("sqlalchemy.url", owner_url.replace("postgresql://", "postgresql+asyncpg://", 1))
-    command.upgrade(cfg, "head")
+    owner_url = _owner_db(fresh_db)
+    command.upgrade(_alembic_cfg_as(fresh_db, owner_url), "head")
     _as(owner_url, ANALYST_FIXTURE_SQL)
 
-    stats = _stat_statements_enabled(fresh_db)
-    if stats:
-        _run(fresh_db, "CREATE EXTENSION pg_stat_statements; SELECT pg_stat_statements_reset();")
-
-    verifiers = {role: scram_verifier(PASSWORDS[role]) for role in ("migrator", "app")}
-    created = _psql(
-        owner_url,
-        ROLES_DIR / "create_roles.sql",
-        {"MIGRATOR_PASSWORD_SCRAM": verifiers["migrator"], "APP_PASSWORD_SCRAM": verifiers["app"]},
-        "--echo-queries",
-    )
+    created = _psql(owner_url, ROLES_DIR / "create_roles.sql", ROLE_PASSWORD_ENV)
     assert created.returncode == 0, created.stderr
-    sent = created.stdout + created.stderr
-    assert "CREATE ROLE migrator" in sent
-    assert verifiers["migrator"] in sent and verifiers["app"] in sent
+    assert "roles migrator and app created" in created.stdout
     for plaintext in (PASSWORDS["migrator"], PASSWORDS["app"]):
-        assert plaintext not in sent
+        assert plaintext not in created.stdout + created.stderr
 
     stored = _fetch_row(
         fresh_db,
         "SELECT (SELECT rolpassword FROM pg_authid WHERE rolname = 'migrator'),"
         " (SELECT rolpassword FROM pg_authid WHERE rolname = 'app')",
     )
-    assert stored == [verifiers["migrator"], verifiers["app"]]
-    if stats:
-        texts = asyncio.run(_fetchall(_db_url(fresh_db), "SELECT query FROM pg_stat_statements"))
-        assert any("CREATE ROLE" in t for t in texts)
-        for plaintext in (PASSWORDS["migrator"], PASSWORDS["app"]):
-            assert not any(plaintext in t for t in texts)
+    for secret in stored:
+        assert str(secret).startswith("SCRAM-SHA-256$")
+    assert not {PASSWORDS["migrator"], PASSWORDS["app"]} & set(map(str, stored))
 
     verified = _psql(owner_url, ROLES_DIR / "verify_roles.sql", {})
     assert verified.returncode == 0, verified.stdout + verified.stderr
@@ -357,17 +342,69 @@ def test_role_scripts_create_least_privilege_roles(role_cleanup, fresh_db):
     assert "nobody can SET or INHERIT app" in stray.stderr
 
 
-def test_create_roles_refuses_plaintext_in_the_scram_variables(role_cleanup, fresh_db):
+def test_stamp_then_revoke_alembic_version_passes_verify(role_cleanup, fresh_db):
+    # Prod order (runbook Task 8): roles first on a pre-Alembic schema, then migrator stamps,
+    # which creates alembic_version under migrator's default SELECT grant to app.
+    _require_psql()
+    owner_url = _owner_db(fresh_db)
+    command.upgrade(_alembic_cfg_as(fresh_db, owner_url), "0001_baseline")
+    _as(owner_url, "DROP TABLE alembic_version")
+    _as(owner_url, ANALYST_FIXTURE_SQL)
+    created = _psql(owner_url, ROLES_DIR / "create_roles.sql", ROLE_PASSWORD_ENV)
+    assert created.returncode == 0, created.stderr
+    verified = _psql(owner_url, ROLES_DIR / "verify_roles.sql", {})
+    assert verified.returncode == 0, verified.stdout + verified.stderr
+
+    migrator_url = _role_url(fresh_db, "migrator", PASSWORDS["migrator"])
+    cfg = _alembic_cfg_as(fresh_db, migrator_url)
+    command.stamp(cfg, "0001_baseline")
+    command.upgrade(cfg, "head")
+    command.check(cfg)
+
+    unrevoked = _psql(owner_url, ROLES_DIR / "verify_roles.sql", {})
+    assert unrevoked.returncode != 0
+    assert "app cannot read or write alembic_version" in unrevoked.stderr
+
+    _as(migrator_url, "REVOKE ALL ON public.alembic_version FROM app")
+    verified = _psql(owner_url, ROLES_DIR / "verify_roles.sql", {})
+    assert verified.returncode == 0, verified.stdout + verified.stderr
+    assert "ALL ROLE CHECKS PASSED" in verified.stdout
+    app_url = _role_url(fresh_db, "app", PASSWORDS["app"])
+    _denied(app_url, "SELECT * FROM alembic_version")
+    _as(app_url, "SELECT count(*) FROM historical_predictions")
+
+
+FAKE_VERIFIER = "SCRAM-SHA-256$4096:c2FsdHNhbHRzYWx0c2FsdA==$c3RvcmVka2V5:c2VydmVya2V5"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [FAKE_VERIFIER, "md5" + "0123456789abcdef" * 2, "short-plaintext-pw"],
+    ids=["scram-verifier", "md5-hash", "too-short"],
+)
+def test_create_roles_refuses_verifiers_and_short_passwords(role_cleanup, fresh_db, bad):
     _require_psql()
     _run(fresh_db, ANALYST_FIXTURE_SQL)
-    result = _psql(
-        _db_url(fresh_db),
-        ROLES_DIR / "create_roles.sql",
-        {"MIGRATOR_PASSWORD_SCRAM": "plain-migrator-pw", "APP_PASSWORD_SCRAM": "plain-app-pw"},
+    result = _psql(_db_url(fresh_db), ROLES_DIR / "create_roles.sql", {**ROLE_PASSWORD_ENV, "APP_PASSWORD": bad})
+    assert result.returncode != 0
+    assert "must be plaintext passwords of at least 32 characters" in result.stderr
+    assert bad not in result.stdout + result.stderr
+    assert _fetch_row(fresh_db, "SELECT count(*) FROM pg_roles WHERE rolname IN ('migrator', 'app')") == [0]
+
+
+def test_create_roles_requires_both_passwords(role_cleanup, fresh_db):
+    _require_psql()
+    _run(fresh_db, ANALYST_FIXTURE_SQL)
+    env = {k: v for k, v in os.environ.items() if k not in ROLE_PASSWORD_ENV}
+    result = subprocess.run(
+        [_require_psql(), _db_url(fresh_db), "-X", "-q", "-f", str(ROLES_DIR / "create_roles.sql")],
+        env={**env, "MIGRATOR_PASSWORD": PASSWORDS["migrator"]},
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert result.returncode != 0
-    assert "SCRAM-SHA-256 verifiers" in result.stderr
-    assert "plain-migrator-pw" not in result.stdout + result.stderr
+    assert "APP_PASSWORD is not set" in result.stderr
     assert _fetch_row(fresh_db, "SELECT count(*) FROM pg_roles WHERE rolname IN ('migrator', 'app')") == [0]
 
 
