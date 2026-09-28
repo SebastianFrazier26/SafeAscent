@@ -65,6 +65,10 @@ DATE_RETRY_BACKOFF_SECONDS = 20
 CACHE_POPULATION_LOCK_KEY = "safety:cache_population:optimized:lock"
 CACHE_POPULATION_LOCK_TTL_SECONDS = 6 * 60 * 60  # 6 hours
 CACHE_POPULATION_STALE_AFTER_SECONDS = 30 * 60   # 30 minutes
+# Below the 6h lock TTL and broker visibility_timeout, so a hung run is killed
+# before its lock could expire and let a redelivered message start a duplicate.
+NIGHTLY_SOFT_TIME_LIMIT_SECONDS = 5 * 60 * 60          # 5 hours
+NIGHTLY_TIME_LIMIT_SECONDS = NIGHTLY_SOFT_TIME_LIMIT_SECONDS + 30 * 60  # 5.5 hours
 OPTIMIZED_TASK_NAME = "app.tasks.safety_computation_optimized.compute_daily_safety_scores_optimized"
 
 
@@ -96,6 +100,8 @@ def _parse_lock_payload(raw_value: Optional[str]) -> Dict[str, Optional[object]]
 
 def _get_active_optimized_task_ids() -> Optional[set[str]]:
     """Return active optimized task IDs, or None when no worker answered the inspect."""
+    # Census, not per-replica identification: this treats "no other active id" as "no
+    # other run anywhere," which only holds with numReplicas=1 (backend/railway-worker.toml).
     try:
         inspect = celery_app.control.inspect(timeout=1)
         active_workers = inspect.active()
@@ -904,7 +910,11 @@ async def _save_to_historical(
         await db.rollback()
 
 
-@celery_app.task(name="app.tasks.safety_computation_optimized.compute_daily_safety_scores_optimized")
+@celery_app.task(
+    name="app.tasks.safety_computation_optimized.compute_daily_safety_scores_optimized",
+    soft_time_limit=NIGHTLY_SOFT_TIME_LIMIT_SECONDS,
+    time_limit=NIGHTLY_TIME_LIMIT_SECONDS,
+)
 def compute_daily_safety_scores_optimized():
     """
     Celery task for optimized daily safety score computation.

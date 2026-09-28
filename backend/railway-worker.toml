@@ -9,5 +9,6 @@ dockerfilePath = "Dockerfile"
 [deploy]
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 10
+# Also relied on by the nightly lock's stale-lock inspect() census (safety_computation_optimized.py).
 numReplicas = 1
 startCommand = "celery -A app.celery_app worker --loglevel=info --concurrency=2 -E"

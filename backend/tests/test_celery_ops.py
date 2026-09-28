@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import fakeredis
 import pytest
+from celery.exceptions import SoftTimeLimitExceeded
 
 import app.tasks.ops as ops
 import app.tasks.safety_computation_optimized as nightly
@@ -76,6 +77,32 @@ def test_nightly_skipped_run_sends_no_pings(nightly_pings, monkeypatch):
     monkeypatch.setattr(nightly, "_acquire_population_lock", lambda task_id: (False, None))
     assert nightly.compute_daily_safety_scores_optimized()["status"] == "skipped"
     assert nightly_pings == []
+
+
+def test_nightly_time_limits_are_below_lock_ttl_and_visibility_timeout():
+    task = celery_app.tasks[nightly.OPTIMIZED_TASK_NAME]
+    assert task.soft_time_limit == nightly.NIGHTLY_SOFT_TIME_LIMIT_SECONDS
+    assert task.time_limit == nightly.NIGHTLY_TIME_LIMIT_SECONDS
+    assert task.soft_time_limit < task.time_limit
+    assert task.time_limit < nightly.CACHE_POPULATION_LOCK_TTL_SECONDS
+    visibility_timeout = celery_app.conf.broker_transport_options["visibility_timeout"]
+    assert task.time_limit < visibility_timeout
+
+
+def test_nightly_soft_time_limit_exceeded_sends_fail_releases_lock_and_reraises(
+    nightly_pings, monkeypatch
+):
+    released: list[str | None] = []
+    monkeypatch.setattr(nightly, "_release_population_lock", lambda token: released.append(token))
+
+    async def hangs() -> dict[str, str]:
+        raise SoftTimeLimitExceeded()
+
+    monkeypatch.setattr(nightly, "_compute_all_dates_async", hangs)
+    with pytest.raises(SoftTimeLimitExceeded):
+        nightly.compute_daily_safety_scores_optimized()
+    assert nightly_pings == [(NIGHTLY_URL, "/start"), (NIGHTLY_URL, "/fail")]
+    assert released == ["token"]
 
 
 def test_worker_service_does_not_embed_beat():

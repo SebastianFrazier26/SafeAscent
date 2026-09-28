@@ -79,7 +79,7 @@ All nine are **DECIDED** by the owner.
 **Root cause.** The worker ran `worker --beat --concurrency=1`. Its consumer hung silently from 2026-08-27, while the embedded beat kept publishing the 02:00 UTC task. Each message passed `expires=28800` and was discarded with nothing logged above INFO.
 
 - **Split.** Two Railway services run from one image:
-  - `worker`: `celery -A app.celery_app worker --concurrency=1 -E`.
+  - `worker`: `celery -A app.celery_app worker --concurrency=2 -E` (owner decision 2026-09-28: two slots, so `beat_heartbeat` has a free one while the nightly holds the other).
   - `beat`: `celery -A app.celery_app beat`, one replica only, configured by the new `backend/railway-beat.toml`.
 
   Delete `run_celery_*.sh`.
