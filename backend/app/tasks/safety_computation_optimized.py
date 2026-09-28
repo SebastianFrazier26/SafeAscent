@@ -94,14 +94,17 @@ def _parse_lock_payload(raw_value: Optional[str]) -> Dict[str, Optional[object]]
     return {"task_id": task_id, "acquired_at": None}
 
 
-def _get_active_optimized_task_ids() -> set[str]:
-    """Return active optimized task IDs currently executing in Celery workers."""
+def _get_active_optimized_task_ids() -> Optional[set[str]]:
+    """Return active optimized task IDs, or None when no worker answered the inspect."""
     try:
         inspect = celery_app.control.inspect(timeout=1)
-        active_workers = inspect.active() or {}
+        active_workers = inspect.active()
     except Exception as exc:
-        logger.warning("Could not inspect Celery active tasks during lock check: %s", exc)
-        return set()
+        # Type only: broker errors can echo connection details.
+        logger.warning("Could not inspect Celery active tasks during lock check: %s", type(exc).__name__)
+        return None
+    if not active_workers:
+        return None
 
     active_task_ids: set[str] = set()
     for worker_tasks in active_workers.values():
@@ -135,7 +138,7 @@ def _delete_lock_if_unchanged(lock_value: str) -> bool:
         return False
 
 
-def _try_recover_stale_lock(existing_lock_value: str) -> bool:
+def _try_recover_stale_lock(existing_lock_value: str, task_id: str) -> bool:
     """Recover lock if owner is not active and lock appears stale/terminal."""
     client = get_redis_client()
     if client is None:
@@ -147,10 +150,18 @@ def _try_recover_stale_lock(existing_lock_value: str) -> bool:
     lock_ttl_seconds = client.ttl(CACHE_POPULATION_LOCK_KEY)
     now_ts = int(time.time())
 
+    # Fail closed: with two worker slots an unanswered inspect may hide a live run, and
+    # the 6h lock TTL already frees the lock of a holder that crashed.
     active_ids = _get_active_optimized_task_ids()
-    if owner_task_id and owner_task_id in active_ids:
+    if active_ids is None:
+        logger.warning(
+            "Keeping optimized cache lock: could not confirm via inspect that no other run is active "
+            "(owner_task_id=%s, task_id=%s)",
+            owner_task_id,
+            task_id,
+        )
         return False
-    if not owner_task_id and active_ids:
+    if active_ids - {task_id}:
         return False
 
     stale_reason = None
@@ -214,7 +225,7 @@ def _acquire_population_lock(task_id: str) -> Tuple[bool, Optional[str]]:
         return True, token
 
     existing = client.get(CACHE_POPULATION_LOCK_KEY)
-    if existing and _try_recover_stale_lock(existing):
+    if existing and _try_recover_stale_lock(existing, task_id):
         reacquired = client.set(
             CACHE_POPULATION_LOCK_KEY,
             token,

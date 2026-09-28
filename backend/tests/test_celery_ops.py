@@ -1,5 +1,9 @@
+import json
+import logging
+import time
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 
 import fakeredis
 import pytest
@@ -113,3 +117,60 @@ def test_population_lock_blocks_a_second_concurrent_nightly_run(monkeypatch):
 
     assert nightly._acquire_population_lock("first")[0] is True
     assert nightly._acquire_population_lock("second") == (False, None)
+
+
+class _Inspect:
+    def __init__(self, active: object) -> None:
+        self._active = active
+
+    def active(self) -> object:
+        if isinstance(self._active, Exception):
+            raise self._active
+        return self._active
+
+
+@pytest.fixture
+def stale_lock(monkeypatch) -> fakeredis.FakeRedis:
+    client = fakeredis.FakeRedis(decode_responses=True)
+    stale = json.dumps({"task_id": "dead-owner", "token": "t", "acquired_at": int(time.time()) - 3600})
+    client.set(nightly.CACHE_POPULATION_LOCK_KEY, stale, ex=nightly.CACHE_POPULATION_LOCK_TTL_SECONDS)
+    monkeypatch.setattr(nightly, "get_redis_client", lambda: client)
+    monkeypatch.setattr(nightly.celery_app, "AsyncResult", lambda task_id: SimpleNamespace(state="PENDING"))
+    # fakeredis has no Lua; the compare-and-delete is replaced by a plain delete.
+    monkeypatch.setattr(
+        nightly, "_delete_lock_if_unchanged", lambda value: bool(client.delete(nightly.CACHE_POPULATION_LOCK_KEY))
+    )
+    return client
+
+
+def _inspect_returns(monkeypatch, active: object) -> None:
+    monkeypatch.setattr(nightly.celery_app.control, "inspect", lambda timeout=1: _Inspect(active))
+
+
+def _nightly(task_id: str) -> dict[str, str]:
+    return {"name": nightly.OPTIMIZED_TASK_NAME, "id": task_id}
+
+
+@pytest.mark.parametrize(
+    "active",
+    [RuntimeError("broker unreachable"), None, {}],
+    ids=["inspect-raises", "no-reply", "empty-reply"],
+)
+def test_stale_lock_is_not_recovered_when_workers_cannot_be_inspected(stale_lock, monkeypatch, caplog, active):
+    _inspect_returns(monkeypatch, active)
+    with caplog.at_level(logging.WARNING, logger=nightly.logger.name):
+        assert nightly._acquire_population_lock("second") == (False, None)
+    assert "dead-owner" in stale_lock.get(nightly.CACHE_POPULATION_LOCK_KEY)
+    assert "could not confirm" in caplog.text
+
+
+def test_stale_lock_is_not_recovered_while_another_nightly_is_active(stale_lock, monkeypatch):
+    _inspect_returns(monkeypatch, {"worker@a": [_nightly("second"), _nightly("other-run")]})
+    assert nightly._acquire_population_lock("second") == (False, None)
+
+
+def test_stale_lock_is_recovered_when_inspect_shows_no_other_nightly(stale_lock, monkeypatch):
+    _inspect_returns(monkeypatch, {"worker@a": [_nightly("second")], "worker@b": []})
+    acquired, token = nightly._acquire_population_lock("second")
+    assert acquired is True
+    assert stale_lock.get(nightly.CACHE_POPULATION_LOCK_KEY) == token
