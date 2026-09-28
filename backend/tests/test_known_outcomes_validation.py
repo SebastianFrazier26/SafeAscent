@@ -44,22 +44,25 @@ class TestHighRiskVsLowRisk:
         longs_data = longs_peak.json()
         florida_data = florida.json()
 
-        # Longs Peak should have significantly higher risk
-        assert longs_data["risk_score"] > florida_data["risk_score"], \
-            f"Longs Peak ({longs_data['risk_score']}) should be riskier than Florida ({florida_data['risk_score']})"
-
         # Longs Peak should have high risk (>60)
+        assert longs_data["data_status"] == "ok"
         assert longs_data["risk_score"] > 60, \
             f"Longs Peak should show high risk (got {longs_data['risk_score']})"
 
-        # Florida should have low-moderate risk (<50)
-        assert florida_data["risk_score"] < 50, \
-            f"Florida should show low risk (got {florida_data['risk_score']})"
+        # Florida may have no contributing evidence at all; then the score is withheld
+        # (insufficient_data), never a safe 0. Only a real score is compared.
+        if florida_data["data_status"] == "insufficient_data":
+            assert florida_data["risk_score"] is None
+        else:
+            assert florida_data["data_status"] == "ok"
+            assert florida_data["risk_score"] < 50, \
+                f"Florida should show low risk (got {florida_data['risk_score']})"
+            assert longs_data["risk_score"] > florida_data["risk_score"], \
+                f"Longs Peak ({longs_data['risk_score']}) should be riskier than Florida ({florida_data['risk_score']})"
 
         print("\n✅ High-Risk vs Low-Risk Comparison:")
         print(f"   Longs Peak: Risk={longs_data['risk_score']:.1f}, Accidents={longs_data['num_contributing_accidents']}")
-        print(f"   Florida:    Risk={florida_data['risk_score']:.1f}, Accidents={florida_data['num_contributing_accidents']}")
-        print(f"   Risk Difference: {longs_data['risk_score'] - florida_data['risk_score']:.1f} points")
+        print(f"   Florida:    Risk={florida_data['risk_score']}, Status={florida_data['data_status']}, Accidents={florida_data['num_contributing_accidents']}")
 
     def test_mount_rainier_vs_smith_rock(self, test_client):
         """Mount Rainier (alpine) should score higher than Smith Rock (sport)."""

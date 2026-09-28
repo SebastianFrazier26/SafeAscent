@@ -10,6 +10,15 @@ from datetime import datetime
 import time
 import statistics
 
+
+def _assert_scored_or_insufficient(data):
+    # Sparse areas may or may not have contributing evidence; a withheld score is never 0.
+    if data["data_status"] == "insufficient_data":
+        assert data["risk_score"] is None
+    else:
+        assert data["data_status"] == "ok"
+        assert 0 <= data["risk_score"] <= 100
+
 # needs_data: class needs a populated database or live Redis/network; deselected by
 # default (pyproject addopts). Applied per class below — TestErrorHandlingRobustness
 # tests only request validation and need neither.
@@ -55,8 +64,7 @@ class TestExtremeLocations:
         assert response.status_code == 200
         data = response.json()
 
-        # Should handle sparse data gracefully
-        assert 0 <= data["risk_score"] <= 100
+        _assert_scored_or_insufficient(data)
 
         print("\n✅ Hawaii (Mauna Kea) Prediction:")
         print(f"   Risk Score: {data['risk_score']}/100")
@@ -103,8 +111,7 @@ class TestSparseDataScenarios:
         assert response.status_code == 200
         data = response.json()
 
-        # Should handle gracefully even with few accidents
-        assert 0 <= data["risk_score"] <= 100
+        _assert_scored_or_insufficient(data)
 
         print("\n✅ Remote Wyoming Prediction:")
         print(f"   Accidents Found: {data['num_contributing_accidents']}")
@@ -124,13 +131,14 @@ class TestSparseDataScenarios:
         assert response.status_code == 200
         data = response.json()
 
-        # Should return prediction even with zero nearby accidents
-        assert 0 <= data["risk_score"] <= 100
+        # No evidence within 100 km of open ocean: the score is withheld, never a safe 0.
+        assert data["data_status"] == "insufficient_data"
+        assert data["risk_score"] is None
 
         print("\n✅ Ocean Location Prediction:")
         print(f"   Accidents Found: {data['num_contributing_accidents']}")
         print(f"   Risk Score: {data['risk_score']}/100")
-        print("   Note: Zero/few accidents expected - algorithm should handle gracefully")
+        print("   Note: zero accidents expected - insufficient_data, no score")
 
     def test_very_large_search_radius(self, test_client):
         """Test with maximum search radius to find distant accidents."""
