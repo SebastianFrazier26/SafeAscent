@@ -109,7 +109,7 @@ MVP-1 therefore needs elevation and climate normals in `route_static_features` (
 - The Ascents tab uses the same fields.
 - The old response `confidence` (0-100) is still advertised in the `predict.py:89-91` docstring but no longer exists in the schema. Delete that stale text.
 
-### 3.4 Replacing "accidents per 1,000 ascents" (pending owner review)
+### 3.4 Replacing "accidents per 1,000 ascents" (owner decision 2026-09-28)
 
 MP ticks may be displayed (D5), but they remain a partial, capped sample, not exposure (§1B).
 
