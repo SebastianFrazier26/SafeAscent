@@ -23,7 +23,7 @@
 - Migrations run as an explicit step with `MIGRATOR_DATABASE_URL`, never at app startup. Prod is `alembic stamp 0001_baseline`, then `alembic upgrade head`.
 - Phase 1 does not touch row contents. `routes`/`mountains` and the `accidents.route_id`/`accidents.mountain_id` FKs stay (Phase 2a drops them).
 - The live weather table is `weather`; `weather_patterns` is a stale doc name only.
-- healthchecks.io free tier; nightly check = 24h period + 4h grace; beat check = 15 min period + 15 min grace. When a ping URL is unset, pings are skipped with a WARNING (no outbound calls in local runs or CI).
+- healthchecks.io free tier; nightly check = 24h period + 4h grace; beat check = 15 min period + 60 min grace (owner decision 2026-09-28; was 15 + 15). When a ping URL is unset, pings are skipped with a WARNING (no outbound calls in local runs or CI).
 - No scraper code in any repo (D9). No Mountain Project data in fixtures, docs, or commits; MP ice/mixed route facts may only be displayed.
 - Comments are load-bearing only (why, not what). Match the density of the file being edited.
 - `CHANGELOG.md` gets one dated entry per PR, in the existing Keep a Changelog format.
@@ -2268,7 +2268,7 @@ def test_worker_service_does_not_embed_beat():
     command = deploy["startCommand"].split()
     assert command[:4] == ["celery", "-A", "app.celery_app", "worker"]
     assert "--beat" not in command and "-B" not in command
-    assert "-E" in command and "--concurrency=1" in command
+    assert "-E" in command and "--concurrency=2" in command
 
 
 def test_beat_service_is_single_replica():
@@ -2322,8 +2322,8 @@ In `celery_app.conf.update(...)`, after `task_reject_on_worker_lost=True,` add:
 In `celery_app.conf.beat_schedule`, after the `"compute-daily-safety-scores"` entry add:
 
 ```python
-    # Dead-man's switch for the consumer: an alert fires within 30 min (15 min period +
-    # 15 min grace on healthchecks.io) instead of at the next nightly run.
+    # Dead-man's switch for the consumer: an alert fires within 75 min (15 min period +
+    # 60 min grace on healthchecks.io) instead of at the next nightly run.
     "beat-heartbeat": {
         "task": "app.tasks.ops.beat_heartbeat",
         "schedule": 900.0,
@@ -2394,7 +2394,7 @@ dockerfilePath = "Dockerfile"
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 10
 numReplicas = 1
-startCommand = "celery -A app.celery_app worker --loglevel=info --concurrency=1 -E"
+startCommand = "celery -A app.celery_app worker --loglevel=info --concurrency=2 -E"
 ```
 
 `backend/railway-beat.toml`:
@@ -2592,7 +2592,7 @@ PR6 is ready for review and `/commitandpush`. Task 14 follows the merge.
 
 - [ ] **Step 1 (owner): healthchecks.io checks** (dashboard at healthchecks.io)
   - Check `safeascent-nightly`: Simple schedule, **Period 1 day, Grace 4 hours**. Copy its ping URL.
-  - Check `safeascent-beat`: **Period 15 minutes, Grace 15 minutes**. Copy its ping URL.
+  - Check `safeascent-beat`: **Period 15 minutes, Grace 60 minutes**. Copy its ping URL.
   - Integrations: email (and phone push if wanted) to the owner.
 
 - [ ] **Step 2 (owner): Railway variables** (dashboard; not the CLI, so the URLs stay out of shell history). On the `worker` service set `HEALTHCHECKS_NIGHTLY_URL` and `HEALTHCHECKS_BEAT_URL` to the two ping URLs. The tasks run on the worker; `beat` and `api` do not need them.
@@ -2609,7 +2609,7 @@ curl -s https://api.safeascent.us/health/worker
 Expected: `200` and `"status":"ok"`, with `last_heartbeat_age_seconds` under 40. The beat check on healthchecks.io turns green within 15 min.
 
 - [ ] **Step 5 (owner): Staging drills (spec)**
-  1. Stop the `worker` service in Railway. Within ~2 min, `/health/worker` returns `503`. Within 30 min, healthchecks.io emails that `safeascent-beat` is down. Restart the worker; both recover.
+  1. Stop the `worker` service in Railway. Within ~2 min, `/health/worker` returns `503`. Within 75 min, healthchecks.io emails that `safeascent-beat` is down. Restart the worker; both recover.
   2. Pause the worker (stop it), then send a short-lived task from a local shell pointed at the prod broker. `CELERY_BROKER_URL` comes from the Railway dashboard, pasted into a gitignored `backend/.env.broker`:
      ```bash
      cd /Users/sebastianfrazier/Developer/SafeAscent/backend
@@ -4184,7 +4184,7 @@ Backend (run from `backend/`):
 - `uv run mypy app scripts`: types (strict on the allowlist in `pyproject.toml`)
 - `uv run alembic upgrade head`: migrations. Needs `MIGRATOR_DATABASE_URL`. Never runs on app startup.
 - `uv run uvicorn app.main:app --reload`: API
-- `uv run celery -A app.celery_app worker --concurrency=1 -E` and `uv run celery -A app.celery_app beat`: background jobs
+- `uv run celery -A app.celery_app worker --concurrency=2 -E` and `uv run celery -A app.celery_app beat`: background jobs
 
 Frontend (run from `frontend/`): `npm ci`, `npm run dev`, `npm test` (watch), `npm run test:run`, `npm run lint`, `npm run typecheck`, `npm run build`.
 
@@ -4333,7 +4333,7 @@ Keep Part A's CI / "Wait for CI" / branch-protection section **verbatim** (it wa
 | Service | Config | Start command | Notes |
 |---|---|---|---|
 | `api` | `backend/railway.toml` | `uvicorn app.main:app` (Dockerfile default) | Health: `/health`; worker liveness: `/health/worker` |
-| `worker` | `backend/railway-worker.toml` | `celery -A app.celery_app worker --concurrency=1 -E` | Runs the nightly job and the beat heartbeat |
+| `worker` | `backend/railway-worker.toml` | `celery -A app.celery_app worker --concurrency=2 -E` | Runs the nightly job and the beat heartbeat |
 | `beat` | `backend/railway-beat.toml` | `celery -A app.celery_app beat` | Exactly one replica |
 | `frontend` | `frontend/railway.toml` | nginx serving the Vite build | `MAINTENANCE_MODE` build arg serves the maintenance page |
 
@@ -4362,7 +4362,7 @@ At 02:00 UTC, beat enqueues `compute_daily_safety_scores_optimized` (expires aft
 ## Alerts
 
 - `safeascent-nightly`: 24h period, 4h grace.
-- `safeascent-beat`: 15 min period, 15 min grace. A dead consumer alerts within 30 min.
+- `safeascent-beat`: 15 min period, 60 min grace. A dead consumer alerts within 75 min.
 ```
 
 - [ ] **Step 3: Frontend README drift**
@@ -4382,7 +4382,7 @@ flowchart LR
   user --> api[api<br/>FastAPI]
   fe -->|/api/v1| api
   beat[beat<br/>Celery beat, 1 replica] -->|enqueue| redis[(Redis<br/>broker + cache)]
-  redis --> worker[worker<br/>Celery, concurrency 1]
+  redis --> worker[worker<br/>Celery, concurrency 2]
   worker -->|scores| redis
   worker -->|historical_predictions| neon[(Neon Postgres + PostGIS)]
   api --> redis

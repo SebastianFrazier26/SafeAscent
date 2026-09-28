@@ -67,7 +67,7 @@ services:
 
   worker:
     <<: *backend
-    command: celery -A app.celery_app worker --loglevel=info --concurrency=1 -E
+    command: celery -A app.celery_app worker --loglevel=info --concurrency=2 -E
 
   beat:
     <<: *backend

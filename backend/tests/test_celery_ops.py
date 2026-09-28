@@ -1,6 +1,7 @@
 import tomllib
 from pathlib import Path
 
+import fakeredis
 import pytest
 
 import app.tasks.ops as ops
@@ -78,10 +79,37 @@ def test_worker_service_does_not_embed_beat():
     command = deploy["startCommand"].split()
     assert command[:4] == ["celery", "-A", "app.celery_app", "worker"]
     assert "--beat" not in command and "-B" not in command
-    assert "-E" in command and "--concurrency=1" in command
+    assert "-E" in command and "--concurrency=2" in command
 
 
 def test_beat_service_is_single_replica():
     deploy = tomllib.loads((BACKEND / "railway-beat.toml").read_text())["deploy"]
     assert deploy["numReplicas"] == 1
     assert deploy["startCommand"].split()[:4] == ["celery", "-A", "app.celery_app", "beat"]
+
+
+def test_nightly_still_returns_result_when_ping_internals_raise(monkeypatch):
+    def broken_client(*args, **kwargs):
+        raise RuntimeError("unexpected client failure")
+
+    monkeypatch.setattr("app.healthchecks.httpx.Client", broken_client)
+    monkeypatch.setattr(nightly.settings, "HEALTHCHECKS_NIGHTLY_URL", NIGHTLY_URL)
+    monkeypatch.setattr(nightly, "_acquire_population_lock", lambda task_id: (True, "token"))
+    monkeypatch.setattr(nightly, "_release_population_lock", lambda token: None)
+
+    async def ok() -> dict[str, str]:
+        return {"status": "completed"}
+
+    monkeypatch.setattr(nightly, "_compute_all_dates_async", ok)
+    assert nightly.compute_daily_safety_scores_optimized() == {"status": "completed"}
+
+
+def test_population_lock_blocks_a_second_concurrent_nightly_run(monkeypatch):
+    # The worker runs two slots, so a second nightly message can start while the
+    # first is mid-run; the Redis SET NX lock must turn it into a skip.
+    client = fakeredis.FakeRedis(decode_responses=True)
+    monkeypatch.setattr(nightly, "get_redis_client", lambda: client)
+    monkeypatch.setattr(nightly, "_get_active_optimized_task_ids", lambda: {"first"})
+
+    assert nightly._acquire_population_lock("first")[0] is True
+    assert nightly._acquire_population_lock("second") == (False, None)

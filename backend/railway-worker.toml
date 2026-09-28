@@ -1,5 +1,6 @@
 # Railway: Celery worker. Beat runs as its own service (railway-beat.toml); embedding it
 # here let beat keep publishing while the consumer was hung (2026-08 outage).
+# Two slots: beat_heartbeat needs one free while the ~2h nightly holds the other (its Redis lock stops overlap).
 
 [build]
 builder = "dockerfile"
@@ -9,4 +10,4 @@ dockerfilePath = "Dockerfile"
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 10
 numReplicas = 1
-startCommand = "celery -A app.celery_app worker --loglevel=info --concurrency=1 -E"
+startCommand = "celery -A app.celery_app worker --loglevel=info --concurrency=2 -E"

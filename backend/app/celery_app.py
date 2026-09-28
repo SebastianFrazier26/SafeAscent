@@ -62,8 +62,8 @@ celery_app.conf.beat_schedule = {
         # worker restart can still execute and finish the overnight run.
         "options": {"expires": 28800},  # 8 hours
     },
-    # Dead-man's switch for the consumer: an alert fires within 30 min (15 min period +
-    # 15 min grace on healthchecks.io) instead of at the next nightly run.
+    # Dead-man's switch for the consumer: an alert fires within 75 min (15 min period +
+    # 60 min grace on healthchecks.io) instead of at the next nightly run.
     "beat-heartbeat": {
         "task": "app.tasks.ops.beat_heartbeat",
         "schedule": 900.0,

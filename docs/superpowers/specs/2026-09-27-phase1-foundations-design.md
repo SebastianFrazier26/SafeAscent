@@ -86,7 +86,7 @@ All nine are **DECIDED** by the owner.
 - **Liveness.** A heartbeat bootstep writes `celery:worker:heartbeat` to Redis every 60s with a 180s TTL. A new `/health/worker` API route returns 503 when the key is missing. Set `broker_heartbeat` and `worker_cancel_long_running_tasks_on_connection_loss=True`.
 - **Dead-man's switch (D2).**
   - The nightly task pings `HC_PING_URL` at `/start`, on success, and at `/fail`. The check allows 24h plus 4h grace.
-  - A beat-scheduled `heartbeat` task pings a second check every 15 min, so a dead consumer alerts within 30 min instead of the next night.
+  - A beat-scheduled `heartbeat` task pings a second check every 15 min (60 min grace), so a dead consumer alerts within 75 min instead of the next night.
   - When `HC_PING_URL` is unset, pings are skipped with a WARNING, so local runs and CI make no outbound calls.
 - **Expired tasks.** A `task_revoked` handler logs at ERROR (name, id, expired flag) and increments `celery:expired:<task>`. `/health/worker` reports the 7-day count.
 - **Files:** `backend/app/{celery_app.py,celery_signals.py (new, typed),main.py}`, `tasks/safety_computation_optimized.py`, `railway-{worker,beat}.toml`, `tests/test_celery_signals.py`.
@@ -184,7 +184,7 @@ The `no-scrapers` guard (D9) lands in PR3 with the CI rework, so it is required 
   - The old owner password no longer authenticates after rotation.
 - **Celery:**
   - Unit tests cover the heartbeat writer, `/health/worker` returning 200 or 503, and the expired handler (ERROR log plus counter).
-  - Staging drills: stopping the worker triggers an alert within 30 min and a 503; a task sent with `expires=1` to a paused worker is logged and counted.
+  - Staging drills: stopping the worker triggers an alert within 75 min and a 503; a task sent with `expires=1` to a paused worker is logged and counted.
 - **Config:**
   - The parity test passes.
   - Importing config without `DATABASE_URL` raises.
@@ -223,7 +223,7 @@ The `no-scrapers` guard (D9) lands in PR3 with the CI rework, so it is required 
 - **Celery:**
   - `worker` and `beat` are separate services, and `/health/worker` reports the heartbeat.
   - Expired tasks log at ERROR and are counted.
-  - A stopped worker alerts the owner within 30 min.
+  - A stopped worker alerts the owner within 75 min.
   - One nightly run completes with a success ping.
 - **Config:** no hardcoded DB URL, echo is off by default, `.env.example` parity is enforced, and `.do/`, `docker-compose.prod.yml`, the root `railway.toml`, and the second Redis are gone.
 - **Deploy:** Railway deploys only after green CI, `main` requires a PR plus `ci-ok`, and there is no placeholder deploy job.

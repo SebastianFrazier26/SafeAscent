@@ -45,3 +45,27 @@ def test_network_error_is_swallowed_and_url_never_logged(caplog):
         assert ping(URL, "/fail", transport=httpx.MockTransport(boom)) is False
     assert "secret-uuid" not in caplog.text
     assert "ConnectError" in caplog.text
+
+
+def test_invalid_url_returns_false_without_raising_or_logging_url(caplog):
+    malformed = "https://hc-ping.com/secret-uuid\x00bad"
+    with caplog.at_level(logging.WARNING, logger="app.healthchecks"):
+        assert ping(malformed, "/start", transport=_recording_transport([])) is False
+    assert "secret-uuid" not in caplog.text
+    assert "InvalidURL" in caplog.text
+
+
+def test_url_whitespace_from_env_is_stripped():
+    seen: list[str] = []
+    assert ping(f"  {URL}/ \n", "/start", transport=_recording_transport(seen)) is True
+    assert seen == [f"{URL}/start"]
+
+
+def test_unexpected_client_error_is_swallowed(monkeypatch, caplog):
+    def broken_client(*args, **kwargs):
+        raise RuntimeError(f"boom {URL}")
+
+    monkeypatch.setattr("app.healthchecks.httpx.Client", broken_client)
+    with caplog.at_level(logging.WARNING, logger="app.healthchecks"):
+        assert ping(URL) is False
+    assert "secret-uuid" not in caplog.text
