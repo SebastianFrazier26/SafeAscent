@@ -10,7 +10,12 @@ from datetime import datetime, timedelta
 import time
 import statistics
 
+# needs_data: class needs a populated database or live Redis/network; deselected by
+# default (pyproject addopts). Applied per class below — TestErrorHandlingRobustness
+# tests only request validation and need neither.
 
+
+@pytest.mark.needs_data
 class TestExtremeLocations:
     """Test predictions in extreme geographic locations."""
 
@@ -80,6 +85,7 @@ class TestExtremeLocations:
         print(f"   Accidents Found: {data['num_contributing_accidents']}")
 
 
+@pytest.mark.needs_data
 class TestSparseDataScenarios:
     """Test handling of areas with minimal accident data."""
 
@@ -147,6 +153,7 @@ class TestSparseDataScenarios:
         print(f"   Accidents Found: {data['num_contributing_accidents']}")
 
 
+@pytest.mark.needs_data
 class TestBoundaryValues:
     """Test boundary values and edge cases for all parameters."""
 
@@ -249,6 +256,7 @@ class TestBoundaryValues:
             print(f"   {rt:8s}: Risk={res['risk']:5.1f}, Accidents={res['accidents']}")
 
 
+@pytest.mark.needs_data
 class TestPerformanceBenchmarks:
     """Test response times and performance under load."""
 
@@ -429,6 +437,7 @@ class TestErrorHandlingRobustness:
         assert response.status_code == 422
 
 
+@pytest.mark.needs_data
 class TestConsistencyAndReproducibility:
     """Test that predictions are consistent and reproducible."""
 
@@ -465,6 +474,3 @@ class TestConsistencyAndReproducibility:
 if __name__ == "__main__":
     # Run tests with pytest
     pytest.main([__file__, "-v", "-s"])
-
-# Needs a populated database or live Redis/network; deselected by default (pyproject addopts).
-pytestmark = pytest.mark.needs_data

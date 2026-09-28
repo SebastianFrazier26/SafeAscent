@@ -19,11 +19,14 @@ from statistics import mean, median, stdev
 from datetime import date
 from httpx import AsyncClient
 
-# Mark all tests in this file as performance tests
-pytestmark = [pytest.mark.performance, pytest.mark.needs_data]
+# Mark all tests in this file as performance tests. needs_data (deselected by default,
+# pyproject addopts) is applied per class below — TestValidationPerformance only measures
+# 422-validation latency (no DB/algorithm work) and needs neither.
+pytestmark = pytest.mark.performance
 
 
 @pytest.mark.asyncio
+@pytest.mark.needs_data
 class TestPredictEndpointPerformance:
     """Benchmark predict endpoint response times."""
 
@@ -190,6 +193,7 @@ class TestPredictEndpointPerformance:
 
 
 @pytest.mark.asyncio
+@pytest.mark.needs_data
 class TestConcurrentPerformance:
     """Benchmark concurrent request handling."""
 
@@ -281,6 +285,7 @@ class TestConcurrentPerformance:
 
 
 @pytest.mark.asyncio
+@pytest.mark.needs_data
 class TestDatabaseQueryPerformance:
     """Benchmark database query performance."""
 
@@ -326,6 +331,7 @@ class TestDatabaseQueryPerformance:
 
 
 @pytest.mark.asyncio
+@pytest.mark.needs_data
 class TestAlgorithmPerformance:
     """Benchmark core algorithm execution time."""
 
@@ -409,6 +415,7 @@ class TestValidationPerformance:
 
 
 @pytest.mark.asyncio
+@pytest.mark.needs_data
 class TestMemoryPerformance:
     """Benchmark memory usage patterns."""
 

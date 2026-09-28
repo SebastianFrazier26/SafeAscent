@@ -8,7 +8,12 @@ and response formatting using real data.
 import pytest
 from datetime import datetime
 
+# needs_data: class needs a populated database or live Redis/network; deselected by
+# default (pyproject addopts). Applied per class below — TestValidationAndErrorHandling
+# only exercises request validation (422s before any DB work) and needs neither.
 
+
+@pytest.mark.needs_data
 class TestPredictionEndpointIntegration:
     """Test the complete prediction endpoint flow with real data."""
 
@@ -132,6 +137,7 @@ class TestPredictionEndpointIntegration:
         print(f"   Sport Risk: {sport_data['risk_score']}/100 ({sport_data['num_contributing_accidents']} accidents)")
 
 
+@pytest.mark.needs_data
 class TestDatabaseIntegration:
     """Test database queries work correctly with real data."""
 
@@ -204,6 +210,7 @@ class TestDatabaseIntegration:
         print(f"\n✅ Weather Integration: System processed {data['num_contributing_accidents']} accidents")
 
 
+@pytest.mark.needs_data
 class TestComponentIntegration:
     """Test that all algorithm components work together correctly."""
 
@@ -310,6 +317,3 @@ class TestValidationAndErrorHandling:
 if __name__ == "__main__":
     # Run tests with pytest
     pytest.main([__file__, "-v", "-s"])
-
-# Needs a populated database or live Redis/network; deselected by default (pyproject addopts).
-pytestmark = pytest.mark.needs_data

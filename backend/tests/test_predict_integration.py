@@ -14,8 +14,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.main import app
 
+# needs_data: needs a populated database or live Redis/network; deselected by default
+# (pyproject addopts). Applied per class below — TestPredictValidation asserts 422s
+# before any DB/algorithm work and needs neither, except
+# test_predict_accepts_all_valid_route_types (marked individually), which asserts 200
+# and does need a working pipeline.
+
 
 @pytest.mark.asyncio
+@pytest.mark.needs_data
 class TestPredictEndpointBasics:
     """Test basic request-response contracts."""
 
@@ -186,8 +193,13 @@ class TestPredictValidation:
         response = await async_client.post("/api/v1/predict", json=payload)
         assert response.status_code == 422
 
+    @pytest.mark.needs_data
     async def test_predict_accepts_all_valid_route_types(self, async_client: AsyncClient):
-        """All valid route types should be accepted."""
+        """All valid route types should be accepted.
+
+        Unlike its siblings in this class, this asserts a 200 (full pipeline success),
+        not a 422 — it needs the DB/algorithm to actually run.
+        """
         valid_types = ["alpine", "ice", "mixed", "trad", "sport", "aid", "boulder"]
 
         for route_type in valid_types:
@@ -241,6 +253,7 @@ class TestPredictValidation:
 
 
 @pytest.mark.asyncio
+@pytest.mark.needs_data
 class TestPredictEdgeCases:
     """Test edge cases and boundary conditions."""
 
@@ -338,6 +351,7 @@ class TestPredictEdgeCases:
 
 
 @pytest.mark.asyncio
+@pytest.mark.needs_data
 class TestPredictRouteTypes:
     """Test route type specific behavior."""
 
@@ -389,6 +403,7 @@ class TestPredictRouteTypes:
 
 
 @pytest.mark.asyncio
+@pytest.mark.needs_data
 class TestPredictDatabaseIntegration:
     """Test database query integration."""
 
@@ -460,6 +475,7 @@ class TestPredictDatabaseIntegration:
 
 
 @pytest.mark.asyncio
+@pytest.mark.needs_data
 class TestPredictResponseConsistency:
     """Test response consistency and data integrity."""
 
@@ -518,6 +534,3 @@ class TestPredictResponseConsistency:
         if len(accidents) > 1:
             influences = [acc["total_influence"] for acc in accidents]
             assert influences == sorted(influences, reverse=True)
-
-# Needs a populated database or live Redis/network; deselected by default (pyproject addopts).
-pytestmark = pytest.mark.needs_data
