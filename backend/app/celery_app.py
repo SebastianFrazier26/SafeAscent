@@ -46,8 +46,11 @@ celery_app.conf.update(
     task_acks_late=True,
     # Don't retry failed tasks by default
     task_reject_on_worker_lost=True,
-    # A lost broker connection cancels in-flight work so acks_late redelivers it,
-    # instead of the task finishing against a dead channel.
+    # A lost broker connection cancels in-flight work instead of letting it finish
+    # against a dead channel. The unacked message is not redelivered at once: the Redis
+    # transport restores it only after visibility_timeout (6h), so a cancelled 02:00
+    # nightly reruns around 08:00, or never if that passes its 8h `expires`. The
+    # cancelled child may also skip its `finally` lock release (stale-lock recovery covers it).
     worker_cancel_long_running_tasks_on_connection_loss=True,
 )
 

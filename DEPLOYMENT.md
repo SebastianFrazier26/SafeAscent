@@ -64,6 +64,12 @@ At 02:00 UTC, beat enqueues `compute_daily_safety_scores_optimized` (message exp
 
 Time limits: soft 5h, hard 5.5h, below the 6h lock TTL and broker visibility timeout, so a hung run is killed before a redelivered copy could start a duplicate.
 
+Operator notes:
+
+- A lost broker connection cancels the in-flight nightly (`worker_cancel_long_running_tasks_on_connection_loss`). With the Redis broker the unacked message comes back only after the 6h `visibility_timeout`, so a run cancelled soon after 02:00 reruns around 08:00 UTC, and not at all if redelivery lands after the message's 8h `expires` (it is then discarded and counted as expired). The cancelled child may skip its `finally` lock release; the stale-lock recovery then applies, and it fails closed (keeps the lock) when `inspect()` does not answer.
+- `GET /api/v1/mp-routes/admin/trigger-cache-population` runs the same task, which pings `HEALTHCHECKS_NIGHTLY_URL` on success like the scheduled run. A manual run therefore resets the nightly check and can mask a missed scheduled run for up to a day.
+- Beat keeps its schedule state in `/tmp/celerybeat-schedule`, which is lost when the beat container restarts. A beat restart that straddles 02:00 UTC skips that night's run (a fresh beat does not catch up a missed crontab slot); the `safeascent-nightly` healthchecks alert catches it.
+
 Revoked and expired tasks are logged at ERROR; expired ones are counted per task per UTC day. `GET /health/worker` reports the 7-day counts.
 
 ## Alerts and liveness
