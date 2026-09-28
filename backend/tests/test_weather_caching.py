@@ -22,7 +22,12 @@ from app.utils.cache import (
     build_weather_stats_key,
 )
 
+# needs_data: class needs a populated database or live Redis/network; deselected by
+# default (pyproject addopts). Applied per class below — TestWeatherCacheKeys tests are
+# pure key-builder functions and need neither.
 
+
+@pytest.mark.needs_data
 class TestCacheBasics:
     """Test basic Redis cache operations."""
 
@@ -101,6 +106,7 @@ class TestWeatherCacheKeys:
         assert key == "weather:stats:40.3:-105.6:4000:summer"
 
 
+@pytest.mark.needs_data
 class TestWeatherServiceCaching:
     """Test caching integration with weather service."""
 
@@ -193,6 +199,7 @@ class TestWeatherServiceCaching:
         cache_delete(cache_key)
 
 
+@pytest.mark.needs_data
 class TestPredictionEndpointWithCaching:
     """Test full prediction endpoint with caching."""
 

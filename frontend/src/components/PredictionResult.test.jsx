@@ -1,9 +1,17 @@
 /**
  * Tests for PredictionResult component
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import userEvent from '@testing-library/user-event';
 import { render, screen } from '../test/utils';
 import PredictionResult from './PredictionResult';
+import {
+  INSUFFICIENT_DATA_MESSAGE,
+  NO_RISK_ICON_HEX,
+  RISK_COLOR_HEX,
+  RISK_ICON_HEX,
+  RISK_TEXT_ON_HEX,
+} from '../utils/riskUtils';
 
 // Mock prediction data
 const mockPrediction = {
@@ -24,11 +32,10 @@ const mockPrediction = {
 };
 
 describe('PredictionResult', () => {
-  it('renders risk score correctly (rounded)', () => {
+  it('renders the risk score with one decimal, as the backend sends it', () => {
     render(<PredictionResult prediction={mockPrediction} />);
 
-    // Component rounds risk_score (35.5 → 36)
-    expect(screen.getByText('36')).toBeInTheDocument();
+    expect(screen.getByText('35.5')).toBeInTheDocument();
   });
 
   it('renders top contributing factors section', () => {
@@ -49,7 +56,14 @@ describe('PredictionResult', () => {
     render(<PredictionResult prediction={highRiskPrediction} />);
 
     // High risk should be displayed (we test that it renders without error)
-    expect(screen.getByText('75')).toBeInTheDocument();
+    expect(screen.getByText('75.0')).toBeInTheDocument();
+  });
+
+  it('colours the level badge with the shared band hex', () => {
+    render(<PredictionResult prediction={{ ...mockPrediction, risk_score: 61.3 }} />);
+    expect(screen.getByText('HIGH RISK').closest('.MuiChip-root')).toHaveStyle({
+      backgroundColor: RISK_COLOR_HEX.orange,
+    });
   });
 
   it('handles zero risk score', () => {
@@ -72,5 +86,75 @@ describe('PredictionResult', () => {
 
     // Should not crash, may show loading or empty state
     expect(document.body).toBeTruthy();
+  });
+
+  it('renders an error Alert with Retry and no score when the request failed', async () => {
+    const onRetry = vi.fn();
+    render(<PredictionResult prediction={null} error="Cannot connect to SafeAscent API." onRetry={onRetry} />);
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Cannot connect to SafeAscent API.');
+    await userEvent.click(screen.getByRole('button', { name: /retry/i }));
+    expect(onRetry).toHaveBeenCalledOnce();
+    expect(screen.queryByText(/^\d+(\.\d)?$/)).toBeNull();
+    expect(screen.queryByText(/RISK$/)).toBeNull();
+  });
+
+  it('shows Unavailable instead of a number when risk_score is missing', () => {
+    render(<PredictionResult prediction={{ ...mockPrediction, risk_score: undefined }} />);
+
+    expect(screen.getByText('Unavailable')).toBeInTheDocument();
+    expect(screen.queryByText(/^\d+(\.\d)?$/)).toBeNull();
+    expect(screen.queryByText(/RISK$/)).toBeNull();
+    expect(screen.queryByText(/NaN|undefined/)).toBeNull();
+  });
+
+  it('shows the missing-score icon in the neutral no-data grey', () => {
+    for (const risk_score of [undefined, null, NaN]) {
+      const { unmount } = render(<PredictionResult prediction={{ ...mockPrediction, risk_score }} />);
+      expect(screen.getByTestId('risk-icon')).toHaveStyle({ color: NO_RISK_ICON_HEX });
+      expect(screen.queryByText(/NaN|undefined/)).toBeNull();
+      unmount();
+    }
+  });
+
+  it('uses the contrast-checked text colour on the level badge', () => {
+    render(<PredictionResult prediction={{ ...mockPrediction, risk_score: 80 }} />);
+    expect(screen.getByText('EXTREME RISK').closest('.MuiChip-root')).toHaveStyle({
+      color: RISK_TEXT_ON_HEX.red,
+    });
+  });
+
+  it('the error Alert can be dismissed, which resets', async () => {
+    const onReset = vi.fn();
+    render(<PredictionResult prediction={null} error="boom" onRetry={() => {}} onReset={onReset} />);
+    await userEvent.click(screen.getByRole('button', { name: /close/i }));
+    expect(onReset).toHaveBeenCalledOnce();
+  });
+
+  it('colours the risk icon with the contrast-safe variant of the band hex', () => {
+    render(<PredictionResult prediction={{ ...mockPrediction, risk_score: 30 }} />);
+    expect(screen.getByTestId('risk-icon')).toHaveStyle({ color: RISK_ICON_HEX.yellow });
+  });
+
+  it('shows insufficient data in neutral grey with the explanation and no digits', () => {
+    render(
+      <PredictionResult
+        prediction={{
+          ...mockPrediction,
+          risk_score: null,
+          color_code: 'gray',
+          data_status: 'insufficient_data',
+          num_contributing_accidents: 0,
+        }}
+      />,
+    );
+
+    expect(screen.getByText('Insufficient data')).toBeInTheDocument();
+    expect(screen.getByText(INSUFFICIENT_DATA_MESSAGE)).toBeInTheDocument();
+    expect(screen.getByTestId('risk-icon')).toHaveStyle({ color: NO_RISK_ICON_HEX });
+    expect(screen.queryByText(/^\d+(\.\d)?$/)).toBeNull();
+    expect(screen.queryByText(/RISK$/)).toBeNull();
+    expect(screen.queryByText('Top Contributing Factors')).toBeNull();
+    expect(screen.queryByRole('button', { name: /retry/i })).toBeNull();
   });
 });

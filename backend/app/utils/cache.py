@@ -15,6 +15,8 @@ import logging
 from typing import Optional, Any, Dict, List
 from urllib.parse import urlparse
 
+from app.services.risk_bands import cached_safety
+
 # Configure logging
 logger = logging.getLogger(__name__)
 
@@ -217,7 +219,8 @@ def get_cache_stats() -> dict:
         }
     except redis.RedisError as e:
         logger.error(f"Cache stats error: {e}")
-        return {"status": "error", "error": str(e)}
+        # Redis error text can name the host/port; callers get the type, the log gets the detail.
+        return {"status": "error", "error": f"Redis error ({type(e).__name__})"}
 
 
 # Cache key builders for common use cases
@@ -309,41 +312,6 @@ def get_cached_safety_score(route_id: int, target_date: str) -> Optional[Dict]:
     return cache_get(key)
 
 
-def set_cached_safety_score(
-    route_id: int,
-    target_date: str,
-    risk_score: float,
-    color_code: str,
-    confidence: float = 1.0,
-    computed_at: Optional[str] = None
-) -> bool:
-    """
-    Cache a single safety score.
-
-    Args:
-        route_id: Route ID
-        target_date: Date string (YYYY-MM-DD)
-        risk_score: Risk score 0-100
-        color_code: 'green', 'yellow', 'orange', 'red', or 'gray'
-        confidence: Confidence level 0-1 (default: 1.0)
-        computed_at: ISO timestamp when computed (default: now)
-
-    Returns:
-        True if cached successfully
-    """
-    from datetime import datetime
-
-    key = build_safety_score_key(route_id, target_date)
-    data = {
-        "risk_score": risk_score,
-        "color_code": color_code,
-        "confidence": confidence,
-        "computed_at": computed_at or datetime.utcnow().isoformat(),
-        "status": "cached"
-    }
-    return cache_set(key, data, ttl_seconds=SAFETY_SCORE_TTL)
-
-
 def get_bulk_cached_safety_scores(
     route_ids: List[int],
     target_date: str
@@ -422,22 +390,34 @@ def set_bulk_cached_safety_scores(
         # Use pipeline for efficient bulk SET
         pipe = client.pipeline()
 
+        written = 0
         for route_id, data in scores.items():
+            # Never write a placeholder score: readers would serve it as a real 0. An
+            # explicit insufficient_data entry is stored as such (null score, gray).
+            parsed = cached_safety(data)
+            if parsed is None:
+                continue
+            risk_score, color_code, data_status = parsed
             key = build_safety_score_key(route_id, target_date)
             cache_data = {
-                "risk_score": data.get("risk_score", 0),
-                "color_code": data.get("color_code", "gray"),
+                "risk_score": risk_score,
+                "color_code": color_code,
+                "data_status": data_status,
                 "confidence": data.get("confidence", 1.0),
                 "computed_at": computed_at,
                 "status": "cached"
             }
             pipe.setex(key, SAFETY_SCORE_TTL, json.dumps(cache_data))
+            written += 1
 
         # Execute all commands in one round trip
         pipe.execute()
 
-        logger.info(f"Bulk cache SET: {len(scores)} safety scores for {target_date}")
-        return len(scores)
+        skipped = len(scores) - written
+        if skipped:
+            logger.warning(f"Bulk cache SET: skipped {skipped} entries without a valid risk_score for {target_date}")
+        logger.info(f"Bulk cache SET: {written} safety scores for {target_date}")
+        return written
 
     except redis.RedisError as e:
         logger.error(f"Bulk cache set error: {e}")
@@ -471,7 +451,7 @@ def get_safety_cache_stats(target_date: str) -> Dict:
         }
     except redis.RedisError as e:
         logger.error(f"Safety cache stats error: {e}")
-        return {"status": "error", "error": str(e), "cached_count": 0}
+        return {"status": "error", "error": f"Redis error ({type(e).__name__})", "cached_count": 0}
 
 
 def clear_stale_safety_score_keys(keep_dates: List[str]) -> int:

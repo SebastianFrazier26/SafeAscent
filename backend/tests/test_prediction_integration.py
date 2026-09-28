@@ -8,7 +8,12 @@ and response formatting using real data.
 import pytest
 from datetime import datetime
 
+# needs_data: class needs a populated database or live Redis/network; deselected by
+# default (pyproject addopts). Applied per class below — TestValidationAndErrorHandling
+# only exercises request validation (422s before any DB work) and needs neither.
 
+
+@pytest.mark.needs_data
 class TestPredictionEndpointIntegration:
     """Test the complete prediction endpoint flow with real data."""
 
@@ -39,7 +44,7 @@ class TestPredictionEndpointIntegration:
         assert len(data["top_contributing_accidents"]) > 0
         assert data["num_contributing_accidents"] > 0
 
-        print(f"\n✅ Longs Peak Prediction:")
+        print("\n✅ Longs Peak Prediction:")
         print(f"   Risk Score: {data['risk_score']}/100")
         print(f"   Accidents Found: {data['num_contributing_accidents']}")
 
@@ -60,7 +65,7 @@ class TestPredictionEndpointIntegration:
         # Florida should have lower risk than mountain areas
         assert data["risk_score"] < 70, "Florida should not show extreme risk"
 
-        print(f"\n✅ Florida Prediction:")
+        print("\n✅ Florida Prediction:")
         print(f"   Risk Score: {data['risk_score']}/100")
         print(f"   Accidents Found: {data['num_contributing_accidents']}")
 
@@ -97,7 +102,7 @@ class TestPredictionEndpointIntegration:
         assert "search_radius_km" in metadata
         assert "route_type" in metadata
 
-        print(f"\n✅ Response Structure: Valid - All fields present with correct types")
+        print("\n✅ Response Structure: Valid - All fields present with correct types")
 
     def test_prediction_with_different_route_types(self, test_client):
         """Test that different route types can be predicted."""
@@ -127,11 +132,12 @@ class TestPredictionEndpointIntegration:
         assert 0 <= alpine_data["risk_score"] <= 100
         assert 0 <= sport_data["risk_score"] <= 100
 
-        print(f"\n✅ Route Type Comparison:")
+        print("\n✅ Route Type Comparison:")
         print(f"   Alpine Risk: {alpine_data['risk_score']}/100 ({alpine_data['num_contributing_accidents']} accidents)")
         print(f"   Sport Risk: {sport_data['risk_score']}/100 ({sport_data['num_contributing_accidents']} accidents)")
 
 
+@pytest.mark.needs_data
 class TestDatabaseIntegration:
     """Test database queries work correctly with real data."""
 
@@ -180,7 +186,7 @@ class TestDatabaseIntegration:
         # Larger radius should find more accidents (or equal)
         assert large_count >= small_count
 
-        print(f"\n✅ Radius Comparison:")
+        print("\n✅ Radius Comparison:")
         print(f"   25km radius: {small_count} accidents")
         print(f"   150km radius: {large_count} accidents")
 
@@ -204,6 +210,7 @@ class TestDatabaseIntegration:
         print(f"\n✅ Weather Integration: System processed {data['num_contributing_accidents']} accidents")
 
 
+@pytest.mark.needs_data
 class TestComponentIntegration:
     """Test that all algorithm components work together correctly."""
 
@@ -231,7 +238,7 @@ class TestComponentIntegration:
         # Should have top contributing accidents
         assert len(data["top_contributing_accidents"]) > 0
 
-        print(f"\n✅ High Density Area (Longs Peak):")
+        print("\n✅ High Density Area (Longs Peak):")
         print(f"   Total Contributing Accidents: {num_accidents}")
         print(f"   Risk Score: {data['risk_score']}/100")
 
@@ -254,7 +261,7 @@ class TestComponentIntegration:
         # Should generate valid prediction (weather API may or may not succeed)
         assert 0 <= data["risk_score"] <= 100
 
-        print(f"\n✅ Real-time Weather: Prediction generated for today")
+        print("\n✅ Real-time Weather: Prediction generated for today")
         print(f"   Risk Score: {data['risk_score']}/100")
 
 

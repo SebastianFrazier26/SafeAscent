@@ -1,9 +1,11 @@
 /**
  * PredictionResult Component - Material Design
  *
- * Displays the safety prediction results including risk score and contributing factors.
+ * Displays the safety prediction, or the request error with a Retry action.
  */
 import {
+  Alert,
+  AlertTitle,
   Card,
   CardContent,
   Typography,
@@ -11,49 +13,79 @@ import {
   Paper,
   Chip,
   Button,
+  IconButton,
   Divider,
   Stack,
 } from '@mui/material';
 import {
   Warning as WarningIcon,
   CheckCircle as CheckCircleIcon,
+  Close as CloseIcon,
   Error as ErrorIcon,
+  HelpOutline as HelpOutlineIcon,
   Print as PrintIcon,
   Refresh as RefreshIcon,
 } from '@mui/icons-material';
 import {
+  INSUFFICIENT_DATA_LABEL,
+  INSUFFICIENT_DATA_MESSAGE,
+  NO_RISK_ICON_HEX,
+  RISK_COLOR_HEX,
+  RISK_ICON_HEX,
+  RISK_TEXT_ON_HEX,
+  getRiskColorCode,
   getRiskLevel,
   getRiskDescription,
+  isInsufficientData,
+  isRiskScore,
 } from '../utils/riskUtils';
 
+function RiskIcon({ level }) {
+  if (level === null) return <HelpOutlineIcon sx={{ fontSize: 40 }} />;
+  if (level === 'low') return <CheckCircleIcon sx={{ fontSize: 40 }} />;
+  if (level === 'moderate') return <WarningIcon sx={{ fontSize: 40 }} />;
+  return <ErrorIcon sx={{ fontSize: 40 }} />;
+}
+
 /**
- * PredictionResult - Display prediction results
- *
- * @param {Object} prediction - Prediction result from API
- * @param {Function} onReset - Callback to reset and start new prediction
+ * @param {Object|null} prediction - Prediction result from API
+ * @param {Function} onReset - Start a new prediction
+ * @param {string|null} [error] - Request error message; takes precedence over prediction
+ * @param {Function} [onRetry] - Re-send the last request
  */
-export default function PredictionResult({ prediction, onReset }) {
+export default function PredictionResult({ prediction, onReset, error, onRetry }) {
+  if (error) {
+    return (
+      <Alert
+        severity="error"
+        onClose={onReset}
+        sx={{ mt: 3, mb: 3 }}
+        // MUI drops its own close button whenever `action` is set, so the Retry case adds one.
+        action={onRetry ? (
+          <>
+            <Button color="inherit" size="small" onClick={onRetry}>
+              Retry
+            </Button>
+            {onReset && (
+              <IconButton color="inherit" size="small" aria-label="Close" onClick={onReset}>
+                <CloseIcon fontSize="small" />
+              </IconButton>
+            )}
+          </>
+        ) : undefined}
+      >
+        <AlertTitle>Prediction failed</AlertTitle>
+        {error}
+      </Alert>
+    );
+  }
+
   if (!prediction) return null;
 
-  const riskLevel = getRiskLevel(prediction.risk_score);
-  const riskDescription = getRiskDescription(prediction.risk_score);
-
-  // Get risk color based on level
-  const getRiskColor = () => {
-    if (riskLevel === 'low') return 'success';
-    if (riskLevel === 'moderate') return 'warning';
-    if (riskLevel === 'high') return 'error';
-    return 'error';
-  };
-
-  // Get risk icon
-  const getRiskIcon = () => {
-    if (riskLevel === 'low') return <CheckCircleIcon sx={{ fontSize: 40 }} />;
-    if (riskLevel === 'moderate') return <WarningIcon sx={{ fontSize: 40 }} />;
-    return <ErrorIcon sx={{ fontSize: 40 }} />;
-  };
-
-  const riskColor = getRiskColor();
+  const insufficient = isInsufficientData(prediction);
+  const riskScore = !insufficient && isRiskScore(prediction.risk_score) ? prediction.risk_score : null;
+  const riskLevel = riskScore === null ? null : getRiskLevel(riskScore);
+  const riskColorCode = riskScore === null ? null : getRiskColorCode(riskScore);
 
   return (
     <Card elevation={3}>
@@ -62,44 +94,49 @@ export default function PredictionResult({ prediction, onReset }) {
           Route Safety Prediction
         </Typography>
 
-        {/* Risk Score Display */}
         <Box sx={{ textAlign: 'center', my: 4 }}>
-          {/* Icon */}
-          <Box sx={{ color: `${riskColor}.main`, mb: 2 }}>
-            {getRiskIcon()}
+          <Box
+            data-testid="risk-icon"
+            sx={{ color: riskColorCode ? RISK_ICON_HEX[riskColorCode] : NO_RISK_ICON_HEX, mb: 2 }}
+          >
+            <RiskIcon level={riskLevel} />
           </Box>
 
-          {/* Score */}
           <Typography variant="h2" component="div" fontWeight={700} gutterBottom>
-            {Math.round(prediction.risk_score)}
+            {insufficient ? INSUFFICIENT_DATA_LABEL : riskScore === null ? 'Unavailable' : riskScore.toFixed(1)}
           </Typography>
-          <Typography variant="subtitle1" color="text.secondary" gutterBottom>
-            out of 100
-          </Typography>
-
-          {/* Risk Level Badge */}
-          <Chip
-            label={`${riskLevel.toUpperCase()} RISK`}
-            color={riskColor}
-            sx={{
-              mt: 2,
-              px: 2,
-              py: 1,
-              fontSize: '1rem',
-              fontWeight: 600,
-            }}
-          />
-
-          {/* Risk Description */}
-          <Typography variant="body2" color="text.secondary" sx={{ mt: 2, maxWidth: 400, mx: 'auto' }}>
-            {riskDescription}
-          </Typography>
+          {insufficient && (
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 2, maxWidth: 400, mx: 'auto' }}>
+              {INSUFFICIENT_DATA_MESSAGE}
+            </Typography>
+          )}
+          {riskScore !== null && (
+            <>
+              <Typography variant="subtitle1" color="text.secondary" gutterBottom>
+                out of 100
+              </Typography>
+              <Chip
+                label={`${riskLevel.toUpperCase()} RISK`}
+                sx={{
+                  bgcolor: RISK_COLOR_HEX[riskColorCode],
+                  color: RISK_TEXT_ON_HEX[riskColorCode],
+                  mt: 2,
+                  px: 2,
+                  py: 1,
+                  fontSize: '1rem',
+                  fontWeight: 600,
+                }}
+              />
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 2, maxWidth: 400, mx: 'auto' }}>
+                {getRiskDescription(riskScore)}
+              </Typography>
+            </>
+          )}
         </Box>
 
         <Divider sx={{ my: 3 }} />
 
-        {/* Top Contributing Accidents */}
-        {prediction.top_contributing_accidents && prediction.top_contributing_accidents.length > 0 && (
+        {!insufficient && prediction.top_contributing_accidents && prediction.top_contributing_accidents.length > 0 && (
           <Box sx={{ mt: 3 }}>
             <Typography variant="subtitle1" fontWeight={500} gutterBottom>
               Top Contributing Factors
@@ -133,7 +170,6 @@ export default function PredictionResult({ prediction, onReset }) {
           </Box>
         )}
 
-        {/* Metadata */}
         {prediction.metadata && (
           <Paper elevation={0} sx={{ p: 2, mt: 3, bgcolor: 'grey.50' }}>
             <Typography variant="caption" fontWeight={500} color="text.secondary" display="block" gutterBottom>
@@ -153,7 +189,6 @@ export default function PredictionResult({ prediction, onReset }) {
           </Paper>
         )}
 
-        {/* Action Buttons */}
         <Stack direction="row" spacing={2} sx={{ mt: 3 }}>
           <Button
             variant="outlined"

@@ -1,8 +1,10 @@
 """
 Pydantic schemas for MpRoute API requests/responses.
 """
-from typing import Optional
-from pydantic import BaseModel
+from typing import Optional, Self
+from pydantic import BaseModel, Field, model_validator
+
+from app.services.risk_bands import DataStatus, SafetyColorCode, check_score_status
 
 
 class MpRouteBase(BaseModel):
@@ -63,8 +65,15 @@ class MpRouteSafetyResponse(BaseModel):
     route_id: int  # Using mp_route_id but named route_id for frontend compatibility
     route_name: str
     target_date: str
-    risk_score: float
-    color_code: str  # For marker coloring: 'green', 'yellow', 'orange', 'red'
+    # None only with data_status="insufficient_data" (then color_code is "gray").
+    risk_score: Optional[float] = Field(ge=0.0, le=100.0)
+    color_code: SafetyColorCode
+    data_status: DataStatus = "ok"
+
+    @model_validator(mode="after")
+    def _score_matches_status(self) -> Self:
+        check_score_status(self.risk_score, self.color_code, self.data_status)
+        return self
 
     class Config:
         json_schema_extra = {
@@ -73,7 +82,8 @@ class MpRouteSafetyResponse(BaseModel):
                 "route_name": "The Nose",
                 "target_date": "2026-02-01",
                 "risk_score": 45.2,
-                "color_code": "yellow"
+                "color_code": "yellow",
+                "data_status": "ok"
             }
         }
 
@@ -84,9 +94,15 @@ class MpRouteSafetyResponse(BaseModel):
 
 class SafetyScore(BaseModel):
     """Embedded safety score for a route."""
-    risk_score: float
-    color_code: str
+    risk_score: Optional[float] = Field(ge=0.0, le=100.0)
+    color_code: SafetyColorCode
+    data_status: DataStatus = "ok"
     status: str = "cached"  # 'cached' or 'computed'
+
+    @model_validator(mode="after")
+    def _score_matches_status(self) -> Self:
+        check_score_status(self.risk_score, self.color_code, self.data_status)
+        return self
 
 
 class MpRouteWithSafety(BaseModel):
@@ -107,6 +123,7 @@ class MpRouteMapWithSafetyMeta(BaseModel):
     cached_routes: int
     computed_routes: int
     missing_routes: int
+    insufficient_routes: int = 0
     target_date: str
     season: str
 
@@ -131,6 +148,7 @@ class MpRouteMapWithSafetyResponse(BaseModel):
                         "safety": {
                             "risk_score": 45.2,
                             "color_code": "yellow",
+                            "data_status": "ok",
                             "status": "cached"
                         }
                     }

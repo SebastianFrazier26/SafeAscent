@@ -40,3 +40,6 @@ yarn-error.log*
 # OS files
 .DS_Store
 Thumbs.db
+
+# Image tests run on the host against the built image
+docker-tests/

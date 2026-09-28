@@ -9,7 +9,7 @@ from app.config import settings
 # Create async engine
 engine = create_async_engine(
     settings.DATABASE_URL,
-    echo=settings.ENVIRONMENT == "development",  # Log SQL queries in dev
+    echo=settings.SQL_ECHO,
     pool_size=10,  # Connection pool size
     max_overflow=20,  # Max connections beyond pool_size
     pool_pre_ping=True,  # Check connection health before using

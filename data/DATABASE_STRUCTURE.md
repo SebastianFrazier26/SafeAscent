@@ -104,7 +104,7 @@ WHERE ST_DWithin(
 
 ---
 
-### 4. weather_patterns
+### 4. weather
 **Purpose:** 7-day weather windows for accident dates
 **Records:** ~25,000
 
@@ -137,14 +137,15 @@ WHERE ST_DWithin(
 | Column | Type | Description |
 |--------|------|-------------|
 | id | SERIAL | Primary key |
-| route_id | INTEGER | FK to mp_routes |
+| route_id | INTEGER | MP route id (no FK constraint) |
 | prediction_date | DATE | Date of prediction |
-| risk_score | FLOAT | Calculated risk score (0-100) |
-| color_code | VARCHAR | Risk category (green/yellow/orange/red) |
+| risk_score | FLOAT | Calculated risk score (0-100); NULL when there is too little evidence (since `0003`) |
+| color_code | VARCHAR | Risk band (green/yellow/orange/red), or gray with a NULL score |
 | calculated_at | TIMESTAMP | When score was computed |
 
 **Constraints:**
 - UNIQUE on `(route_id, prediction_date)` - one score per route per day
+- CHECK (`NOT VALID`, from `0003`): `risk_score IS NULL` exactly when `color_code = 'gray'`
 - Auto-purges data older than 1 year
 
 **Use Cases:**
@@ -156,6 +157,8 @@ WHERE ST_DWithin(
 
 ## Key Relationships
 
+Full diagram: [`data_model.png`](../data_model.png) (source `docs/diagrams/data_model.mmd`). The schema is owned by Alembic (`backend/alembic/`). Two more live tables have no SQLAlchemy model: `mp_ticks` (read with raw SQL by the ascent-analytics endpoint) and `area_weekly_weather` (not referenced by `app/`).
+
 ```
 mp_locations (45K)
     │
@@ -165,10 +168,10 @@ mp_locations (45K)
 
 accidents (6.9K)
     │
-    └── weather_patterns (25K)
+    └── weather (25K)
 ```
 
-**Note:** Routes and accidents are NOT directly linked via foreign keys. The safety algorithm uses spatial proximity (PostGIS) to find relevant accidents for each route dynamically.
+**Note:** `accidents.mp_route_id` is a nullable FK to `mp_routes`, but the safety algorithm does not rely on it; it finds relevant accidents by spatial proximity (PostGIS). `historical_predictions.route_id` holds an MP route id without an FK constraint. Accidents do carry legacy FKs, `accidents.route_id → routes` and `accidents.mountain_id → mountains`. Phase 2a relinks them to `mp_routes`/`mp_locations` and drops the legacy tables. `ascents` and `climbers` were dropped by migration `0002_drop_ascents_climbers`.
 
 ---
 
@@ -178,7 +181,7 @@ accidents (6.9K)
 |-------|-----------|-------|
 | mp_locations | 6 decimals | ~0.1m precision |
 | accidents | 4-6 decimals | Varies by source |
-| weather_patterns | 2 decimals | ~1km grid (intentional) |
+| weather | 2 decimals | ~1km grid (intentional) |
 
 All coordinates use **WGS84 (SRID 4326)** - standard GPS coordinate system.
 
@@ -212,7 +215,7 @@ WHERE l.latitude IS NOT NULL
 ### Weather Pattern Matching
 ```sql
 -- Get 7-day weather window for an accident
-SELECT * FROM weather_patterns
+SELECT * FROM weather
 WHERE accident_id = :id
 ORDER BY date ASC;
 ```

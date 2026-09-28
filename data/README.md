@@ -88,13 +88,11 @@ See [DATABASE_STRUCTURE.md](./DATABASE_STRUCTURE.md) for detailed table schemas 
 
 ## Legal & Attribution
 
-All data is from publicly accessible sources. When using this data:
+This repository contains no accident, route, or weather records; they live only in the production database. Licensing and permitted use for each source are in [`DATA_LICENSE.md`](../DATA_LICENSE.md). In short: Mountain Project data is internal only apart from displaying ice/mixed route facts (name, grade, location, type); OpenBeta (the planned rock-route source) is CC0.
 
-1. **Cite original sources** (AAC, CAIC/Avalanche.org, NPS)
-2. **Respect privacy** for fatal incidents
-3. **Use aggregated analysis** when possible
+Respect the privacy of people involved in fatal incidents.
 
-**Example Citation:**
+When citing the accident sources:
 ```
 American Alpine Club. Accidents in North American Climbing.
 Colorado Avalanche Information Center. U.S. Avalanche Accident Reports.

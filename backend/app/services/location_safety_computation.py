@@ -29,6 +29,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+from app.services.risk_bands import INSUFFICIENT_DATA_COLOR, color_code_for, estimable_score
 from app.services.algorithm_config import (
     EARTH_RADIUS_KM,
     ELEVATION_DECAY_CONSTANT,
@@ -404,7 +405,9 @@ def compute_location_base_score_vectorized(
     )
 
     # Store results (only for significant influences to save memory)
-    threshold = 1e-6  # Minimum influence to track
+    # Memory filter that is part of the nightly score as shipped (dropping it would shift
+    # scores); whether a route has enough evidence is decided by risk_bands.estimable_score.
+    threshold = 1e-6
     significant_mask = base_influences > threshold
 
     for i in np.where(significant_mask)[0]:
@@ -426,7 +429,7 @@ def compute_route_risk_score(
     location_base: LocationBaseScore,
     route_type: str,
     route_grade: Optional[str] = None,
-) -> Tuple[float, List[Dict]]:
+) -> Tuple[Optional[float], List[Dict]]:
     """
     Compute final risk score for a route using pre-computed location base.
 
@@ -440,7 +443,8 @@ def compute_route_risk_score(
         route_grade: Route grade (e.g., "5.10a", None = neutral weight)
 
     Returns:
-        Tuple of (risk_score, contributing_accidents_list)
+        Tuple of (risk_score, contributing_accidents_list); risk_score is None when there is
+        too little evidence (see risk_bands.estimable_score), never 0.0.
     """
     route_type_lower = route_type.lower()
 
@@ -502,6 +506,9 @@ def compute_route_risk_score(
     # Normalize to risk score (0-100)
     risk_score = min(MAX_RISK_SCORE, max(0.0, total_influence * RISK_NORMALIZATION_FACTOR))
 
+    if estimable_score(len(contributing_accidents), risk_score) is None:
+        return None, []
+
     # Sort contributing accidents by influence
     contributing_accidents.sort(key=lambda x: x["total_influence"], reverse=True)
 
@@ -523,7 +530,8 @@ def compute_batch_route_scores(
         routes: List of route dicts with keys: route_id, route_type, grade
 
     Returns:
-        Dict mapping route_id to {"risk_score": float, "color_code": str}
+        Dict mapping route_id to {"risk_score": float | None, "color_code": str,
+        "data_status": "ok" | "insufficient_data"}
     """
     results = {}
 
@@ -538,19 +546,23 @@ def compute_batch_route_scores(
             route_grade=route_grade,
         )
 
-        # Determine color code
-        if risk_score < 25:
-            color_code = "green"
-        elif risk_score < 50:
-            color_code = "yellow"
-        elif risk_score < 75:
-            color_code = "orange"
-        else:
-            color_code = "red"
+        if risk_score is None:
+            results[route_id] = {
+                "risk_score": None,
+                "color_code": INSUFFICIENT_DATA_COLOR,
+                "data_status": "insufficient_data",
+            }
+            continue
 
+        # Colour must be derived from the rounded score, not the raw value:
+        # otherwise a score just under a band edge (e.g. 24.96) can round up to
+        # the stored value on one side of the edge (25.0, yellow) while its
+        # colour is computed from the pre-round value on the other (green).
+        stored_score = round(risk_score, 1)
         results[route_id] = {
-            "risk_score": round(risk_score, 1),
-            "color_code": color_code,
+            "risk_score": stored_score,
+            "color_code": color_code_for(stored_score),
+            "data_status": "ok",
         }
 
     return results

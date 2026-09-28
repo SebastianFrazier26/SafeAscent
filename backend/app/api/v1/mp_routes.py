@@ -41,6 +41,15 @@ from app.services.weather_service import (
     fetch_weather_statistics,
 )
 from app.utils.time_utils import get_season
+from app.services.risk_bands import (
+    INSUFFICIENT_DATA_COLOR,
+    INSUFFICIENT_DATA_MESSAGE,
+    RISK_BAND_THRESHOLDS,
+    cached_safety,
+    color_code_for,
+    displayed_risk,
+    valid_risk_score,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -151,23 +160,23 @@ def normalize_route_type(route_type: Optional[str]) -> str:
 
 
 def get_safety_color_code(risk_score: float) -> str:
-    """
-    Convert risk score to color code for map markers.
+    return color_code_for(risk_score)
 
-    Args:
-        risk_score: Risk score from 0-100
 
-    Returns:
-        Color code string: 'green', 'yellow', 'orange', or 'red'
-    """
-    if risk_score < 30:
-        return 'green'
-    elif risk_score < 50:
-        return 'yellow'
-    elif risk_score < 70:
-        return 'orange'
-    else:
-        return 'red'
+def _safety_response(route_id: int, route_name: str, date_str: str, risk_score: Optional[float]) -> MpRouteSafetyResponse:
+    return MpRouteSafetyResponse(
+        route_id=route_id,
+        route_name=route_name,
+        target_date=date_str,
+        **_rounded_risk_fields(risk_score),
+    )
+
+
+def _rounded_risk_fields(risk_score: Optional[float]) -> dict:
+    """risk_score/color_code/data_status as every surface shows them (1 decimal, colour of
+    that value); None or a score that would show as 0.0 is insufficient_data."""
+    score, color_code, data_status = displayed_risk(risk_score)
+    return {"risk_score": score, "color_code": color_code, "data_status": data_status}
 
 
 async def get_route_with_location_coords(db: AsyncSession, mp_route_id: int):
@@ -467,18 +476,24 @@ async def get_mp_routes_with_safety(
     routes_with_safety = []
     cached_count = 0
     missing_count = 0
+    insufficient_count = 0
 
     for row in rows:
-        # Get cached safety score if available
-        cached = cached_scores.get(row.mp_route_id)
+        # An entry without a real 0-100 score (and no explicit insufficient_data status)
+        # is a miss, never a 0; colour is re-derived from the score.
+        parsed = cached_safety(cached_scores.get(row.mp_route_id))
 
-        if cached:
+        if parsed is not None:
+            score, color_code, data_status = parsed
             safety = SafetyScore(
-                risk_score=cached.get("risk_score", 0),
-                color_code=cached.get("color_code", "gray"),
+                risk_score=score,
+                color_code=color_code,
+                data_status=data_status,
                 status="cached"
             )
             cached_count += 1
+            if data_status == "insufficient_data":
+                insufficient_count += 1
         else:
             safety = None
             missing_count += 1
@@ -502,6 +517,7 @@ async def get_mp_routes_with_safety(
         cached_routes=cached_count,
         computed_routes=0,  # We don't compute on-demand in bulk endpoint
         missing_routes=missing_count,
+        insufficient_routes=insufficient_count,
         target_date=date_str,
         season=season or "rock",
     )
@@ -624,15 +640,18 @@ async def calculate_mp_route_safety(
     date_str = target_date.isoformat()
     cache_key = build_safety_score_key(mp_route_id, date_str)
     if not bypass_cache:
-        cached_result = cache_get(cache_key)
-        if cached_result:
-            # Merge cached safety data with route info from database
+        # A cached entry without a real 0-100 score (or explicit insufficient_data)
+        # falls through to a recompute.
+        parsed = cached_safety(cache_get(cache_key))
+        if parsed is not None:
+            cached_score, cached_color, cached_status = parsed
             return MpRouteSafetyResponse(
                 route_id=mp_route_id,
                 route_name=route.name,
                 target_date=date_str,
-                risk_score=cached_result.get("risk_score", 0),
-                color_code=cached_result.get("color_code", "gray"),
+                risk_score=cached_score,
+                color_code=cached_color,
+                data_status=cached_status,
             )
 
     # Build prediction request
@@ -647,14 +666,7 @@ async def calculate_mp_route_safety(
     # Get prediction
     prediction_response = await predict_route_safety(prediction_request, db)
 
-    # Build response
-    response = MpRouteSafetyResponse(
-        route_id=mp_route_id,
-        route_name=route.name,
-        target_date=date_str,
-        risk_score=prediction_response.risk_score,
-        color_code=get_safety_color_code(prediction_response.risk_score),
-    )
+    response = _safety_response(mp_route_id, route.name, date_str, prediction_response.risk_score)
 
     # Cache the result (1 hour TTL) - cache_set is sync, not async
     if not bypass_cache:
@@ -765,7 +777,7 @@ async def get_route_forecast(
 
             forecast_days.append({
                 "date": target_date.isoformat(),
-                "risk_score": round(prediction.risk_score, 1),
+                **_rounded_risk_fields(prediction.risk_score),
                 "weather_summary": weather_summary,
                 "temp_high": round(temp_max, 1) if temp_max is not None else None,
                 "temp_low": round(temp_min, 1) if temp_min is not None else None,
@@ -780,7 +792,7 @@ async def get_route_forecast(
             forecast_days.append({
                 "date": target_date.isoformat(),
                 "risk_score": None,
-                "error": str(e)
+                "error": "Forecast unavailable for this date"
             })
 
     # Today's detailed conditions (first day)
@@ -1063,7 +1075,7 @@ async def get_risk_breakdown(
     # Build factor breakdown with actual data
     factors = []
 
-    if prediction.num_contributing_accidents > 0:
+    if prediction.risk_score is not None:
         factors.append({
             "name": "Spatial Proximity",
             "contribution": round(avg_spatial, 1),
@@ -1097,18 +1109,14 @@ async def get_risk_breakdown(
             "description": f"Climbing discipline similarity ({route.type} routes). "
                           f"Asymmetric weighting accounts for shared risk factors"
         })
-    else:
-        factors.append({
-            "name": "No Data",
-            "contribution": 0,
-            "description": "Insufficient accident data for risk calculation"
-        })
 
     return {
         "route_id": mp_route_id,
         "route_name": route.name,
         "target_date": target_date.isoformat(),
-        "risk_score": round(prediction.risk_score, 1),
+        **_rounded_risk_fields(prediction.risk_score),
+        # Insufficient: no factors at all (a zero-contribution "factor" read like a result).
+        **({"message": INSUFFICIENT_DATA_MESSAGE} if prediction.risk_score is None else {}),
         "num_contributing_accidents": prediction.num_contributing_accidents,
         "extreme_weather": extreme_weather,
         "factors": factors,
@@ -1197,7 +1205,7 @@ async def get_seasonal_patterns(
                 "month": month_name,
                 "month_num": month_num,
                 "accident_count": 0,
-                "avg_risk_score": 0,
+                "avg_risk_score": None,
                 "avg_temp": None,
             })
 
@@ -1343,7 +1351,9 @@ async def get_time_of_day_analysis(
             elif visibility is not None and visibility < 5000:
                 risk_adjustment += 5
 
-            hourly_risk = min(max(base_risk + risk_adjustment, 0), 100)
+            # Too little evidence: no hourly number either (weather adjustments would otherwise
+            # turn "unknown" into an apparently low score).
+            hourly_risk = None if base_risk is None else min(max(base_risk + risk_adjustment, 0), 100)
 
             # Determine condition summary
             conditions = []
@@ -1358,26 +1368,35 @@ async def get_time_of_day_analysis(
             if visibility is not None and visibility < 5000:
                 conditions.append("Low Visibility")
 
-            if not conditions:
-                if hourly_risk < 30:
+            if not conditions and hourly_risk is None:
+                conditions.append("No risk estimate")
+            elif not conditions:
+                band = displayed_risk(hourly_risk)[1]
+                if band == "green":
                     conditions.append("Good Conditions")
-                elif hourly_risk < 50:
+                elif band == "yellow":
                     conditions.append("Moderate")
                 else:
                     conditions.append("Cautious")
 
             is_daylight = 6 <= hour <= 18
-            is_climbable = (
-                hourly_risk < 70
-                and (precip is None or precip < 5)
-                and (wind is None or wind < 20)
-                and (gust is None or gust < 20)
-            )
+            # Owner decision 2026-09-28: cut-off is the high band's lower edge
+            # (RISK_BAND_THRESHOLDS[2] = 75), not an independent literal.
+            # Insufficient data: climbability is unknown (None), never True.
+            is_climbable: Optional[bool] = None
+            if hourly_risk is not None:
+                is_climbable = (
+                    hourly_risk < RISK_BAND_THRESHOLDS[2]
+                    and (precip is None or precip < 5)
+                    and (wind is None or wind < 20)
+                    and (gust is None or gust < 20)
+                    and is_daylight
+                )
 
             hourly_data.append({
                 "hour": hour,
                 "time": times[i],
-                "risk_score": round(hourly_risk, 1),
+                **_rounded_risk_fields(hourly_risk),
                 "temperature": round(temp, 1) if temp is not None else None,
                 "precipitation": round(precip, 2) if precip is not None else None,
                 "wind_speed": round(wind, 1) if wind is not None else None,
@@ -1386,7 +1405,7 @@ async def get_time_of_day_analysis(
                 "visibility": round(visibility, 0) if visibility is not None else None,
                 "conditions_summary": ", ".join(conditions),
                 "is_daylight": is_daylight,
-                "is_climbable": is_climbable and is_daylight,
+                "is_climbable": is_climbable,
             })
 
         # Find best climbing windows
@@ -1424,19 +1443,24 @@ async def get_time_of_day_analysis(
             "route_id": mp_route_id,
             "route_name": route.name,
             "target_date": target_date.isoformat(),
-            "base_daily_risk": round(base_risk, 1),
+            "base_daily_risk": round(base_risk, 1) if base_risk is not None else None,
+            "data_status": "ok" if base_risk is not None else "insufficient_data",
             "hourly_data": hourly_data,
             "climbing_windows": windows,
             "best_window": windows[0] if windows else None,
             "recommendation": (
-                f"Best window: {windows[0]['start_hour']:02d}:00-{windows[0]['end_hour']:02d}:00 "
-                f"(Risk: {windows[0]['avg_risk']}/100)"
-            ) if windows else "No suitable climbing windows identified for this date",
+                f"{INSUFFICIENT_DATA_MESSAGE}."
+                if base_risk is None
+                else (
+                    f"Best window: {windows[0]['start_hour']:02d}:00-{windows[0]['end_hour']:02d}:00 "
+                    f"(Risk: {windows[0]['avg_risk']}/100)"
+                ) if windows else "No suitable climbing windows identified for this date"
+            ),
         }
 
     except Exception as e:
         logger.error(f"Error fetching hourly weather: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch hourly weather data: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to fetch hourly weather data")
 
 
 @router.get("/mp-routes/{mp_route_id}/historical-trends")
@@ -1521,26 +1545,6 @@ async def get_historical_trends(
         except Exception as weather_err:
             logger.warning(f"Weather volatility data unavailable for route {mp_route_id}: {weather_err}")
 
-    # Ensure historical table exists so first-run routes don't hard-error.
-    # If permissions prevent table creation, continue and let the normal
-    # query/error path report availability.
-    try:
-        await db.execute(text("""
-            CREATE TABLE IF NOT EXISTS historical_predictions (
-                id SERIAL PRIMARY KEY,
-                route_id INTEGER NOT NULL,
-                prediction_date DATE NOT NULL,
-                risk_score FLOAT,
-                color_code VARCHAR(20),
-                calculated_at TIMESTAMP DEFAULT NOW(),
-                UNIQUE(route_id, prediction_date)
-            )
-        """))
-        await db.commit()
-    except Exception as table_err:
-        await db.rollback()
-        logger.warning(f"Could not ensure historical_predictions table exists: {table_err}")
-
     # Fetch historical predictions
     historical_query = text("""
         SELECT
@@ -1569,38 +1573,49 @@ async def get_historical_trends(
                 "message": "Historical data not yet available. Run backfill script to collect historical predictions."
             }
 
-        predictions = [
-            {
+        predictions = []
+        for row in historical_data:
+            if row[1] is None and row[2] == INSUFFICIENT_DATA_COLOR:
+                predictions.append({"date": row[0].isoformat(), **_rounded_risk_fields(None)})
+                continue
+            stored_score = valid_risk_score(float(row[1])) if row[1] is not None else None
+            if stored_score is None:
+                logger.warning(f"Skipping historical prediction without a valid score: route {mp_route_id} {row[0]}")
+                continue
+            predictions.append({
                 "date": row[0].isoformat(),
-                "risk_score": round(float(row[1]), 1),
-                "color_code": row[2],
-            }
-            for row in historical_data
-        ]
+                # Colour re-derived rather than trusting the stored column, so rows written
+                # under older band sets can never disagree with the live marker colour; rows
+                # stored as 0.0 before 0003 ("no evidence") read as insufficient. No rewrites.
+                **_rounded_risk_fields(stored_score),
+            })
 
-        risk_scores = [p["risk_score"] for p in predictions]
+        # Insufficient-data days carry no number, so they are left out of the summary/trend.
+        risk_scores = [p["risk_score"] for p in predictions if p["risk_score"] is not None]
         summary = {
             "avg_risk": round(sum(risk_scores) / len(risk_scores), 1),
             "min_risk": round(min(risk_scores), 1),
             "max_risk": round(max(risk_scores), 1),
-        }
+        } if risk_scores else None
 
         trend = None
-        if len(predictions) >= 7:
+        if len(risk_scores) >= 7:
             recent_avg = sum(risk_scores[-7:]) / 7
             older_avg = sum(risk_scores[:7]) / 7
 
+            # Windows are scored days, not calendar weeks: insufficient days carry no number.
+            window = "the latest 7 scored days vs the earliest 7 scored days"
             if recent_avg > older_avg + 5:
-                trend = {"direction": "increasing", "description": "Risk has increased over the past week"}
+                trend = {"direction": "increasing", "description": f"Risk is higher in {window}"}
             elif recent_avg < older_avg - 5:
-                trend = {"direction": "decreasing", "description": "Risk has decreased over the past week"}
+                trend = {"direction": "decreasing", "description": f"Risk is lower in {window}"}
             else:
-                trend = {"direction": "stable", "description": "Risk has remained relatively stable"}
+                trend = {"direction": "stable", "description": f"Risk is about the same in {window}"}
 
         return {
             "route_id": mp_route_id,
             "route_name": route.name,
-            "days_available": len(predictions),
+            "days_available": len(risk_scores),
             "historical_predictions": predictions,
             "summary": summary,
             "trend": trend,
@@ -1781,204 +1796,3 @@ async def get_ascent_analytics(
         response["message"] = "No tick data available yet for this route."
 
     return response
-
-
-# =============================================================================
-# ADMIN ENDPOINTS - Cache Management
-# =============================================================================
-
-@router.get("/mp-routes/admin/trigger-cache-population")
-async def trigger_cache_population(
-    target_date: Optional[str] = Query(None, description="Specific date (YYYY-MM-DD) or leave empty for 7-day run"),
-):
-    """
-    Manually trigger safety score cache population via Celery background task.
-
-    Returns immediately with task ID. Check Railway logs for progress.
-
-    **Options:**
-    - No params: Compute optimized 3-day window (today + 2)
-    - `target_date` is currently ignored by the optimized task (kept for backward compatibility)
-
-    **Returns:** Task ID and status message (task runs in background).
-    """
-    from app.tasks.safety_computation_optimized import (
-        compute_daily_safety_scores_optimized,
-    )
-    from app.celery_app import celery_app
-
-    logger.info("=" * 60)
-    logger.info("MANUAL CACHE POPULATION TRIGGERED VIA API")
-    logger.info("=" * 60)
-
-    try:
-        # Refuse duplicate manual triggers while optimized computation is active
-        inspect = celery_app.control.inspect()
-        active_workers = inspect.active() or {}
-        optimized_task_name = (
-            "app.tasks.safety_computation_optimized.compute_daily_safety_scores_optimized"
-        )
-        active_optimized_task_ids = []
-        for worker_tasks in active_workers.values():
-            for task in worker_tasks or []:
-                if task.get("name") == optimized_task_name:
-                    active_optimized_task_ids.append(task.get("id"))
-
-        if active_optimized_task_ids:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "status": "already_running",
-                    "message": "Optimized cache population already active; refusing duplicate trigger.",
-                    "active_count": len(active_optimized_task_ids),
-                    "active_task_ids": active_optimized_task_ids[:10],
-                },
-            )
-
-        # Use optimized location-level computation (3-day window: today + 2)
-        # target_date parameter is ignored - optimized task computes configured range
-        logger.info("Triggering OPTIMIZED Celery task (location-level computation)...")
-        task = compute_daily_safety_scores_optimized.delay()
-        return {
-            "status": "started",
-            "message": "Optimized cache population started (3-day window). Check Railway logs for progress.",
-            "task_id": task.id,
-            "estimated_time": "5-15 minutes",
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to trigger cache population: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to trigger cache population: {str(e)}"
-        )
-
-
-@router.get("/mp-routes/admin/task-status/{task_id}")
-async def get_task_status(task_id: str):
-    """
-    Check the status of a Celery background task.
-
-    **Returns:**
-    - `pending`: Task is waiting to be picked up by a worker
-    - `started`: Task is currently running
-    - `success`: Task completed successfully (includes result)
-    - `failure`: Task failed (includes error message)
-    - `revoked`: Task was cancelled
-    """
-    from app.celery_app import celery_app
-
-    try:
-        result = celery_app.AsyncResult(task_id)
-
-        response = {
-            "task_id": task_id,
-            "status": result.status.lower(),
-            "ready": result.ready(),
-        }
-
-        if result.ready():
-            if result.successful():
-                response["result"] = result.result
-            else:
-                response["error"] = str(result.result)
-
-        return response
-
-    except Exception as e:
-        logger.error(f"Failed to get task status: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to get task status: {str(e)}"
-        )
-
-
-@router.get("/mp-routes/admin/queue-info")
-async def get_queue_info():
-    """
-    Get info about Celery queue and purge stale tasks if needed.
-    """
-    from app.celery_app import celery_app
-    import redis
-    from app.config import settings
-
-    try:
-        # Connect to Redis directly to inspect queue
-        r = redis.from_url(settings.REDIS_URL)
-
-        # Get queue length
-        queue_length = r.llen("celery")
-
-        # Get active workers
-        inspect = celery_app.control.inspect()
-        active_workers = inspect.active()
-        registered = inspect.registered()
-
-        return {
-            "queue_length": queue_length,
-            "active_workers": active_workers,
-            "registered_tasks": registered,
-            "redis_connected": True,
-        }
-    except Exception as e:
-        return {
-            "error": str(e),
-            "redis_connected": False,
-        }
-
-
-@router.get("/mp-routes/admin/purge-queue")
-async def purge_queue():
-    """
-    Purge all pending tasks from the Celery queue.
-    Use with caution - this removes ALL queued tasks.
-    """
-    from app.celery_app import celery_app
-
-    try:
-        purged = celery_app.control.purge()
-        return {
-            "status": "purged",
-            "tasks_removed": purged,
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": str(e),
-        }
-
-
-@router.get("/mp-routes/admin/redis-debug")
-async def redis_debug():
-    """
-    Debug Redis connection and see all Celery-related keys.
-    """
-    import redis
-    from app.config import settings
-
-    try:
-        r = redis.from_url(settings.REDIS_URL)
-
-        # Get all keys
-        all_keys = [k.decode() for k in r.keys("*")]
-        celery_keys = [k for k in all_keys if "celery" in k.lower()]
-
-        # Check specific queues
-        queue_lengths = {}
-        for key in ["celery", "celery:default", "default"]:
-            try:
-                queue_lengths[key] = r.llen(key)
-            except Exception:
-                queue_lengths[key] = "N/A"
-
-        return {
-            "redis_url": settings.REDIS_URL[:50] + "...",  # Truncate for security
-            "total_keys": len(all_keys),
-            "celery_keys": celery_keys[:20],  # First 20
-            "queue_lengths": queue_lengths,
-            "ping": r.ping(),
-        }
-    except Exception as e:
-        return {"error": str(e)}

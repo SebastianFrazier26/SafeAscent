@@ -16,8 +16,73 @@ import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFns';
 import { addDays, startOfToday, format } from 'date-fns';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import RouteAnalyticsModal from './RouteAnalyticsModal';
+import RiskLegend from './RiskLegend';
+import { useRouteSafety } from '../hooks/useRouteSafety';
+import {
+  NO_RISK_HEX,
+  NO_RISK_TEXT_HEX,
+  RISK_BAND_THRESHOLDS,
+  RISK_COLOR_HEX,
+  RISK_TEXT_ON_HEX,
+  routeSafetyProps,
+} from '../utils/riskUtils';
+import { hexToRgba, mixHex } from '../utils/color';
+import { clusterColorExpression } from '../utils/clusterColor';
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
+
+const [RISK_LOW_MAX, RISK_MODERATE_MAX, RISK_HIGH_MAX] = RISK_BAND_THRESHOLDS;
+// Heatmap layers overlap by this many points either side of each band edge so adjacent
+// colours blend. It is a rendering overlap only; markers/clusters/legend use exact edges.
+const HEATMAP_BLEND = 2;
+// 'gray' is what the map endpoint sends for a route with no score.
+const ROUTE_COLOR_MATCH_ARMS = [
+  ...Object.entries(RISK_COLOR_HEX).flat(),
+  'gray', NO_RISK_HEX,
+];
+// Heatmap ramps come from the band palette so the heatmap cannot drift from the markers.
+// Edges and peaks lean toward the neighbouring band's hue so overlapping layers blend.
+const BLACK = '#000000';
+const heatRamp = (stops) => [
+  'interpolate', ['linear'], ['heatmap-density'],
+  ...stops.flatMap(([density, hex, alpha]) => [density, hexToRgba(hex, alpha)]),
+];
+const HEATMAP_COLOR = {
+  base: heatRamp([
+    [0, BLACK, 0],
+    [0.05, NO_RISK_HEX, 0.25],
+    [0.3, NO_RISK_HEX, 0.35],
+    [1, NO_RISK_HEX, 0.4],
+  ]),
+  low: heatRamp([
+    [0, RISK_COLOR_HEX.green, 0],
+    [0.05, RISK_COLOR_HEX.green, 0.4],
+    [0.2, RISK_COLOR_HEX.green, 0.6],
+    [0.5, RISK_COLOR_HEX.green, 0.7],
+    [1, mixHex(RISK_COLOR_HEX.green, RISK_COLOR_HEX.yellow, 0.4), 0.75],
+  ]),
+  moderate: heatRamp([
+    [0, RISK_COLOR_HEX.yellow, 0],
+    [0.05, mixHex(RISK_COLOR_HEX.yellow, RISK_COLOR_HEX.green, 0.25), 0.4],
+    [0.2, RISK_COLOR_HEX.yellow, 0.65],
+    [0.5, RISK_COLOR_HEX.yellow, 0.8],
+    [1, mixHex(RISK_COLOR_HEX.yellow, RISK_COLOR_HEX.orange, 0.5), 0.85],
+  ]),
+  elevated: heatRamp([
+    [0, RISK_COLOR_HEX.orange, 0],
+    [0.05, mixHex(RISK_COLOR_HEX.orange, RISK_COLOR_HEX.yellow, 0.3), 0.5],
+    [0.2, RISK_COLOR_HEX.orange, 0.7],
+    [0.5, RISK_COLOR_HEX.orange, 0.85],
+    [1, mixHex(RISK_COLOR_HEX.orange, RISK_COLOR_HEX.red, 0.7), 0.9],
+  ]),
+  high: heatRamp([
+    [0, RISK_COLOR_HEX.red, 0],
+    [0.05, mixHex(RISK_COLOR_HEX.red, RISK_COLOR_HEX.orange, 0.3), 0.55],
+    [0.2, RISK_COLOR_HEX.red, 0.75],
+    [0.5, RISK_COLOR_HEX.red, 0.9],
+    [1, mixHex(RISK_COLOR_HEX.red, BLACK, 0.25), 0.95],
+  ]),
+};
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
 
 // Default view: Centered on Rocky Mountains (major climbing destination)
@@ -55,8 +120,29 @@ export default function MapView({ selectedRouteForZoom }) {
 
   // Selected route for detail popup
   const [selectedRoute, setSelectedRoute] = useState(null);
-  const [safetyData, setSafetyData] = useState(null);
-  const [_loadingSafety, setLoadingSafety] = useState(false);
+  const { state: safetyState, retry: retrySafety } = useRouteSafety(
+    selectedRoute?.properties?.id ?? null,
+    format(selectedDate, 'yyyy-MM-dd'),
+  );
+
+  const okSafety = safetyState?.status === 'ok' ? safetyState.data : null;
+  const insufficientSafety = safetyState?.status === 'insufficient';
+  // Memoized so the modal's props don't change on every map pan/hover render. Keyed on
+  // okSafety, not safetyState, since the hook derives a fresh loading object each render.
+  const modalRouteData = useMemo(() => (selectedRoute ? {
+      route_id: selectedRoute.properties.id,
+      name: selectedRoute.properties.name,
+      mountain_name: selectedRoute.properties.mountain_name || 'Unknown Mountain',
+      type: selectedRoute.properties.type,
+      grade: selectedRoute.properties.grade,
+      latitude: selectedRoute.geometry.coordinates[1],
+      longitude: selectedRoute.geometry.coordinates[0],
+      elevation_meters: null,
+      risk_score: okSafety ? okSafety.risk_score : null,
+      color_code: okSafety ? okSafety.color_code : insufficientSafety ? 'gray' : null,
+      data_status: okSafety ? 'ok' : insufficientSafety ? 'insufficient_data' : null,
+      mp_route_id: selectedRoute.properties.mp_route_id,
+    } : null), [selectedRoute, okSafety, insufficientSafety]);
 
   // Track safety score loading progress (now just for display, bulk fetch is fast)
   const [safetyLoadingProgress, setSafetyLoadingProgress] = useState({ loaded: 0, total: 0, isLoading: false });
@@ -177,8 +263,8 @@ export default function MapView({ selectedRouteForZoom }) {
           if (routesAtLocation.length === 1) {
             // Single route - use original coordinates
             const route = routesAtLocation[0];
-            const hasSafety = route.safety !== null;
-            if (hasSafety) routesWithSafety++;
+            const safetyProps = routeSafetyProps(route.safety);
+            if (safetyProps.data_status !== null) routesWithSafety++;
 
             features.push({
               type: 'Feature',
@@ -193,9 +279,9 @@ export default function MapView({ selectedRouteForZoom }) {
                 type: normalizeRouteTypeForDisplay(route.type),
                 mp_route_id: route.mp_route_id,
                 location_id: route.location_id,
-                // Safety scores embedded from bulk response!
-                color_code: hasSafety ? route.safety.color_code : 'gray',
-                risk_score: hasSafety ? route.safety.risk_score : null,
+                // Insufficient-data and unscored routes are gray with no score: the cluster
+                // average leaves them out, and clusterColorExpression grays a mostly-unscored cluster.
+                ...safetyProps,
               },
             });
           } else {
@@ -218,8 +304,8 @@ export default function MapView({ selectedRouteForZoom }) {
               const offsetLon = startLon + col * baseOffset;
               const offsetLat = startLat + row * baseOffset;
 
-              const hasSafety = route.safety !== null;
-              if (hasSafety) routesWithSafety++;
+              const safetyProps = routeSafetyProps(route.safety);
+              if (safetyProps.data_status !== null) routesWithSafety++;
 
               features.push({
                 type: 'Feature',
@@ -234,9 +320,7 @@ export default function MapView({ selectedRouteForZoom }) {
                   type: normalizeRouteTypeForDisplay(route.type),
                   mp_route_id: route.mp_route_id,
                   location_id: route.location_id,
-                  // Safety scores embedded from bulk response!
-                  color_code: hasSafety ? route.safety.color_code : 'gray',
-                  risk_score: hasSafety ? route.safety.risk_score : null,
+                  ...safetyProps,
                 },
               });
             });
@@ -338,54 +422,6 @@ export default function MapView({ selectedRouteForZoom }) {
   }, [selectedRouteForZoom, routes, seasonFilter]);
 
   /**
-   * Fetch safety score for selected route
-   */
-  useEffect(() => {
-    if (!selectedRoute) {
-      setSafetyData(null);
-      return;
-    }
-
-    let ignoreResponse = false;
-
-    const fetchSafety = async () => {
-      try {
-        setSafetyData(null); // Prevent stale score flash from previously selected route
-        setLoadingSafety(true);
-        const dateStr = format(selectedDate, 'yyyy-MM-dd');
-        const response = await fetch(
-          `${API_BASE_URL}/mp-routes/${selectedRoute.properties.id}/safety?target_date=${dateStr}&bypass_cache=true`,
-          { method: 'POST' }
-        );
-
-        if (!response.ok) {
-          throw new Error(`Failed to fetch safety score: ${response.statusText}`);
-        }
-
-        const data = await response.json();
-        if (!ignoreResponse) {
-          setSafetyData(data);
-        }
-      } catch (err) {
-        if (!ignoreResponse) {
-          console.error('Error fetching safety score:', err);
-          setSafetyData({ error: err.message });
-        }
-      } finally {
-        if (!ignoreResponse) {
-          setLoadingSafety(false);
-        }
-      }
-    };
-
-    fetchSafety();
-
-    return () => {
-      ignoreResponse = true;
-    };
-  }, [selectedRoute, selectedDate]);
-
-  /**
    * Log when map view mode changes
    */
   useEffect(() => {
@@ -395,10 +431,7 @@ export default function MapView({ selectedRouteForZoom }) {
       console.log('🎨 Switched to RISK COVERAGE VIEW - Stratified heatmap with smooth blending');
       console.log('   → Base: Gray heatmap shows ALL climbing areas (contrast for non-climbing areas)');
       console.log('   → Risk layers with overlapping boundaries for smooth transitions:');
-      console.log('     • Green: 0-32 (low risk)');
-      console.log('     • Yellow: 28-52 (moderate) ← overlaps green & orange');
-      console.log('     • Orange: 48-72 (elevated) ← overlaps yellow & red');
-      console.log('     • Red: 68+ (high risk) ← overlaps orange');
+      console.log(`   → Bands ${RISK_BAND_THRESHOLDS.join('/')}, heatmap overlap ±${HEATMAP_BLEND}`);
       console.log('   → Smaller radius (70px) for tighter coverage');
       console.log('   → No gray in Oklahoma/central US = no climbing routes there');
     }
@@ -520,28 +553,18 @@ export default function MapView({ selectedRouteForZoom }) {
               clusterRadius={30}
               clusterProperties={{
                 risk_score_sum: ['+', ['coalesce', ['get', 'risk_score'], 0]],
+                // Unscored routes must not count toward the average, or they drag it greener.
+                risk_score_count: ['+', ['case', ['==', ['typeof', ['get', 'risk_score']], 'number'], 1, 0]],
               }}
             >
-              {/* Clustered points - color by average safety score */}
+              {/* Clustered points - gray unless half are scored, else the scored average */}
               <Layer
                 id="clusters"
                 type="circle"
                 source="routes"
                 filter={['has', 'point_count']}
                 paint={{
-                  'circle-color': [
-                    'case',
-                    ['>', ['get', 'risk_score_sum'], 0],
-                    [
-                      'step',
-                      ['/', ['get', 'risk_score_sum'], ['get', 'point_count']],
-                      '#4caf50',  // Green: 0-30
-                      30, '#fdd835',  // Yellow: 30-50
-                      50, '#ff9800',  // Orange: 50-70
-                      70, '#f44336',  // Red: 70+
-                    ],
-                    '#9e9e9e'  // Gray: no data
-                  ],
+                  'circle-color': clusterColorExpression(RISK_COLOR_HEX, NO_RISK_HEX),
                   'circle-radius': [
                     'step',
                     ['get', 'point_count'],
@@ -564,7 +587,7 @@ export default function MapView({ selectedRouteForZoom }) {
                   'text-size': 14,
                 }}
                 paint={{
-                  'text-color': '#ffffff',
+                  'text-color': clusterColorExpression(RISK_TEXT_ON_HEX, NO_RISK_TEXT_HEX),
                 }}
               />
 
@@ -578,11 +601,7 @@ export default function MapView({ selectedRouteForZoom }) {
                   'circle-color': [
                     'match',
                     ['get', 'color_code'],
-                    'green', '#4caf50',
-                    'yellow', '#fdd835',
-                    'orange', '#ff9800',
-                    'red', '#f44336',
-                    'gray', '#9e9e9e',
+                    ...ROUTE_COLOR_MATCH_ARMS,
                     '#11b4da'
                   ],
                   'circle-radius': 6,
@@ -648,24 +667,17 @@ export default function MapView({ selectedRouteForZoom }) {
                     0, 25, 4, 40, 6, 55, 8, 70, 10, 55, 12, 40, 14, 25, 16, 12,
                   ],
                   'heatmap-intensity': 1.0,
-                  'heatmap-color': [
-                    'interpolate', ['linear'], ['heatmap-density'],
-                    0, 'rgba(0, 0, 0, 0)',             // Transparent where no routes
-                    0.05, 'rgba(158, 158, 158, 0.25)', // Light gray shows climbing areas
-                    0.3, 'rgba(158, 158, 158, 0.35)',
-                    1, 'rgba(158, 158, 158, 0.4)',
-                  ],
+                  'heatmap-color': HEATMAP_COLOR.base,
                   'heatmap-opacity': 0.7,
                 }}
               />
 
-              {/* Layer 1: LOW RISK (0-32) - Green heatmap */}
-              {/* Extended to 32 to create overlap zone with yellow for smoother blending */}
+              {/* Layer 1: LOW RISK - Green heatmap (band + HEATMAP_BLEND overlap) */}
               <Layer
                 id="risk-low"
                 type="heatmap"
                 source="routes"
-                filter={['all', ['has', 'risk_score'], ['<', ['get', 'risk_score'], 32]]}
+                filter={['all', ['has', 'risk_score'], ['<', ['get', 'risk_score'], RISK_LOW_MAX + HEATMAP_BLEND]]}
                 paint={{
                   'heatmap-weight': 1,
                   'heatmap-radius': [
@@ -676,14 +688,7 @@ export default function MapView({ selectedRouteForZoom }) {
                     'interpolate', ['linear'], ['zoom'],
                     0, 1.0, 6, 1.2, 10, 1.4,
                   ],
-                  'heatmap-color': [
-                    'interpolate', ['linear'], ['heatmap-density'],
-                    0, 'rgba(76, 175, 80, 0)',        // Transparent far from routes
-                    0.05, 'rgba(76, 175, 80, 0.4)',   // Soft green at edges
-                    0.2, 'rgba(76, 175, 80, 0.6)',    // Green
-                    0.5, 'rgba(76, 175, 80, 0.7)',
-                    1, 'rgba(139, 195, 74, 0.75)',    // Light green at peak (blends toward yellow)
-                  ],
+                  'heatmap-color': HEATMAP_COLOR.low,
                   'heatmap-opacity': [
                     'interpolate', ['linear'], ['zoom'],
                     0, 0.8, 8, 0.85, 12, 0.75, 14, 0.6, 16, 0.3,
@@ -691,13 +696,12 @@ export default function MapView({ selectedRouteForZoom }) {
                 }}
               />
 
-              {/* Layer 2: MODERATE RISK (28-52) - Yellow heatmap */}
-              {/* Overlaps with green (28-32) and orange (48-52) for smooth transitions */}
+              {/* Layer 2: MODERATE RISK - Yellow heatmap */}
               <Layer
                 id="risk-moderate"
                 type="heatmap"
                 source="routes"
-                filter={['all', ['>=', ['get', 'risk_score'], 28], ['<', ['get', 'risk_score'], 52]]}
+                filter={['all', ['>=', ['get', 'risk_score'], RISK_LOW_MAX - HEATMAP_BLEND], ['<', ['get', 'risk_score'], RISK_MODERATE_MAX + HEATMAP_BLEND]]}
                 paint={{
                   'heatmap-weight': 1,
                   'heatmap-radius': [
@@ -708,14 +712,7 @@ export default function MapView({ selectedRouteForZoom }) {
                     'interpolate', ['linear'], ['zoom'],
                     0, 1.0, 6, 1.2, 10, 1.4,
                   ],
-                  'heatmap-color': [
-                    'interpolate', ['linear'], ['heatmap-density'],
-                    0, 'rgba(253, 216, 53, 0)',
-                    0.05, 'rgba(205, 220, 57, 0.4)',  // Yellow-green transition at edges
-                    0.2, 'rgba(253, 216, 53, 0.65)',  // Yellow
-                    0.5, 'rgba(253, 216, 53, 0.8)',
-                    1, 'rgba(255, 193, 7, 0.85)',     // Amber at peak (blends toward orange)
-                  ],
+                  'heatmap-color': HEATMAP_COLOR.moderate,
                   'heatmap-opacity': [
                     'interpolate', ['linear'], ['zoom'],
                     0, 0.8, 8, 0.85, 12, 0.75, 14, 0.6, 16, 0.3,
@@ -723,13 +720,12 @@ export default function MapView({ selectedRouteForZoom }) {
                 }}
               />
 
-              {/* Layer 3: ELEVATED RISK (48-72) - Orange heatmap */}
-              {/* Overlaps with yellow (48-52) and red (68-72) for smooth transitions */}
+              {/* Layer 3: ELEVATED RISK - Orange heatmap */}
               <Layer
                 id="risk-elevated"
                 type="heatmap"
                 source="routes"
-                filter={['all', ['>=', ['get', 'risk_score'], 48], ['<', ['get', 'risk_score'], 72]]}
+                filter={['all', ['>=', ['get', 'risk_score'], RISK_MODERATE_MAX - HEATMAP_BLEND], ['<', ['get', 'risk_score'], RISK_HIGH_MAX + HEATMAP_BLEND]]}
                 paint={{
                   'heatmap-weight': 1,
                   'heatmap-radius': [
@@ -740,14 +736,7 @@ export default function MapView({ selectedRouteForZoom }) {
                     'interpolate', ['linear'], ['zoom'],
                     0, 1.0, 6, 1.2, 10, 1.4,
                   ],
-                  'heatmap-color': [
-                    'interpolate', ['linear'], ['heatmap-density'],
-                    0, 'rgba(255, 152, 0, 0)',
-                    0.05, 'rgba(255, 171, 0, 0.5)',   // Orange-yellow at edges
-                    0.2, 'rgba(255, 152, 0, 0.7)',    // Orange
-                    0.5, 'rgba(255, 152, 0, 0.85)',
-                    1, 'rgba(255, 87, 34, 0.9)',      // Deep orange at peak (blends toward red)
-                  ],
+                  'heatmap-color': HEATMAP_COLOR.elevated,
                   'heatmap-opacity': [
                     'interpolate', ['linear'], ['zoom'],
                     0, 0.8, 8, 0.85, 12, 0.75, 14, 0.6, 16, 0.3,
@@ -755,13 +744,12 @@ export default function MapView({ selectedRouteForZoom }) {
                 }}
               />
 
-              {/* Layer 4: HIGH RISK (68+) - Red heatmap */}
-              {/* Overlaps with orange (68-72) for smooth transition */}
+              {/* Layer 4: HIGH RISK - Red heatmap */}
               <Layer
                 id="risk-high"
                 type="heatmap"
                 source="routes"
-                filter={['>=', ['get', 'risk_score'], 68]}
+                filter={['>=', ['get', 'risk_score'], RISK_HIGH_MAX - HEATMAP_BLEND]}
                 paint={{
                   'heatmap-weight': 1,
                   'heatmap-radius': [
@@ -772,14 +760,7 @@ export default function MapView({ selectedRouteForZoom }) {
                     'interpolate', ['linear'], ['zoom'],
                     0, 1.0, 6, 1.2, 10, 1.4,
                   ],
-                  'heatmap-color': [
-                    'interpolate', ['linear'], ['heatmap-density'],
-                    0, 'rgba(244, 67, 54, 0)',
-                    0.05, 'rgba(255, 87, 34, 0.55)',  // Red-orange at edges
-                    0.2, 'rgba(244, 67, 54, 0.75)',   // Red
-                    0.5, 'rgba(244, 67, 54, 0.9)',
-                    1, 'rgba(183, 28, 28, 0.95)',     // Dark red at peak
-                  ],
+                  'heatmap-color': HEATMAP_COLOR.high,
                   'heatmap-opacity': [
                     'interpolate', ['linear'], ['zoom'],
                     0, 0.8, 8, 0.85, 12, 0.75, 14, 0.6, 16, 0.3,
@@ -798,11 +779,7 @@ export default function MapView({ selectedRouteForZoom }) {
                   'circle-color': [
                     'match',
                     ['get', 'color_code'],
-                    'green', '#4caf50',
-                    'yellow', '#fdd835',
-                    'orange', '#ff9800',
-                    'red', '#f44336',
-                    'gray', '#9e9e9e',
+                    ...ROUTE_COLOR_MATCH_ARMS,
                     '#11b4da'
                   ],
                   // Smaller markers in risk view to avoid clutter
@@ -1083,145 +1060,7 @@ export default function MapView({ selectedRouteForZoom }) {
           </Paper>
         )}
 
-        {/* Safety Gradient Legend */}
-        <Paper
-          elevation={3}
-          sx={{
-            position: 'absolute',
-            bottom: 40,
-            left: 16,
-            p: 2,
-            zIndex: 1,
-            bgcolor: 'background.paper',
-            borderRadius: 2,
-            minWidth: 200,
-          }}
-        >
-          <Typography variant="subtitle2" fontWeight={600} gutterBottom sx={{ mb: 1.5 }}>
-            🎯 Safety Score Legend
-          </Typography>
-
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-            {/* Green - Safe */}
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-              <Box
-                sx={{
-                  width: 24,
-                  height: 24,
-                  borderRadius: '50%',
-                  bgcolor: '#4caf50',
-                  border: '2px solid #fff',
-                  boxShadow: 1,
-                }}
-              />
-              <Box>
-                <Typography variant="body2" fontWeight={500}>
-                  Safe (0-30)
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  Favorable conditions
-                </Typography>
-              </Box>
-            </Box>
-
-            {/* Yellow - Moderate */}
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-              <Box
-                sx={{
-                  width: 24,
-                  height: 24,
-                  borderRadius: '50%',
-                  bgcolor: '#fdd835',
-                  border: '2px solid #fff',
-                  boxShadow: 1,
-                }}
-              />
-              <Box>
-                <Typography variant="body2" fontWeight={500}>
-                  Moderate (30-50)
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  Increased caution
-                </Typography>
-              </Box>
-            </Box>
-
-            {/* Orange - Elevated */}
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-              <Box
-                sx={{
-                  width: 24,
-                  height: 24,
-                  borderRadius: '50%',
-                  bgcolor: '#ff9800',
-                  border: '2px solid #fff',
-                  boxShadow: 1,
-                }}
-              />
-              <Box>
-                <Typography variant="body2" fontWeight={500}>
-                  Elevated (50-70)
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  Consider postponing
-                </Typography>
-              </Box>
-            </Box>
-
-            {/* Red - High Risk */}
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-              <Box
-                sx={{
-                  width: 24,
-                  height: 24,
-                  borderRadius: '50%',
-                  bgcolor: '#f44336',
-                  border: '2px solid #fff',
-                  boxShadow: 1,
-                }}
-              />
-              <Box>
-                <Typography variant="body2" fontWeight={500}>
-                  High Risk (70+)
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  Not recommended
-                </Typography>
-              </Box>
-            </Box>
-
-            {/* Gray - No Data */}
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-              <Box
-                sx={{
-                  width: 24,
-                  height: 24,
-                  borderRadius: '50%',
-                  bgcolor: '#9e9e9e',
-                  border: '2px solid #fff',
-                  boxShadow: 1,
-                }}
-              />
-              <Box>
-                <Typography variant="body2" fontWeight={500}>
-                  No Data
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  Insufficient information
-                </Typography>
-              </Box>
-            </Box>
-          </Box>
-
-          <Divider sx={{ my: 1.5 }} />
-
-          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
-            💡 <strong>Heatmap:</strong> Regional risk coverage across entire map
-          </Typography>
-          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-            📍 <strong>Markers:</strong> Individual routes • Clusters show average score
-          </Typography>
-        </Paper>
+        <RiskLegend />
 
         {/* Mapbox attribution (required) */}
         <Paper
@@ -1245,54 +1084,13 @@ export default function MapView({ selectedRouteForZoom }) {
       <RouteAnalyticsModal
         open={!!selectedRoute}
         onClose={() => setSelectedRoute(null)}
-        routeData={selectedRoute && safetyData ? {
-          route_id: selectedRoute.properties.id,
-          name: selectedRoute.properties.name,
-          mountain_name: selectedRoute.properties.mountain_name || 'Unknown Mountain',
-          type: selectedRoute.properties.type,
-          grade: selectedRoute.properties.grade,
-          latitude: selectedRoute.geometry.coordinates[1],
-          longitude: selectedRoute.geometry.coordinates[0],
-          elevation_meters: null,
-          risk_score: safetyData.risk_score || 0,
-          color_code: safetyData.color_code || 'gray',
-          mp_route_id: selectedRoute.properties.mp_route_id,
-        } : null}
+        routeData={modalRouteData}
         selectedDate={format(selectedDate, 'yyyy-MM-dd')}
+        safety={safetyState}
+        onRetrySafety={retrySafety}
       />
     </LocalizationProvider>
   );
-}
-
-/**
- * Get background color for safety score display
- * @deprecated Kept for potential future use
- */
-function _getSafetyBackgroundColor(colorCode) {
-  const colors = {
-    green: '#4caf50',
-    yellow: '#ffeb3b',
-    orange: '#ff9800',
-    red: '#f44336',
-    gray: '#9e9e9e',
-  };
-  return colors[colorCode] || colors.gray;
-}
-
-/**
- * Get human-readable safety interpretation
- * @deprecated Kept for potential future use
- */
-function _getSafetyInterpretation(riskScore) {
-  if (riskScore < 30) {
-    return '✅ Conditions appear favorable for climbing. Standard precautions apply.';
-  } else if (riskScore < 50) {
-    return '⚠️ Moderate risk conditions. Exercise increased caution and proper preparation.';
-  } else if (riskScore < 70) {
-    return '🔶 Elevated risk conditions. Consider postponing or choosing alternative routes.';
-  } else {
-    return '🔴 High risk conditions. Climbing not recommended unless experienced with current conditions.';
-  }
 }
 
 /**

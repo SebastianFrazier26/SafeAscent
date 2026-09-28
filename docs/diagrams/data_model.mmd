@@ -1,0 +1,18 @@
+erDiagram
+  mp_locations |o--o{ mp_routes : "location_id"
+  mp_routes ||--o{ historical_predictions : "route_id (no FK)"
+  mp_routes |o--o{ accidents : "mp_route_id"
+  accidents |o--o{ weather : "accident_id"
+  routes |o--o{ accidents : "route_id (legacy, Phase 2a)"
+  mountains |o--o{ accidents : "mountain_id (legacy, Phase 2a)"
+  mountains ||--o{ routes : "mountain_id (legacy)"
+
+  mp_locations { bigint mp_id PK }
+  mp_routes { bigint mp_route_id PK }
+  historical_predictions { int id PK }
+  accidents { int accident_id PK }
+  weather { int weather_id PK }
+  routes { int route_id PK }
+  mountains { int mountain_id PK }
+  area_weekly_weather { int weather_id PK }
+  mp_ticks { int tick_id PK }

@@ -3,7 +3,6 @@ Safety Prediction API Endpoint
 
 POST /api/v1/predict - Calculate safety prediction for a planned climbing route
 """
-import os
 import logging
 from datetime import timedelta
 from typing import List, Optional, Dict
@@ -13,6 +12,7 @@ from sqlalchemy import select, and_, func
 from geoalchemy2.functions import ST_DWithin, ST_MakePoint
 
 from app.db.session import get_db
+from app.config import settings
 from app.models.accident import Accident
 from app.models.weather import Weather
 from app.schemas.prediction import (
@@ -36,6 +36,12 @@ from app.services.weather_service import (
     fetch_weather_statistics,
 )
 from app.services.elevation_service import fetch_elevation
+from app.services.risk_bands import (
+    INSUFFICIENT_DATA_COLOR,
+    INSUFFICIENT_DATA_MESSAGE,
+    color_code_for,
+    estimable_score,
+)
 from app.utils.time_utils import get_season
 from app.utils.geo_utils import haversine_distance
 
@@ -78,7 +84,8 @@ async def predict_route_safety(
     - Severity weighting: Subtle boosters (1.0× to 1.3×)
 
     **Returns**:
-    - `risk_score`: 0-100 (higher = more dangerous)
+    - `risk_score`: 0-100 (higher = more dangerous), or null with
+      `data_status="insufficient_data"` when no accident contributed evidence
     - `confidence`: 0-100 (higher = more confident in prediction)
     - `top_contributing_accidents`: Detailed breakdown of influential accidents
     - `confidence_breakdown`: Component scores for transparency
@@ -116,13 +123,11 @@ async def predict_route_safety(
         route_elevation = None
 
     if not accidents:
-        # No accidents found - return zero risk
-        return PredictionResponse(
-            risk_score=0.0,
+        return _insufficient_response(
             num_contributing_accidents=0,
             top_contributing_accidents=[],
             metadata={
-                "message": f"No historical accidents found within {search_radius_km:.0f}km",
+                "reason": f"No historical accidents found within {search_radius_km:.0f}km",
                 "route_type": request.route_type,
                 "search_date": request.planned_date.isoformat(),
                 "search_radius_km": search_radius_km,
@@ -173,12 +178,11 @@ async def predict_route_safety(
     accidents = filtered_accidents
 
     if not accidents:
-        return PredictionResponse(
-            risk_score=0.0,
+        return _insufficient_response(
             num_contributing_accidents=0,
             top_contributing_accidents=[],
             metadata={
-                "message": "No compatible accidents found after route type filtering",
+                "reason": "No compatible accidents found after route type filtering",
                 "route_type": request.route_type,
                 "search_date": request.planned_date.isoformat(),
             },
@@ -269,7 +273,7 @@ async def predict_route_safety(
 
     # Step 6: Calculate safety prediction
     # Feature flag: Use vectorized algorithm if enabled (default: True)
-    use_vectorized = os.getenv("USE_VECTORIZED_ALGORITHM", "true").lower() == "true"
+    use_vectorized = settings.USE_VECTORIZED_ALGORITHM
 
     # Use route_grade from function parameter (batch processing) or request
     effective_grade = route_grade if route_grade is not None else getattr(request, 'route_grade', None)
@@ -325,14 +329,44 @@ async def predict_route_safety(
     metadata["search_radius_km"] = search_radius_km
     metadata["extreme_weather"] = extreme_weather
 
+    raw_score = estimable_score(prediction.num_contributing_accidents, float(prediction.risk_score))
+    if raw_score is None:
+        return _insufficient_response(
+            num_contributing_accidents=prediction.num_contributing_accidents,
+            top_contributing_accidents=contributing_accidents,
+            metadata=metadata,
+        )
+
+    # Every surface shows the 1-decimal value with the colour of that value (the nightly
+    # batch and cache already did); the unrounded formula output stays in metadata.
+    metadata["raw_risk_score"] = raw_score
+    shown_score = round(raw_score, 1)
     response = PredictionResponse(
-        risk_score=prediction.risk_score,
+        risk_score=shown_score,
+        color_code=color_code_for(shown_score),
+        data_status="ok",
         num_contributing_accidents=prediction.num_contributing_accidents,
         top_contributing_accidents=contributing_accidents,
         metadata=metadata,
     )
 
     return response
+
+
+def _insufficient_response(
+    num_contributing_accidents: int,
+    top_contributing_accidents: List[ContributingAccident],
+    metadata: Dict,
+) -> PredictionResponse:
+    metadata = {**metadata, "message": INSUFFICIENT_DATA_MESSAGE}
+    return PredictionResponse(
+        risk_score=None,
+        color_code=INSUFFICIENT_DATA_COLOR,
+        data_status="insufficient_data",
+        num_contributing_accidents=num_contributing_accidents,
+        top_contributing_accidents=top_contributing_accidents,
+        metadata=metadata,
+    )
 
 
 # In-memory cache for accidents during batch processing

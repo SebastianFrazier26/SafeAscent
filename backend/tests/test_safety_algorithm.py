@@ -11,7 +11,7 @@ Tests the core risk calculation engine that combines multiple weighting factors:
 This validates the mathematical foundation of SafeAscent's predictions.
 """
 import pytest
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from app.services.safety_algorithm import (
     AccidentData,
     SafetyPrediction,

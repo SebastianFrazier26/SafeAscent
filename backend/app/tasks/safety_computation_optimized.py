@@ -31,6 +31,8 @@ from app.models.mp_route import MpRoute
 from app.models.mp_location import MpLocation
 from app.models.accident import Accident
 from app.celery_app import celery_app
+from app.config import settings
+from app.healthchecks import ping
 from app.services.location_safety_computation import (
     compute_location_base_score_vectorized,
     compute_batch_route_scores,
@@ -63,6 +65,10 @@ DATE_RETRY_BACKOFF_SECONDS = 20
 CACHE_POPULATION_LOCK_KEY = "safety:cache_population:optimized:lock"
 CACHE_POPULATION_LOCK_TTL_SECONDS = 6 * 60 * 60  # 6 hours
 CACHE_POPULATION_STALE_AFTER_SECONDS = 30 * 60   # 30 minutes
+# Below the 6h lock TTL and broker visibility_timeout, so a hung run is killed
+# before its lock could expire and let a redelivered message start a duplicate.
+NIGHTLY_SOFT_TIME_LIMIT_SECONDS = 5 * 60 * 60          # 5 hours
+NIGHTLY_TIME_LIMIT_SECONDS = NIGHTLY_SOFT_TIME_LIMIT_SECONDS + 30 * 60  # 5.5 hours
 OPTIMIZED_TASK_NAME = "app.tasks.safety_computation_optimized.compute_daily_safety_scores_optimized"
 
 
@@ -92,14 +98,19 @@ def _parse_lock_payload(raw_value: Optional[str]) -> Dict[str, Optional[object]]
     return {"task_id": task_id, "acquired_at": None}
 
 
-def _get_active_optimized_task_ids() -> set[str]:
-    """Return active optimized task IDs currently executing in Celery workers."""
+def _get_active_optimized_task_ids() -> Optional[set[str]]:
+    """Return active optimized task IDs, or None when no worker answered the inspect."""
+    # Census, not per-replica identification: this treats "no other active id" as "no
+    # other run anywhere," which only holds with numReplicas=1 (backend/railway-worker.toml).
     try:
         inspect = celery_app.control.inspect(timeout=1)
-        active_workers = inspect.active() or {}
+        active_workers = inspect.active()
     except Exception as exc:
-        logger.warning("Could not inspect Celery active tasks during lock check: %s", exc)
-        return set()
+        # Type only: broker errors can echo connection details.
+        logger.warning("Could not inspect Celery active tasks during lock check: %s", type(exc).__name__)
+        return None
+    if not active_workers:
+        return None
 
     active_task_ids: set[str] = set()
     for worker_tasks in active_workers.values():
@@ -133,7 +144,7 @@ def _delete_lock_if_unchanged(lock_value: str) -> bool:
         return False
 
 
-def _try_recover_stale_lock(existing_lock_value: str) -> bool:
+def _try_recover_stale_lock(existing_lock_value: str, task_id: str) -> bool:
     """Recover lock if owner is not active and lock appears stale/terminal."""
     client = get_redis_client()
     if client is None:
@@ -145,10 +156,18 @@ def _try_recover_stale_lock(existing_lock_value: str) -> bool:
     lock_ttl_seconds = client.ttl(CACHE_POPULATION_LOCK_KEY)
     now_ts = int(time.time())
 
+    # Fail closed: with two worker slots an unanswered inspect may hide a live run, and
+    # the 6h lock TTL already frees the lock of a holder that crashed.
     active_ids = _get_active_optimized_task_ids()
-    if owner_task_id and owner_task_id in active_ids:
+    if active_ids is None:
+        logger.warning(
+            "Keeping optimized cache lock: could not confirm via inspect that no other run is active "
+            "(owner_task_id=%s, task_id=%s)",
+            owner_task_id,
+            task_id,
+        )
         return False
-    if not owner_task_id and active_ids:
+    if active_ids - {task_id}:
         return False
 
     stale_reason = None
@@ -212,7 +231,7 @@ def _acquire_population_lock(task_id: str) -> Tuple[bool, Optional[str]]:
         return True, token
 
     existing = client.get(CACHE_POPULATION_LOCK_KEY)
-    if existing and _try_recover_stale_lock(existing):
+    if existing and _try_recover_stale_lock(existing, task_id):
         reacquired = client.set(
             CACHE_POPULATION_LOCK_KEY,
             token,
@@ -770,7 +789,7 @@ async def _process_location_batch(
     3. Compute base scores for all accidents (VECTORIZED for speed)
     4. Apply route-specific adjustments for all routes at this location
 
-    Returns {route_id: {"risk_score": float, "color_code": str}}
+    Returns {route_id: {"risk_score": float | None, "color_code": str, "data_status": str}}
     """
     all_scores = {}
 
@@ -832,6 +851,9 @@ async def _save_to_historical(
     """
     Save scores to historical_predictions table.
 
+    An insufficient_data route is stored as risk_score NULL + color_code 'gray'
+    (migration 0003), not skipped and never 0.
+
     Uses batched inserts to avoid PostgreSQL parameter limits.
     Also purges data older than 1 year for storage efficiency.
     """
@@ -840,6 +862,7 @@ async def _save_to_historical(
 
     BATCH_SIZE = 5000  # Stay well under PostgreSQL's 65535 param limit (4 params per row)
     total_saved = 0
+    failed_batches = 0
     score_items = list(scores.items())
 
     for batch_start in range(0, len(score_items), BATCH_SIZE):
@@ -859,20 +882,6 @@ async def _save_to_historical(
         values_sql = ", ".join(values_list)
 
         try:
-            # Ensure table exists (idempotent, safe to run)
-            await db.execute(text("""
-                CREATE TABLE IF NOT EXISTS historical_predictions (
-                    id SERIAL PRIMARY KEY,
-                    route_id INTEGER NOT NULL,
-                    prediction_date DATE NOT NULL,
-                    risk_score FLOAT,
-                    color_code VARCHAR(20),
-                    calculated_at TIMESTAMP DEFAULT NOW(),
-                    UNIQUE(route_id, prediction_date)
-                )
-            """))
-            await db.commit()
-
             await db.execute(text(f"""
                 INSERT INTO historical_predictions
                     (route_id, prediction_date, risk_score, color_code)
@@ -888,6 +897,7 @@ async def _save_to_historical(
         except Exception as e:
             logger.error(f"Failed to save batch to historical_predictions: {e}")
             await db.rollback()
+            failed_batches += 1
 
     logger.info(f"✓ Saved {total_saved:,} to historical_predictions for {target_date}")
 
@@ -904,8 +914,19 @@ async def _save_to_historical(
         logger.error(f"Failed to purge old historical data: {e}")
         await db.rollback()
 
+    # Raised after the purge so one bad batch doesn't skip it; the task then fails loudly
+    # (healthchecks /fail) like the cache-count check, instead of logging and moving on.
+    if failed_batches:
+        raise RuntimeError(
+            f"{failed_batches} historical_predictions batch(es) failed to save for {target_date}"
+        )
 
-@celery_app.task(name="app.tasks.safety_computation_optimized.compute_daily_safety_scores_optimized")
+
+@celery_app.task(
+    name="app.tasks.safety_computation_optimized.compute_daily_safety_scores_optimized",
+    soft_time_limit=NIGHTLY_SOFT_TIME_LIMIT_SECONDS,
+    time_limit=NIGHTLY_TIME_LIMIT_SECONDS,
+)
 def compute_daily_safety_scores_optimized():
     """
     Celery task for optimized daily safety score computation.
@@ -930,6 +951,7 @@ def compute_daily_safety_scores_optimized():
         }
 
     try:
+        ping(settings.HEALTHCHECKS_NIGHTLY_URL, "/start")
         logger.warning("Creating event loop...")
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -943,9 +965,11 @@ def compute_daily_safety_scores_optimized():
         logger.info("=" * 60)
         logger.info(f"OPTIMIZED COMPUTATION COMPLETE: {result}")
         logger.info("=" * 60)
+        ping(settings.HEALTHCHECKS_NIGHTLY_URL)
         return result
     except Exception as e:
         logger.error(f"Optimized computation failed: {e}", exc_info=True)
+        ping(settings.HEALTHCHECKS_NIGHTLY_URL, "/fail")
         raise
     finally:
         _release_population_lock(lock_token)
@@ -999,9 +1023,10 @@ async def _compute_all_dates_async() -> Dict:
                     logger.warning(f"Retrying {date_str} in {delay_seconds}s")
                     await asyncio.sleep(delay_seconds)
                 else:
+                    # Full text is in the log above; the stats dict is task-result material.
                     all_stats["failed_dates"].append({
                         "date": date_str,
-                        "error": str(exc),
+                        "error": f"computation failed ({type(exc).__name__})",
                     })
 
         if not date_success:

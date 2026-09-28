@@ -1,12 +1,12 @@
-# Railway Configuration for SafeAscent Frontend
-# Deployed as a Docker service with Nginx
+# Railway config for the frontend service (nginx). /health answers 200 in both
+# app and maintenance mode; / is a deliberate 503 in maintenance mode.
 
 [build]
 builder = "dockerfile"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-healthcheckPath = "/"
+healthcheckPath = "/health"
 healthcheckTimeout = 10
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3

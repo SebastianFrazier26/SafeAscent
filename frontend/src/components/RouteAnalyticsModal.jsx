@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Dialog,
   DialogTitle,
@@ -270,8 +270,68 @@ import {
   ReferenceDot,
 } from 'recharts';
 import { format, parseISO } from 'date-fns';
+import {
+  INSUFFICIENT_DATA_LABEL,
+  INSUFFICIENT_DATA_MESSAGE,
+  NO_RISK_HEX,
+  NO_RISK_TEXT_HEX,
+  RISK_COLOR_HEX,
+  RISK_TEXT_ON_HEX,
+  formatRiskScore,
+  formatRiskTooltip,
+  getRiskColorCode,
+  isInsufficientData,
+  isRiskScore,
+} from '../utils/riskUtils';
+import { readableTextOn } from '../utils/color';
+import { ACCIDENT_RATE_UNIT, formatAccidentRate, formatAccidentRateValue, hasAccidentRate } from '../utils/accidentRate';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
+
+// Band and hex both come from riskUtils, the same source the map markers use, so a
+// score is the same colour here and on the map.
+function riskChipColors(score) {
+  if (!isRiskScore(score)) return { bgcolor: NO_RISK_HEX, color: NO_RISK_TEXT_HEX };
+  const code = getRiskColorCode(score);
+  return { bgcolor: RISK_COLOR_HEX[code], color: RISK_TEXT_ON_HEX[code] };
+}
+
+const chipColorsOn = (bgcolor) => ({ bgcolor, color: readableTextOn(bgcolor) });
+
+// Hexes, not theme names, so the text colour can be computed from them.
+const SEVERITY_BG = { fatal: '#b71c1c', serious: '#e65100', moderate: '#f57c00', minor: '#fbc02d' };
+
+function severityBg(severity) {
+  const s = severity.toLowerCase();
+  if (s.includes('fatal') || s.includes('death')) return SEVERITY_BG.fatal;
+  if (s.includes('serious') || s.includes('severe')) return SEVERITY_BG.serious;
+  if (s.includes('moderate')) return SEVERITY_BG.moderate;
+  if (s.includes('minor')) return SEVERITY_BG.minor;
+  return NO_RISK_HEX;
+}
+
+// MUI light-theme success.main / success.light / warning.main / error.main and grey.400.
+const ACCIDENT_RATE_BG = { none: '#2e7d32', low: '#4caf50', elevated: '#ed6c02', high: '#d32f2f', noAscents: '#bdbdbd' };
+
+const isFiniteNumber = (value) => typeof value === 'number' && Number.isFinite(value);
+
+function accidentRateBg(month) {
+  if (month.ascent_count === 0) return ACCIDENT_RATE_BG.noAscents;
+  const rate = month.accident_rate;
+  if (!isFiniteNumber(rate)) return NO_RISK_HEX;
+  if (rate === 0) return ACCIDENT_RATE_BG.none;
+  if (rate < 5) return ACCIDENT_RATE_BG.low;
+  if (rate < 10) return ACCIDENT_RATE_BG.elevated;
+  return ACCIDENT_RATE_BG.high;
+}
+
+const formatCount = (count) => (isFiniteNumber(count) ? count : '—');
+
+function monthSummary(month) {
+  const rate = formatAccidentRate(month?.accident_rate, month?.ascent_count);
+  return `${formatCount(month?.ascent_count)} ascents with ${formatCount(month?.accident_count)} accidents `
+    + `(${hasAccidentRate(month?.accident_rate, month?.ascent_count) ? rate : `rate ${rate}`})`;
+}
 
 /**
  * Check if a string segment looks like malformed MP IDs (mostly numbers/slashes)
@@ -388,10 +448,20 @@ function formatRouteNameWithType(name, routeType) {
   return safeName;
 }
 
-function formatRiskScore(score) {
-  const numericScore = Number(score);
-  if (!Number.isFinite(numericScore)) return '0.0';
-  return numericScore.toFixed(1);
+// Driven by the fetch state, not routeData.risk_score, so "still loading" and "failed"
+// read differently and neither shows a number.
+function headerRiskChip(safety) {
+  if (!safety || safety.status === 'loading') {
+    return { label: 'Risk: loading…', colors: riskChipColors(null) };
+  }
+  if (safety.status === 'error') {
+    return { label: 'Risk: Unavailable', colors: riskChipColors(null) };
+  }
+  if (safety.status === 'insufficient') {
+    return { label: `Risk: ${INSUFFICIENT_DATA_LABEL}`, colors: riskChipColors(null) };
+  }
+  const score = safety.data.risk_score;
+  return { label: `Risk: ${formatRiskScore(score)}`, colors: riskChipColors(score) };
 }
 
 // Tab panel component
@@ -409,22 +479,35 @@ function TabPanel({ children, value, index, ...other }) {
   );
 }
 
-export default function RouteAnalyticsModal({ open, onClose, routeData, selectedDate }) {
+const EMPTY_TAB_DATA = {
+  forecast: null,
+  routeDetails: null,
+  accidents: null,
+  breakdown: null,
+  historical: null,
+  timeOfDay: null,
+  ascents: null,
+};
+
+export default function RouteAnalyticsModal({ open, onClose, routeData, selectedDate, safety, onRetrySafety }) {
   const [currentTab, setCurrentTab] = useState(1);  // Default to Route Details tab
   const [loading, setLoading] = useState({});
-  const [data, setData] = useState({
-    forecast: null,
-    routeDetails: null,
-    accidents: null,
-    breakdown: null,
-    historical: null,
-    timeOfDay: null,
-    ascents: null,
-  });
+  const routeId = routeData?.route_id ?? null;
+  const routeDateKey = routeId === null ? null : `${routeId}|${selectedDate}`;
+  // Every change of route or date opens a new visit, so A -> B -> A does not accept
+  // responses still in flight from the first visit to A.
+  const [visit, setVisit] = useState({ routeDateKey, n: 0 });
+  if (visit.routeDateKey !== routeDateKey) setVisit({ routeDateKey, n: visit.n + 1 });
+  const dataKey = routeDateKey === null ? null : `${routeDateKey}#${visit.n}`;
+  const [tabData, setTabData] = useState({ key: null, ...EMPTY_TAB_DATA });
+  // Tab data is filed under the visit it was requested in, so another route's (or date's)
+  // response can never render here even if it lands after a switch.
+  const data = tabData.key === dataKey ? tabData : EMPTY_TAB_DATA;
+  const currentKeyRef = useRef(dataKey);
   const [error, setError] = useState(null);
   const [exportMenuAnchor, setExportMenuAnchor] = useState(null);
   const displayRouteName = formatRouteNameWithType(routeData?.name, routeData?.type);
-  const formattedRouteRiskScore = formatRiskScore(routeData?.risk_score);
+  const riskChip = headerRiskChip(safety);
 
   // Reset tab when modal opens - default to Route Details (tab 1)
   useEffect(() => {
@@ -434,25 +517,28 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
     }
   }, [open]);
 
-  // Reset all cached data when route changes
   useEffect(() => {
-    if (routeData?.route_id) {
-      setData({
-        forecast: null,
-        routeDetails: null,
-        accidents: null,
-        breakdown: null,
-        historical: null,
-        timeOfDay: null,
-        ascents: null,
-      });
-      setError(null);
-    }
-  }, [routeData?.route_id]);
+    currentKeyRef.current = dataKey;
+    setLoading({});
+    setError(null);
+  }, [dataKey]);
 
   // Fetch data based on current tab
   useEffect(() => {
-    if (!open || !routeData) return;
+    if (!open || dataKey === null) return;
+
+    const requestKey = dataKey;
+    const isCurrent = () => currentKeyRef.current === requestKey;
+    const store = (field, value) => {
+      if (!isCurrent()) return;
+      setTabData(prev => ({
+        ...(prev.key === requestKey ? prev : { key: requestKey, ...EMPTY_TAB_DATA }),
+        [field]: value,
+      }));
+    };
+    const settle = (field) => {
+      if (isCurrent()) setLoading(prev => ({ ...prev, [field]: false }));
+    };
 
     const fetchTabData = async () => {
       try {
@@ -461,23 +547,23 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
             if (!data.forecast) {
               setLoading(prev => ({ ...prev, forecast: true }));
               const response = await fetch(
-                `${API_BASE}/mp-routes/${routeData.route_id}/forecast?start_date=${selectedDate}`
+                `${API_BASE}/mp-routes/${routeId}/forecast?start_date=${selectedDate}`
               );
               if (!response.ok) throw new Error('Failed to fetch forecast data');
               const forecastData = await response.json();
-              setData(prev => ({ ...prev, forecast: forecastData }));
-              setLoading(prev => ({ ...prev, forecast: false }));
+              store('forecast', forecastData);
+              settle('forecast');
             }
             break;
 
           case 1: // Route Characteristics
             if (!data.routeDetails) {
               setLoading(prev => ({ ...prev, routeDetails: true }));
-              const response = await fetch(`${API_BASE}/mp-routes/${routeData.route_id}`);
+              const response = await fetch(`${API_BASE}/mp-routes/${routeId}`);
               if (!response.ok) throw new Error('Failed to fetch route details');
               const routeDetails = await response.json();
-              setData(prev => ({ ...prev, routeDetails }));
-              setLoading(prev => ({ ...prev, routeDetails: false }));
+              store('routeDetails', routeDetails);
+              settle('routeDetails');
             }
             break;
 
@@ -485,12 +571,12 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
             if (!data.accidents) {
               setLoading(prev => ({ ...prev, accidents: true }));
               const response = await fetch(
-                `${API_BASE}/mp-routes/${routeData.route_id}/accidents`
+                `${API_BASE}/mp-routes/${routeId}/accidents`
               );
               if (!response.ok) throw new Error('Failed to fetch accident data');
               const accidentData = await response.json();
-              setData(prev => ({ ...prev, accidents: accidentData }));
-              setLoading(prev => ({ ...prev, accidents: false }));
+              store('accidents', accidentData);
+              settle('accidents');
             }
             break;
 
@@ -499,19 +585,19 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
               setLoading(prev => ({ ...prev, breakdown: true }));
               try {
                 const response = await fetch(
-                  `${API_BASE}/mp-routes/${routeData.route_id}/risk-breakdown?target_date=${selectedDate}`
+                  `${API_BASE}/mp-routes/${routeId}/risk-breakdown?target_date=${selectedDate}`
                 );
                 if (!response.ok) {
                   const errorText = await response.text();
-                  setData(prev => ({ ...prev, breakdown: { error: `API error: ${response.status} - ${errorText.substring(0, 100)}` } }));
+                  store('breakdown', { error: `API error: ${response.status} - ${errorText.substring(0, 100)}` });
                 } else {
                   const breakdownData = await response.json();
-                  setData(prev => ({ ...prev, breakdown: breakdownData }));
+                  store('breakdown', breakdownData);
                 }
               } catch (fetchErr) {
-                setData(prev => ({ ...prev, breakdown: { error: `Network error: ${fetchErr.message}` } }));
+                store('breakdown', { error: `Network error: ${fetchErr.message}` });
               }
-              setLoading(prev => ({ ...prev, breakdown: false }));
+              settle('breakdown');
             }
             break;
 
@@ -519,12 +605,12 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
             if (!data.historical || data.historical.reference_date !== selectedDate) {
               setLoading(prev => ({ ...prev, historical: true }));
               const response = await fetch(
-                `${API_BASE}/mp-routes/${routeData.route_id}/historical-trends?days=365&target_date=${encodeURIComponent(selectedDate)}`
+                `${API_BASE}/mp-routes/${routeId}/historical-trends?days=365&target_date=${encodeURIComponent(selectedDate)}`
               );
               if (!response.ok) throw new Error('Failed to fetch historical data');
               const historicalData = await response.json();
-              setData(prev => ({ ...prev, historical: historicalData }));
-              setLoading(prev => ({ ...prev, historical: false }));
+              store('historical', historicalData);
+              settle('historical');
             }
             break;
 
@@ -533,19 +619,19 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
               setLoading(prev => ({ ...prev, timeOfDay: true }));
               try {
                 const response = await fetch(
-                  `${API_BASE}/mp-routes/${routeData.route_id}/time-of-day?target_date=${selectedDate}`
+                  `${API_BASE}/mp-routes/${routeId}/time-of-day?target_date=${selectedDate}`
                 );
                 if (!response.ok) {
                   const errorText = await response.text();
-                  setData(prev => ({ ...prev, timeOfDay: { error: `API error: ${response.status} - ${errorText.substring(0, 100)}` } }));
+                  store('timeOfDay', { error: `API error: ${response.status} - ${errorText.substring(0, 100)}` });
                 } else {
                   const timeOfDayData = await response.json();
-                  setData(prev => ({ ...prev, timeOfDay: timeOfDayData }));
+                  store('timeOfDay', timeOfDayData);
                 }
               } catch (fetchErr) {
-                setData(prev => ({ ...prev, timeOfDay: { error: `Network error: ${fetchErr.message}` } }));
+                store('timeOfDay', { error: `Network error: ${fetchErr.message}` });
               }
-              setLoading(prev => ({ ...prev, timeOfDay: false }));
+              settle('timeOfDay');
             }
             break;
 
@@ -553,12 +639,12 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
             if (!data.ascents) {
               setLoading(prev => ({ ...prev, ascents: true }));
               const response = await fetch(
-                `${API_BASE}/mp-routes/${routeData.route_id}/ascent-analytics`
+                `${API_BASE}/mp-routes/${routeId}/ascent-analytics`
               );
               if (!response.ok) throw new Error('Failed to fetch ascent analytics');
               const ascentsData = await response.json();
-              setData(prev => ({ ...prev, ascents: ascentsData }));
-              setLoading(prev => ({ ...prev, ascents: false }));
+              store('ascents', ascentsData);
+              settle('ascents');
             }
             break;
 
@@ -566,20 +652,21 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
             break;
         }
       } catch (err) {
+        if (!isCurrent()) return;
         console.error('Error fetching tab data:', err);
         setError(err.message);
         // Clear loading state for the current tab
         const tabKeys = ['forecast', 'routeDetails', 'accidents', 'breakdown', 'historical', 'timeOfDay', 'ascents'];
         const currentTabKey = tabKeys[currentTab];
         if (currentTabKey) {
-          setLoading(prev => ({ ...prev, [currentTabKey]: false }));
+          settle(currentTabKey);
         }
       }
     };
 
     fetchTabData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentTab, open, routeData, selectedDate]);
+  }, [currentTab, open, dataKey]);
   // Note: data.* intentionally excluded - we only fetch when data is null, not on every change
 
   const handleTabChange = (event, newValue) => {
@@ -621,15 +708,18 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
     csv += `Location,${getBestLocationName([data.routeDetails?.location_name, routeData.mountain_name, routeData.location_name])}\n`;
     csv += `Type,${routeData.type}\n`;
     csv += `Grade,${routeData.grade}\n`;
-    csv += `Risk Score,${routeData.risk_score}\n`;
+    // Bare number like the forecast rows so the column stays numeric; missing -> empty cell.
+    csv += `Risk Score,${isRiskScore(routeData.risk_score) ? routeData.risk_score : ''}\n`;
+    if (routeData.data_status) csv += `Data Status,${routeData.data_status}\n`;
     csv += `Date,${selectedDate}\n\n`;
 
     // Add 7-day forecast if available
     if (data.forecast && data.forecast.forecast_days) {
       csv += '\n7-Day Forecast\n';
-      csv += 'Date,Risk Score,Weather Summary,Temp High,Temp Low,Precip,Wind Speed\n';
+      csv += 'Date,Risk Score,Weather Summary,Temp High,Temp Low,Precip,Wind Speed,Data Status\n';
       data.forecast.forecast_days.forEach(day => {
-        csv += `${day.date},${day.risk_score},"${day.weather_summary}",${day.temp_high},${day.temp_low},${day.precip_mm || 0},${day.wind_speed}\n`;
+        const precipMm = day.precip_mm || 0;
+        csv += `${day.date},${isRiskScore(day.risk_score) ? day.risk_score : ''},"${day.weather_summary}",${day.temp_high},${day.temp_low},${precipMm},${day.wind_speed},${day.data_status ?? ''}\n`;
       });
     }
 
@@ -679,12 +769,9 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
             </Typography>
           </Box>
           <Chip
-            label={`Risk: ${formattedRouteRiskScore}/100`}
+            label={riskChip.label}
             sx={{
-              bgcolor: routeData.color_code === 'green' ? 'success.main' :
-                       routeData.color_code === 'yellow' ? 'warning.main' :
-                       routeData.color_code === 'orange' ? 'warning.dark' : 'error.main',
-              color: 'white',
+              ...riskChip.colors,
               fontWeight: 600,
               fontSize: '1rem',
               mr: 2,
@@ -754,6 +841,24 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
       </Box>
 
       <DialogContent sx={{ bgcolor: 'grey.50', overflow: 'auto' }}>
+        {safety?.status === 'error' && (
+          <Alert
+            severity="error"
+            sx={{ mb: 2 }}
+            action={
+              <Button color="inherit" size="small" onClick={onRetrySafety}>
+                Retry
+              </Button>
+            }
+          >
+            Couldn&apos;t load the risk score for this route. {safety.message}
+          </Alert>
+        )}
+        {safety?.status === 'insufficient' && (
+          <Alert severity="info" sx={{ mb: 2 }}>
+            {INSUFFICIENT_DATA_MESSAGE}
+          </Alert>
+        )}
         {error && (
           <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
             {error}
@@ -989,7 +1094,7 @@ function ForecastTab({ data, loading, selectedDate: _selectedDate, routeData, ro
                 />
                 <Tooltip
                   labelFormatter={(date) => formatDateForDisplay(date, 'EEEE, MMM d', String(date))}
-                  formatter={(value) => [`${value}/100`, 'Risk Score']}
+                  formatter={formatRiskTooltip}
                 />
                 <Legend />
                 <Line
@@ -1025,12 +1130,13 @@ function ForecastTab({ data, loading, selectedDate: _selectedDate, routeData, ro
                           </Typography>
                           <Chip
                             size="small"
-                            label={`${day.risk_score}`}
+                            label={
+                              isInsufficientData(day)
+                                ? INSUFFICIENT_DATA_LABEL
+                                : isRiskScore(day.risk_score) ? day.risk_score.toFixed(1) : 'N/A'
+                            }
                             sx={{
-                              bgcolor: day.risk_score < 35 ? 'success.main' :
-                                       day.risk_score < 55 ? 'warning.main' :
-                                       day.risk_score < 75 ? 'warning.dark' : 'error.main',
-                              color: 'white',
+                              ...riskChipColors(day.risk_score),
                               fontWeight: 600,
                             }}
                           />
@@ -1255,11 +1361,7 @@ function AccidentsTab({ data, loading, routeData }) {
                           size="small"
                           sx={{
                             fontWeight: 600,
-                            bgcolor: accident.injury_severity.toLowerCase().includes('fatal') || accident.injury_severity.toLowerCase().includes('death') ? '#b71c1c' :
-                                     accident.injury_severity.toLowerCase().includes('serious') || accident.injury_severity.toLowerCase().includes('severe') ? '#e65100' :
-                                     accident.injury_severity.toLowerCase().includes('moderate') ? '#f57c00' :
-                                     accident.injury_severity.toLowerCase().includes('minor') ? '#fbc02d' : '#9e9e9e',
-                            color: 'white',
+                            ...chipColorsOn(severityBg(accident.injury_severity)),
                           }}
                         />
                       )}
@@ -1455,6 +1557,17 @@ function RiskBreakdownTab({ data, loading, routeData }) {
     );
   }
 
+  if (isInsufficientData(data)) {
+    return (
+      <Alert severity="info">
+        <Typography variant="body2" fontWeight={600} sx={{ color: 'text.primary' }}>
+          Risk Score: {INSUFFICIENT_DATA_LABEL}
+        </Typography>
+        <Typography variant="body2" sx={{ color: 'text.primary' }}>{INSUFFICIENT_DATA_MESSAGE}</Typography>
+      </Alert>
+    );
+  }
+
   if (!data || !data.factors) {
     return (
       <Alert severity="info">
@@ -1467,7 +1580,9 @@ function RiskBreakdownTab({ data, loading, routeData }) {
     );
   }
 
-  const effectiveRiskScore = data.risk_score ?? routeData.risk_score ?? 0;
+  const effectiveRiskScore = [data.risk_score, routeData.risk_score].find(isRiskScore) ?? null;
+  const scorePointsFor = (contribution) =>
+    effectiveRiskScore === null ? null : Number(((effectiveRiskScore * contribution) / 100).toFixed(1));
   const extremeWeather = data.extreme_weather || null;
   const triggeredFactors = (extremeWeather?.triggered_factors || []).map((factor) =>
     factor.replace(/_/g, ' ')
@@ -1477,7 +1592,7 @@ function RiskBreakdownTab({ data, loading, routeData }) {
   const factorData = data.factors?.map(factor => ({
     name: factor.name,
     value: factor.contribution,
-    scorePoints: Number(((effectiveRiskScore * factor.contribution) / 100).toFixed(1)),
+    scorePoints: scorePointsFor(factor.contribution),
     description: factor.description,
   })) || [];
 
@@ -1489,7 +1604,7 @@ function RiskBreakdownTab({ data, loading, routeData }) {
         <Card elevation={3}>
           <CardContent>
             <Typography variant="h6" gutterBottom fontWeight={600}>
-              📊 Risk Score: {formatRiskScore(effectiveRiskScore)}/100
+              📊 Risk Score: {formatRiskScore(effectiveRiskScore)}
             </Typography>
             <Typography variant="body2" color="text.secondary" paragraph>
               This risk score is calculated using statistical analysis of historical accident data,
@@ -1547,7 +1662,7 @@ function RiskBreakdownTab({ data, loading, routeData }) {
                 </Pie>
                 <Tooltip
                   formatter={(value, _name, item) => [
-                    `${value}% (~${item?.payload?.scorePoints ?? 0} pts)`,
+                    `${value}% (~${item?.payload?.scorePoints ?? 'N/A'} pts)`,
                     'Contribution',
                   ]}
                 />
@@ -1580,7 +1695,7 @@ function RiskBreakdownTab({ data, loading, routeData }) {
                               color={factor.contribution > 20 ? 'error' : factor.contribution > 10 ? 'warning' : 'default'}
                             />
                             <Chip
-                              label={`+${((effectiveRiskScore * factor.contribution) / 100).toFixed(1)} pts`}
+                              label={effectiveRiskScore === null ? 'N/A pts' : `+${scorePointsFor(factor.contribution).toFixed(1)} pts`}
                               size="small"
                               variant="outlined"
                             />
@@ -1619,7 +1734,8 @@ function RiskTrendsTab({ data, loading, routeData: _routeData, selectedDate }) {
     return <LoadingState message="Loading risk trends..." />;
   }
 
-  const daysOfData = data?.historical_predictions?.length || 0;
+  // Insufficient-data days carry no score, so they don't count toward the trend minimum.
+  const daysOfData = (data?.historical_predictions ?? []).filter((p) => isRiskScore(p.risk_score)).length;
   const MIN_DAYS_REQUIRED = 30;
   const hasRiskData = Boolean(data?.historical_predictions && daysOfData >= MIN_DAYS_REQUIRED);
   const weatherVolatility = data?.weather_volatility;
@@ -1789,7 +1905,7 @@ function RiskTrendsTab({ data, loading, routeData: _routeData, selectedDate }) {
                     <YAxis domain={[0, 100]} />
                     <Tooltip
                       labelFormatter={(date) => formatDateForDisplay(date, 'MMM d, yyyy', String(date))}
-                      formatter={(value) => [`${value}/100`, 'Risk Score']}
+                      formatter={formatRiskTooltip}
                     />
                     <Area
                       type="monotone"
@@ -1816,25 +1932,25 @@ function RiskTrendsTab({ data, loading, routeData: _routeData, selectedDate }) {
                   <Grid size={6}>
                     <Typography variant="body2" color="text.secondary">Average Risk</Typography>
                     <Typography variant="h5" fontWeight={600}>
-                      {data.summary?.avg_risk}/100
+                      {formatRiskScore(data.summary?.avg_risk)}
                     </Typography>
                   </Grid>
                   <Grid size={6}>
                     <Typography variant="body2" color="text.secondary">Peak Risk</Typography>
                     <Typography variant="h5" fontWeight={600}>
-                      {data.summary?.max_risk}/100
+                      {formatRiskScore(data.summary?.max_risk)}
                     </Typography>
                   </Grid>
                   <Grid size={6}>
                     <Typography variant="body2" color="text.secondary">Minimum Risk</Typography>
                     <Typography variant="h5" fontWeight={600}>
-                      {data.summary?.min_risk}/100
+                      {formatRiskScore(data.summary?.min_risk)}
                     </Typography>
                   </Grid>
                   <Grid size={6}>
-                    <Typography variant="body2" color="text.secondary">Days Tracked</Typography>
+                    <Typography variant="body2" color="text.secondary">Days Scored</Typography>
                     <Typography variant="h5" fontWeight={600}>
-                      {data.historical_predictions?.length || 0}
+                      {daysOfData}
                     </Typography>
                   </Grid>
                 </Grid>
@@ -1850,11 +1966,11 @@ function RiskTrendsTab({ data, loading, routeData: _routeData, selectedDate }) {
                 </Typography>
                 <Typography variant="body2" color="text.secondary" paragraph>
                   {data.trend?.direction === 'increasing' &&
-                    '⚠️ Risk has been trending upward over the past 30 days.'}
+                    '⚠️ Risk is trending upward (latest 7 scored days vs earliest 7 scored days).'}
                   {data.trend?.direction === 'decreasing' &&
-                    '✅ Risk has been trending downward over the past 30 days.'}
+                    '✅ Risk is trending downward (latest 7 scored days vs earliest 7 scored days).'}
                   {data.trend?.direction === 'stable' &&
-                    '➡️ Risk has remained relatively stable over the past 30 days.'}
+                    '➡️ Risk is relatively stable (latest 7 scored days vs earliest 7 scored days).'}
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
                   {data.trend?.description || 'Trend analysis not available.'}
@@ -2073,6 +2189,12 @@ function TimeOfDayTab({ data, loading, routeData: _routeData, selectedDate }) {
         </Card>
       </Grid>
 
+      {isInsufficientData(data) && (
+        <Grid size={12}>
+          <Alert severity="info">{INSUFFICIENT_DATA_MESSAGE}</Alert>
+        </Grid>
+      )}
+
       {/* Best Climbing Window */}
       {data.best_window && (
         <Grid size={12}>
@@ -2097,7 +2219,7 @@ function TimeOfDayTab({ data, loading, routeData: _routeData, selectedDate }) {
                 <Grid size={{ xs: 12, md: 3 }}>
                   <Typography variant="body2" color="text.secondary">Avg Risk</Typography>
                   <Typography variant="h5" fontWeight={600}>
-                    {data.best_window.avg_risk}/100
+                    {formatRiskScore(data.best_window.avg_risk)}
                   </Typography>
                 </Grid>
                 <Grid size={{ xs: 12, md: 3 }}>
@@ -2129,7 +2251,7 @@ function TimeOfDayTab({ data, loading, routeData: _routeData, selectedDate }) {
                 <YAxis domain={[0, 100]} />
                 <Tooltip
                   labelFormatter={(hour) => `${String(hour).padStart(2, '0')}:00`}
-                  formatter={(value) => [`${value}/100`, 'Risk Score']}
+                  formatter={formatRiskTooltip}
                 />
                 <Legend />
                 <Line
@@ -2170,13 +2292,14 @@ function TimeOfDayTab({ data, loading, routeData: _routeData, selectedDate }) {
                           {String(hour.hour).padStart(2, '0')}:00
                         </Typography>
                         <Chip
-                          label={hour.risk_score}
+                          label={
+                            isInsufficientData(hour)
+                              ? INSUFFICIENT_DATA_LABEL
+                              : isRiskScore(hour.risk_score) ? hour.risk_score.toFixed(1) : '—'
+                          }
                           size="small"
                           sx={{
-                            bgcolor: hour.risk_score < 35 ? '#4caf50' :
-                                     hour.risk_score < 55 ? '#ff9800' :
-                                     hour.risk_score < 75 ? '#f57c00' : '#f44336',
-                            color: 'white',
+                            ...riskChipColors(hour.risk_score),
                             fontWeight: 600,
                           }}
                         />
@@ -2215,13 +2338,10 @@ function TimeOfDayTab({ data, loading, routeData: _routeData, selectedDate }) {
                               {String(window.start_hour).padStart(2, '0')}:00 - {String(window.end_hour).padStart(2, '0')}:00
                             </Typography>
                             <Chip
-                              label={`${window.avg_risk}/100`}
+                              label={formatRiskScore(window.avg_risk)}
                               size="small"
                               sx={{
-                                bgcolor: window.avg_risk < 35 ? 'success.main' :
-                                         window.avg_risk < 55 ? 'warning.main' :
-                                         window.avg_risk < 75 ? 'warning.dark' : 'error.main',
-                                color: 'white',
+                                ...riskChipColors(window.avg_risk),
                                 fontWeight: 600,
                               }}
                             />
@@ -2301,7 +2421,7 @@ function AscentsTab({ data, loading, routeData }) {
                 <Paper sx={{ p: 2, bgcolor: 'primary.50', textAlign: 'center' }}>
                   <Typography variant="body2" color="text.secondary">Total Ascents</Typography>
                   <Typography variant="h4" fontWeight={700} color="primary.main">
-                    {data.total_ascents}
+                    {formatCount(data.total_ascents)}
                   </Typography>
                 </Paper>
               </Grid>
@@ -2309,7 +2429,7 @@ function AscentsTab({ data, loading, routeData }) {
                 <Paper sx={{ p: 2, bgcolor: 'error.50', textAlign: 'center' }}>
                   <Typography variant="body2" color="text.secondary">Total Accidents</Typography>
                   <Typography variant="h4" fontWeight={700} color="error.main">
-                    {data.total_accidents}
+                    {formatCount(data.total_accidents)}
                   </Typography>
                 </Paper>
               </Grid>
@@ -2317,9 +2437,11 @@ function AscentsTab({ data, loading, routeData }) {
                 <Paper sx={{ p: 2, bgcolor: 'warning.50', textAlign: 'center' }}>
                   <Typography variant="body2" color="text.secondary">Accident Rate</Typography>
                   <Typography variant="h4" fontWeight={700} color="warning.dark">
-                    {data.overall_accident_rate}%
+                    {formatAccidentRateValue(data.overall_accident_rate, data.total_ascents)}
                   </Typography>
-                  <Typography variant="caption" color="text.secondary">per 1000 ascents</Typography>
+                  {hasAccidentRate(data.overall_accident_rate, data.total_ascents) && (
+                    <Typography variant="caption" color="text.secondary">{ACCIDENT_RATE_UNIT}</Typography>
+                  )}
                 </Paper>
               </Grid>
               <Grid size={{ xs: 6, md: 2.4 }}>
@@ -2409,6 +2531,9 @@ function AscentsTab({ data, loading, routeData }) {
             <Typography variant="h6" gutterBottom fontWeight={600}>
               📈 Accident Rate by Month
             </Typography>
+            <Typography variant="body2" color="text.secondary">
+              Accidents {ACCIDENT_RATE_UNIT}
+            </Typography>
             <Box sx={{ maxHeight: 400, overflow: 'auto' }}>
               <List dense>
                 {data.monthly_stats?.map((month, idx) => (
@@ -2421,20 +2546,16 @@ function AscentsTab({ data, loading, routeData }) {
                               {month.month}
                             </Typography>
                             <Chip
-                              label={month.ascent_count > 0 ? `${month.accident_rate}%` : 'No data'}
+                              label={month.ascent_count > 0 ? formatAccidentRateValue(month.accident_rate, month.ascent_count) : 'No data'}
                               size="small"
                               sx={{
-                                bgcolor: month.ascent_count === 0 ? 'grey.400' :
-                                         month.accident_rate === 0 ? 'success.main' :
-                                         month.accident_rate < 5 ? 'success.light' :
-                                         month.accident_rate < 10 ? 'warning.main' : 'error.main',
-                                color: 'white',
+                                ...chipColorsOn(accidentRateBg(month)),
                                 fontWeight: 600,
                               }}
                             />
                           </Box>
                         }
-                        secondary={`${month.ascent_count} ascents • ${month.accident_count} accidents`}
+                        secondary={`${formatCount(month.ascent_count)} ascents • ${formatCount(month.accident_count)} accidents`}
                       />
                     </ListItem>
                     {idx < 11 && <Divider />}
@@ -2456,9 +2577,7 @@ function AscentsTab({ data, loading, routeData }) {
               </Typography>
               {data.best_month && (
                 <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                  {data.monthly_stats?.find(m => m.month === data.best_month)?.ascent_count || 0} ascents
-                  with {data.monthly_stats?.find(m => m.month === data.best_month)?.accident_count || 0} accidents
-                  ({data.monthly_stats?.find(m => m.month === data.best_month)?.accident_rate || 0}% rate)
+                  {monthSummary(data.monthly_stats?.find(m => m.month === data.best_month))}
                 </Typography>
               )}
             </Paper>
@@ -2470,9 +2589,7 @@ function AscentsTab({ data, loading, routeData }) {
               </Typography>
               {data.worst_month && (
                 <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                  {data.monthly_stats?.find(m => m.month === data.worst_month)?.ascent_count || 0} ascents
-                  with {data.monthly_stats?.find(m => m.month === data.worst_month)?.accident_count || 0} accidents
-                  ({data.monthly_stats?.find(m => m.month === data.worst_month)?.accident_rate || 0}% rate)
+                  {monthSummary(data.monthly_stats?.find(m => m.month === data.worst_month))}
                 </Typography>
               )}
             </Paper>
@@ -2484,7 +2601,7 @@ function AscentsTab({ data, loading, routeData }) {
               </Typography>
               {data.peak_month && (
                 <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                  {data.monthly_stats?.find(m => m.month === data.peak_month)?.ascent_count || 0} recorded ascents
+                  {formatCount(data.monthly_stats?.find(m => m.month === data.peak_month)?.ascent_count)} recorded ascents
                   — the most popular month for this route
                 </Typography>
               )}

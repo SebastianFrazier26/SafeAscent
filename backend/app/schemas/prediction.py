@@ -4,8 +4,10 @@ Pydantic schemas for safety prediction API endpoints.
 Defines request and response models for the /api/v1/predict endpoint.
 """
 from datetime import date
-from typing import List, Optional, Dict
-from pydantic import BaseModel, Field, validator
+from typing import List, Optional, Dict, Self
+from pydantic import BaseModel, Field, model_validator, validator
+
+from app.services.risk_bands import DataStatus, SafetyColorCode, check_score_status
 
 
 class PredictionRequest(BaseModel):
@@ -140,11 +142,18 @@ class PredictionResponse(BaseModel):
         }
     """
 
-    risk_score: float = Field(
+    risk_score: Optional[float] = Field(
         ...,
         ge=0.0,
         le=100.0,
-        description="Risk score from 0 (safe) to 100 (very dangerous)",
+        description="Risk score from 0 (safe) to 100 (very dangerous); null when data_status is insufficient_data",
+    )
+    color_code: SafetyColorCode = Field(
+        ..., description="Band colour for risk_score, or 'gray' when data_status is insufficient_data"
+    )
+    data_status: DataStatus = Field(
+        default="ok",
+        description="'insufficient_data' when no accident contributed evidence (score withheld, never 0)",
     )
     num_contributing_accidents: int = Field(
         ..., description="Total number of accidents that influenced this prediction"
@@ -154,10 +163,17 @@ class PredictionResponse(BaseModel):
     )
     metadata: Dict = Field(..., description="Additional metadata about the calculation")
 
+    @model_validator(mode="after")
+    def _score_matches_status(self) -> Self:
+        check_score_status(self.risk_score, self.color_code, self.data_status)
+        return self
+
     class Config:
         json_schema_extra = {
             "example": {
                 "risk_score": 68.4,
+                "color_code": "orange",
+                "data_status": "ok",
                 "num_contributing_accidents": 47,
                 "top_contributing_accidents": [
                     {

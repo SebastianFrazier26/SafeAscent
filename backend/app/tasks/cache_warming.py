@@ -16,6 +16,7 @@ from app.schemas.prediction import PredictionRequest
 from app.api.v1.predict import predict_route_safety
 from app.api.v1.mp_routes import normalize_route_type, get_safety_color_code
 from app.schemas.mp_route import MpRouteSafetyResponse
+from app.services.risk_bands import INSUFFICIENT_DATA_COLOR
 from app.utils.cache import cache_set, build_safety_score_key
 
 logger = logging.getLogger(__name__)
@@ -114,17 +115,30 @@ async def _warm_cache_async() -> dict:
                             allow_elevation_lookup=False,
                         )
 
-                        # Determine color code
-                        color_code = get_safety_color_code(prediction.risk_score)
-
-                        # Build response
-                        safety_response = MpRouteSafetyResponse(
-                            route_id=route.mp_route_id,
-                            route_name=route.name,
-                            target_date=target_date.isoformat(),
-                            risk_score=round(prediction.risk_score, 1),
-                            color_code=color_code
-                        )
+                        if prediction.risk_score is None:
+                            # Too little evidence: cache the explicit insufficient_data state
+                            # rather than skipping (a miss would trigger recomputes) or 0.
+                            safety_response = MpRouteSafetyResponse(
+                                route_id=route.mp_route_id,
+                                route_name=route.name,
+                                target_date=target_date.isoformat(),
+                                risk_score=None,
+                                color_code=INSUFFICIENT_DATA_COLOR,
+                                data_status="insufficient_data",
+                            )
+                        else:
+                            # Colour must match the rounded score actually stored
+                            # (see location_safety_computation.compute_batch_route_scores
+                            # for the same fix), not the raw pre-round value.
+                            stored_score = round(prediction.risk_score, 1)
+                            safety_response = MpRouteSafetyResponse(
+                                route_id=route.mp_route_id,
+                                route_name=route.name,
+                                target_date=target_date.isoformat(),
+                                risk_score=stored_score,
+                                color_code=get_safety_color_code(stored_score),
+                                data_status="ok",
+                            )
 
                         # Cache with 6-hour TTL (matches API endpoint)
                         cache_set(
