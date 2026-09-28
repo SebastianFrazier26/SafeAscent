@@ -1032,7 +1032,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ### Task 6: Role scripts (SQL only) + role URL writer
 
-> **Superseded in part (2026-09-28, fix round 1):** the committed `create_roles.sql` takes SCRAM verifiers (`MIGRATOR_PASSWORD_SCRAM`/`APP_PASSWORD_SCRAM`) and grants `app` writes only on `historical_predictions`. The code below is the original draft; the files in `backend/db/roles/` and `backend/scripts/write_role_url.py` are authoritative.
+> **Superseded in part (2026-09-28, fix round 1; revised again 2026-09-28 after the Neon rehearsal):** the committed `create_roles.sql` takes plaintext passwords (`MIGRATOR_PASSWORD`/`APP_PASSWORD` via `\getenv`, since Neon rejects SCRAM verifiers; see Task 8) and grants `app` writes only on `historical_predictions`. The code below is the original draft; the files in `backend/db/roles/` and `backend/scripts/write_role_url.py` are authoritative.
 
 **Files:**
 - Create: `backend/db/roles/create_roles.sql`
@@ -1559,42 +1559,58 @@ PR5 is ready for the owner to review and `/commitandpush`. Task 8 runs only afte
 
 ### Task 8: OWNER STEPS — create roles, rehearse on a Neon branch, stamp prod
 
-All commands run in the owner's terminal from `/Users/sebastianfrazier/Developer/SafeAscent/backend` on an up-to-date `main` that includes PR5. Nothing here prints a password. Agents do not run these steps.
+All commands run in the owner's terminal (zsh or bash; both verified 2026-09-28) from `/Users/sebastianfrazier/Developer/SafeAscent/backend` on an up-to-date `main` that includes PR5 and the Neon plaintext-password fix. Nothing here prints a password. Agents do not run the prod steps.
 
-**Files (gitignored, never committed):** `backend/.env.owner`, `backend/.env.migrator`, `backend/.env.app`.
+> **Revised 2026-09-28 (Neon rehearsals 1 and 2, owner decision D1).** Neon's control plane rejects pre-hashed passwords in `CREATE ROLE ... PASSWORD` (`Neon only supports being given plaintext passwords`). `create_roles.sql` therefore reads the plaintext from `MIGRATOR_PASSWORD` / `APP_PASSWORD` via psql `\getenv` (never argv) and sends it over `verify-full` TLS; Neon stores SCRAM-SHA-256 (checked on the rehearsal branch: `pg_authid.rolpassword` starts `SCRAM-SHA-256$`). The script refuses a value shaped like a SCRAM or md5 verifier and anything under 32 characters. On this compute `log_statement=none`, `log_min_duration_statement=-1`, and `pg_stat_statements` is not installed in `neondb`, so the statement is not logged by Postgres; Neon's control plane does receive the plaintext. Also folded in: the owner URL is single-quoted (D2); `create_roles.sql` itself revokes the owner's older default `SELECT` grant to `analyst` (D3); Step 7 revokes **all** privileges on `alembic_version` from `app` (D4); the prod branch is `production` (D5). The sequence passed on branch `rehearsal2-2026-09-28` (Steps 3, 7 and 8 run verbatim from this text, the rest with the same commands) — see `.superpowers/sdd/2026-09-27-phase1b-foundations-pr5-8/neon-fix-rehearsal2-report.md`.
 
-- [ ] **Step 1 (owner): Tools**
+**Files (gitignored by `.env.*`, mode 0600, never committed):** `backend/.env.owner`, `backend/.env.migrator`, `backend/.env.app` for prod; `backend/.env.rehearsal.owner`, `.env.rehearsal.migrator`, `.env.rehearsal.app` for the rehearsal. The rehearsal gets its own role passwords; never reuse them on prod.
+
+- [ ] **Step 1 (owner): Tools and helpers**
 
 ```bash
-brew install libpq
+brew install libpq neonctl
 export PATH="/opt/homebrew/opt/libpq/bin:$PATH"
 psql --version
 ```
 
-Expected: `psql (PostgreSQL) 16` or newer (`\getenv` needs 15+; `sslrootcert=system`, used below for `verify-full`, needs 16+).
+Expected: `psql (PostgreSQL) 16` or newer (`\getenv` needs 15+; `sslrootcert=system` needs 16+). Verified with psql 18.6 and neonctl 6.0.0.
 
-**Revised 2026-09-28 (owner decision, PR5 review):** every `psql` call below reads its password from `PGPASSWORD` instead of the connection URL, so no owner or migrator password ever appears in `ps`/argv output visible to other users on the box. Define this helper once per shell session (it runs inside the `( … )` subshells below, since a `bash` subshell inherits the parent's functions):
+Define these once per shell session. Every `psql` call below reads its password from `PGPASSWORD`, never from its argv, and connects with `verify-full` against the OS trust store:
 
 ```bash
-# Splits a postgresql:// URL into a password-less URL on stdout and the password into
-# PGPASSWORD, so callers never pass a credential as a psql argv.
+# Splits a postgresql:// URL into a password-less URL (PG_URL_NOPASS) and PGPASSWORD. The
+# URL goes to python through the environment, not argv, so ps never shows the password.
 split_pg_url() {
-  { read -r PG_URL_NOPASS; read -r PGPASSWORD; } < <(uv run python3 -c '
-import sys
+  { read -r PG_URL_NOPASS; read -r PGPASSWORD; } < <(SPLIT_PG_URL="$1" uv run python3 -c '
+import os
 from urllib.parse import urlsplit, urlunsplit, quote, unquote
-u = urlsplit(sys.argv[1])
-# urlsplit does not decode; u.password is still percent-encoded, and PGPASSWORD must be
-# the literal characters libpq expects, not the URL-escaped form.
+u = urlsplit(os.environ["SPLIT_PG_URL"])
+# urlsplit does not decode; PGPASSWORD must be the literal characters, not the URL-escaped form.
 username = quote(unquote(u.username), safe="") if u.username else None
 netloc = (f"{username}@" if username else "") + (u.hostname or "") + (f":{u.port}" if u.port else "")
 print(urlunsplit((u.scheme, netloc, u.path, u.query, u.fragment)))
 print(unquote(u.password) if u.password else "")
-' "$1")
+')
   export PGPASSWORD
+}
+
+# libpq spelling of an owner (sslmode=require) or role (asyncpg ssl=verify-full) URL,
+# upgraded to verify-full. libpq's verify-full has no OS-trust fallback, hence sslrootcert=system.
+pg_verify_full() {
+  local u="${1/postgresql+asyncpg:/postgresql:}"
+  u="${u/ssl=verify-full/sslmode=verify-full}"
+  u="${u/sslmode=require/sslmode=verify-full}"
+  u="${u/ssl=require/sslmode=verify-full}"
+  case "$u" in
+    *sslmode=verify-full*) printf '%s&sslrootcert=system\n' "$u" ;;
+    *) echo 'URL has neither sslmode=require nor ssl=verify-full' >&2; return 1 ;;
+  esac
 }
 ```
 
-- [ ] **Step 2 (owner): Put the owner URL in a file, using an editor, not the shell**
+On Neon, `pg_stat_ssl.ssl` reads `f` even over TLS (the proxy terminates it). Prove TLS client-side: `\conninfo` shows `SSL Connection | true`, and a missing `sslrootcert` file fails the connection (D8).
+
+- [ ] **Step 2 (owner): Put the prod owner URL in a file, using an editor, not the shell**
 
 ```bash
 cd /Users/sebastianfrazier/Developer/SafeAscent/backend
@@ -1602,117 +1618,125 @@ umask 077
 ${EDITOR:-nano} .env.owner
 ```
 
-File content (a single line, with the value from the Neon Console → Connect, owner role, *direct* not pooled):
-`OWNER_DATABASE_URL=postgresql://neondb_owner:<password>@<host>/neondb?sslmode=require`
+File content: one line, the value **in single quotes**, from the Neon Console → Connect, branch `production`, role `neondb_owner`, *direct* not pooled:
+`OWNER_DATABASE_URL='postgresql://neondb_owner:<password>@<host>/neondb?sslmode=require&channel_binding=require'`
 
-Run: `git check-ignore -v .env.owner .env.migrator .env.app`
-Expected: three lines, each matched by `.gitignore:…:.env.*`.
+Unquoted, the `&` breaks `set -a; . ./.env.owner` (zsh: parse error; bash: the URL is silently cut at `&` and the rest runs as a background command) (D2).
 
-- [ ] **Step 3 (owner): Generate passwords straight into files and write role URLs**
+Run: `git check-ignore -v .env.owner .env.migrator .env.app .env.rehearsal.owner`
+Expected: four lines, each matched by `.gitignore:…:.env.*`.
+
+- [ ] **Step 3 (owner): Create the rehearsal branch and its owner URL file**
+
+The prod branch is named `production` (not `main`). Commands scoped by `--project-id` need no org; `neonctl projects list` needs `--org-id org-spring-wildflower-01541142` or it waits on an interactive org prompt (D6).
 
 ```bash
 cd /Users/sebastianfrazier/Developer/SafeAscent/backend
 umask 077
-printf 'MIGRATOR_PASSWORD=%s\n' "$(openssl rand -hex 32)" > .env.migrator
-printf 'APP_PASSWORD=%s\n' "$(openssl rand -hex 32)" > .env.app
-( set -a; . ./.env.owner; . ./.env.migrator; set +a; uv run python -m scripts.write_role_url --role migrator --env-file .env.migrator )
-( set -a; . ./.env.owner; . ./.env.app; set +a; uv run python -m scripts.write_role_url --role app --env-file .env.app )
+B=p1-roles-rehearsal
+neonctl branches create --project-id still-morning-74008008 --name "$B" --parent production --output json \
+  | python3 -c 'import json,sys; b=json.load(sys.stdin)["branch"]; print(b["id"], b["name"], b["parent_id"])'
+neonctl connection-string "$B" --project-id still-morning-74008008 --role-name neondb_owner --database-name neondb \
+  | python3 -c '
+import sys
+from urllib.parse import urlsplit
+url = sys.stdin.read().strip()
+assert url.startswith("postgresql://") and "\x27" not in url
+open(".env.rehearsal.owner", "w").write("OWNER_DATABASE_URL=\x27" + url + "\x27\n")
+print("wrote .env.rehearsal.owner for", urlsplit(url).hostname)'
 ```
 
-Expected: `wrote MIGRATOR_DATABASE_URL to .env.migrator` and `wrote APP_DATABASE_URL to .env.app`. Both files are mode 0600.
+Expected: the branch id with parent `br-restless-bar-ajw5zy4b` (production), then `wrote .env.rehearsal.owner for ep-…c-3.us-east-2.aws.neon.tech`. `neonctl connection-string` prints a bare URL (not JSON). Neon roles are per branch, so roles created on the rehearsal branch never exist on `production`.
 
-`create_roles.sql` takes SCRAM-SHA-256 verifiers (`MIGRATOR_PASSWORD_SCRAM` / `APP_PASSWORD_SCRAM`), not passwords, so no plaintext reaches Neon's logs or `pg_stat_statements`. In Steps 4 and 5, each verifier is computed inside a `$( … )` subshell that is the only place the plaintext password is loaded. The outer shell exports only the verifiers and the owner URL.
+- [ ] **Step 4 (owner): Rehearse the whole rollout (Steps 5–8 with `E=.env.rehearsal`)**
 
-- [ ] **Step 4 (owner): Rehearse on a Neon branch before touching prod**
+Run Steps 5–8 below with `E=.env.rehearsal`. Every expected output must match; any failure stops the rollout (error output contains no password). Then delete the branch and its files:
 
-In the Neon Console: Branches → New branch from `main` (name `p1-pr5-rehearsal`, current data). Copy the branch's **direct** host. Neon roles are per branch, so roles created here do not exist on `main`. Then:
+```bash
+neonctl branches delete p1-roles-rehearsal --project-id still-morning-74008008
+rm -f .env.rehearsal.owner .env.rehearsal.migrator .env.rehearsal.app
+```
+
+Then run Steps 5–8 again with `E=.env` against prod.
+
+- [ ] **Step 5 (owner): Generate role passwords into files and write the role URLs**
 
 ```bash
 cd /Users/sebastianfrazier/Developer/SafeAscent/backend
-BRANCH_HOST='<paste branch host, e.g. ep-foo-123.us-east-2.aws.neon.tech>'
-( set -a; . ./.env.owner; set +a
-  BRANCH_URL="$(printf '%s' "$OWNER_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")"
-  split_pg_url "$BRANCH_URL"
-  export MIGRATOR_PASSWORD_SCRAM="$( set -a; . ./.env.migrator; uv run python -m scripts.write_role_url --role migrator --scram )"
-  export APP_PASSWORD_SCRAM="$( set -a; . ./.env.app; uv run python -m scripts.write_role_url --role app --scram )"
-  psql "$PG_URL_NOPASS" -X -q -f db/roles/create_roles.sql
+umask 077
+E=.env.rehearsal   # prod: E=.env
+( set -a; . "./$E.owner"; set +a
+  uv run python -m scripts.write_role_url --role migrator --env-file "$E.migrator" --generate-password &&
+  uv run python -m scripts.write_role_url --role app --env-file "$E.app" --generate-password )
+ls -l "$E.owner" "$E.migrator" "$E.app"
+```
+
+Expected: `wrote MIGRATOR_PASSWORD and MIGRATOR_DATABASE_URL to .env….migrator`, the same for `APP`, and all three files `-rw-------`. `--generate-password` writes a fresh `secrets.token_hex(32)` password (64 hex characters) and refuses to replace a password already in the file; delete the file to start over. Each role URL is the owner URL's host and database with `ssl=verify-full`.
+
+- [ ] **Step 6 (owner): Create the roles and verify**
+
+```bash
+( set -a; . "./$E.owner"; . "./$E.migrator"; . "./$E.app"; set +a
+  U="$(pg_verify_full "$OWNER_DATABASE_URL")" || exit 1; split_pg_url "$U"
+  psql "$PG_URL_NOPASS" -X -q -f db/roles/create_roles.sql &&
   psql "$PG_URL_NOPASS" -X -q -f db/roles/verify_roles.sql )
-( set -a; . ./.env.migrator; set +a
-  export MIGRATOR_DATABASE_URL="$(printf '%s' "$MIGRATOR_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")"
-  uv run alembic stamp 0001_baseline
-  uv run alembic upgrade head
-  uv run alembic current
-  uv run alembic check )
 ```
 
-Expected: `roles migrator and app created`, a table of checks all `t`, `ALL ROLE CHECKS PASSED`, then `0002_drop_ascents_climbers (head)` and `No new upgrade operations detected.` If `verify_roles.sql` fails on `analyst` (for example, the existing `analyst` role has a membership or `rolbypassrls`), paste the failing check names (no secrets) to the agent. This rehearsal is exactly where a pre-existing owner-level default grant to `analyst` (from before `migrator` existed — see the note after Step 5) surfaces; resolve it there, not on prod. Any failure stops the rollout. Error output contains no password. Delete the branch in the Console afterwards.
+Expected: `roles migrator and app created`, a table of checks all `t` (96 rows before the upgrade), then `ALL ROLE CHECKS PASSED`. `create_roles.sql` also runs `ALTER DEFAULT PRIVILEGES FOR ROLE CURRENT_USER IN SCHEMA public REVOKE ALL ON TABLES FROM analyst`, clearing prod's older owner-level default `SELECT` grant to `analyst` (seen 2026-09-28 via `\ddp`), which `verify_roles.sql` would otherwise fail as `no other default privileges grant app or analyst anything`; `migrator`'s default grant replaces it (D3).
 
-- [ ] **Step 5 (owner): Create the roles on prod and verify**
-
-Only after Step 4 passes:
+- [ ] **Step 7 (owner): Stamp and upgrade as `migrator`, then lock `alembic_version`**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
-( set -a; . ./.env.owner; set +a
-  split_pg_url "$OWNER_DATABASE_URL"
-  export MIGRATOR_PASSWORD_SCRAM="$( set -a; . ./.env.migrator; uv run python -m scripts.write_role_url --role migrator --scram )"
-  export APP_PASSWORD_SCRAM="$( set -a; . ./.env.app; uv run python -m scripts.write_role_url --role app --scram )"
-  psql "$PG_URL_NOPASS" -X -q -f db/roles/create_roles.sql
-  psql "$PG_URL_NOPASS" -X -q -f db/roles/verify_roles.sql )
+( set -a; . "./$E.migrator"; set +a
+  uv run alembic stamp 0001_baseline &&
+  uv run alembic upgrade head &&
+  uv run alembic current &&
+  uv run alembic check &&
+  U="$(pg_verify_full "$MIGRATOR_DATABASE_URL")" && split_pg_url "$U" &&
+  psql "$PG_URL_NOPASS" -X -q -c "REVOKE ALL ON public.alembic_version FROM app" && echo 'alembic_version revoked from app' )
 ```
 
-Expected: `roles migrator and app created`, a table of checks all `t`, then `ALL ROLE CHECKS PASSED`. If `verify_roles.sql` fails because `pg_default_acl` shows `analyst` with a default grant beyond `SELECT` — a pre-existing owner-level `ALTER DEFAULT PRIVILEGES ... TO analyst` from when `analyst` was set up, before `migrator` owned anything — revoke it (substitute the actual granting role if `\ddp public.*` shows something other than `neondb_owner`):
+Expected: `Running stamp_revision -> 0001_baseline`, `Running upgrade 0001_baseline -> 0002_drop_ascents_climbers`, `Running upgrade 0002_drop_ascents_climbers -> 0003_hist_insufficient_data`, `0003_hist_insufficient_data (head)`, `No new upgrade operations detected.`, then `alembic_version revoked from app`. `alembic stamp` creates `alembic_version` as `migrator`, so `migrator`'s default privileges hand `app` `SELECT` on it; revoking only `INSERT, UPDATE, DELETE` leaves that `SELECT`, and `verify_roles.sql` fails `app cannot read or write alembic_version` (D4, reproduced on rehearsal2 and in `tests/test_migrations.py::test_stamp_then_revoke_alembic_version_passes_verify`). 0003 on the 23M-row `historical_predictions` finished in seconds (drop NOT NULL plus a `NOT VALID` check).
+
+- [ ] **Step 8 (owner): Verify the end state and smoke-test `app`**
 
 ```bash
-( set -a; . ./.env.owner; set +a
-  split_pg_url "$OWNER_DATABASE_URL"
-  psql "$PG_URL_NOPASS" -X -q -c "ALTER DEFAULT PRIVILEGES FOR ROLE neondb_owner IN SCHEMA public REVOKE ALL ON TABLES FROM analyst" )
-```
-
-Then re-run `verify_roles.sql` above.
-
-- [ ] **Step 6 (owner): Stamp and upgrade prod, then lock `alembic_version`**
-
-```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
-( set -a; . ./.env.migrator; set +a
-  uv run alembic stamp 0001_baseline
-  uv run alembic upgrade head
-  uv run alembic current
-  uv run alembic check
-  # psql needs libpq spelling: postgresql:// and sslmode=, not asyncpg's +asyncpg and ssl=.
-  # The value (verify-full) is spelled the same in both; only the key changes. Unlike
-  # app.db.ssl (which loads certifi's bundle explicitly), libpq's verify-full has no
-  # built-in OS-trust fallback at all — it fails outright without a root cert, so
-  # &sslrootcert=system (libpq 16+, uses the OS/OpenSSL trust store; Neon's certs are
-  # publicly trusted so this verifies cleanly) is appended unconditionally below, not
-  # only if psql complains.
-  case "$MIGRATOR_DATABASE_URL" in
-    *'ssl=verify-full'*) : ;;
-    *) echo 'MIGRATOR_DATABASE_URL still says ssl=require (written before the verify-full change) — re-run Step 3 to regenerate .env.migrator, then re-run this step' >&2; exit 1 ;;
-  esac
-  U="${MIGRATOR_DATABASE_URL/postgresql+asyncpg:/postgresql:}"
-  U="${U/ssl=verify-full/sslmode=verify-full}&sslrootcert=system"
-  split_pg_url "$U"
-  psql "$PG_URL_NOPASS" -X -q -c "REVOKE INSERT, UPDATE, DELETE ON public.alembic_version FROM app" )
-```
-
-Expected: `0002_drop_ascents_climbers (head)`, `No new upgrade operations detected.`, and the REVOKE returns silently.
-
-- [ ] **Step 7 (owner): Verify prod state as `analyst` and re-run the role checks**
-
-```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
-( set -a; . ./.env.analyst; set +a
-  U="${ANALYST_DATABASE_URL/postgresql+asyncpg:/postgresql:}"; U="${U/ssl=require/sslmode=require}"
-  split_pg_url "$U"
+( set -a; . "./$E.owner"; set +a
+  U="$(pg_verify_full "$OWNER_DATABASE_URL")" || exit 1; split_pg_url "$U"
+  psql "$PG_URL_NOPASS" -X -q -f db/roles/verify_roles.sql &&
   psql "$PG_URL_NOPASS" -XAt -c "SELECT version_num FROM alembic_version" \
     -c "SELECT to_regclass('public.ascents'), to_regclass('public.climbers'), to_regclass('public.routes'), to_regclass('public.mountains')" \
     -c "SELECT conname FROM pg_constraint WHERE conrelid = 'public.accidents'::regclass AND contype = 'f' ORDER BY 1" )
-( set -a; . ./.env.owner; set +a; split_pg_url "$OWNER_DATABASE_URL"; psql "$PG_URL_NOPASS" -X -q -f db/roles/verify_roles.sql )
+( set -a; . "./$E.app"; set +a
+  U="$(pg_verify_full "$APP_DATABASE_URL")" || exit 1; split_pg_url "$U"
+  psql "$PG_URL_NOPASS" -X -q -v ON_ERROR_STOP=1 <<'SQL'
+\conninfo
+SELECT current_user, count(*) FROM accidents;
+BEGIN;
+INSERT INTO historical_predictions (route_id, prediction_date, risk_score, color_code) VALUES (-424242, DATE '2099-01-01', NULL, 'gray');
+UPDATE historical_predictions SET color_code = 'gray' WHERE route_id = -424242;
+DELETE FROM historical_predictions WHERE route_id = -424242;
+ROLLBACK;
+SQL
+  for sql in "INSERT INTO accidents DEFAULT VALUES" "CREATE TABLE app_should_not_create (x int)" \
+             "SELECT 1 FROM alembic_version" "TRUNCATE historical_predictions"; do
+    if psql "$PG_URL_NOPASS" -XAtq -c "$sql" 2>&1 | grep -q 'permission denied'; then echo "denied: $sql"; else echo "NOT DENIED: $sql"; fi
+  done
+  uv run python -c '
+import asyncio, os
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+from app.db.ssl import connect_args_for
+async def main():
+    url = os.environ["APP_DATABASE_URL"]
+    engine = create_async_engine(url, connect_args=connect_args_for(url))
+    async with engine.connect() as conn:
+        print("asyncpg verify-full as", (await conn.execute(text("SELECT current_user"))).scalar())
+    await engine.dispose()
+asyncio.run(main())' )
 ```
 
-Expected: `0002_drop_ascents_climbers`; `||routes|mountains` (the first two are NULL); FK list includes `accidents_route_id_fkey`; `ALL ROLE CHECKS PASSED`.
+Expected: `ALL ROLE CHECKS PASSED` (82 rows now that `ascents`/`climbers` are gone); `0003_hist_insufficient_data`; `||routes|mountains` (the first two NULL); the FK list includes `accidents_route_id_fkey`. Then for `app`: `\conninfo` shows `Client User | app` and `SSL Connection | true`; one `app | <count>` row; the `BEGIN`…`ROLLBACK` block prints nothing (`-q`) and raises no error; four `denied:` lines and no `NOT DENIED`; `asyncpg verify-full as app`. These checks read as the owner (which inherits `migrator` until Task 26) rather than `analyst`, so they do not depend on the format of `.env.analyst`.
 
 The services still connect as `neondb_owner` at this point. They keep working through the transitional `INHERIT TRUE` membership. Switching them to `app` is part of the relaunch gate (Task 26).
 
@@ -4573,7 +4597,7 @@ PR8 is ready for review and `/commitandpush`.
 
 ### Task 26: OWNER CHECKLIST — relaunch
 
-Every item must hold before maintenance mode is turned off. Agents do not perform these steps.
+Every item must hold before maintenance mode is turned off. Agents do not perform these steps. The `split_pg_url` and `pg_verify_full` helpers are defined in Task 8 Step 1.
 
 - [ ] **Step 1 (owner): Switch services to the `app` role.** In the Railway dashboard, set `DATABASE_URL` on `api`, `worker`, and `beat` to the value of `APP_DATABASE_URL` from `backend/.env.app` (open the file in an editor and copy the value; do not `cat` it into a shared terminal). Confirm `MIGRATOR_DATABASE_URL` is set on no service. Redeploy the three services. Then:
 
@@ -4584,7 +4608,7 @@ curl -s https://api.safeascent.us/health/worker
 
 Expected: `200`, and `"status":"ok"`.
 
-- [ ] **Step 2 (owner): Rotate the `neondb_owner` password** (it leaked in public git history). Use the Neon Console → Branch `main` → Roles → `neondb_owner` → Reset password. Put the new URL in `backend/.env.owner` with an editor. Confirm the old password no longer authenticates, by pasting the old URL from the leaked history into a gitignored `backend/.env.oldowner` as `OLD_OWNER_DATABASE_URL=...`:
+- [ ] **Step 2 (owner): Rotate the `neondb_owner` password** (it leaked in public git history). Use the Neon Console → Branch `production` → Roles → `neondb_owner` → Reset password. Put the new URL in `backend/.env.owner` with an editor. Confirm the old password no longer authenticates, by pasting the old URL from the leaked history into a gitignored `backend/.env.oldowner` as `OLD_OWNER_DATABASE_URL=...`:
 
 ```bash
 cd /Users/sebastianfrazier/Developer/SafeAscent/backend
@@ -4599,8 +4623,9 @@ Expected: `password authentication failed for user "neondb_owner"` and `exit=2`.
 ```bash
 cd /Users/sebastianfrazier/Developer/SafeAscent/backend
 ( set -a; . ./.env.owner; set +a
-  psql "$OWNER_DATABASE_URL" -X -q -c "REVOKE migrator FROM CURRENT_USER"
-  psql "$OWNER_DATABASE_URL" -X -q -f db/roles/verify_roles.sql )
+  U="$(pg_verify_full "$OWNER_DATABASE_URL")" || exit 1; split_pg_url "$U"
+  psql "$PG_URL_NOPASS" -X -q -c "REVOKE migrator FROM CURRENT_USER" &&
+  psql "$PG_URL_NOPASS" -X -q -f db/roles/verify_roles.sql )
 ```
 
 Expected: `ALL ROLE CHECKS PASSED`. The owner no longer inherits table access, which is intended.
@@ -4612,8 +4637,8 @@ Expected: `ALL ROLE CHECKS PASSED`. The owner no longer inherits table access, w
 ```bash
 cd /Users/sebastianfrazier/Developer/SafeAscent/backend
 ( set -a; . ./.env.analyst; set +a
-  U="${ANALYST_DATABASE_URL/postgresql+asyncpg:/postgresql:}"; U="${U/ssl=require/sslmode=require}"
-  psql "$U" -XAtc "SELECT count(*) FROM historical_predictions WHERE prediction_date = CURRENT_DATE" )
+  U="$(pg_verify_full "$ANALYST_DATABASE_URL")" || exit 1; split_pg_url "$U"
+  psql "$PG_URL_NOPASS" -XAtc "SELECT count(*) FROM historical_predictions WHERE prediction_date = CURRENT_DATE" )
 ```
 
 Expected: a count in the six figures (about 168K routes).
