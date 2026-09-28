@@ -34,7 +34,7 @@ Local stack: `docker compose up --build` (db, redis, api, worker, beat, frontend
 ## Data rules
 
 - **No scraper code is ever committed to this repo.** CI's `guards` job runs `scripts/check_no_scrapers.py` on every tracked file (names, banned-host mentions, HTML-parsing/browser-automation imports, and lockfile entries). Clients for open APIs (OpenBeta GraphQL, Open-Meteo, NOAA, USGS, Macrostrat, NWS, AirNow, SNOTEL) are fine and live in the repo.
-- Mountain Project: only ice/mixed route facts (name, grade, location, type) may be displayed, and never bulk-redistributed. No MP prose or descriptions, ever, anywhere — not fixtures, docs, or commits. Everything else MP-derived is internal only.
+- Mountain Project: ice/mixed route facts (name, grade, location, type), rock routes, and tick aggregates (ascent counts by season/month) may be displayed; none is bulk-redistributed. No MP prose or descriptions, ever, anywhere — not fixtures, docs, or commits. (Owner decision 2026-09-28; `DATA_LICENSE.md` wording is pending the owner's legal review.)
 - OpenBeta climb/area data is CC0; see `DATA_LICENSE.md` for the full source-by-source breakdown and verification dates.
 
 ## Safety-accuracy rules (owner priority: accurate results over everything else)

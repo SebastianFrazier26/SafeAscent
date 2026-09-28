@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
+from app.db.ssl import connect_args_for
 from app.services.safety_algorithm import calculate_safety_score, AccidentData
 from app.services.safety_algorithm_vectorized import calculate_safety_score_vectorized
 from app.services.weather_similarity import WeatherPattern
@@ -35,7 +36,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL not found in environment variables")
 
-engine = create_async_engine(DATABASE_URL, echo=False)
+engine = create_async_engine(DATABASE_URL, echo=False, connect_args=connect_args_for(DATABASE_URL))
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 

@@ -29,6 +29,7 @@ os.environ.setdefault("DATABASE_URL", _database_url())
 
 import app.models  # noqa: E402,F401  (populates Base.metadata)
 from app.db.session import Base  # noqa: E402
+from app.db.ssl import connect_args_for  # noqa: E402
 from app.models.legacy import UNMANAGED_LEGACY_TABLES  # noqa: E402
 
 target_metadata = Base.metadata
@@ -69,10 +70,12 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 async def run_async_migrations() -> None:
+    url = _database_url()
     connectable = async_engine_from_config(
-        {"sqlalchemy.url": _database_url()},
+        {"sqlalchemy.url": url},
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=connect_args_for(url),
     )
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)

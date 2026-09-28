@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 from app.config import settings
+from app.db.ssl import connect_args_for
 
 # Create async engine
 engine = create_async_engine(
@@ -14,6 +15,7 @@ engine = create_async_engine(
     max_overflow=20,  # Max connections beyond pool_size
     pool_pre_ping=True,  # Check connection health before using
     pool_recycle=3600,  # Recycle connections after 1 hour
+    connect_args=connect_args_for(settings.DATABASE_URL),
 )
 
 # Session factory

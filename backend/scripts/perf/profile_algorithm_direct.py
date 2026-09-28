@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
+from app.db.ssl import connect_args_for
 from app.services.safety_algorithm import calculate_safety_score, AccidentData
 from app.services.weather_similarity import WeatherPattern
 from app.models.accident import Accident
@@ -32,7 +33,7 @@ print()
 # Database connection
 DATABASE_URL = f"postgresql+asyncpg://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}@{os.getenv('DB_HOST')}:{os.getenv('DB_PORT')}/{os.getenv('DB_NAME')}"
 
-engine = create_async_engine(DATABASE_URL, echo=False)
+engine = create_async_engine(DATABASE_URL, echo=False, connect_args=connect_args_for(DATABASE_URL))
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 

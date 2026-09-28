@@ -23,6 +23,7 @@ from dotenv import load_dotenv
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
+from app.db.ssl import connect_args_for
 from app.models.accident import Accident
 from app.models.weather import Weather
 
@@ -37,7 +38,7 @@ DB_NAME = os.getenv('DB_NAME', 'safeascent')
 
 DATABASE_URL = f"postgresql+asyncpg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
-engine = create_async_engine(DATABASE_URL, echo=False)
+engine = create_async_engine(DATABASE_URL, echo=False, connect_args=connect_args_for(DATABASE_URL))
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
