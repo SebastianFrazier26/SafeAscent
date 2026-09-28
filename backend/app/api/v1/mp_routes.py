@@ -41,7 +41,7 @@ from app.services.weather_service import (
     fetch_weather_statistics,
 )
 from app.utils.time_utils import get_season
-from app.services.risk_bands import color_code_for
+from app.services.risk_bands import color_code_for, valid_risk_score
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -454,13 +454,15 @@ async def get_mp_routes_with_safety(
     missing_count = 0
 
     for row in rows:
-        # Get cached safety score if available
         cached = cached_scores.get(row.mp_route_id)
+        # An entry without a real 0-100 score is a miss, never a 0; colour is re-derived
+        # from the score so entries written under older band sets can't disagree.
+        score = valid_risk_score(cached.get("risk_score")) if cached else None
 
-        if cached:
+        if score is not None:
             safety = SafetyScore(
-                risk_score=cached.get("risk_score", 0),
-                color_code=cached.get("color_code", "gray"),
+                risk_score=score,
+                color_code=color_code_for(score),
                 status="cached"
             )
             cached_count += 1
@@ -610,14 +612,19 @@ async def calculate_mp_route_safety(
     cache_key = build_safety_score_key(mp_route_id, date_str)
     if not bypass_cache:
         cached_result = cache_get(cache_key)
-        if cached_result:
-            # Merge cached safety data with route info from database
+        # A cached entry without a real 0-100 score falls through to a recompute.
+        cached_score = (
+            valid_risk_score(cached_result.get("risk_score"))
+            if isinstance(cached_result, dict)
+            else None
+        )
+        if cached_score is not None:
             return MpRouteSafetyResponse(
                 route_id=mp_route_id,
                 route_name=route.name,
                 target_date=date_str,
-                risk_score=cached_result.get("risk_score", 0),
-                color_code=cached_result.get("color_code", "gray"),
+                risk_score=cached_score,
+                color_code=color_code_for(cached_score),
             )
 
     # Build prediction request
@@ -1182,7 +1189,7 @@ async def get_seasonal_patterns(
                 "month": month_name,
                 "month_num": month_num,
                 "accident_count": 0,
-                "avg_risk_score": 0,
+                "avg_risk_score": None,
                 "avg_temp": None,
             })
 
@@ -1535,23 +1542,26 @@ async def get_historical_trends(
                 "message": "Historical data not yet available. Run backfill script to collect historical predictions."
             }
 
-        predictions = [
-            {
+        predictions = []
+        for row in historical_data:
+            stored_score = valid_risk_score(float(row[1])) if row[1] is not None else None
+            if stored_score is None:
+                logger.warning(f"Skipping historical prediction without a valid score: route {mp_route_id} {row[0]}")
+                continue
+            predictions.append({
                 "date": row[0].isoformat(),
-                "risk_score": round(float(row[1]), 1),
+                "risk_score": round(stored_score, 1),
                 # Re-derived rather than trusting the stored column, so rows written under
                 # older band sets can never disagree with the live marker colour.
-                "color_code": color_code_for(float(row[1])),
-            }
-            for row in historical_data
-        ]
+                "color_code": color_code_for(stored_score),
+            })
 
         risk_scores = [p["risk_score"] for p in predictions]
         summary = {
             "avg_risk": round(sum(risk_scores) / len(risk_scores), 1),
             "min_risk": round(min(risk_scores), 1),
             "max_risk": round(max(risk_scores), 1),
-        }
+        } if risk_scores else None
 
         trend = None
         if len(predictions) >= 7:

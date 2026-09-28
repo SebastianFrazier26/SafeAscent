@@ -15,6 +15,8 @@ import logging
 from typing import Optional, Any, Dict, List
 from urllib.parse import urlparse
 
+from app.services.risk_bands import color_code_for, valid_risk_score
+
 # Configure logging
 logger = logging.getLogger(__name__)
 
@@ -422,22 +424,31 @@ def set_bulk_cached_safety_scores(
         # Use pipeline for efficient bulk SET
         pipe = client.pipeline()
 
+        written = 0
         for route_id, data in scores.items():
+            # Never write a placeholder score: readers would serve it as a real 0.
+            risk_score = valid_risk_score(data.get("risk_score"))
+            if risk_score is None:
+                continue
             key = build_safety_score_key(route_id, target_date)
             cache_data = {
-                "risk_score": data.get("risk_score", 0),
-                "color_code": data.get("color_code", "gray"),
+                "risk_score": risk_score,
+                "color_code": color_code_for(risk_score),
                 "confidence": data.get("confidence", 1.0),
                 "computed_at": computed_at,
                 "status": "cached"
             }
             pipe.setex(key, SAFETY_SCORE_TTL, json.dumps(cache_data))
+            written += 1
 
         # Execute all commands in one round trip
         pipe.execute()
 
-        logger.info(f"Bulk cache SET: {len(scores)} safety scores for {target_date}")
-        return len(scores)
+        skipped = len(scores) - written
+        if skipped:
+            logger.warning(f"Bulk cache SET: skipped {skipped} entries without a valid risk_score for {target_date}")
+        logger.info(f"Bulk cache SET: {written} safety scores for {target_date}")
+        return written
 
     except redis.RedisError as e:
         logger.error(f"Bulk cache set error: {e}")

@@ -2,7 +2,7 @@
 Pydantic schemas for MpRoute API requests/responses.
 """
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class MpRouteBase(BaseModel):
@@ -63,7 +63,7 @@ class MpRouteSafetyResponse(BaseModel):
     route_id: int  # Using mp_route_id but named route_id for frontend compatibility
     route_name: str
     target_date: str
-    risk_score: float
+    risk_score: float = Field(ge=0.0, le=100.0)
     color_code: str  # For marker coloring: 'green', 'yellow', 'orange', 'red'
 
     class Config:
@@ -84,7 +84,7 @@ class MpRouteSafetyResponse(BaseModel):
 
 class SafetyScore(BaseModel):
     """Embedded safety score for a route."""
-    risk_score: float
+    risk_score: float = Field(ge=0.0, le=100.0)
     color_code: str
     status: str = "cached"  # 'cached' or 'computed'
 

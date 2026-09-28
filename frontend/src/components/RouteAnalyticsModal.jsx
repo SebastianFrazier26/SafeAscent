@@ -411,9 +411,7 @@ function formatRouteNameWithType(name, routeType) {
 }
 
 function formatRiskScore(score) {
-  const numericScore = Number(score);
-  if (!Number.isFinite(numericScore)) return '0.0';
-  return numericScore.toFixed(1);
+  return isRiskScore(score) ? `${score.toFixed(1)}/100` : 'Unavailable';
 }
 
 // Tab panel component
@@ -643,7 +641,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
     csv += `Location,${getBestLocationName([data.routeDetails?.location_name, routeData.mountain_name, routeData.location_name])}\n`;
     csv += `Type,${routeData.type}\n`;
     csv += `Grade,${routeData.grade}\n`;
-    csv += `Risk Score,${routeData.risk_score}\n`;
+    csv += `Risk Score,${formatRiskScore(routeData.risk_score)}\n`;
     csv += `Date,${selectedDate}\n\n`;
 
     // Add 7-day forecast if available
@@ -651,7 +649,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
       csv += '\n7-Day Forecast\n';
       csv += 'Date,Risk Score,Weather Summary,Temp High,Temp Low,Precip,Wind Speed\n';
       data.forecast.forecast_days.forEach(day => {
-        csv += `${day.date},${day.risk_score},"${day.weather_summary}",${day.temp_high},${day.temp_low},${day.precip_mm || 0},${day.wind_speed}\n`;
+        csv += `${day.date},${isRiskScore(day.risk_score) ? day.risk_score : 'Unavailable'},"${day.weather_summary}",${day.temp_high},${day.temp_low},${day.precip_mm || 0},${day.wind_speed}\n`;
       });
     }
 
@@ -701,11 +699,9 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
             </Typography>
           </Box>
           <Chip
-            label={`Risk: ${formattedRouteRiskScore}/100`}
+            label={`Risk: ${formattedRouteRiskScore}`}
             sx={{
-              bgcolor: routeData.color_code === 'green' ? 'success.main' :
-                       routeData.color_code === 'yellow' ? 'warning.main' :
-                       routeData.color_code === 'orange' ? 'warning.dark' : 'error.main',
+              bgcolor: riskChipBg(routeData.risk_score),
               color: 'white',
               fontWeight: 600,
               fontSize: '1rem',
@@ -1047,7 +1043,7 @@ function ForecastTab({ data, loading, selectedDate: _selectedDate, routeData, ro
                           </Typography>
                           <Chip
                             size="small"
-                            label={`${day.risk_score}`}
+                            label={isRiskScore(day.risk_score) ? `${day.risk_score}` : 'N/A'}
                             sx={{
                               bgcolor: riskChipBg(day.risk_score),
                               color: 'white',
@@ -1487,7 +1483,9 @@ function RiskBreakdownTab({ data, loading, routeData }) {
     );
   }
 
-  const effectiveRiskScore = data.risk_score ?? routeData.risk_score ?? 0;
+  const effectiveRiskScore = [data.risk_score, routeData.risk_score].find(isRiskScore) ?? null;
+  const scorePointsFor = (contribution) =>
+    effectiveRiskScore === null ? null : Number(((effectiveRiskScore * contribution) / 100).toFixed(1));
   const extremeWeather = data.extreme_weather || null;
   const triggeredFactors = (extremeWeather?.triggered_factors || []).map((factor) =>
     factor.replace(/_/g, ' ')
@@ -1497,7 +1495,7 @@ function RiskBreakdownTab({ data, loading, routeData }) {
   const factorData = data.factors?.map(factor => ({
     name: factor.name,
     value: factor.contribution,
-    scorePoints: Number(((effectiveRiskScore * factor.contribution) / 100).toFixed(1)),
+    scorePoints: scorePointsFor(factor.contribution),
     description: factor.description,
   })) || [];
 
@@ -1509,7 +1507,7 @@ function RiskBreakdownTab({ data, loading, routeData }) {
         <Card elevation={3}>
           <CardContent>
             <Typography variant="h6" gutterBottom fontWeight={600}>
-              📊 Risk Score: {formatRiskScore(effectiveRiskScore)}/100
+              📊 Risk Score: {formatRiskScore(effectiveRiskScore)}
             </Typography>
             <Typography variant="body2" color="text.secondary" paragraph>
               This risk score is calculated using statistical analysis of historical accident data,
@@ -1567,7 +1565,7 @@ function RiskBreakdownTab({ data, loading, routeData }) {
                 </Pie>
                 <Tooltip
                   formatter={(value, _name, item) => [
-                    `${value}% (~${item?.payload?.scorePoints ?? 0} pts)`,
+                    `${value}% (~${item?.payload?.scorePoints ?? 'N/A'} pts)`,
                     'Contribution',
                   ]}
                 />
@@ -1600,7 +1598,7 @@ function RiskBreakdownTab({ data, loading, routeData }) {
                               color={factor.contribution > 20 ? 'error' : factor.contribution > 10 ? 'warning' : 'default'}
                             />
                             <Chip
-                              label={`+${((effectiveRiskScore * factor.contribution) / 100).toFixed(1)} pts`}
+                              label={effectiveRiskScore === null ? 'N/A pts' : `+${scorePointsFor(factor.contribution).toFixed(1)} pts`}
                               size="small"
                               variant="outlined"
                             />

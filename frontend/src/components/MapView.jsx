@@ -16,7 +16,7 @@ import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFns';
 import { addDays, startOfToday, format } from 'date-fns';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import RouteAnalyticsModal from './RouteAnalyticsModal';
-import { RISK_BAND_THRESHOLDS } from '../utils/riskUtils';
+import { RISK_BAND_THRESHOLDS, getRiskColorCode, isRiskScore } from '../utils/riskUtils';
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
 
@@ -1255,8 +1255,9 @@ export default function MapView({ selectedRouteForZoom }) {
           latitude: selectedRoute.geometry.coordinates[1],
           longitude: selectedRoute.geometry.coordinates[0],
           elevation_meters: null,
-          risk_score: safetyData.risk_score || 0,
-          color_code: safetyData.color_code || 'gray',
+          // A failed fetch leaves risk_score null ("Unavailable"), never 0.
+          risk_score: isRiskScore(safetyData.risk_score) ? safetyData.risk_score : null,
+          color_code: isRiskScore(safetyData.risk_score) ? getRiskColorCode(safetyData.risk_score) : null,
           mp_route_id: selectedRoute.properties.mp_route_id,
         } : null}
         selectedDate={format(selectedDate, 'yyyy-MM-dd')}
