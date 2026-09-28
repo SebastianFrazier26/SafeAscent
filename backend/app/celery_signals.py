@@ -52,29 +52,29 @@ def write_heartbeat(client: redis.Redis, ttl_seconds: int, now: float) -> None:
     client.set(HEARTBEAT_KEY, f"{now:.3f}", ex=ttl_seconds)
 
 
+def _expired_key(day: date) -> str:
+    return f"{EXPIRED_KEY_PREFIX}{day.isoformat()}"
+
+
 def record_expired(client: redis.Redis, task_name: str, today: date) -> None:
-    key = f"{EXPIRED_KEY_PREFIX}{task_name}:{today.isoformat()}"
+    key = _expired_key(today)
     pipe = client.pipeline()
-    pipe.incr(key)
+    pipe.hincrby(key, task_name, 1)
     pipe.expire(key, EXPIRED_KEY_TTL_SECONDS)
     pipe.execute()  # type: ignore[no-untyped-call]  # redis-py ships Pipeline.execute with no annotations
 
 
 def _expired_counts(client: redis.Redis, today: date) -> dict[str, int]:
-    window_start = today - timedelta(days=EXPIRED_WINDOW_DAYS - 1)
+    # One hash per UTC day, read by known key names: /health/worker is public and shares
+    # the Redis DB with the safety-score cache, so it must never SCAN the keyspace.
+    pipe = client.pipeline()
+    for offset in range(EXPIRED_WINDOW_DAYS):
+        pipe.hgetall(_expired_key(today - timedelta(days=offset)))
+    buckets: list[dict[str, str]] = pipe.execute()  # type: ignore[no-untyped-call]
     counts: dict[str, int] = {}
-    for raw_key in client.scan_iter(match=f"{EXPIRED_KEY_PREFIX}*"):
-        key = str(raw_key)
-        task_name, _, day = key[len(EXPIRED_KEY_PREFIX):].rpartition(":")
-        try:
-            bucket = date.fromisoformat(day)
-        except ValueError:
-            continue
-        if not task_name or bucket < window_start or bucket > today:
-            continue
-        # redis-py's get() is typed Awaitable[Any] | Any (shared sync/async signature);
-        # decode_responses=True makes the runtime value a str, so str() is a no-op cast.
-        counts[task_name] = counts.get(task_name, 0) + int(str(client.get(key) or 0))
+    for bucket in buckets:
+        for task_name, count in bucket.items():
+            counts[task_name] = counts.get(task_name, 0) + int(count)
     return counts
 
 

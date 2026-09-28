@@ -60,11 +60,32 @@ def test_expired_counts_cover_last_seven_days_only(fake):
     task = "app.tasks.safety_computation_optimized.compute_daily_safety_scores_optimized"
     record_expired(fake, task, TODAY)
     record_expired(fake, task, TODAY)
+    record_expired(fake, "other", date(2026, 9, 25))
     record_expired(fake, task, date(2026, 9, 21))
     record_expired(fake, task, date(2026, 9, 20))
-    fake.set(f"{EXPIRED_KEY_PREFIX}garbage", "5")
-    assert read_worker_health(fake, now=0.0, today=TODAY)["expired_tasks_7d"] == {task: 3}
-    assert fake.ttl(f"{EXPIRED_KEY_PREFIX}{task}:{TODAY.isoformat()}") > 7 * 86400
+    assert read_worker_health(fake, now=0.0, today=TODAY)["expired_tasks_7d"] == {task: 3, "other": 1}
+    assert fake.hgetall(f"{EXPIRED_KEY_PREFIX}{TODAY.isoformat()}") == {task: "2"}
+    assert fake.ttl(f"{EXPIRED_KEY_PREFIX}{TODAY.isoformat()}") > 7 * 86400
+
+
+class _NoScanRedis(fakeredis.FakeRedis):
+    def scan_iter(self, *args: object, **kwargs: object):
+        raise AssertionError("health read must not SCAN")
+
+    def scan(self, *args: object, **kwargs: object):
+        raise AssertionError("health read must not SCAN")
+
+    def keys(self, *args: object, **kwargs: object):
+        raise AssertionError("health read must not KEYS")
+
+
+def test_health_read_never_scans_the_keyspace():
+    client = _NoScanRedis(decode_responses=True)
+    write_heartbeat(client, ttl_seconds=120, now=1000.0)
+    record_expired(client, "t", TODAY)
+    health = read_worker_health(client, now=1001.0, today=TODAY)
+    assert health["status"] == "ok"
+    assert health["expired_tasks_7d"] == {"t": 1}
 
 
 def test_revoked_expired_task_logs_error_and_counts(fake, monkeypatch, caplog):
@@ -83,7 +104,7 @@ def test_revoked_non_expired_task_logs_but_does_not_count(fake, monkeypatch, cap
     with caplog.at_level(logging.ERROR, logger="app.celery_signals"):
         signals.on_task_revoked(sender=SimpleNamespace(name="t"), request=None, expired=False)
     assert "expired=False" in caplog.text
-    assert list(fake.scan_iter(match=f"{EXPIRED_KEY_PREFIX}*")) == []
+    assert fake.hgetall(f"{EXPIRED_KEY_PREFIX}{signals._utc_today().isoformat()}") == {}
 
 
 class _FakeTref:
@@ -123,12 +144,18 @@ def test_heartbeat_step_survives_missing_redis(monkeypatch, caplog):
     assert "heartbeat" in caplog.text
 
 
-@pytest.mark.parametrize(
-    ("key", "value"),
-    [(HEARTBEAT_KEY, "not-a-float"), (f"{EXPIRED_KEY_PREFIX}t:2026-09-27", "not-an-int")],
-)
-def test_health_down_on_garbage_values(fake, key, value):
-    fake.set(key, value)
+def test_health_down_on_garbage_heartbeat(fake):
+    fake.set(HEARTBEAT_KEY, "not-a-float")
+    assert read_worker_health(fake, now=1.0, today=TODAY) == {
+        "status": "down",
+        "last_heartbeat_age_seconds": None,
+        "expired_tasks_7d": {},
+    }
+
+
+def test_health_down_on_garbage_expired_count(fake):
+    write_heartbeat(fake, ttl_seconds=120, now=1.0)
+    fake.hset(f"{EXPIRED_KEY_PREFIX}{TODAY.isoformat()}", "t", "not-an-int")
     assert read_worker_health(fake, now=1.0, today=TODAY) == {
         "status": "down",
         "last_heartbeat_age_seconds": None,
