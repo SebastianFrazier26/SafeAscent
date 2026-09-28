@@ -313,6 +313,88 @@ describe('RouteAnalyticsModal accident and ascent figures', () => {
     expect(within(dialog).queryByText(/all recorded years/)).toBeNull();
   });
 
+  const stubFetch = ({ accidentsBody = accidents, ascentsBody = ascents } = {}) => {
+    vi.stubGlobal('fetch', vi.fn((url) => {
+      if (url.endsWith('/ascent-analytics')) return Promise.resolve(jsonResponse(ascentsBody));
+      if (url.endsWith('/accidents')) return Promise.resolve(jsonResponse(accidentsBody));
+      return Promise.resolve(jsonResponse(route(1, 'Route A')));
+    }));
+  };
+
+  it('a route without coordinates says nearby accidents are unavailable, not that there are none', async () => {
+    stubFetch({ accidentsBody: { location_name: 'Unknown Area', accidents: [], total_accidents: 0, nearby_search: false } });
+    const user = userEvent.setup();
+    render(<Modal routeData={route(1, 'Route A')} />);
+    await user.click(screen.getByRole('tab', { name: 'Accident Reports' }));
+
+    expect(await screen.findByText("Nearby accidents unavailable: this route's area has no coordinates."))
+      .toBeInTheDocument();
+    expect(screen.queryByText(/No accident reports found/)).toBeNull();
+  });
+
+  it('linked reports on a route without coordinates are listed under the unavailable notice', async () => {
+    stubFetch({
+      accidentsBody: {
+        location_name: 'Unknown Area',
+        total_accidents: 1,
+        nearby_search: false,
+        accidents: [{ accident_id: 9, date: '2018-05-01', injury_severity: 'Serious', same_route: true, distance_km: null }],
+      },
+    });
+    const user = userEvent.setup();
+    render(<Modal routeData={route(1, 'Route A')} />);
+    await user.click(screen.getByRole('tab', { name: 'Accident Reports' }));
+    await screen.findByText('SAME ROUTE');
+
+    expect(screen.getByText("Nearby accidents unavailable: this route's area has no coordinates.")).toBeInTheDocument();
+  });
+
+  it('"Showing X of Y" uses the true total, not the returned page', async () => {
+    stubFetch({ accidentsBody: { ...accidents, total_accidents: 120, nearby_search: true } });
+    const user = userEvent.setup();
+    render(<Modal routeData={route(1, 'Route A')} />);
+    await user.click(screen.getByRole('tab', { name: 'Accident Reports' }));
+
+    expect(await screen.findByText('Showing 5 of 120 accidents.', { exact: false })).toBeInTheDocument();
+  });
+
+  it('a route with accidents but no logged ascents still shows the accident count', async () => {
+    stubFetch({
+      ascentsBody: {
+        ...ascents,
+        has_data: false,
+        total_ascents: 0,
+        total_accidents: 3,
+        ascent_years: null,
+        peak_month: null,
+        message: 'No tick data available yet for this route.',
+      },
+    });
+    const user = userEvent.setup();
+    render(<Modal routeData={route(1, 'Route A')} />);
+    await user.click(screen.getByRole('tab', { name: 'Ascents' }));
+
+    expect(await screen.findByText('3 accidents · no logged ascents yet')).toBeInTheDocument();
+    expect(screen.queryByText('No tick data available yet for this route.')).toBeNull();
+  });
+
+  it('undated records are named next to the spans and the month breakdown', async () => {
+    stubFetch({ ascentsBody: { ...ascents, undated_accidents: 1, undated_ascents: 2 } });
+    const user = userEvent.setup();
+    render(<Modal routeData={route(1, 'Route A')} />);
+    await user.click(screen.getByRole('tab', { name: 'Ascents' }));
+    await screen.findByText(/Counts by Month/);
+
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText(
+      'Accidents: all recorded years (1998–2021) (+1 undated). Logged ascents: 2024–2026 (+2 undated).',
+    )).toBeInTheDocument();
+    expect(within(dialog).getByText('Not in any month: accidents (+1 undated), logged ascents (+2 undated).'))
+      .toBeInTheDocument();
+    expect(within(dialog).getByText('Logged ascents by month (+2 undated)')).toBeInTheDocument();
+    expect(within(dialog).getByText('Accidents by month (+1 undated)')).toBeInTheDocument();
+  });
+
   it('a route with no logged ascents shows the no-data state, not zero counts', async () => {
     const noAscents = {
       ...ascents,

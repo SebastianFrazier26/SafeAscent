@@ -284,7 +284,14 @@ import {
   isRiskScore,
 } from '../utils/riskUtils';
 import { readableTextOn } from '../utils/color';
-import { LOGGED_ASCENTS_NOTE, formatAccidentAscentCounts, formatCount, formatDataSpans } from '../utils/ascentCounts';
+import {
+  LOGGED_ASCENTS_NOTE,
+  formatAccidentAscentCounts,
+  formatAccidentsWithoutAscents,
+  formatCount,
+  formatDataSpans,
+  formatUndated,
+} from '../utils/ascentCounts';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
 
@@ -1282,6 +1289,8 @@ function RouteDetailsTab({ data, loading, routeData }) {
   );
 }
 
+const NEARBY_UNAVAILABLE_MESSAGE = "Nearby accidents unavailable: this route's area has no coordinates.";
+
 function AccidentsTab({ data, loading, routeData }) {
   const [showCount, setShowCount] = useState(10);
 
@@ -1289,8 +1298,17 @@ function AccidentsTab({ data, loading, routeData }) {
     return <LoadingState message="Loading accident reports..." />;
   }
 
+  // Without route coordinates only linked reports can be listed, so an empty or short
+  // list must not read as "no accidents around here".
+  const nearbyUnavailable = data?.nearby_search === false;
+  const nearbyUnavailableAlert = (
+    <Alert severity="warning" sx={{ mb: 2 }}>
+      {NEARBY_UNAVAILABLE_MESSAGE}
+    </Alert>
+  );
+
   if (!data || data.accidents?.length === 0) {
-    return (
+    return nearbyUnavailable ? nearbyUnavailableAlert : (
       <Alert severity="info">
         No accident reports found for this mountain.
       </Alert>
@@ -1299,6 +1317,9 @@ function AccidentsTab({ data, loading, routeData }) {
 
   const displayedAccidents = data.accidents.slice(0, showCount);
   const hasMore = data.accidents.length > showCount;
+  const totalAccidents = Number.isInteger(data.total_accidents) && data.total_accidents >= data.accidents.length
+    ? data.total_accidents
+    : data.accidents.length;
 
   return (
     <Box>
@@ -1306,9 +1327,10 @@ function AccidentsTab({ data, loading, routeData }) {
         ⚠️ Accident Reports for {getBestLocationName([data.location_name, routeData.mountain_name, formatRouteNameWithType(routeData.name, routeData.type)])}
       </Typography>
       <Typography variant="body2" color="text.secondary" paragraph>
-        Showing {displayedAccidents.length} of {data.accidents.length} accidents.
+        Showing {displayedAccidents.length} of {totalAccidents} accidents.
         Accidents on the same route are highlighted.
       </Typography>
+      {nearbyUnavailable && nearbyUnavailableAlert}
 
       <Grid container spacing={2}>
         {displayedAccidents.map((accident, idx) => (
@@ -2339,6 +2361,9 @@ function TimeOfDayTab({ data, loading, routeData: _routeData, selectedDate }) {
   );
 }
 
+const ASCENT_BAR_FILL = '#1976d2';
+const ACCIDENT_BAR_FILL = '#616161';
+
 function AscentsTab({ data, loading, routeData }) {
   if (loading) {
     return <LoadingState message="Loading ascent analytics..." />;
@@ -2371,8 +2396,10 @@ function AscentsTab({ data, loading, routeData }) {
     );
   }
 
-  // Show DataOnTheWay if no data or no tick data available
-  if (!data || data.has_data === false || data.total_ascents === 0) {
+  const noAscents = !data || data.has_data === false || data.total_ascents === 0;
+  const hasAccidents = Number.isInteger(data?.total_accidents) && data.total_accidents > 0;
+
+  if (noAscents && !hasAccidents) {
     return (
       <DataOnTheWay
         title="Ascent Data on its way!"
@@ -2381,7 +2408,35 @@ function AscentsTab({ data, loading, routeData }) {
     );
   }
 
-  const dataSpans = formatDataSpans(data.accident_years, data.ascent_years);
+  const dataSpans = formatDataSpans(
+    data.accident_years, data.ascent_years, data.undated_accidents, data.undated_ascents,
+  );
+
+  if (noAscents) {
+    return (
+      <Card elevation={3}>
+        <CardContent>
+          <Typography variant="h6" gutterBottom fontWeight={600}>
+            🧗 Ascent Analytics for {formatRouteNameWithType(routeData.name, routeData.type)}
+          </Typography>
+          <Typography variant="body1" fontWeight={600}>
+            {formatAccidentsWithoutAscents(data.total_accidents)}
+          </Typography>
+          <Typography variant="body2" color="text.secondary" paragraph>
+            {LOGGED_ASCENTS_NOTE}
+          </Typography>
+          {dataSpans && (
+            <Typography variant="body2" color="text.secondary">
+              {dataSpans}
+            </Typography>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const undatedAscents = formatUndated(data.undated_ascents);
+  const undatedAccidents = formatUndated(data.undated_accidents);
 
   return (
     <Grid container spacing={3}>
@@ -2457,40 +2512,34 @@ function AscentsTab({ data, loading, routeData }) {
         </Card>
       </Grid>
 
-      {/* Monthly Breakdown Chart */}
-      <Grid size={12}>
-        <Card>
-          <CardContent>
-            <Typography variant="h6" gutterBottom fontWeight={600}>
-              📊 Logged Ascents & Accidents by Month
-            </Typography>
-            <ResponsiveContainer width="100%" height={350}>
-              <BarChart data={data.monthly_stats}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="month" />
-                <YAxis yAxisId="left" orientation="left" stroke="#1976d2" />
-                <YAxis yAxisId="right" orientation="right" stroke="#f44336" />
-                <Tooltip />
-                <Legend />
-                <Bar
-                  yAxisId="left"
-                  dataKey="ascent_count"
-                  fill="#1976d2"
-                  name="Logged ascents"
-                  radius={[4, 4, 0, 0]}
-                />
-                <Bar
-                  yAxisId="right"
-                  dataKey="accident_count"
-                  fill="#f44336"
-                  name="Accidents"
-                  radius={[4, 4, 0, 0]}
-                />
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-      </Grid>
+      {/* Separate charts on their own axes, in neutral colours: a shared chart with red
+          accident bars on an independently scaled axis read as a rate or a danger level. */}
+      {[
+        { key: 'ascent_count', title: 'Logged ascents by month', axis: 'Logged ascents', fill: ASCENT_BAR_FILL, undated: undatedAscents },
+        { key: 'accident_count', title: 'Accidents by month', axis: 'Accidents', fill: ACCIDENT_BAR_FILL, undated: undatedAccidents },
+      ].map((chart) => (
+        <Grid size={{ xs: 12, md: 6 }} key={chart.key}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom fontWeight={600}>
+                {chart.title}{chart.undated && ` ${chart.undated}`}
+              </Typography>
+              <ResponsiveContainer width="100%" height={260}>
+                <BarChart data={data.monthly_stats}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="month" />
+                  <YAxis
+                    allowDecimals={false}
+                    label={{ value: chart.axis, angle: -90, position: 'insideLeft' }}
+                  />
+                  <Tooltip />
+                  <Bar dataKey={chart.key} fill={chart.fill} name={chart.axis} radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </CardContent>
+          </Card>
+        </Grid>
+      ))}
 
       <Grid size={12}>
         <Card>
@@ -2498,6 +2547,14 @@ function AscentsTab({ data, loading, routeData }) {
             <Typography variant="h6" gutterBottom fontWeight={600}>
               Counts by Month
             </Typography>
+            {(undatedAccidents || undatedAscents) && (
+              <Typography variant="body2" color="text.secondary">
+                Not in any month: {[
+                  undatedAccidents && `accidents ${undatedAccidents}`,
+                  undatedAscents && `logged ascents ${undatedAscents}`,
+                ].filter(Boolean).join(', ')}.
+              </Typography>
+            )}
             <Box sx={{ maxHeight: 400, overflow: 'auto' }}>
               <List dense>
                 {data.monthly_stats?.map((month, idx) => (

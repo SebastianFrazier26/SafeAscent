@@ -4,7 +4,9 @@ import {
   formatAccidentAscentCounts,
   formatAccidents,
   formatCount,
+  formatAccidentsWithoutAscents,
   formatDataSpans,
+  formatUndated,
   formatLoggedAscents,
 } from './ascentCounts';
 
@@ -48,5 +50,29 @@ describe('formatAccidentAscentCounts', () => {
     expect(formatDataSpans(null, { first: 2024, last: 2025 })).toBe('Logged ascents: 2024–2025.');
     expect(formatDataSpans(null, undefined)).toBeNull();
     expect(formatDataSpans({ first: 2020 }, { first: 2025, last: 2020 })).toBeNull();
+  });
+});
+
+describe('undated records', () => {
+  it('formatUndated names a positive count and nothing else', () => {
+    expect(formatUndated(2)).toBe('(+2 undated)');
+    expect(formatUndated(0)).toBeNull();
+    for (const bad of [undefined, null, -1, 1.5, '2', NaN]) expect(formatUndated(bad)).toBeNull();
+  });
+
+  it('spans carry the undated count, and an all-undated side still shows', () => {
+    expect(formatDataSpans({ first: 1998, last: 2021 }, { first: 2024, last: 2026 }, 1, 2))
+      .toBe('Accidents: all recorded years (1998–2021) (+1 undated). Logged ascents: 2024–2026 (+2 undated).');
+    expect(formatDataSpans(null, { first: 2024, last: 2024 }, 3, 0))
+      .toBe('Accidents: none dated (+3 undated). Logged ascents: 2024.');
+    expect(formatDataSpans(null, null, 0, undefined)).toBeNull();
+  });
+});
+
+describe('formatAccidentsWithoutAscents', () => {
+  it('keeps the accident count visible', () => {
+    expect(formatAccidentsWithoutAscents(3)).toBe('3 accidents · no logged ascents yet');
+    expect(formatAccidentsWithoutAscents(1)).toBe('1 accident · no logged ascents yet');
+    expect(formatAccidentsWithoutAscents(undefined)).toBe('— accidents · no logged ascents yet');
   });
 });

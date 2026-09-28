@@ -27,6 +27,10 @@ export const formatLoggedAscents = (ascents: unknown): string =>
 export const formatAccidentAscentCounts = (accidents: unknown, ascents: unknown): string =>
   `${formatAccidents(accidents)} · ${formatLoggedAscents(ascents)}`;
 
+/** Routes with linked accidents but no logged ascents must still show the accidents. */
+export const formatAccidentsWithoutAscents = (accidents: unknown): string =>
+  `${formatAccidents(accidents)} · no logged ascents yet`;
+
 interface YearSpan {
   first: number;
   last: number;
@@ -42,12 +46,31 @@ const formatSpan = ({ first, last }: YearSpan): string =>
   (first === last ? `${first}` : `${first}–${last}`);
 
 /**
- * Accidents reach back decades while logged ascents cover a few recent years, so the tab
- * states each side's span. A side with no dated records gets no span; null if neither has one.
+ * Totals include undated records but no month or year span can, so each place that shows
+ * months or spans says how many were left out. Null when there are none (or the count is bad).
  */
-export const formatDataSpans = (accidentYears: unknown, ascentYears: unknown): string | null => {
-  const parts: string[] = [];
-  if (isYearSpan(accidentYears)) parts.push(`Accidents: all recorded years (${formatSpan(accidentYears)}).`);
-  if (isYearSpan(ascentYears)) parts.push(`Logged ascents: ${formatSpan(ascentYears)}.`);
+export const formatUndated = (count: unknown): string | null =>
+  (isCount(count) && count > 0 ? `(+${formatCount(count)} undated)` : null);
+
+/**
+ * Accidents reach back decades while logged ascents cover a few recent years, so the tab
+ * states each side's span. A side with neither a span nor undated records is dropped;
+ * null if both are.
+ */
+export const formatDataSpans = (
+  accidentYears: unknown,
+  ascentYears: unknown,
+  undatedAccidents?: unknown,
+  undatedAscents?: unknown,
+): string | null => {
+  const side = (span: unknown, undated: unknown, dated: (s: string) => string, name: string) => {
+    const extra = formatUndated(undated);
+    if (isYearSpan(span)) return `${dated(formatSpan(span))}${extra ? ` ${extra}` : ''}.`;
+    return extra ? `${name}: none dated ${extra}.` : null;
+  };
+  const parts = [
+    side(accidentYears, undatedAccidents, (s) => `Accidents: all recorded years (${s})`, 'Accidents'),
+    side(ascentYears, undatedAscents, (s) => `Logged ascents: ${s}`, 'Logged ascents'),
+  ].filter((part): part is string => part !== null);
   return parts.length ? parts.join(' ') : null;
 };
