@@ -41,6 +41,7 @@ from app.services.weather_service import (
     fetch_weather_statistics,
 )
 from app.utils.time_utils import get_season
+from app.services.risk_bands import color_code_for
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -151,23 +152,7 @@ def normalize_route_type(route_type: Optional[str]) -> str:
 
 
 def get_safety_color_code(risk_score: float) -> str:
-    """
-    Convert risk score to color code for map markers.
-
-    Args:
-        risk_score: Risk score from 0-100
-
-    Returns:
-        Color code string: 'green', 'yellow', 'orange', or 'red'
-    """
-    if risk_score < 30:
-        return 'green'
-    elif risk_score < 50:
-        return 'yellow'
-    elif risk_score < 70:
-        return 'orange'
-    else:
-        return 'red'
+    return color_code_for(risk_score)
 
 
 async def get_route_with_location_coords(db: AsyncSession, mp_route_id: int):
@@ -1359,9 +1344,10 @@ async def get_time_of_day_analysis(
                 conditions.append("Low Visibility")
 
             if not conditions:
-                if hourly_risk < 30:
+                band = color_code_for(hourly_risk)
+                if band == "green":
                     conditions.append("Good Conditions")
-                elif hourly_risk < 50:
+                elif band == "yellow":
                     conditions.append("Moderate")
                 else:
                     conditions.append("Cautious")
@@ -1553,7 +1539,9 @@ async def get_historical_trends(
             {
                 "date": row[0].isoformat(),
                 "risk_score": round(float(row[1]), 1),
-                "color_code": row[2],
+                # Re-derived rather than trusting the stored column, so rows written under
+                # older band sets can never disagree with the live marker colour.
+                "color_code": color_code_for(float(row[1])),
             }
             for row in historical_data
         ]

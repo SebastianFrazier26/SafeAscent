@@ -29,6 +29,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+from app.services.risk_bands import color_code_for
 from app.services.algorithm_config import (
     EARTH_RADIUS_KM,
     ELEVATION_DECAY_CONSTANT,
@@ -538,19 +539,9 @@ def compute_batch_route_scores(
             route_grade=route_grade,
         )
 
-        # Determine color code
-        if risk_score < 25:
-            color_code = "green"
-        elif risk_score < 50:
-            color_code = "yellow"
-        elif risk_score < 75:
-            color_code = "orange"
-        else:
-            color_code = "red"
-
         results[route_id] = {
             "risk_score": round(risk_score, 1),
-            "color_code": color_code,
+            "color_code": color_code_for(risk_score),
         }
 
     return results

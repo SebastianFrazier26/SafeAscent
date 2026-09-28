@@ -3,7 +3,17 @@
  * callers check isRiskScore and show "Unavailable" instead.
  */
 
+import type { RiskColorCode } from '../services/api';
+
 export type RiskLevel = 'low' | 'moderate' | 'high' | 'extreme';
+
+/**
+ * The only risk-band definition in the frontend (owner decision 2026-09-28: 25/50/75
+ * until Phase 3). Edges are lower-inclusive: 25 is moderate. Mirrors
+ * RISK_BAND_THRESHOLDS in backend/app/services/risk_bands.py;
+ * backend/tests/test_risk_bands.py parses this line and fails if they drift.
+ */
+export const RISK_BAND_THRESHOLDS = [25, 50, 75] as const;
 
 export interface ConfidenceInfo {
   level: string;
@@ -15,11 +25,23 @@ export const isRiskScore = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value);
 
 export const getRiskLevel = (riskScore: number): RiskLevel => {
-  if (riskScore < 25) return 'low';
-  if (riskScore < 50) return 'moderate';
-  if (riskScore < 75) return 'high';
+  const [low, moderate, high] = RISK_BAND_THRESHOLDS;
+  if (riskScore < low) return 'low';
+  if (riskScore < moderate) return 'moderate';
+  if (riskScore < high) return 'high';
   return 'extreme';
 };
+
+const RISK_COLOR_CODE: Record<RiskLevel, RiskColorCode> = {
+  low: 'green',
+  moderate: 'yellow',
+  high: 'orange',
+  extreme: 'red',
+};
+
+/** Same colour names the backend emits as color_code, from the same bands. */
+export const getRiskColorCode = (riskScore: number): RiskColorCode =>
+  RISK_COLOR_CODE[getRiskLevel(riskScore)];
 
 const RISK_BG_CLASS: Record<RiskLevel, string> = {
   low: 'bg-risk-low',

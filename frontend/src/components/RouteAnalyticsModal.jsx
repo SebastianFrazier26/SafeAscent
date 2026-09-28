@@ -270,8 +270,30 @@ import {
   ReferenceDot,
 } from 'recharts';
 import { format, parseISO } from 'date-fns';
+import { getRiskColorCode, isRiskScore } from '../utils/riskUtils';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
+
+const RISK_CHIP_BG = {
+  green: 'success.main',
+  yellow: 'warning.main',
+  orange: 'warning.dark',
+  red: 'error.main',
+};
+
+const HOURLY_CHIP_BG = {
+  green: '#4caf50',
+  yellow: '#ff9800',
+  orange: '#f57c00',
+  red: '#f44336',
+};
+
+const NO_SCORE_CHIP_BG = 'grey.500';
+
+// Bands come from riskUtils so these chips can never disagree with the map marker.
+function riskChipBg(score, palette = RISK_CHIP_BG) {
+  return isRiskScore(score) ? palette[getRiskColorCode(score)] : NO_SCORE_CHIP_BG;
+}
 
 /**
  * Check if a string segment looks like malformed MP IDs (mostly numbers/slashes)
@@ -1027,9 +1049,7 @@ function ForecastTab({ data, loading, selectedDate: _selectedDate, routeData, ro
                             size="small"
                             label={`${day.risk_score}`}
                             sx={{
-                              bgcolor: day.risk_score < 35 ? 'success.main' :
-                                       day.risk_score < 55 ? 'warning.main' :
-                                       day.risk_score < 75 ? 'warning.dark' : 'error.main',
+                              bgcolor: riskChipBg(day.risk_score),
                               color: 'white',
                               fontWeight: 600,
                             }}
@@ -2173,9 +2193,7 @@ function TimeOfDayTab({ data, loading, routeData: _routeData, selectedDate }) {
                           label={hour.risk_score}
                           size="small"
                           sx={{
-                            bgcolor: hour.risk_score < 35 ? '#4caf50' :
-                                     hour.risk_score < 55 ? '#ff9800' :
-                                     hour.risk_score < 75 ? '#f57c00' : '#f44336',
+                            bgcolor: riskChipBg(hour.risk_score, HOURLY_CHIP_BG),
                             color: 'white',
                             fontWeight: 600,
                           }}
@@ -2218,9 +2236,7 @@ function TimeOfDayTab({ data, loading, routeData: _routeData, selectedDate }) {
                               label={`${window.avg_risk}/100`}
                               size="small"
                               sx={{
-                                bgcolor: window.avg_risk < 35 ? 'success.main' :
-                                         window.avg_risk < 55 ? 'warning.main' :
-                                         window.avg_risk < 75 ? 'warning.dark' : 'error.main',
+                                bgcolor: riskChipBg(window.avg_risk),
                                 color: 'white',
                                 fontWeight: 600,
                               }}

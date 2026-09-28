@@ -16,8 +16,14 @@ import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFns';
 import { addDays, startOfToday, format } from 'date-fns';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import RouteAnalyticsModal from './RouteAnalyticsModal';
+import { RISK_BAND_THRESHOLDS } from '../utils/riskUtils';
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
+
+const [RISK_LOW_MAX, RISK_MODERATE_MAX, RISK_HIGH_MAX] = RISK_BAND_THRESHOLDS;
+// Heatmap layers overlap by this many points either side of each band edge so adjacent
+// colours blend. It is a rendering overlap only; markers/clusters/legend use exact edges.
+const HEATMAP_BLEND = 2;
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
 
 // Default view: Centered on Rocky Mountains (major climbing destination)
@@ -395,10 +401,7 @@ export default function MapView({ selectedRouteForZoom }) {
       console.log('🎨 Switched to RISK COVERAGE VIEW - Stratified heatmap with smooth blending');
       console.log('   → Base: Gray heatmap shows ALL climbing areas (contrast for non-climbing areas)');
       console.log('   → Risk layers with overlapping boundaries for smooth transitions:');
-      console.log('     • Green: 0-32 (low risk)');
-      console.log('     • Yellow: 28-52 (moderate) ← overlaps green & orange');
-      console.log('     • Orange: 48-72 (elevated) ← overlaps yellow & red');
-      console.log('     • Red: 68+ (high risk) ← overlaps orange');
+      console.log(`   → Bands ${RISK_BAND_THRESHOLDS.join('/')}, heatmap overlap ±${HEATMAP_BLEND}`);
       console.log('   → Smaller radius (70px) for tighter coverage');
       console.log('   → No gray in Oklahoma/central US = no climbing routes there');
     }
@@ -520,6 +523,8 @@ export default function MapView({ selectedRouteForZoom }) {
               clusterRadius={30}
               clusterProperties={{
                 risk_score_sum: ['+', ['coalesce', ['get', 'risk_score'], 0]],
+                // Unscored routes must not count toward the average, or they drag it greener.
+                risk_score_count: ['+', ['case', ['==', ['typeof', ['get', 'risk_score']], 'number'], 1, 0]],
               }}
             >
               {/* Clustered points - color by average safety score */}
@@ -531,14 +536,14 @@ export default function MapView({ selectedRouteForZoom }) {
                 paint={{
                   'circle-color': [
                     'case',
-                    ['>', ['get', 'risk_score_sum'], 0],
+                    ['>', ['get', 'risk_score_count'], 0],
                     [
                       'step',
-                      ['/', ['get', 'risk_score_sum'], ['get', 'point_count']],
-                      '#4caf50',  // Green: 0-30
-                      30, '#fdd835',  // Yellow: 30-50
-                      50, '#ff9800',  // Orange: 50-70
-                      70, '#f44336',  // Red: 70+
+                      ['/', ['get', 'risk_score_sum'], ['get', 'risk_score_count']],
+                      '#4caf50',
+                      RISK_LOW_MAX, '#fdd835',
+                      RISK_MODERATE_MAX, '#ff9800',
+                      RISK_HIGH_MAX, '#f44336',
                     ],
                     '#9e9e9e'  // Gray: no data
                   ],
@@ -659,13 +664,12 @@ export default function MapView({ selectedRouteForZoom }) {
                 }}
               />
 
-              {/* Layer 1: LOW RISK (0-32) - Green heatmap */}
-              {/* Extended to 32 to create overlap zone with yellow for smoother blending */}
+              {/* Layer 1: LOW RISK - Green heatmap (band + HEATMAP_BLEND overlap) */}
               <Layer
                 id="risk-low"
                 type="heatmap"
                 source="routes"
-                filter={['all', ['has', 'risk_score'], ['<', ['get', 'risk_score'], 32]]}
+                filter={['all', ['has', 'risk_score'], ['<', ['get', 'risk_score'], RISK_LOW_MAX + HEATMAP_BLEND]]}
                 paint={{
                   'heatmap-weight': 1,
                   'heatmap-radius': [
@@ -691,13 +695,12 @@ export default function MapView({ selectedRouteForZoom }) {
                 }}
               />
 
-              {/* Layer 2: MODERATE RISK (28-52) - Yellow heatmap */}
-              {/* Overlaps with green (28-32) and orange (48-52) for smooth transitions */}
+              {/* Layer 2: MODERATE RISK - Yellow heatmap */}
               <Layer
                 id="risk-moderate"
                 type="heatmap"
                 source="routes"
-                filter={['all', ['>=', ['get', 'risk_score'], 28], ['<', ['get', 'risk_score'], 52]]}
+                filter={['all', ['>=', ['get', 'risk_score'], RISK_LOW_MAX - HEATMAP_BLEND], ['<', ['get', 'risk_score'], RISK_MODERATE_MAX + HEATMAP_BLEND]]}
                 paint={{
                   'heatmap-weight': 1,
                   'heatmap-radius': [
@@ -723,13 +726,12 @@ export default function MapView({ selectedRouteForZoom }) {
                 }}
               />
 
-              {/* Layer 3: ELEVATED RISK (48-72) - Orange heatmap */}
-              {/* Overlaps with yellow (48-52) and red (68-72) for smooth transitions */}
+              {/* Layer 3: ELEVATED RISK - Orange heatmap */}
               <Layer
                 id="risk-elevated"
                 type="heatmap"
                 source="routes"
-                filter={['all', ['>=', ['get', 'risk_score'], 48], ['<', ['get', 'risk_score'], 72]]}
+                filter={['all', ['>=', ['get', 'risk_score'], RISK_MODERATE_MAX - HEATMAP_BLEND], ['<', ['get', 'risk_score'], RISK_HIGH_MAX + HEATMAP_BLEND]]}
                 paint={{
                   'heatmap-weight': 1,
                   'heatmap-radius': [
@@ -755,13 +757,12 @@ export default function MapView({ selectedRouteForZoom }) {
                 }}
               />
 
-              {/* Layer 4: HIGH RISK (68+) - Red heatmap */}
-              {/* Overlaps with orange (68-72) for smooth transition */}
+              {/* Layer 4: HIGH RISK - Red heatmap */}
               <Layer
                 id="risk-high"
                 type="heatmap"
                 source="routes"
-                filter={['>=', ['get', 'risk_score'], 68]}
+                filter={['>=', ['get', 'risk_score'], RISK_HIGH_MAX - HEATMAP_BLEND]}
                 paint={{
                   'heatmap-weight': 1,
                   'heatmap-radius': [
@@ -1116,7 +1117,7 @@ export default function MapView({ selectedRouteForZoom }) {
               />
               <Box>
                 <Typography variant="body2" fontWeight={500}>
-                  Safe (0-30)
+                  Safe (0-{RISK_LOW_MAX})
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
                   Favorable conditions
@@ -1138,7 +1139,7 @@ export default function MapView({ selectedRouteForZoom }) {
               />
               <Box>
                 <Typography variant="body2" fontWeight={500}>
-                  Moderate (30-50)
+                  Moderate ({RISK_LOW_MAX}-{RISK_MODERATE_MAX})
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
                   Increased caution
@@ -1160,7 +1161,7 @@ export default function MapView({ selectedRouteForZoom }) {
               />
               <Box>
                 <Typography variant="body2" fontWeight={500}>
-                  Elevated (50-70)
+                  Elevated ({RISK_MODERATE_MAX}-{RISK_HIGH_MAX})
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
                   Consider postponing
@@ -1182,7 +1183,7 @@ export default function MapView({ selectedRouteForZoom }) {
               />
               <Box>
                 <Typography variant="body2" fontWeight={500}>
-                  High Risk (70+)
+                  High Risk ({RISK_HIGH_MAX}+)
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
                   Not recommended
@@ -1277,22 +1278,6 @@ function _getSafetyBackgroundColor(colorCode) {
     gray: '#9e9e9e',
   };
   return colors[colorCode] || colors.gray;
-}
-
-/**
- * Get human-readable safety interpretation
- * @deprecated Kept for potential future use
- */
-function _getSafetyInterpretation(riskScore) {
-  if (riskScore < 30) {
-    return '✅ Conditions appear favorable for climbing. Standard precautions apply.';
-  } else if (riskScore < 50) {
-    return '⚠️ Moderate risk conditions. Exercise increased caution and proper preparation.';
-  } else if (riskScore < 70) {
-    return '🔶 Elevated risk conditions. Consider postponing or choosing alternative routes.';
-  } else {
-    return '🔴 High risk conditions. Climbing not recommended unless experienced with current conditions.';
-  }
 }
 
 /**
