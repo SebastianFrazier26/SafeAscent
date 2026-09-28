@@ -1637,6 +1637,11 @@ async def get_historical_trends(
         }
 
 
+def _year_span(row) -> Optional[dict]:
+    first, last = row
+    return None if first is None or last is None else {"first": int(first), "last": int(last)}
+
+
 @router.get("/mp-routes/{mp_route_id}/ascent-analytics")
 async def get_ascent_analytics(
     mp_route_id: int,
@@ -1663,6 +1668,8 @@ async def get_ascent_analytics(
             "total_accidents": 0,
             "monthly_stats": [],
             "peak_month": None,
+            "accident_years": None,
+            "ascent_years": None,
             "has_data": False,
             "excluded_reason": "Boulder problems are excluded from safety analytics",
         }
@@ -1717,6 +1724,27 @@ async def get_ascent_analytics(
     monthly_acc_result = await db.execute(monthly_accidents_query, {"mp_route_id": mp_route_id})
     monthly_accident_dict = {int(row[0]): int(row[1]) for row in monthly_acc_result.fetchall()}
 
+    # The two sides cover very different spans (accidents back decades, ticks a few
+    # years), so the UI states both rather than implying they line up.
+    ascent_years_query = text("""
+        SELECT MIN(EXTRACT(YEAR FROM tick_date))::int, MAX(EXTRACT(YEAR FROM tick_date))::int
+        FROM mp_ticks
+        WHERE route_id = :route_id
+          AND tick_date IS NOT NULL
+          AND tick_date <= :today
+    """)
+    ascent_years = _year_span((await db.execute(ascent_years_query, tick_params)).one())
+
+    accident_years_query = text("""
+        SELECT MIN(EXTRACT(YEAR FROM date))::int, MAX(EXTRACT(YEAR FROM date))::int
+        FROM accidents
+        WHERE mp_route_id = :mp_route_id
+          AND date IS NOT NULL
+    """)
+    accident_years = _year_span(
+        (await db.execute(accident_years_query, {"mp_route_id": mp_route_id})).one()
+    )
+
     month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
     monthly_stats = [
@@ -1742,6 +1770,8 @@ async def get_ascent_analytics(
         "total_accidents": total_accidents,
         "monthly_stats": monthly_stats,
         "peak_month": peak_month["month"] if peak_month else None,
+        "accident_years": accident_years,
+        "ascent_years": ascent_years,
         "has_data": has_data,
     }
 

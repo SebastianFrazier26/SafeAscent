@@ -196,6 +196,8 @@ describe('RouteAnalyticsModal accident and ascent figures', () => {
     total_ascents: 40,
     total_accidents: 2,
     peak_month: 'Jan',
+    accident_years: { first: 1998, last: 2021 },
+    ascent_years: { first: 2024, last: 2026 },
     monthly_stats: [
       { month: 'Jan', ascent_count: 30, accident_count: 0 },
       { month: 'Feb', ascent_count: 10, accident_count: undefined },
@@ -237,6 +239,8 @@ describe('RouteAnalyticsModal accident and ascent figures', () => {
     const dialog = screen.getByRole('dialog');
     expect(within(dialog).getByText('2 accidents · 40 logged ascents')).toBeInTheDocument();
     expect(within(dialog).getByText(/logged ascents, which undercount real ascents/)).toBeInTheDocument();
+    expect(within(dialog).getByText('Accidents: all recorded years (1998–2021). Logged ascents: 2024–2026.'))
+      .toBeInTheDocument();
     expect(within(dialog).queryByText(/undefined|NaN/)).toBeNull();
     expect(within(dialog).queryByText(/\d%|per 1,000|per 10,000|Accident Rate|Safest|Highest Risk/i)).toBeNull();
 
@@ -252,6 +256,24 @@ describe('RouteAnalyticsModal accident and ascent figures', () => {
       expect(chip).not.toHaveClass('MuiChip-colorSuccess');
       expect(chip).not.toHaveClass('MuiChip-colorError');
     }
+  });
+
+  it('a side with no dated records gets no span', async () => {
+    vi.stubGlobal('fetch', vi.fn((url) => {
+      if (url.endsWith('/ascent-analytics')) {
+        return Promise.resolve(jsonResponse({ ...ascents, accident_years: null }));
+      }
+      if (url.endsWith('/accidents')) return Promise.resolve(jsonResponse(accidents));
+      return Promise.resolve(jsonResponse(route(1, 'Route A')));
+    }));
+    const user = userEvent.setup();
+    render(<Modal routeData={route(1, 'Route A')} />);
+    await user.click(screen.getByRole('tab', { name: 'Ascents' }));
+    await screen.findByText(/Counts by Month/);
+
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText('Logged ascents: 2024–2026.')).toBeInTheDocument();
+    expect(within(dialog).queryByText(/all recorded years/)).toBeNull();
   });
 
   it('a route with no logged ascents shows the no-data state, not zero counts', async () => {

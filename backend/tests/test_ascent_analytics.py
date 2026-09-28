@@ -36,6 +36,7 @@ INSERT INTO mp_ticks (tick_id, route_id, climber_name, tick_date) VALUES
 INSERT INTO accidents (accident_id, date, route_id, mp_route_id) VALUES
     (1, '2020-01-05', {ROUTE}, {OTHER_ROUTE}),
     (2, '2019-07-10', NULL, {ROUTE}),
+    (4, '2008-03-02', NULL, {ROUTE}),
     (3, NULL, NULL, {ROUTE});
 """
 
@@ -68,11 +69,12 @@ def test_accidents_count_by_mp_route_id_not_legacy_route_id(seeded_db):
     data = asyncio.run(_analytics(seeded_db, ROUTE))
 
     assert data["total_ascents"] == 3
-    assert data["total_accidents"] == 2
+    assert data["total_accidents"] == 3
     months = {m["month"]: m for m in data["monthly_stats"]}
     assert months["Jan"]["ascent_count"] == 2
     assert months["Jan"]["accident_count"] == 0
     assert months["Jul"]["accident_count"] == 1
+    assert months["Mar"]["accident_count"] == 1
 
 
 def test_accident_linked_by_mp_route_id_counts_on_that_route(seeded_db):
@@ -109,3 +111,16 @@ def test_future_dated_ticks_are_excluded_from_every_count(seeded_db):
     assert data["total_ascents"] == 3
     assert {m["month"]: m for m in data["monthly_stats"]}["Jan"]["ascent_count"] == 2
     assert sum(m["ascent_count"] for m in data["monthly_stats"]) == 3
+
+
+def test_reports_the_year_span_of_each_side(seeded_db):
+    data = asyncio.run(_analytics(seeded_db, ROUTE))
+    assert data["accident_years"] == {"first": 2008, "last": 2019}
+    # The 3901 tick is excluded here too.
+    assert data["ascent_years"] == {"first": 2025, "last": 2025}
+
+
+def test_year_span_is_null_when_a_side_is_empty(seeded_db):
+    data = asyncio.run(_analytics(seeded_db, OTHER_ROUTE))
+    assert data["accident_years"] == {"first": 2020, "last": 2020}
+    assert data["ascent_years"] is None

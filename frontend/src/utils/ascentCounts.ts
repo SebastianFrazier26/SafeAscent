@@ -26,3 +26,28 @@ export const formatLoggedAscents = (ascents: unknown): string =>
 
 export const formatAccidentAscentCounts = (accidents: unknown, ascents: unknown): string =>
   `${formatAccidents(accidents)} · ${formatLoggedAscents(ascents)}`;
+
+interface YearSpan {
+  first: number;
+  last: number;
+}
+
+const isYearSpan = (value: unknown): value is YearSpan => {
+  if (typeof value !== 'object' || value === null) return false;
+  const { first, last } = value as Record<string, unknown>;
+  return Number.isInteger(first) && Number.isInteger(last) && (first as number) <= (last as number);
+};
+
+const formatSpan = ({ first, last }: YearSpan): string =>
+  (first === last ? `${first}` : `${first}–${last}`);
+
+/**
+ * Accidents reach back decades while logged ascents cover a few recent years, so the tab
+ * states each side's span. A side with no dated records gets no span; null if neither has one.
+ */
+export const formatDataSpans = (accidentYears: unknown, ascentYears: unknown): string | null => {
+  const parts: string[] = [];
+  if (isYearSpan(accidentYears)) parts.push(`Accidents: all recorded years (${formatSpan(accidentYears)}).`);
+  if (isYearSpan(ascentYears)) parts.push(`Logged ascents: ${formatSpan(ascentYears)}.`);
+  return parts.length ? parts.join(' ') : null;
+};

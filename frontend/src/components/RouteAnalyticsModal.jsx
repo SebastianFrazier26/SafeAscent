@@ -284,7 +284,7 @@ import {
   isRiskScore,
 } from '../utils/riskUtils';
 import { readableTextOn } from '../utils/color';
-import { LOGGED_ASCENTS_NOTE, formatAccidentAscentCounts, formatCount } from '../utils/ascentCounts';
+import { LOGGED_ASCENTS_NOTE, formatAccidentAscentCounts, formatCount, formatDataSpans } from '../utils/ascentCounts';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
 
@@ -2381,6 +2381,8 @@ function AscentsTab({ data, loading, routeData }) {
     );
   }
 
+  const dataSpans = formatDataSpans(data.accident_years, data.ascent_years);
+
   return (
     <Grid container spacing={3}>
       {/* Summary Cards */}
@@ -2396,6 +2398,11 @@ function AscentsTab({ data, loading, routeData }) {
             <Typography variant="body2" color="text.secondary" paragraph>
               {LOGGED_ASCENTS_NOTE}
             </Typography>
+            {dataSpans && (
+              <Typography variant="body2" color="text.secondary" paragraph>
+                {dataSpans}
+              </Typography>
+            )}
             <Grid container spacing={3} sx={{ mt: 1 }}>
               <Grid size={{ xs: 12, sm: 4 }}>
                 <Paper variant="outlined" sx={{ p: 2, textAlign: 'center' }}>
