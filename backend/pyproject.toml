@@ -76,6 +76,7 @@ ignore_errors = true
 # leaks its component flags (e.g. disallow_subclassing_any) into *other*
 # per-module override sections that never asked for them — reproduced against
 # mypy 2.3.1 while adding the celery-adjacent block below.
+# warn_redundant_casts is left out: mypy accepts it only globally, not per-module.
 [[tool.mypy.overrides]]
 module = ["app.config", "app.services.risk_bands", "app.healthchecks"]
 ignore_errors = false

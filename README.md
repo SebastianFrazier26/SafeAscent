@@ -53,7 +53,7 @@ The whole stack (db, redis, api, worker, beat, frontend, with the same start com
 
 Tests and checks:
 
-- Backend (from `backend/`): `uv run pytest`, `uv run ruff check app/ ../scripts/`, `uv run mypy`
+- Backend (from `backend/`): `uv run pytest`, `uv run ruff check . ../scripts/`, `uv run mypy`
 - Frontend (from `frontend/`): `npm run test:run`, `npm run lint`, `npm run typecheck`, `npm run build`
 
 Tests that need a populated database or live services are marked `needs_data` and skipped by default. [`CLAUDE.md`](./CLAUDE.md) has the full command list.
