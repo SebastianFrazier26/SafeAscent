@@ -4,6 +4,7 @@
  */
 
 import type { RiskColorCode } from '../services/api';
+import { readableTextOn } from './color';
 
 export type RiskLevel = 'low' | 'moderate' | 'high' | 'extreme';
 
@@ -110,12 +111,12 @@ export const RISK_COLOR_HEX: Record<RiskColorCode, string> = {
 
 export const NO_RISK_HEX = '#9e9e9e';
 
-// White on #fdd835 is ~1.6:1 and unreadable, so the yellow band gets dark text.
-export const RISK_TEXT_ON_HEX: Record<RiskColorCode, string> = {
-  green: '#ffffff',
-  yellow: 'rgba(0, 0, 0, 0.87)',
-  orange: '#ffffff',
-  red: '#ffffff',
-};
+// Picked by computed WCAG contrast (>= 4.5:1), not by eye: white on the green, orange and
+// red band hexes is under 4:1.
+export const RISK_TEXT_ON_HEX = Object.fromEntries(
+  Object.entries(RISK_COLOR_HEX).map(([code, hex]) => [code, readableTextOn(hex)]),
+) as Record<RiskColorCode, string>;
+
+export const NO_RISK_TEXT_HEX = readableTextOn(NO_RISK_HEX);
 
 export const getMarkerColor = (riskScore: number): string => RISK_COLOR_HEX[getRiskColorCode(riskScore)];

@@ -66,3 +66,32 @@ describe('components use the shared palette, not their own', () => {
     expect(text).not.toMatch(/safetyData/);
   });
 });
+
+describe('no fabricated risk score', () => {
+  // `risk_score || 0` turned a failed request into "Risk 0.0" (a green "safe" route).
+  const scoreFallback = /risk_score[^\n]*(\|\||\?\?)\s*0\b/;
+
+  it.each(['MapView.jsx', 'RouteAnalyticsModal.jsx'])('%s never falls a risk_score back to 0', (name) => {
+    const hits = source(name).split('\n').filter((line) => scoreFallback.test(line));
+    expect(hits).toEqual([]);
+  });
+
+  it('catches the old pattern and spares the cluster coalesce', () => {
+    expect(scoreFallback.test('risk_score: safetyData.risk_score || 0,')).toBe(true);
+    expect(scoreFallback.test('const s = route.risk_score ?? 0;')).toBe(true);
+    expect(scoreFallback.test("risk_score_sum: ['+', ['coalesce', ['get', 'risk_score'], 0]],")).toBe(false);
+    expect(source('MapView.jsx')).toContain("['coalesce', ['get', 'risk_score'], 0]");
+  });
+});
+
+describe('MapView heatmap ramps', () => {
+  it('derive band colours from the palette instead of rgba literals', () => {
+    const text = source('MapView.jsx').replace(/\s+/g, '');
+    for (const hex of [...Object.values(RISK_COLOR_HEX), NO_RISK_HEX]) {
+      const rgb = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(',');
+      expect(text).not.toContain(`rgba(${rgb},`);
+    }
+    expect(text).toContain('hexToRgba(hex,alpha)');
+    expect(text.match(/'heatmap-color':HEATMAP_COLOR\./g)).toHaveLength(5);
+  });
+});

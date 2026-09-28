@@ -17,7 +17,14 @@ import { addDays, startOfToday, format } from 'date-fns';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import RouteAnalyticsModal from './RouteAnalyticsModal';
 import { useRouteSafety } from '../hooks/useRouteSafety';
-import { NO_RISK_HEX, RISK_BAND_THRESHOLDS, RISK_COLOR_HEX } from '../utils/riskUtils';
+import {
+  NO_RISK_HEX,
+  NO_RISK_TEXT_HEX,
+  RISK_BAND_THRESHOLDS,
+  RISK_COLOR_HEX,
+  RISK_TEXT_ON_HEX,
+} from '../utils/riskUtils';
+import { hexToRgba, mixHex } from '../utils/color';
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
 
@@ -30,6 +37,64 @@ const ROUTE_COLOR_MATCH_ARMS = [
   ...Object.entries(RISK_COLOR_HEX).flat(),
   'gray', NO_RISK_HEX,
 ];
+// Cluster fill and its count label pick from parallel band tables on the same average score,
+// so the label colour always matches the fill it sits on.
+const clusterBandColor = (byBand, none) => [
+  'case',
+  ['>', ['get', 'risk_score_count'], 0],
+  [
+    'step',
+    ['/', ['get', 'risk_score_sum'], ['get', 'risk_score_count']],
+    byBand.green,
+    RISK_LOW_MAX, byBand.yellow,
+    RISK_MODERATE_MAX, byBand.orange,
+    RISK_HIGH_MAX, byBand.red,
+  ],
+  none,
+];
+// Heatmap ramps come from the band palette so the heatmap cannot drift from the markers.
+// Edges and peaks lean toward the neighbouring band's hue so overlapping layers blend.
+const BLACK = '#000000';
+const heatRamp = (stops) => [
+  'interpolate', ['linear'], ['heatmap-density'],
+  ...stops.flatMap(([density, hex, alpha]) => [density, hexToRgba(hex, alpha)]),
+];
+const HEATMAP_COLOR = {
+  base: heatRamp([
+    [0, BLACK, 0],
+    [0.05, NO_RISK_HEX, 0.25],
+    [0.3, NO_RISK_HEX, 0.35],
+    [1, NO_RISK_HEX, 0.4],
+  ]),
+  low: heatRamp([
+    [0, RISK_COLOR_HEX.green, 0],
+    [0.05, RISK_COLOR_HEX.green, 0.4],
+    [0.2, RISK_COLOR_HEX.green, 0.6],
+    [0.5, RISK_COLOR_HEX.green, 0.7],
+    [1, mixHex(RISK_COLOR_HEX.green, RISK_COLOR_HEX.yellow, 0.4), 0.75],
+  ]),
+  moderate: heatRamp([
+    [0, RISK_COLOR_HEX.yellow, 0],
+    [0.05, mixHex(RISK_COLOR_HEX.yellow, RISK_COLOR_HEX.green, 0.25), 0.4],
+    [0.2, RISK_COLOR_HEX.yellow, 0.65],
+    [0.5, RISK_COLOR_HEX.yellow, 0.8],
+    [1, mixHex(RISK_COLOR_HEX.yellow, RISK_COLOR_HEX.orange, 0.5), 0.85],
+  ]),
+  elevated: heatRamp([
+    [0, RISK_COLOR_HEX.orange, 0],
+    [0.05, mixHex(RISK_COLOR_HEX.orange, RISK_COLOR_HEX.yellow, 0.3), 0.5],
+    [0.2, RISK_COLOR_HEX.orange, 0.7],
+    [0.5, RISK_COLOR_HEX.orange, 0.85],
+    [1, mixHex(RISK_COLOR_HEX.orange, RISK_COLOR_HEX.red, 0.7), 0.9],
+  ]),
+  high: heatRamp([
+    [0, RISK_COLOR_HEX.red, 0],
+    [0.05, mixHex(RISK_COLOR_HEX.red, RISK_COLOR_HEX.orange, 0.3), 0.55],
+    [0.2, RISK_COLOR_HEX.red, 0.75],
+    [0.5, RISK_COLOR_HEX.red, 0.9],
+    [1, mixHex(RISK_COLOR_HEX.red, BLACK, 0.25), 0.95],
+  ]),
+};
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
 
 // Default view: Centered on Rocky Mountains (major climbing destination)
@@ -73,9 +138,8 @@ export default function MapView({ selectedRouteForZoom }) {
   );
 
   const okSafety = safetyState?.status === 'ok' ? safetyState.data : null;
-  // Memoized because the modal refetches its tab data whenever this object's identity
-  // changes; an inline literal is new on every map pan/hover render. Keyed on okSafety,
-  // not safetyState, since the hook derives a fresh loading object each render.
+  // Memoized so the modal's props don't change on every map pan/hover render. Keyed on
+  // okSafety, not safetyState, since the hook derives a fresh loading object each render.
   const modalRouteData = useMemo(() => (selectedRoute ? {
       route_id: selectedRoute.properties.id,
       name: selectedRoute.properties.name,
@@ -512,19 +576,7 @@ export default function MapView({ selectedRouteForZoom }) {
                 source="routes"
                 filter={['has', 'point_count']}
                 paint={{
-                  'circle-color': [
-                    'case',
-                    ['>', ['get', 'risk_score_count'], 0],
-                    [
-                      'step',
-                      ['/', ['get', 'risk_score_sum'], ['get', 'risk_score_count']],
-                      RISK_COLOR_HEX.green,
-                      RISK_LOW_MAX, RISK_COLOR_HEX.yellow,
-                      RISK_MODERATE_MAX, RISK_COLOR_HEX.orange,
-                      RISK_HIGH_MAX, RISK_COLOR_HEX.red,
-                    ],
-                    NO_RISK_HEX
-                  ],
+                  'circle-color': clusterBandColor(RISK_COLOR_HEX, NO_RISK_HEX),
                   'circle-radius': [
                     'step',
                     ['get', 'point_count'],
@@ -547,7 +599,7 @@ export default function MapView({ selectedRouteForZoom }) {
                   'text-size': 14,
                 }}
                 paint={{
-                  'text-color': '#ffffff',
+                  'text-color': clusterBandColor(RISK_TEXT_ON_HEX, NO_RISK_TEXT_HEX),
                 }}
               />
 
@@ -627,13 +679,7 @@ export default function MapView({ selectedRouteForZoom }) {
                     0, 25, 4, 40, 6, 55, 8, 70, 10, 55, 12, 40, 14, 25, 16, 12,
                   ],
                   'heatmap-intensity': 1.0,
-                  'heatmap-color': [
-                    'interpolate', ['linear'], ['heatmap-density'],
-                    0, 'rgba(0, 0, 0, 0)',             // Transparent where no routes
-                    0.05, 'rgba(158, 158, 158, 0.25)', // Light gray shows climbing areas
-                    0.3, 'rgba(158, 158, 158, 0.35)',
-                    1, 'rgba(158, 158, 158, 0.4)',
-                  ],
+                  'heatmap-color': HEATMAP_COLOR.base,
                   'heatmap-opacity': 0.7,
                 }}
               />
@@ -654,14 +700,7 @@ export default function MapView({ selectedRouteForZoom }) {
                     'interpolate', ['linear'], ['zoom'],
                     0, 1.0, 6, 1.2, 10, 1.4,
                   ],
-                  'heatmap-color': [
-                    'interpolate', ['linear'], ['heatmap-density'],
-                    0, 'rgba(76, 175, 80, 0)',        // Transparent far from routes
-                    0.05, 'rgba(76, 175, 80, 0.4)',   // Soft green at edges
-                    0.2, 'rgba(76, 175, 80, 0.6)',    // Green
-                    0.5, 'rgba(76, 175, 80, 0.7)',
-                    1, 'rgba(139, 195, 74, 0.75)',    // Light green at peak (blends toward yellow)
-                  ],
+                  'heatmap-color': HEATMAP_COLOR.low,
                   'heatmap-opacity': [
                     'interpolate', ['linear'], ['zoom'],
                     0, 0.8, 8, 0.85, 12, 0.75, 14, 0.6, 16, 0.3,
@@ -685,14 +724,7 @@ export default function MapView({ selectedRouteForZoom }) {
                     'interpolate', ['linear'], ['zoom'],
                     0, 1.0, 6, 1.2, 10, 1.4,
                   ],
-                  'heatmap-color': [
-                    'interpolate', ['linear'], ['heatmap-density'],
-                    0, 'rgba(253, 216, 53, 0)',
-                    0.05, 'rgba(205, 220, 57, 0.4)',  // Yellow-green transition at edges
-                    0.2, 'rgba(253, 216, 53, 0.65)',  // Yellow
-                    0.5, 'rgba(253, 216, 53, 0.8)',
-                    1, 'rgba(255, 193, 7, 0.85)',     // Amber at peak (blends toward orange)
-                  ],
+                  'heatmap-color': HEATMAP_COLOR.moderate,
                   'heatmap-opacity': [
                     'interpolate', ['linear'], ['zoom'],
                     0, 0.8, 8, 0.85, 12, 0.75, 14, 0.6, 16, 0.3,
@@ -716,14 +748,7 @@ export default function MapView({ selectedRouteForZoom }) {
                     'interpolate', ['linear'], ['zoom'],
                     0, 1.0, 6, 1.2, 10, 1.4,
                   ],
-                  'heatmap-color': [
-                    'interpolate', ['linear'], ['heatmap-density'],
-                    0, 'rgba(255, 152, 0, 0)',
-                    0.05, 'rgba(255, 171, 0, 0.5)',   // Orange-yellow at edges
-                    0.2, 'rgba(255, 152, 0, 0.7)',    // Orange
-                    0.5, 'rgba(255, 152, 0, 0.85)',
-                    1, 'rgba(255, 87, 34, 0.9)',      // Deep orange at peak (blends toward red)
-                  ],
+                  'heatmap-color': HEATMAP_COLOR.elevated,
                   'heatmap-opacity': [
                     'interpolate', ['linear'], ['zoom'],
                     0, 0.8, 8, 0.85, 12, 0.75, 14, 0.6, 16, 0.3,
@@ -747,14 +772,7 @@ export default function MapView({ selectedRouteForZoom }) {
                     'interpolate', ['linear'], ['zoom'],
                     0, 1.0, 6, 1.2, 10, 1.4,
                   ],
-                  'heatmap-color': [
-                    'interpolate', ['linear'], ['heatmap-density'],
-                    0, 'rgba(244, 67, 54, 0)',
-                    0.05, 'rgba(255, 87, 34, 0.55)',  // Red-orange at edges
-                    0.2, 'rgba(244, 67, 54, 0.75)',   // Red
-                    0.5, 'rgba(244, 67, 54, 0.9)',
-                    1, 'rgba(183, 28, 28, 0.95)',     // Dark red at peak
-                  ],
+                  'heatmap-color': HEATMAP_COLOR.high,
                   'heatmap-opacity': [
                     'interpolate', ['linear'], ['zoom'],
                     0, 0.8, 8, 0.85, 12, 0.75, 14, 0.6, 16, 0.3,
