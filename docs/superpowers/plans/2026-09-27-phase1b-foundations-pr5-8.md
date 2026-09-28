@@ -1571,7 +1571,7 @@ export PATH="/opt/homebrew/opt/libpq/bin:$PATH"
 psql --version
 ```
 
-Expected: `psql (PostgreSQL) 15` or newer (`\getenv` needs 15+).
+Expected: `psql (PostgreSQL) 16` or newer (`\getenv` needs 15+; `sslrootcert=system`, used below for `verify-full`, needs 16+).
 
 **Revised 2026-09-28 (owner decision, PR5 review):** every `psql` call below reads its password from `PGPASSWORD` instead of the connection URL, so no owner or migrator password ever appears in `ps`/argv output visible to other users on the box. Define this helper once per shell session (it runs inside the `( … )` subshells below, since a `bash` subshell inherits the parent's functions):
 
@@ -1683,10 +1683,16 @@ cd /Users/sebastianfrazier/Developer/SafeAscent/backend
   # psql needs libpq spelling: postgresql:// and sslmode=, not asyncpg's +asyncpg and ssl=.
   # The value (verify-full) is spelled the same in both; only the key changes. Unlike
   # app.db.ssl (which loads certifi's bundle explicitly), libpq's verify-full has no
-  # built-in OS-trust fallback — if psql errors with "root certificate file ... does
-  # not exist", append &sslrootcert=system to $U (libpq 14+, uses the OS/OpenSSL trust
-  # store; Neon's certs are publicly trusted so this should verify cleanly).
-  U="${MIGRATOR_DATABASE_URL/postgresql+asyncpg:/postgresql:}"; U="${U/ssl=verify-full/sslmode=verify-full}"
+  # built-in OS-trust fallback at all — it fails outright without a root cert, so
+  # &sslrootcert=system (libpq 16+, uses the OS/OpenSSL trust store; Neon's certs are
+  # publicly trusted so this verifies cleanly) is appended unconditionally below, not
+  # only if psql complains.
+  case "$MIGRATOR_DATABASE_URL" in
+    *'ssl=verify-full'*) : ;;
+    *) echo 'MIGRATOR_DATABASE_URL still says ssl=require (written before the verify-full change) — re-run Step 3 to regenerate .env.migrator, then re-run this step' >&2; exit 1 ;;
+  esac
+  U="${MIGRATOR_DATABASE_URL/postgresql+asyncpg:/postgresql:}"
+  U="${U/ssl=verify-full/sslmode=verify-full}&sslrootcert=system"
   split_pg_url "$U"
   psql "$PG_URL_NOPASS" -X -q -c "REVOKE INSERT, UPDATE, DELETE ON public.alembic_version FROM app" )
 ```

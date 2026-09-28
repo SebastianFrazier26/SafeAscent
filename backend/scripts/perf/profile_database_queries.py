@@ -11,17 +11,29 @@ Uses PostgreSQL's EXPLAIN ANALYZE to show:
 - Cost estimates
 """
 import os
+import sys
 import time
 from datetime import timedelta
 
 import psycopg2
 from dotenv import load_dotenv
 
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+
+from app.db.ssl import is_local_host
+
 load_dotenv()
+
+# psycopg2 needs its own sslmode=/sslrootcert= kwargs (asyncpg's connect_args_for
+# builds an SSLContext object, which psycopg2 doesn't accept); refusing a non-local
+# host is simpler than duplicating that logic in a one-off profiling script.
+db_host = os.getenv("DB_HOST", "localhost")
+if not is_local_host(db_host):
+    raise SystemExit(f"refusing to profile a non-local host ({db_host!r}) without TLS verification")
 
 # Database connection
 conn = psycopg2.connect(
-    host=os.getenv("DB_HOST", "localhost"),
+    host=db_host,
     port=os.getenv("DB_PORT", "5432"),
     database=os.getenv("DB_NAME", "safeascent"),
     user=os.getenv("DB_USER", "sebastianfrazier"),
