@@ -1573,6 +1573,24 @@ psql --version
 
 Expected: `psql (PostgreSQL) 15` or newer (`\getenv` needs 15+).
 
+**Revised 2026-09-28 (owner decision, PR5 review):** every `psql` call below reads its password from `PGPASSWORD` instead of the connection URL, so no owner or migrator password ever appears in `ps`/argv output visible to other users on the box. Define this helper once per shell session (it runs inside the `( … )` subshells below, since a `bash` subshell inherits the parent's functions):
+
+```bash
+# Splits a postgresql:// URL into a password-less URL on stdout and the password into
+# PGPASSWORD, so callers never pass a credential as a psql argv.
+split_pg_url() {
+  { read -r PG_URL_NOPASS; read -r PGPASSWORD; } < <(uv run python3 -c '
+import sys
+from urllib.parse import urlsplit, urlunsplit
+u = urlsplit(sys.argv[1])
+netloc = (f"{u.username}@" if u.username else "") + (u.hostname or "") + (f":{u.port}" if u.port else "")
+print(urlunsplit((u.scheme, netloc, u.path, u.query, u.fragment)))
+print(u.password or "")
+' "$1")
+  export PGPASSWORD
+}
+```
+
 - [ ] **Step 2 (owner): Put the owner URL in a file, using an editor, not the shell**
 
 ```bash
@@ -1610,11 +1628,12 @@ In the Neon Console: Branches → New branch from `main` (name `p1-pr5-rehearsal
 cd /Users/sebastianfrazier/Developer/SafeAscent/backend
 BRANCH_HOST='<paste branch host, e.g. ep-foo-123.us-east-2.aws.neon.tech>'
 ( set -a; . ./.env.owner; set +a
-  U="$(printf '%s' "$OWNER_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")"
+  BRANCH_URL="$(printf '%s' "$OWNER_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")"
+  split_pg_url "$BRANCH_URL"
   export MIGRATOR_PASSWORD_SCRAM="$( set -a; . ./.env.migrator; uv run python -m scripts.write_role_url --role migrator --scram )"
   export APP_PASSWORD_SCRAM="$( set -a; . ./.env.app; uv run python -m scripts.write_role_url --role app --scram )"
-  psql "$U" -X -q -f db/roles/create_roles.sql
-  psql "$U" -X -q -f db/roles/verify_roles.sql )
+  psql "$PG_URL_NOPASS" -X -q -f db/roles/create_roles.sql
+  psql "$PG_URL_NOPASS" -X -q -f db/roles/verify_roles.sql )
 ( set -a; . ./.env.migrator; set +a
   export MIGRATOR_DATABASE_URL="$(printf '%s' "$MIGRATOR_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")"
   uv run alembic stamp 0001_baseline
@@ -1623,7 +1642,7 @@ BRANCH_HOST='<paste branch host, e.g. ep-foo-123.us-east-2.aws.neon.tech>'
   uv run alembic check )
 ```
 
-Expected: `roles migrator and app created`, a table of checks all `t`, `ALL ROLE CHECKS PASSED`, then `0002_drop_ascents_climbers (head)` and `No new upgrade operations detected.` If `verify_roles.sql` fails on `analyst` (for example, the existing analyst role has a membership or `rolbypassrls`), paste the failing check names (no secrets) to the agent. Any failure stops the rollout. Error output contains no password. Delete the branch in the Console afterwards.
+Expected: `roles migrator and app created`, a table of checks all `t`, `ALL ROLE CHECKS PASSED`, then `0002_drop_ascents_climbers (head)` and `No new upgrade operations detected.` If `verify_roles.sql` fails on `analyst` (for example, the existing `analyst` role has a membership or `rolbypassrls`), paste the failing check names (no secrets) to the agent. This rehearsal is exactly where a pre-existing owner-level default grant to `analyst` (from before `migrator` existed — see the note after Step 5) surfaces; resolve it there, not on prod. Any failure stops the rollout. Error output contains no password. Delete the branch in the Console afterwards.
 
 - [ ] **Step 5 (owner): Create the roles on prod and verify**
 
@@ -1632,13 +1651,22 @@ Only after Step 4 passes:
 ```bash
 cd /Users/sebastianfrazier/Developer/SafeAscent/backend
 ( set -a; . ./.env.owner; set +a
+  split_pg_url "$OWNER_DATABASE_URL"
   export MIGRATOR_PASSWORD_SCRAM="$( set -a; . ./.env.migrator; uv run python -m scripts.write_role_url --role migrator --scram )"
   export APP_PASSWORD_SCRAM="$( set -a; . ./.env.app; uv run python -m scripts.write_role_url --role app --scram )"
-  psql "$OWNER_DATABASE_URL" -X -q -f db/roles/create_roles.sql
-  psql "$OWNER_DATABASE_URL" -X -q -f db/roles/verify_roles.sql )
+  psql "$PG_URL_NOPASS" -X -q -f db/roles/create_roles.sql
+  psql "$PG_URL_NOPASS" -X -q -f db/roles/verify_roles.sql )
 ```
 
-Expected: `roles migrator and app created`, a table of checks all `t`, then `ALL ROLE CHECKS PASSED`.
+Expected: `roles migrator and app created`, a table of checks all `t`, then `ALL ROLE CHECKS PASSED`. If `verify_roles.sql` fails because `pg_default_acl` shows `analyst` with a default grant beyond `SELECT` — a pre-existing owner-level `ALTER DEFAULT PRIVILEGES ... TO analyst` from when `analyst` was set up, before `migrator` owned anything — revoke it (substitute the actual granting role if `\ddp public.*` shows something other than `neondb_owner`):
+
+```bash
+( set -a; . ./.env.owner; set +a
+  split_pg_url "$OWNER_DATABASE_URL"
+  psql "$PG_URL_NOPASS" -X -q -c "ALTER DEFAULT PRIVILEGES FOR ROLE neondb_owner IN SCHEMA public REVOKE ALL ON TABLES FROM analyst" )
+```
+
+Then re-run `verify_roles.sql` above.
 
 - [ ] **Step 6 (owner): Stamp and upgrade prod, then lock `alembic_version`**
 
@@ -1651,7 +1679,8 @@ cd /Users/sebastianfrazier/Developer/SafeAscent/backend
   uv run alembic check
   # psql needs libpq spelling: postgresql:// and sslmode=, not asyncpg's +asyncpg and ssl=.
   U="${MIGRATOR_DATABASE_URL/postgresql+asyncpg:/postgresql:}"; U="${U/ssl=require/sslmode=require}"
-  psql "$U" -X -q -c "REVOKE INSERT, UPDATE, DELETE ON public.alembic_version FROM app" )
+  split_pg_url "$U"
+  psql "$PG_URL_NOPASS" -X -q -c "REVOKE INSERT, UPDATE, DELETE ON public.alembic_version FROM app" )
 ```
 
 Expected: `0002_drop_ascents_climbers (head)`, `No new upgrade operations detected.`, and the REVOKE returns silently.
@@ -1662,10 +1691,11 @@ Expected: `0002_drop_ascents_climbers (head)`, `No new upgrade operations detect
 cd /Users/sebastianfrazier/Developer/SafeAscent/backend
 ( set -a; . ./.env.analyst; set +a
   U="${ANALYST_DATABASE_URL/postgresql+asyncpg:/postgresql:}"; U="${U/ssl=require/sslmode=require}"
-  psql "$U" -XAt -c "SELECT version_num FROM alembic_version" \
+  split_pg_url "$U"
+  psql "$PG_URL_NOPASS" -XAt -c "SELECT version_num FROM alembic_version" \
     -c "SELECT to_regclass('public.ascents'), to_regclass('public.climbers'), to_regclass('public.routes'), to_regclass('public.mountains')" \
     -c "SELECT conname FROM pg_constraint WHERE conrelid = 'public.accidents'::regclass AND contype = 'f' ORDER BY 1" )
-( set -a; . ./.env.owner; set +a; psql "$OWNER_DATABASE_URL" -X -q -f db/roles/verify_roles.sql )
+( set -a; . ./.env.owner; set +a; split_pg_url "$OWNER_DATABASE_URL"; psql "$PG_URL_NOPASS" -X -q -f db/roles/verify_roles.sql )
 ```
 
 Expected: `0002_drop_ascents_climbers`; `||routes|mountains` (the first two are NULL); FK list includes `accidents_route_id_fkey`; `ALL ROLE CHECKS PASSED`.
