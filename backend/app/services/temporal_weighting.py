@@ -9,7 +9,8 @@ Formula:
   base_weight = 1 - impact * (1 - base_decay^shape)
   weight = base_weight * mild_seasonal_multiplier
 """
-from datetime import date
+from datetime import date, datetime, timezone
+from typing import Optional
 
 from app.services.algorithm_config import (
     TEMPORAL_LAMBDA,
@@ -19,6 +20,20 @@ from app.services.algorithm_config import (
     SEASONAL_BOOST,
 )
 from app.utils.time_utils import days_between, is_same_season
+
+
+def utc_today() -> date:
+    """
+    The current UTC day, read on every call. Accident data keeps updating, so a row that is
+    "future" (a data error) today may be legitimate on a later nightly run: never cache
+    this at import or pass a fixed date.
+    """
+    return datetime.now(timezone.utc).date()
+
+
+def is_future_dated(accident_date: Optional[date], today: date) -> bool:
+    """An accident dated after the current day is a data error and carries no weight."""
+    return accident_date is not None and accident_date > today
 
 
 def calculate_temporal_weight(

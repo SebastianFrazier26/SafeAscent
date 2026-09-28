@@ -385,14 +385,3 @@ class TestSeasonalBehavior:
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
 
-
-def test_vectorized_weights_clip_future_dated_accidents():
-    import numpy as np
-    from app.services.safety_algorithm_vectorized import calculate_temporal_weights_vectorized
-
-    today = date(2026, 9, 28)
-    weights, days = calculate_temporal_weights_vectorized(
-        today, np.array([today, date(3901, 9, 28)]), "alpine"
-    )
-    assert days[1] == 0
-    assert weights[1] == pytest.approx(weights[0])

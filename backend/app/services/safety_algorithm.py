@@ -30,7 +30,7 @@ from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
 
 from app.services.spatial_weighting import calculate_spatial_weight_with_distance
-from app.services.temporal_weighting import calculate_temporal_weight_detailed
+from app.services.temporal_weighting import calculate_temporal_weight_detailed, is_future_dated, utc_today
 from app.services.route_type_weighting import calculate_route_type_weight
 from app.services.elevation_weighting import calculate_elevation_weight
 from app.services.weather_similarity import (
@@ -102,9 +102,12 @@ def calculate_safety_score(
     accidents: List[AccidentData],
     historical_weather_stats: Optional[Dict[str, Tuple[float, float]]] = None,
     route_grade: Optional[str] = None,
+    today: Optional[date] = None,
 ) -> SafetyPrediction:
     """
     Calculate safety prediction for a planned climbing route.
+
+    Accidents dated after `today` (default: the UTC day at call time) are excluded.
 
     Main orchestrator function that coordinates all algorithm components.
 
@@ -147,6 +150,9 @@ def calculate_safety_score(
                 "search_date": current_date.isoformat(),
             },
         )
+
+    today = today or utc_today()
+    accidents = [acc for acc in accidents if not is_future_dated(acc.accident_date, today)]
 
     # Step 1: Calculate influence for each accident
     accident_influences = []
