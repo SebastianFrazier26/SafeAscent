@@ -71,7 +71,39 @@ module = ["app.*"]
 ignore_errors = true
 
 # Strict allowlist. Append modules here as they become strict-clean.
+# `strict = true` is spelled out here rather than used directly: mypy's `strict`
+# flag is documented as global-only, and setting it inside one override section
+# leaks its component flags (e.g. disallow_subclassing_any) into *other*
+# per-module override sections that never asked for them — reproduced against
+# mypy 2.3.1 while adding the celery-adjacent block below.
 [[tool.mypy.overrides]]
-module = ["app.config", "app.services.risk_bands"]
+module = ["app.config", "app.services.risk_bands", "app.healthchecks"]
 ignore_errors = false
-strict = true
+disallow_any_generics = true
+disallow_subclassing_any = true
+disallow_untyped_calls = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+warn_unused_ignores = true
+warn_return_any = true
+no_implicit_reexport = true
+strict_equality = true
+extra_checks = true
+
+# Same allowlist strictness, minus the two checks celery's untyped API always
+# trips: subclassing bootsteps.StartStopStep (has type Any) and @celery_app.task
+# (an untyped decorator). Everything else strict still enforces, incl. untyped calls.
+[[tool.mypy.overrides]]
+module = ["app.celery_signals", "app.tasks.ops"]
+ignore_errors = false
+disallow_any_generics = true
+disallow_untyped_calls = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_return_any = true
+no_implicit_reexport = true
+strict_equality = true

@@ -57,7 +57,7 @@ def record_expired(client: redis.Redis, task_name: str, today: date) -> None:
     pipe = client.pipeline()
     pipe.incr(key)
     pipe.expire(key, EXPIRED_KEY_TTL_SECONDS)
-    pipe.execute()
+    pipe.execute()  # type: ignore[no-untyped-call]  # redis-py ships Pipeline.execute with no annotations
 
 
 def _expired_counts(client: redis.Redis, today: date) -> dict[str, int]:
@@ -72,7 +72,9 @@ def _expired_counts(client: redis.Redis, today: date) -> dict[str, int]:
             continue
         if not task_name or bucket < window_start or bucket > today:
             continue
-        counts[task_name] = counts.get(task_name, 0) + int(client.get(key) or 0)
+        # redis-py's get() is typed Awaitable[Any] | Any (shared sync/async signature);
+        # decode_responses=True makes the runtime value a str, so str() is a no-op cast.
+        counts[task_name] = counts.get(task_name, 0) + int(str(client.get(key) or 0))
     return counts
 
 
@@ -83,7 +85,7 @@ def read_worker_health(client: redis.Redis | None, now: float, today: date) -> W
     try:
         raw = client.get(HEARTBEAT_KEY)
         expired = _expired_counts(client, today)
-        age = None if raw is None else round(now - float(raw), 1)
+        age = None if raw is None else round(now - float(str(raw)), 1)
     except (redis.RedisError, ValueError):
         logger.exception("worker health read failed")
         return down
