@@ -792,7 +792,7 @@ async def get_route_forecast(
             forecast_days.append({
                 "date": target_date.isoformat(),
                 "risk_score": None,
-                "error": str(e)
+                "error": "Forecast unavailable for this date"
             })
 
     # Today's detailed conditions (first day)
@@ -1460,7 +1460,7 @@ async def get_time_of_day_analysis(
 
     except Exception as e:
         logger.error(f"Error fetching hourly weather: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch hourly weather data: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to fetch hourly weather data")
 
 
 @router.get("/mp-routes/{mp_route_id}/historical-trends")
