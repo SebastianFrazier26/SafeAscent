@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Phase 1 PR8 — 2026-09-27
+
+- Removed tracked junk from `backend/`: `tests/test_prediction_integration.py.backup`, `check_weather_gaps.py`, `test_weather_service.py`, `test_weather_stats_db.py`, `test_request.json`, `tests/check_risk_scores.py` (the last had a hardcoded `/Users/sebastianfrazier/SafeAscent/backend` path and no tests). None were imported or referenced by `app/`, CI, Docker, or the Railway configs.
+- Moved `backend/tests/benchmark_*.py` (4) and `backend/tests/profile_*.py` (3) — one-off performance scripts, never pytest-collected (`python_files = ["test_*.py"]`) — to `backend/scripts/perf/`. Five of the seven relied on `sys.path.insert(0, .../"..")` next to `__file__` to find `app/`; that now resolves one directory short from the new location, so each was updated to `.../"..", ".."`. No other behavior changed.
+
 ### Phase 1 PR7 — 2026-09-27
 
 Owner decisions (2026-09-28) this PR implements: one set of risk bands, 25/50/75 (lower-inclusive, so 25.0 is moderate/yellow), everywhere until Phase 3; and a risk score is never fabricated — a missing, malformed or failed score reads "Unavailable" (or an em-dash in a compact chip) in neutral grey, never `0` or any other number.

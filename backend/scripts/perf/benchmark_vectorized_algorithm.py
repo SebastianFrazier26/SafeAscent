@@ -13,7 +13,7 @@ import asyncio
 from datetime import date
 from dotenv import load_dotenv
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from app.services.safety_algorithm import calculate_safety_score, AccidentData
 from app.services.safety_algorithm_vectorized import calculate_safety_score_vectorized

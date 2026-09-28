@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 
 # Import models
 import sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from app.models.accident import Accident
 from app.models.weather import Weather
