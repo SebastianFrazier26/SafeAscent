@@ -127,6 +127,12 @@ jobs:
       - name: No scraper code (D9)
         run: python scripts/check_no_scrapers.py
 
+      - name: docker-compose mirrors the Railway services
+        run: |
+          services="$(docker compose config --services | sort | tr '\n' ' ')"
+          echo "compose services: $services"
+          [ "$services" = "api beat db frontend redis worker " ]
+
   # The single required status check (branch protection and Railway "Wait for
   # CI" key on this name). always() so a failed or skipped dependency reports
   # as a failure here instead of leaving the check pending forever.
