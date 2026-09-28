@@ -167,8 +167,8 @@ To flip: set the variable on the `frontend` service and redeploy. Locally: `fron
 
 ## Deploy pipeline
 
-- CI (`.github/workflows/ci.yml`) runs on every PR and every push to `main`. Jobs: `backend` (uv sync, ruff, mypy, pip-audit, pytest, image build), `frontend` (npm ci, lint, npm audit, vitest, build, image tests), `guards` (`scripts/check_no_scrapers.py`) and `ci-ok`.
+- CI (`.github/workflows/ci.yml`) runs on every PR and every push to `main`. Jobs: `backend` (uv sync, ruff, mypy, pip-audit, pytest, image build), `frontend` (npm ci, lint, npm audit, vitest, build, image tests), `guards` (`scripts/check_no_scrapers.py`, plus a check that `docker compose config --services` matches the Railway topology) and `ci-ok`.
 - `ci-ok` is the one required check. It fails unless every other job succeeded. Keep its name stable, because Railway "Wait for CI" and branch protection both key on it.
-- Railway builds its own images from GitHub `main` with "Wait for CI" on. A red commit on `main` never deploys. No image registry and no deploy token are involved.
-- `main` is protected: a PR and a green `ci-ok` are required, admins included, and force-pushes are blocked.
+- Railway builds its own images from GitHub `main`. "Wait for CI" (after owner setup — not yet enabled) will make a red commit on `main` never deploy. No image registry and no deploy token are involved.
+- `main` branch protection (a PR and a green `ci-ok` required, admins included, force-pushes blocked) is after owner setup — not yet enabled.
 - Scraper code (anything fetching and parsing HTML pages) is never committed (D9). The `guards` job enforces this.

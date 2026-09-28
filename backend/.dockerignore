@@ -19,6 +19,11 @@ htmlcov/
 .tox/
 .nox/
 
+# Tool caches and local-only artifacts
+.mypy_cache/
+.ruff_cache/
+.schema/
+
 # IDE
 .idea/
 .vscode/

@@ -139,11 +139,16 @@ For detailed database documentation, see [data/DATABASE_STRUCTURE.md](./data/DAT
 
 ### Backend
 ```bash
+# Copy .env.example into backend/.env, but drop the VITE_* lines (those go in
+# frontend/.env instead) — Settings rejects unknown keys. DATABASE_URL is required.
+grep -v '^VITE_' .env.example > backend/.env
 cd backend
 uv sync
 uv run uvicorn app.main:app --reload
 uv run pytest
 ```
+
+Or run the whole local stack (db, redis, api, worker, beat, frontend) in one command: `docker compose up --build`.
 
 ### Frontend
 ```bash

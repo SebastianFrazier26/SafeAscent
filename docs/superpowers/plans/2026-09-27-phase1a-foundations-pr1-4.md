@@ -27,7 +27,7 @@
   - CI job names are `backend`, `frontend`, `guards` and `ci-ok`. `ci-ok` is the only required check.
   - The mypy strict allowlist is the `[[tool.mypy.overrides]]` block with `strict = true` in `backend/pyproject.toml`. Part B appends modules to its `module` list.
   - Pytest marker `needs_data` marks tests that need a populated DB or live services. They are deselected by default.
-- **Tooling pins:** uv `0.11.3` (Docker `ghcr.io/astral-sh/uv:0.11.3`, CI `astral-sh/setup-uv@v10` with `version: "0.11.3"`), Python `3.12`, Node `22`.
+- **Tooling pins:** uv `0.11.3` (Docker `ghcr.io/astral-sh/uv:0.11.3`, CI `astral-sh/setup-uv@v10.2.0` with `version: "0.11.3"`), Python `3.12`, Node `22`.
 
 ## File Structure
 
@@ -871,7 +871,7 @@ Expected, in order: an image digest; `app imports ok`; `ModuleNotFoundError: No 
 In `.github/workflows/ci.yml`, job `backend-test`, replace everything from the `- name: Set up Python` step through the end of the `- name: Dependency audit` step with:
 
 ```yaml
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           version: "0.11.3"
           python-version: "3.12"
@@ -1457,7 +1457,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           version: "0.11.3"
           python-version: "3.12"
