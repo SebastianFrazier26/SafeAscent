@@ -4,7 +4,7 @@ Uses mp_routes table for Mountain Project climbing routes.
 Includes all analytics and safety endpoints.
 """
 from typing import Optional
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, text, or_, and_, not_
@@ -1669,10 +1669,15 @@ async def get_ascent_analytics(
 
     # mp_ticks.route_id is text holding the MP route id.
     route_id_str = str(mp_route_id)
+    # Some ticks carry impossible future dates (years up to 3901); they are data errors,
+    # not ascents. Undated ticks still count toward the total.
+    tick_params = {"route_id": route_id_str, "today": datetime.now(timezone.utc).date()}
     total_ascents_query = text("""
-        SELECT COUNT(*) FROM mp_ticks WHERE route_id = :route_id
+        SELECT COUNT(*) FROM mp_ticks
+        WHERE route_id = :route_id
+          AND (tick_date IS NULL OR tick_date <= :today)
     """)
-    total_result = await db.execute(total_ascents_query, {"route_id": route_id_str})
+    total_result = await db.execute(total_ascents_query, tick_params)
     total_ascents = total_result.scalar() or 0
 
     monthly_ascents_query = text("""
@@ -1682,10 +1687,11 @@ async def get_ascent_analytics(
         FROM mp_ticks
         WHERE route_id = :route_id
           AND tick_date IS NOT NULL
+          AND tick_date <= :today
         GROUP BY EXTRACT(MONTH FROM tick_date)
         ORDER BY month
     """)
-    monthly_result = await db.execute(monthly_ascents_query, {"route_id": route_id_str})
+    monthly_result = await db.execute(monthly_ascents_query, tick_params)
     monthly_ascent_dict = {int(row[0]): int(row[1]) for row in monthly_result.fetchall()}
 
     # accidents.mp_route_id is the MP route FK; accidents.route_id is the legacy

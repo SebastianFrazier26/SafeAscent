@@ -31,7 +31,8 @@ INSERT INTO routes (route_id, name) VALUES ({ROUTE}, 'Legacy Route');
 INSERT INTO mp_ticks (tick_id, route_id, climber_name, tick_date) VALUES
     (1, '{ROUTE}', 'climber-a', '2025-01-04'),
     (2, '{ROUTE}', 'climber-b', '2025-01-11'),
-    (3, '{ROUTE}', 'climber-c', '2025-07-02');
+    (3, '{ROUTE}', 'climber-c', '2025-07-02'),
+    (4, '{ROUTE}', 'climber-d', '3901-01-15');
 INSERT INTO accidents (accident_id, date, route_id, mp_route_id) VALUES
     (1, '2020-01-05', {ROUTE}, {OTHER_ROUTE}),
     (2, '2019-07-10', NULL, {ROUTE}),
@@ -100,3 +101,11 @@ def test_response_carries_counts_only_no_rate(seeded_db):
     assert rate_keys.isdisjoint(data)
     assert all(set(m) == {"month", "month_num", "ascent_count", "accident_count"} for m in data["monthly_stats"])
     assert data["peak_month"] == "Jan"
+
+
+def test_future_dated_ticks_are_excluded_from_every_count(seeded_db):
+    data = asyncio.run(_analytics(seeded_db, ROUTE))
+
+    assert data["total_ascents"] == 3
+    assert {m["month"]: m for m in data["monthly_stats"]}["Jan"]["ascent_count"] == 2
+    assert sum(m["ascent_count"] for m in data["monthly_stats"]) == 3
