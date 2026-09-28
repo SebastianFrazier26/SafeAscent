@@ -12,9 +12,9 @@ from typing import Annotated, Literal
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+# Production only: an unset CORS_ORIGINS on a deployed service must not admit
+# localhost. Local dev sets it explicitly (docker-compose.yml, .env.example).
 DEFAULT_CORS_ORIGINS = [
-    "http://localhost:3000",
-    "http://localhost:5173",
     "https://safeascent.us",
     "https://www.safeascent.us",
 ]

@@ -148,7 +148,7 @@ uv run uvicorn app.main:app --reload
 uv run pytest
 ```
 
-Or run the whole local stack (db, redis, api, worker, beat, frontend) in one command: `docker compose up --build`.
+Or run the whole local stack (db, redis, api, worker, beat, frontend) in one command: `docker compose up --build`. Unset `CORS_ORIGINS` allows only the production origins; the copied `.env.example` and `docker-compose.yml` both set the localhost ones.
 
 ### Frontend
 ```bash

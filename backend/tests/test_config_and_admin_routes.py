@@ -5,8 +5,10 @@ Tests for Phase 0 security fixes:
 - redis-debug never returns REDIS_URL or other connection-string material.
 """
 import importlib
+from pathlib import Path
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 from app.config import Settings, DEFAULT_CORS_ORIGINS
@@ -39,6 +41,17 @@ def test_cors_origins_empty_string_is_empty_list(monkeypatch):
 def test_cors_origins_unset_uses_default(monkeypatch):
     monkeypatch.delenv("CORS_ORIGINS", raising=False)
     assert Settings().CORS_ORIGINS == DEFAULT_CORS_ORIGINS
+
+
+def test_cors_default_is_production_origins_only():
+    assert DEFAULT_CORS_ORIGINS == ["https://safeascent.us", "https://www.safeascent.us"]
+    assert not any("localhost" in origin or "127.0.0.1" in origin for origin in DEFAULT_CORS_ORIGINS)
+
+
+def test_docker_compose_api_allows_local_frontend_origins():
+    compose = yaml.safe_load((Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text())
+    raw = compose["services"]["api"]["environment"]["CORS_ORIGINS"]
+    assert {"http://localhost:3000", "http://localhost:5173"} <= set(Settings._parse_cors_origins(raw))
 
 
 # ============================================================================

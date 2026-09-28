@@ -32,6 +32,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Neither mode prints a password.
 - The end-to-end role test in `test_migrations.py` runs `create_roles.sql` as a non-superuser `CREATEROLE` owner, as on Neon. It fails instead of skipping when `psql` is missing and `CI` is set, and its role cleanup refuses to `DROP ROLE` unless `MIGRATIONS_TEST_ADMIN_URL` points at localhost.
 - The plan's owner runbook (Task 8) now computes each verifier inside a subshell that alone loads the plaintext, and rehearses `create_roles.sql` plus the Alembic stamp/upgrade on a Neon branch before running anything on prod.
+- Security (2026-09-28): `Settings.CORS_ORIGINS` now defaults to the production origins only (`https://safeascent.us`, `https://www.safeascent.us`). Before, an unset variable on a deployed service also admitted `http://localhost:3000`/`:5173`. Local dev lists those explicitly: `docker-compose.yml` sets them for the backend services, and `.env.example` (copied to `backend/.env`) keeps them with a comment. `NoDecode` and the comma/JSON parser are unchanged. Tests pin the default and assert that compose provides the localhost origins.
 
 ### Phase 1 PR4 — 2026-09-27
 
