@@ -191,10 +191,8 @@ async def get_route_with_location_coords(db: AsyncSession, mp_route_id: int):
         mp_route_id: Mountain Project route ID
 
     Returns:
-        Row with route fields + location latitude/longitude, or None
-
-    Raises:
-        HTTPException: If route not found or has no coordinates
+        Row with route fields + location latitude/longitude (None when the route has no
+        location row or the location has no coordinates), or None if the route is missing
     """
     query = (
         select(
@@ -210,7 +208,9 @@ async def get_route_with_location_coords(db: AsyncSession, mp_route_id: int):
             MpLocation.longitude,
             MpLocation.name.label('location_name'),
         )
-        .join(MpLocation, MpRoute.location_id == MpLocation.mp_id)
+        # Outer join: a route with no location row still exists; callers that need
+        # coordinates check for None themselves.
+        .outerjoin(MpLocation, MpRoute.location_id == MpLocation.mp_id)
         .where(MpRoute.mp_route_id == mp_route_id)
     )
     result = await db.execute(query)
@@ -621,7 +621,9 @@ async def calculate_mp_route_safety(
             MpLocation.latitude,
             MpLocation.longitude,
         )
-        .join(MpLocation, MpRoute.location_id == MpLocation.mp_id)
+        # Outer join: a route with no location row still exists; callers that need
+        # coordinates check for None themselves.
+        .outerjoin(MpLocation, MpRoute.location_id == MpLocation.mp_id)
         .where(MpRoute.mp_route_id == mp_route_id)
     )
     result = await db.execute(query)
@@ -815,16 +817,19 @@ async def get_route_accidents(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Get accident reports near this route's location.
+    Get accident reports for this route and its surroundings.
 
-    Uses geographic proximity to find nearby accidents within ~50km radius.
-    Includes weather data for accident dates when available.
-    Coordinates are inherited from the route's parent location.
+    Rows linked to this route (accidents.mp_route_id) come first, whatever their distance
+    and even without coordinates; then unlinked accidents within ~50 km of the route's
+    parent-location coordinates, nearest first. Future-dated rows are excluded.
 
-    Returns accidents with:
-    - impact_score: Relevance based on proximity (closer = higher score)
+    - distance_km / impact_score: null when either the accident or the route has no
+      coordinates (never a guessed distance)
     - same_route: True only when accidents.mp_route_id is this route
-    - weather: Historical weather conditions on accident date
+    - weather: historical conditions on the accident date, when available
+    - nearby_search: False when the route has no coordinates, so only linked rows could
+      be listed; an empty list then means "not searched", not "no accidents nearby"
+    - total_accidents: all matching rows, not capped by limit
     """
     import requests
     import math
@@ -835,8 +840,7 @@ async def get_route_accidents(
     if not route:
         raise HTTPException(status_code=404, detail="Route not found")
 
-    if not route.latitude or not route.longitude:
-        raise HTTPException(status_code=400, detail="Route's location missing GPS coordinates")
+    has_coords = route.latitude is not None and route.longitude is not None
 
     # Fetch nearby accidents using geographic proximity with distance calculation
     # Using Haversine formula - also returns calculated distance for relevance scoring
@@ -847,14 +851,19 @@ async def get_route_accidents(
             accident_type, injury_severity, location, route as route_name,
             source, state, mountain, activity, age_range, tags, elevation_meters,
             mp_route_id,
-            distance_km
+            distance_km,
+            COUNT(*) OVER () AS total_count
         FROM (
             SELECT
                 *,
                 -- The CASE is required: LEAST/GREATEST skip NULLs, so without it a missing
-                -- coordinate becomes acos(-1), about 20,015 km. The clamp keeps acos in its
-                -- domain when rounding pushes the cosine just past 1 for coincident points.
-                CASE WHEN latitude IS NULL OR longitude IS NULL THEN NULL
+                -- coordinate (the accident's or the route's) becomes acos(-1), about
+                -- 20,015 km. The CASTs let asyncpg type the parameters when they are NULL.
+                -- The clamp keeps acos in its domain when rounding pushes the cosine just
+                -- past 1 for coincident points.
+                CASE WHEN latitude IS NULL OR longitude IS NULL
+                          OR CAST(:lat AS double precision) IS NULL
+                          OR CAST(:lon AS double precision) IS NULL THEN NULL
                 ELSE 6371 * acos(LEAST(1.0, GREATEST(-1.0,
                     cos(radians(:lat)) * cos(radians(latitude)) *
                     cos(radians(longitude) - radians(:lon)) +
@@ -875,21 +884,22 @@ async def get_route_accidents(
     accidents_result = await db.execute(
         accidents_query,
         {
-            "lat": route.latitude,
-            "lon": route.longitude,
+            "lat": route.latitude if has_coords else None,
+            "lon": route.longitude if has_coords else None,
             "limit": limit,
             "today": datetime.now(timezone.utc).date(),
             "mp_route_id": mp_route_id,
         }
     )
     accidents = accidents_result.fetchall()
+    total_accidents = int(accidents[0].total_count) if accidents else 0
 
     # Format accident data with weather and relevance scoring
     accidents_data = []
     for accident in accidents:
         (accident_id, acc_date, acc_lat, acc_lon, description, acc_type, severity,
          location, route_name, source, state, mountain, activity, age_range,
-         tags, elevation_m, acc_mp_route_id, distance_km) = accident
+         tags, elevation_m, acc_mp_route_id, distance_km, _total) = accident
 
         # Calculate impact score based on proximity (closer = higher score)
         # Using exponential decay: 100 * e^(-distance/10)
@@ -1004,7 +1014,8 @@ async def get_route_accidents(
         "route_id": mp_route_id,
         "route_name": route.name,
         "location_name": location_name or "Unknown Area",
-        "total_accidents": len(accidents_data),
+        "total_accidents": total_accidents,
+        "nearby_search": has_coords,
         "accidents": accidents_data,
     }
 
@@ -1171,9 +1182,10 @@ async def get_seasonal_patterns(
                 WHEN LOWER(a.injury_severity) LIKE '%minor%' OR LOWER(a.injury_severity) LIKE '%light%' THEN 40
                 ELSE 30
             END) as avg_risk_score,
-            AVG(CURRENT_DATE - a.date) as avg_days_ago
+            AVG(CAST(:today AS date) - a.date) as avg_days_ago
         FROM accidents a
         WHERE a.date IS NOT NULL
+          AND a.date <= :today
           AND a.latitude IS NOT NULL
           AND a.longitude IS NOT NULL
           AND (
@@ -1186,7 +1198,10 @@ async def get_seasonal_patterns(
         GROUP BY EXTRACT(MONTH FROM a.date)
         ORDER BY month
     """)
-    result = await db.execute(monthly_query, {"lat": route.latitude, "lon": route.longitude})
+    result = await db.execute(
+        monthly_query,
+        {"lat": route.latitude, "lon": route.longitude, "today": datetime.now(timezone.utc).date()},
+    )
     monthly_data = result.fetchall()
 
     # Build monthly patterns array (all 12 months)
@@ -1214,9 +1229,8 @@ async def get_seasonal_patterns(
                 "avg_temp": None,
             })
 
-    # Find best and worst months
+    # No "best months": fewest recorded accidents is not evidence of a safe month.
     months_with_data = [m for m in monthly_patterns if m["accident_count"] > 0]
-    best_months = sorted(months_with_data, key=lambda x: x["accident_count"])[:3]
     worst_months = sorted(months_with_data, key=lambda x: x["accident_count"], reverse=True)[:3]
 
     # Get location name
@@ -1231,7 +1245,6 @@ async def get_seasonal_patterns(
         "route_name": route.name,
         "location_name": location_name or "Unknown Area",
         "monthly_patterns": monthly_patterns,
-        "best_months": [{"name": m["month"], "avg_risk": m["avg_risk_score"], "accident_count": m["accident_count"]} for m in best_months],
         "worst_months": [{"name": m["month"], "avg_risk": m["avg_risk_score"], "accident_count": m["accident_count"]} for m in worst_months],
     }
 
@@ -1671,6 +1684,8 @@ async def get_ascent_analytics(
             "route_type": route.type,
             "total_ascents": 0,
             "total_accidents": 0,
+            "undated_ascents": 0,
+            "undated_accidents": 0,
             "monthly_stats": [],
             "peak_month": None,
             "accident_years": None,
@@ -1686,13 +1701,13 @@ async def get_ascent_analytics(
     today = datetime.now(timezone.utc).date()
     tick_params = {"route_id": route_id_str, "today": today}
     accident_params = {"mp_route_id": mp_route_id, "today": today}
+    # Undated rows are in the totals but in no month or span; the UI states them apart.
     total_ascents_query = text("""
-        SELECT COUNT(*) FROM mp_ticks
+        SELECT COUNT(*), COUNT(*) FILTER (WHERE tick_date IS NULL) FROM mp_ticks
         WHERE route_id = :route_id
           AND (tick_date IS NULL OR tick_date <= :today)
     """)
-    total_result = await db.execute(total_ascents_query, tick_params)
-    total_ascents = total_result.scalar() or 0
+    total_ascents, undated_ascents = (int(v) for v in (await db.execute(total_ascents_query, tick_params)).one())
 
     monthly_ascents_query = text("""
         SELECT
@@ -1711,13 +1726,14 @@ async def get_ascent_analytics(
     # accidents.mp_route_id is the MP route FK; accidents.route_id is the legacy
     # routes-table FK and holds different ids (fixed 2026-09-28).
     accident_count_query = text("""
-        SELECT COUNT(*)
+        SELECT COUNT(*), COUNT(*) FILTER (WHERE date IS NULL)
         FROM accidents
         WHERE mp_route_id = :mp_route_id
           AND (date IS NULL OR date <= :today)
     """)
-    accident_result = await db.execute(accident_count_query, accident_params)
-    total_accidents = accident_result.scalar() or 0
+    total_accidents, undated_accidents = (
+        int(v) for v in (await db.execute(accident_count_query, accident_params)).one()
+    )
 
     monthly_accidents_query = text("""
         SELECT
@@ -1776,6 +1792,8 @@ async def get_ascent_analytics(
         "route_type": route.type,
         "total_ascents": total_ascents,
         "total_accidents": total_accidents,
+        "undated_ascents": undated_ascents,
+        "undated_accidents": undated_accidents,
         "monthly_stats": monthly_stats,
         "peak_month": peak_month["month"] if peak_month else None,
         "accident_years": accident_years,

@@ -239,3 +239,106 @@ def test_accident_list_spatial_search_with_all_three_params(seeded_db):
     data = asyncio.run(_get(seeded_db, "/api/v1/accidents", lat=40.0, lon=-105.0, radius_km=5))
     assert {11, 12, 13} <= {a["accident_id"] for a in data["data"]}
     assert not {1, 2, 3, 15} & {a["accident_id"] for a in data["data"]}
+
+
+def _seed(dbname: str, sql: str) -> None:
+    asyncio.run(_execute(_db_url(dbname), sql))
+
+
+NO_COORDS_ROUTE = 555
+NO_LOCATION_ROUTE = 666
+FAR_FK_ROUTE = 777
+
+
+def test_route_without_area_coordinates_lists_fk_accidents_without_distances(seeded_db, no_weather_calls):
+    _seed(seeded_db, f"""
+        INSERT INTO mp_locations (mp_id, name, latitude, longitude) VALUES (20, 'Unlocated Crag', NULL, NULL);
+        INSERT INTO mp_routes (mp_route_id, name, location_id, type) VALUES
+            ({NO_COORDS_ROUTE}, 'Unlocated Route', 20, 'Trad');
+        INSERT INTO accidents (accident_id, date, mp_route_id, latitude, longitude) VALUES
+            (30, '2012-02-02', {NO_COORDS_ROUTE}, 40.0, -105.0),
+            (31, '2013-03-03', {NO_COORDS_ROUTE}, NULL, NULL);
+    """)
+    data = asyncio.run(_get(seeded_db, f"/api/v1/mp-routes/{NO_COORDS_ROUTE}/accidents"))
+
+    assert data["nearby_search"] is False
+    # No non-FK rows: nothing can be "nearby" a route with no coordinates.
+    assert {a["accident_id"] for a in data["accidents"]} == {30, 31}
+    for a in data["accidents"]:
+        assert a["same_route"] is True
+        # Without route coordinates a bare acos clamp would read ~20,015 km here.
+        assert a["distance_km"] is None
+        assert a["impact_score"] is None
+    assert data["total_accidents"] == 2
+
+
+def test_route_without_location_row_is_served(seeded_db, no_weather_calls):
+    _seed(seeded_db, f"""
+        INSERT INTO mp_routes (mp_route_id, name, location_id, type) VALUES
+            ({NO_LOCATION_ROUTE}, 'Orphan Route', NULL, 'Trad');
+        INSERT INTO accidents (accident_id, date, mp_route_id) VALUES (35, '2011-08-08', {NO_LOCATION_ROUTE});
+    """)
+    analytics = asyncio.run(_get(seeded_db, f"/api/v1/mp-routes/{NO_LOCATION_ROUTE}/ascent-analytics"))
+    assert analytics["total_accidents"] == 1
+
+    data = asyncio.run(_get(seeded_db, f"/api/v1/mp-routes/{NO_LOCATION_ROUTE}/accidents"))
+    assert data["nearby_search"] is False
+    assert [a["accident_id"] for a in data["accidents"]] == [35]
+    assert data["accidents"][0]["distance_km"] is None
+
+    asyncio.run(_get(seeded_db, "/api/v1/mp-routes/999999/accidents", expect=404))
+
+
+def test_fk_accidents_lead_even_when_farther_than_nearby_ones(seeded_db, no_weather_calls):
+    # ~45 km and ~67 km FK rows; an unlinked row ~1 km away.
+    _seed(seeded_db, f"""
+        INSERT INTO mp_locations (mp_id, name, latitude, longitude) VALUES (30, 'Far Crag', 45.0, -110.0);
+        INSERT INTO mp_routes (mp_route_id, name, location_id, type) VALUES
+            ({FAR_FK_ROUTE}, 'Far Route', 30, 'Trad');
+        INSERT INTO accidents (accident_id, date, mp_route_id, latitude, longitude) VALUES
+            (40, '2014-04-04', {FAR_FK_ROUTE}, 45.6, -110.0),
+            (42, '2014-05-05', {FAR_FK_ROUTE}, 45.405, -110.0),
+            (41, '2014-06-06', NULL, 45.01, -110.0);
+    """)
+    data = asyncio.run(_get(seeded_db, f"/api/v1/mp-routes/{FAR_FK_ROUTE}/accidents"))
+    assert data["nearby_search"] is True
+    assert [a["accident_id"] for a in data["accidents"]] == [42, 40, 41]
+    by_id = {a["accident_id"]: a for a in data["accidents"]}
+    assert by_id[40]["distance_km"] == pytest.approx(66.7, abs=0.2)
+    assert by_id[41]["same_route"] is False
+
+    limited = asyncio.run(_get(seeded_db, f"/api/v1/mp-routes/{FAR_FK_ROUTE}/accidents", limit=1))
+    assert [a["accident_id"] for a in limited["accidents"]] == [42]
+    # A true total, not one capped by the limit.
+    assert limited["total_accidents"] == 3
+
+
+def test_undated_records_are_counted_separately(seeded_db):
+    _seed(seeded_db, f"INSERT INTO mp_ticks (tick_id, route_id, climber_name, tick_date) VALUES (5, '{ROUTE}', 'climber-e', NULL);")
+    data = asyncio.run(_analytics(seeded_db, ROUTE))
+
+    assert data["total_ascents"] == 4
+    assert data["undated_ascents"] == 1
+    assert sum(m["ascent_count"] for m in data["monthly_stats"]) == 3
+    assert data["total_accidents"] == 3
+    assert data["undated_accidents"] == 1
+    assert sum(m["accident_count"] for m in data["monthly_stats"]) == 2
+
+
+def test_accident_list_excludes_future_dates(seeded_db):
+    data = asyncio.run(_get(seeded_db, "/api/v1/accidents", mp_route_id=ROUTE))
+    assert 5 not in {a["accident_id"] for a in data["data"]}
+    assert data["total"] == 3
+
+
+def test_seasonal_patterns_exclude_future_dates_and_name_no_safest_month(seeded_db):
+    data = asyncio.run(_get(seeded_db, f"/api/v1/mp-routes/{THIRD_ROUTE}/seasonal-patterns"))
+
+    # Accidents 11-13 are May; 14 is dated 3901-05-01.
+    assert {m["month"]: m for m in data["monthly_patterns"]}["May"]["accident_count"] == 3
+    assert "best_months" not in data
+
+
+@pytest.mark.parametrize("params", [{"lat": 91, "lon": 0, "radius_km": 5}, {"lat": 0, "lon": -181, "radius_km": 5}])
+def test_accident_list_rejects_out_of_range_coordinates(seeded_db, params):
+    asyncio.run(_get(seeded_db, "/api/v1/accidents", expect=422, **params))

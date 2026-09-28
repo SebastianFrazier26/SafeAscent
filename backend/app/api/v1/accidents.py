@@ -2,10 +2,10 @@
 Accidents API endpoints with PostGIS spatial query support.
 """
 from typing import Optional
-from datetime import date
+from datetime import date, datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, type_coerce
+from sqlalchemy import select, func, or_, type_coerce
 from geoalchemy2 import Geography
 from geoalchemy2.functions import ST_MakePoint
 
@@ -19,8 +19,8 @@ router = APIRouter()
 @router.get("/accidents", response_model=AccidentListResponse)
 async def list_accidents(
     # Location filters (spatial)
-    lat: Optional[float] = Query(None, description="Latitude for spatial search"),
-    lon: Optional[float] = Query(None, description="Longitude for spatial search"),
+    lat: Optional[float] = Query(None, ge=-90, le=90, description="Latitude for spatial search"),
+    lon: Optional[float] = Query(None, ge=-180, le=180, description="Longitude for spatial search"),
     radius_km: Optional[float] = Query(None, ge=0.1, le=500, description="Search radius in kilometers"),
     # Text filters
     state: Optional[str] = Query(None, description="Filter by state"),
@@ -76,7 +76,9 @@ async def list_accidents(
             status_code=422, detail="Spatial search needs lat, lon and radius_km together"
         )
 
-    query = select(Accident)
+    # Future-dated rows are data errors, not accidents (same UTC cutoff as the route endpoints).
+    today = datetime.now(timezone.utc).date()
+    query = select(Accident).where(or_(Accident.date.is_(None), Accident.date <= today))
 
     # Spatial filter (PostGIS ST_DWithin)
     if lat is not None and lon is not None and radius_km is not None:
