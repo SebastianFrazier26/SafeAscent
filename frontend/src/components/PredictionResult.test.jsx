@@ -1,10 +1,11 @@
 /**
  * Tests for PredictionResult component
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import userEvent from '@testing-library/user-event';
 import { render, screen } from '../test/utils';
 import PredictionResult from './PredictionResult';
-import { RISK_COLOR_HEX } from '../utils/riskUtils';
+import { NO_RISK_HEX, RISK_COLOR_HEX, RISK_TEXT_ON_HEX } from '../utils/riskUtils';
 
 // Mock prediction data
 const mockPrediction = {
@@ -80,5 +81,41 @@ describe('PredictionResult', () => {
 
     // Should not crash, may show loading or empty state
     expect(document.body).toBeTruthy();
+  });
+
+  it('renders an error Alert with Retry and no score when the request failed', async () => {
+    const onRetry = vi.fn();
+    render(<PredictionResult prediction={null} error="Cannot connect to SafeAscent API." onRetry={onRetry} />);
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Cannot connect to SafeAscent API.');
+    await userEvent.click(screen.getByRole('button', { name: /retry/i }));
+    expect(onRetry).toHaveBeenCalledOnce();
+    expect(screen.queryByText(/^\d+$/)).toBeNull();
+    expect(screen.queryByText(/RISK$/)).toBeNull();
+  });
+
+  it('shows Unavailable instead of a number when risk_score is missing', () => {
+    render(<PredictionResult prediction={{ ...mockPrediction, risk_score: undefined }} />);
+
+    expect(screen.getByText('Unavailable')).toBeInTheDocument();
+    expect(screen.queryByText(/^\d+$/)).toBeNull();
+    expect(screen.queryByText(/RISK$/)).toBeNull();
+    expect(screen.queryByText(/NaN|undefined/)).toBeNull();
+  });
+
+  it('shows the missing-score icon in the neutral no-data grey', () => {
+    for (const risk_score of [undefined, null, NaN]) {
+      const { unmount } = render(<PredictionResult prediction={{ ...mockPrediction, risk_score }} />);
+      expect(screen.getByTestId('risk-icon')).toHaveStyle({ color: NO_RISK_HEX });
+      expect(screen.queryByText(/NaN|undefined/)).toBeNull();
+      unmount();
+    }
+  });
+
+  it('uses the contrast-checked text colour on the level badge', () => {
+    render(<PredictionResult prediction={{ ...mockPrediction, risk_score: 80 }} />);
+    expect(screen.getByText('EXTREME RISK').closest('.MuiChip-root')).toHaveStyle({
+      color: RISK_TEXT_ON_HEX.red,
+    });
   });
 });

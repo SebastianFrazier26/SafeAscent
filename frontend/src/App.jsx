@@ -10,8 +10,6 @@ import {
   Toolbar,
   Typography,
   Container,
-  Alert,
-  AlertTitle,
   Paper,
   List,
   ListItem,
@@ -33,6 +31,7 @@ function App() {
   const [prediction, setPrediction] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [lastParams, setLastParams] = useState(null);
   const [selectedRouteForZoom, setSelectedRouteForZoom] = useState(null);
 
   /**
@@ -42,6 +41,7 @@ function App() {
     setIsLoading(true);
     setError(null);
     setPrediction(null);
+    setLastParams(params);
 
     try {
       console.log('Submitting prediction request:', params);
@@ -62,6 +62,10 @@ function App() {
   const handleReset = () => {
     setPrediction(null);
     setError(null);
+  };
+
+  const handleRetry = () => {
+    if (lastParams) handlePredictionSubmit(lastParams);
   };
 
   return (
@@ -149,16 +153,13 @@ function App() {
               />
             )}
 
-            {/* Error Display */}
             {error && (
-              <Alert
-                severity="error"
-                onClose={() => setError(null)}
-                sx={{ mt: 3, mb: 3 }}
-              >
-                <AlertTitle>Error</AlertTitle>
-                {error}
-              </Alert>
+              <PredictionResult
+                prediction={null}
+                error={error}
+                onRetry={lastParams ? handleRetry : undefined}
+                onReset={handleReset}
+              />
             )}
 
             {/* Help Section */}
