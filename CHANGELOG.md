@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Phase 1 PR7 — 2026-09-27
+
+- Incremental TypeScript adopted in `frontend/`: `tsconfig.json` (`allowJs`, `checkJs: false`, `strict: true`, `noEmit`, bundler resolution) lets existing `.jsx` sources coexist with new strict-checked `.ts`/`.tsx` modules. `src/vite-env.d.ts` types `import.meta.env.VITE_API_BASE_URL`/`VITE_MAPBOX_TOKEN` as optional strings, replacing Vite's untyped default. New `npm run typecheck` (`tsc --noEmit`) and a matching CI step in `.github/workflows/ci.yml`'s `frontend` job, after lint. `eslint.config.js` adds a `**/*.{ts,tsx}` block using `typescript-eslint`'s recommended rules (existing `.jsx` linting is untouched); `vite.config.js`'s coverage `include` now globs `.ts`/`.tsx` alongside `.js`/`.jsx`. New devDependencies `typescript@6.0.3` and `typescript-eslint@8.70.1`, pinned exact (dev-only; `npm audit --omit=dev --audit-level=high` unaffected).
+
 ### Phase 1 PR6 — 2026-09-27
 
 - New `backend/app/healthchecks.py`: `ping(url, suffix, *, transport=None, timeout=10.0)` sends a dead-man's-switch ping to healthchecks.io (`/start` before a job, bare success ping, `/fail` on error) so the nightly safety job — which previously hung for a month unnoticed — reports its own liveness. It never raises: an unset URL is skipped with a WARNING and makes no outbound call, and any exception — an `httpx.HTTPError` from a network failure or non-2xx status, or `httpx.InvalidURL` from a malformed env value — is caught, logged by exception type only, and returns `False`. The URL is stripped and never logged, since it is the check's credential. New `backend/tests/test_healthchecks.py` covers suffix handling, the unset-URL skip, HTTP error statuses, and that a network error is swallowed without the URL leaking into logs; all cases inject an `httpx.MockTransport` so no real network call is made.
