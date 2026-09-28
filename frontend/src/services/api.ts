@@ -93,6 +93,8 @@ export const isSafetyResponse = (value: unknown): value is SafetyResponse => {
     typeof body.target_date === 'string' &&
     typeof body.risk_score === 'number' &&
     Number.isFinite(body.risk_score) &&
+    body.risk_score >= 0 &&
+    body.risk_score <= 100 &&
     typeof body.color_code === 'string' &&
     COLOR_CODES.includes(body.color_code)
   );

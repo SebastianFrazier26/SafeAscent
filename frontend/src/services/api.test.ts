@@ -21,6 +21,15 @@ describe('isSafetyResponse', () => {
     expect(isSafetyResponse({ ...OK, risk_score: null })).toBe(false);
     expect(isSafetyResponse({ error: 'boom' })).toBe(false);
   });
+
+  it('accepts the 0 and 100 bounds', () => {
+    expect(isSafetyResponse({ ...OK, risk_score: 0 })).toBe(true);
+    expect(isSafetyResponse({ ...OK, risk_score: 100 })).toBe(true);
+  });
+
+  it('rejects a colour outside the four-band enum, e.g. the backend "gray" sentinel', () => {
+    expect(isSafetyResponse({ ...OK, color_code: 'gray' })).toBe(false);
+  });
 });
 
 describe('fetchRouteSafety', () => {
@@ -34,6 +43,11 @@ describe('fetchRouteSafety', () => {
 
   it('rejects a malformed body instead of returning it', async () => {
     vi.spyOn(api, 'post').mockResolvedValue({ data: { ...OK, risk_score: undefined } } as never);
+    await expect(fetchRouteSafety(42, '2026-09-27')).rejects.toThrow('Malformed safety response');
+  });
+
+  it.each([-1, 100.01, 150])('rejects out-of-range risk_score %s', async (risk_score) => {
+    vi.spyOn(api, 'post').mockResolvedValue({ data: { ...OK, risk_score } } as never);
     await expect(fetchRouteSafety(42, '2026-09-27')).rejects.toThrow('Malformed safety response');
   });
 
