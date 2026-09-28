@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased] - 2026-09-28
+
+### Ascents tab: counts only, correct accident join
+
+- `GET /mp-routes/{id}/ascent-analytics` counted accidents by the legacy `accidents.route_id` (FK to `routes`) instead of `accidents.mp_route_id` (FK to `mp_routes`), so it counted accidents from unrelated routes whose legacy id happened to match and missed the route's own. Both the total and the monthly query now use `mp_route_id`. Test: `backend/tests/test_ascent_analytics.py` (migrated throwaway PostGIS DB; skips without `MIGRATIONS_TEST_ADMIN_URL`), with an accident whose legacy `route_id` collides with the route's MP id.
+- Counts only until the Phase 3 model (owner decision 2026-09-28). The Ascents tab no longer shows any accidents-per-ascents rate: the per-1,000 card, the rate-coloured month chips (including the green "0"), and the Safest/Highest Risk Month summaries are gone. It shows plain counts in neutral styling ("2 accidents · 13 logged ascents", overall and per month), always says "logged ascents", and notes that Mountain Project logged ascents undercount real ascents and a rate estimate comes with Phase 3. The endpoint drops `accident_rate`, `overall_accident_rate`, `best_month` and `worst_month`; per-month `ascent_count`/`accident_count`, totals, `peak_month` and `has_data` stay. `frontend/src/utils/accidentRate.ts` becomes the count formatter `ascentCounts.ts` (missing counts render "—", never 0). The Phase 3 amendment §3.4 records the per-10,000-logged-ascents unit and display wording.
+
 ## [Unreleased]
 
 ### Phase 1 PR8 — 2026-09-27
