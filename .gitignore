@@ -151,7 +151,8 @@ frontend/MATERIAL_DESIGN_MIGRATION_COMPLETE.md
 # =============================================================================
 # Scripts (migration/one-time use - not needed for Railway)
 # =============================================================================
-scripts/
+/scripts/*
+!/scripts/check_no_scrapers.py
 
 # =============================================================================
 # Local automation metadata
