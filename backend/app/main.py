@@ -2,11 +2,16 @@
 SafeAscent FastAPI Application
 Main entry point for the backend API.
 """
-from fastapi import FastAPI
+import time
+from datetime import datetime, timezone
+
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.api.v1 import accidents, predict, locations, mp_routes, admin
+from app.celery_signals import WorkerHealth, read_worker_health
+from app.utils.cache import get_redis_client
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -45,6 +50,22 @@ async def health_check_root():
 async def health_check():
     """API health check endpoint"""
     return {"status": "healthy"}
+
+
+@app.get("/health/worker")
+def worker_health(response: Response) -> WorkerHealth:
+    """503 when no worker heartbeat is in Redis; reports 7-day expired-task counts.
+
+    Public, unauthenticated: only coarse status/age/counts, never Redis host or
+    exception detail. Kept off the Railway API healthcheck path on purpose -
+    a worker outage must not take the API down with it.
+    """
+    health = read_worker_health(
+        get_redis_client(), now=time.time(), today=datetime.now(timezone.utc).date()
+    )
+    if health["status"] != "ok":
+        response.status_code = 503
+    return health
 
 
 # Include API routers
