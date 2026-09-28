@@ -12,11 +12,14 @@ import subprocess
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import asyncpg
 import pytest
 from alembic import command
 from alembic.config import Config
+
+from scripts.write_role_url import scram_verifier
 
 ADMIN_URL = os.environ.get("MIGRATIONS_TEST_ADMIN_URL")
 BACKEND = Path(__file__).resolve().parents[1]
@@ -42,6 +45,14 @@ async def _fetchrow(url: str, sql: str) -> list[object]:
     try:
         record = await conn.fetchrow(sql)
         return list(record) if record is not None else []
+    finally:
+        await conn.close()
+
+
+async def _fetchall(url: str, sql: str) -> list[str]:
+    conn = await asyncpg.connect(url)
+    try:
+        return [str(record[0]) for record in await conn.fetch(sql)]
     finally:
         await conn.close()
 
@@ -140,7 +151,11 @@ def test_baseline_refuses_a_database_that_already_has_the_schema(fresh_db):
 
 PSQL = shutil.which("psql")
 ROLES_DIR = BACKEND / "db" / "roles"
-TEST_ROLES = ("migrator", "app", "analyst")
+# sa_test_owner stands in for Neon's neondb_owner: CREATEROLE but not superuser, so the
+# test sees PG16's automatic ADMIN grant to a role's creator, as prod will.
+OWNER_ROLE = "sa_test_owner"
+TEST_ROLES = ("migrator", "app", "analyst", OWNER_ROLE)
+PASSWORDS = {"owner": "test-owner-pw", "migrator": "test-migrator-pw", "app": "test-app-pw"}
 
 ANALYST_FIXTURE_SQL = """
 CREATE ROLE analyst LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD 'test-analyst-pw';
@@ -152,6 +167,9 @@ GRANT SELECT ON ALL TABLES IN SCHEMA public TO analyst;
 
 def _drop_test_roles() -> None:
     assert ADMIN_URL is not None
+    host = urlsplit(ADMIN_URL).hostname
+    if host not in ("localhost", "127.0.0.1"):
+        raise RuntimeError(f"refusing to DROP ROLE on non-local host {host!r}")
     asyncio.run(_execute(ADMIN_URL, "DROP ROLE IF EXISTS " + ", ".join(TEST_ROLES)))
 
 
@@ -164,10 +182,22 @@ def role_cleanup() -> Iterator[None]:
     _drop_test_roles()
 
 
-def _psql(dbname: str, script: Path, env_extra: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    assert PSQL is not None
+def _require_psql() -> str:
+    if PSQL is None:
+        if os.environ.get("CI"):
+            pytest.fail("psql (15+) is required in CI for the role-script test")
+        pytest.skip("psql (15+) not installed")
+    return PSQL
+
+
+def _role_url(dbname: str, role: str, password: str) -> str:
+    base = _db_url(dbname).split("://", 1)[1].split("@", 1)[1]
+    return f"postgresql://{role}:{password}@{base}"
+
+
+def _psql(url: str, script: Path, env_extra: dict[str, str], *flags: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [PSQL, _db_url(dbname), "-X", "-q", "-f", str(script)],
+        [_require_psql(), url, "-X", "-q", *flags, "-f", str(script)],
         env={**os.environ, **env_extra},
         capture_output=True,
         text=True,
@@ -175,33 +205,127 @@ def _psql(dbname: str, script: Path, env_extra: dict[str, str]) -> subprocess.Co
     )
 
 
-@pytest.mark.skipif(PSQL is None, reason="psql (15+) not installed")
-def test_role_scripts_create_least_privilege_roles(role_cleanup, fresh_db):
-    command.upgrade(_alembic_cfg(fresh_db), "head")
-    _run(fresh_db, ANALYST_FIXTURE_SQL)
+def _as(url: str, sql: str) -> None:
+    asyncio.run(_execute(url, sql))
 
-    created = _psql(
+
+def _denied(url: str, sql: str) -> None:
+    with pytest.raises(asyncpg.exceptions.InsufficientPrivilegeError):
+        _as(url, sql)
+
+
+def _stat_statements_enabled(dbname: str) -> bool:
+    row = _fetch_row(dbname, "SELECT current_setting('shared_preload_libraries')")
+    return "pg_stat_statements" in str(row[0])
+
+
+def test_role_scripts_create_least_privilege_roles(role_cleanup, fresh_db):
+    _require_psql()
+    _run(
         fresh_db,
+        f"CREATE ROLE {OWNER_ROLE} LOGIN NOSUPERUSER CREATEROLE PASSWORD '{PASSWORDS['owner']}';"
+        f'ALTER DATABASE "{fresh_db}" OWNER TO {OWNER_ROLE};'
+        # PostGIS is not a trusted extension; on Neon it predates the owner's objects too.
+        "CREATE EXTENSION postgis;",
+    )
+    owner_url = _role_url(fresh_db, OWNER_ROLE, PASSWORDS["owner"])
+    cfg = _alembic_cfg(fresh_db)
+    cfg.set_main_option("sqlalchemy.url", owner_url.replace("postgresql://", "postgresql+asyncpg://", 1))
+    command.upgrade(cfg, "head")
+    _as(owner_url, ANALYST_FIXTURE_SQL)
+
+    stats = _stat_statements_enabled(fresh_db)
+    if stats:
+        _run(fresh_db, "CREATE EXTENSION pg_stat_statements; SELECT pg_stat_statements_reset();")
+
+    verifiers = {role: scram_verifier(PASSWORDS[role]) for role in ("migrator", "app")}
+    created = _psql(
+        owner_url,
         ROLES_DIR / "create_roles.sql",
-        {"MIGRATOR_PASSWORD": "test-migrator-pw", "APP_PASSWORD": "test-app-pw"},
+        {"MIGRATOR_PASSWORD_SCRAM": verifiers["migrator"], "APP_PASSWORD_SCRAM": verifiers["app"]},
+        "--echo-queries",
     )
     assert created.returncode == 0, created.stderr
-    assert "test-migrator-pw" not in created.stdout + created.stderr
-    assert "test-app-pw" not in created.stdout + created.stderr
+    sent = created.stdout + created.stderr
+    assert "CREATE ROLE migrator" in sent
+    assert verifiers["migrator"] in sent and verifiers["app"] in sent
+    for plaintext in (PASSWORDS["migrator"], PASSWORDS["app"]):
+        assert plaintext not in sent
 
-    verified = _psql(fresh_db, ROLES_DIR / "verify_roles.sql", {})
+    stored = _fetch_row(
+        fresh_db,
+        "SELECT (SELECT rolpassword FROM pg_authid WHERE rolname = 'migrator'),"
+        " (SELECT rolpassword FROM pg_authid WHERE rolname = 'app')",
+    )
+    assert stored == [verifiers["migrator"], verifiers["app"]]
+    if stats:
+        texts = asyncio.run(_fetchall(_db_url(fresh_db), "SELECT query FROM pg_stat_statements"))
+        assert any("CREATE ROLE" in t for t in texts)
+        for plaintext in (PASSWORDS["migrator"], PASSWORDS["app"]):
+            assert not any(plaintext in t for t in texts)
+
+    verified = _psql(owner_url, ROLES_DIR / "verify_roles.sql", {})
     assert verified.returncode == 0, verified.stdout + verified.stderr
     assert "ALL ROLE CHECKS PASSED" in verified.stdout
 
-    base = _db_url(fresh_db).split("://", 1)[1].split("@", 1)[1]
-    app_url = f"postgresql://app:test-app-pw@{base}"
-    migrator_url = f"postgresql://migrator:test-migrator-pw@{base}"
+    app_url = _role_url(fresh_db, "app", PASSWORDS["app"])
+    migrator_url = _role_url(fresh_db, "migrator", PASSWORDS["migrator"])
+    analyst_url = _role_url(fresh_db, "analyst", "test-analyst-pw")
+    with pytest.raises(asyncpg.exceptions.InvalidPasswordError):
+        _as(_role_url(fresh_db, "app", "wrong-pw"), "SELECT 1")
+    with pytest.raises(asyncpg.exceptions.InvalidPasswordError):
+        _as(_role_url(fresh_db, "migrator", "wrong-pw"), "SELECT 1")
 
-    asyncio.run(_execute(app_url, "SELECT count(*) FROM accidents"))
-    with pytest.raises(asyncpg.exceptions.InsufficientPrivilegeError):
-        asyncio.run(_execute(app_url, "CREATE TABLE app_should_not_create (x int)"))
-    with pytest.raises(asyncpg.exceptions.InsufficientPrivilegeError):
-        asyncio.run(_execute(app_url, "TRUNCATE accidents"))
+    _as(app_url, "SELECT count(*) FROM accidents; SELECT count(*) FROM weather")
+    upsert = (
+        "INSERT INTO historical_predictions (route_id, prediction_date, risk_score, color_code)"
+        " VALUES (1, DATE '2026-01-01', {score}, 'green')"
+        " ON CONFLICT (route_id, prediction_date) DO UPDATE SET risk_score = EXCLUDED.risk_score"
+    )
+    _as(app_url, upsert.format(score=1.0))
+    _as(app_url, upsert.format(score=2.0))
+    _as(app_url, "DELETE FROM historical_predictions WHERE prediction_date < DATE '2026-06-01'")
+    _denied(app_url, "UPDATE accidents SET accident_id = accident_id")
+    _denied(app_url, "DELETE FROM weather")
+    _denied(app_url, "INSERT INTO accidents DEFAULT VALUES")
+    _denied(app_url, "CREATE TABLE app_should_not_create (x int)")
+    _denied(app_url, "TRUNCATE historical_predictions")
+    _denied(app_url, "SELECT setval('historical_predictions_id_seq', 1)")
 
-    asyncio.run(_execute(migrator_url, "CREATE TABLE new_after_roles (id serial PRIMARY KEY)"))
-    asyncio.run(_execute(app_url, "INSERT INTO new_after_roles DEFAULT VALUES"))
+    _as(analyst_url, "SELECT count(*) FROM historical_predictions")
+    for sql in ("UPDATE accidents SET accident_id = accident_id", "DELETE FROM weather", "TRUNCATE accidents"):
+        # READ WRITE overrides the analyst's read-only default, so only the grants stop it.
+        _denied(analyst_url, f"BEGIN READ WRITE; {sql}; COMMIT")
+
+    _as(migrator_url, "CREATE TABLE new_after_roles (id serial PRIMARY KEY)")
+    _as(app_url, "SELECT count(*) FROM new_after_roles")
+    _as(analyst_url, "SELECT count(*) FROM new_after_roles")
+    _denied(app_url, "INSERT INTO new_after_roles DEFAULT VALUES")
+
+    _as(migrator_url, "GRANT UPDATE ON accidents TO app")
+    _as(owner_url, "GRANT app TO analyst")
+    stray = _psql(owner_url, ROLES_DIR / "verify_roles.sql", {})
+    assert stray.returncode != 0
+    assert "app has no INSERT/UPDATE/DELETE on accidents" in stray.stderr
+    assert "no role memberships (pg_auth_members empty): analyst" in stray.stderr
+    assert "nobody can SET or INHERIT app" in stray.stderr
+
+
+def test_create_roles_refuses_plaintext_in_the_scram_variables(role_cleanup, fresh_db):
+    _require_psql()
+    _run(fresh_db, ANALYST_FIXTURE_SQL)
+    result = _psql(
+        _db_url(fresh_db),
+        ROLES_DIR / "create_roles.sql",
+        {"MIGRATOR_PASSWORD_SCRAM": "plain-migrator-pw", "APP_PASSWORD_SCRAM": "plain-app-pw"},
+    )
+    assert result.returncode != 0
+    assert "SCRAM-SHA-256 verifiers" in result.stderr
+    assert "plain-migrator-pw" not in result.stdout + result.stderr
+    assert _fetch_row(fresh_db, "SELECT count(*) FROM pg_roles WHERE rolname IN ('migrator', 'app')") == [0]
+
+
+def test_role_cleanup_refuses_a_remote_admin_url(monkeypatch):
+    monkeypatch.setitem(globals(), "ADMIN_URL", "postgresql://u:p@ep-x.neon.tech/postgres")
+    with pytest.raises(RuntimeError, match="non-local"):
+        _drop_test_roles()

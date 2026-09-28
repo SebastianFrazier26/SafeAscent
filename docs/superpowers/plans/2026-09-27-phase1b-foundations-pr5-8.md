@@ -1032,6 +1032,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ### Task 6: Role scripts (SQL only) + role URL writer
 
+> **Superseded in part (2026-09-28, fix round 1):** the committed `create_roles.sql` takes SCRAM verifiers (`MIGRATOR_PASSWORD_SCRAM`/`APP_PASSWORD_SCRAM`) and grants `app` writes only on `historical_predictions`. The code below is the original draft; the files in `backend/db/roles/` and `backend/scripts/write_role_url.py` are authoritative.
+
 **Files:**
 - Create: `backend/db/roles/create_roles.sql`
 - Create: `backend/db/roles/verify_roles.sql`
@@ -1596,27 +1598,24 @@ printf 'APP_PASSWORD=%s\n' "$(openssl rand -hex 32)" > .env.app
 ( set -a; . ./.env.owner; . ./.env.app; set +a; uv run python -m scripts.write_role_url --role app --env-file .env.app )
 ```
 
-Expected: `wrote MIGRATOR_DATABASE_URL to .env.migrator` and `wrote APP_DATABASE_URL to .env.app`.
+Expected: `wrote MIGRATOR_DATABASE_URL to .env.migrator` and `wrote APP_DATABASE_URL to .env.app`. Both files are mode 0600.
 
-- [ ] **Step 4 (owner): Create the roles on prod and verify**
+`create_roles.sql` takes SCRAM-SHA-256 verifiers (`MIGRATOR_PASSWORD_SCRAM` / `APP_PASSWORD_SCRAM`), not passwords, so no plaintext reaches Neon's logs or `pg_stat_statements`. In Steps 4 and 5, each verifier is computed inside a `$( … )` subshell that is the only place the plaintext password is loaded. The outer shell exports only the verifiers and the owner URL.
 
-```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
-( set -a; . ./.env.owner; . ./.env.migrator; . ./.env.app; set +a
-  psql "$OWNER_DATABASE_URL" -X -q -f db/roles/create_roles.sql
-  psql "$OWNER_DATABASE_URL" -X -q -f db/roles/verify_roles.sql )
-```
+- [ ] **Step 4 (owner): Rehearse on a Neon branch before touching prod**
 
-Expected: `roles migrator and app created`, a table of checks all `t`, then `ALL ROLE CHECKS PASSED`. If `verify_roles.sql` fails on `analyst` (for example, the existing analyst role has `rolinherit` or a membership), paste the failing check names (no secrets) to the agent.
-
-- [ ] **Step 5 (owner): Rehearse on a Neon branch**
-
-In the Neon Console: Branches → New branch from `main` (name `p1-pr5-rehearsal`, current data). Copy the branch's **direct** host. Then:
+In the Neon Console: Branches → New branch from `main` (name `p1-pr5-rehearsal`, current data). Copy the branch's **direct** host. Neon roles are per branch, so roles created here do not exist on `main`. Then:
 
 ```bash
 cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+BRANCH_HOST='<paste branch host, e.g. ep-foo-123.us-east-2.aws.neon.tech>'
+( set -a; . ./.env.owner; set +a
+  U="$(printf '%s' "$OWNER_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")"
+  export MIGRATOR_PASSWORD_SCRAM="$( set -a; . ./.env.migrator; uv run python -m scripts.write_role_url --role migrator --scram )"
+  export APP_PASSWORD_SCRAM="$( set -a; . ./.env.app; uv run python -m scripts.write_role_url --role app --scram )"
+  psql "$U" -X -q -f db/roles/create_roles.sql
+  psql "$U" -X -q -f db/roles/verify_roles.sql )
 ( set -a; . ./.env.migrator; set +a
-  BRANCH_HOST='<paste branch host, e.g. ep-foo-123.us-east-2.aws.neon.tech>'
   export MIGRATOR_DATABASE_URL="$(printf '%s' "$MIGRATOR_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")"
   uv run alembic stamp 0001_baseline
   uv run alembic upgrade head
@@ -1624,7 +1623,22 @@ cd /Users/sebastianfrazier/Developer/SafeAscent/backend
   uv run alembic check )
 ```
 
-Expected: `alembic current` prints `0002_drop_ascents_climbers (head)`; `alembic check` prints `No new upgrade operations detected.` Any failure stops the rollout. Paste the error (it contains no password) to the agent. Delete the branch in the Console afterwards.
+Expected: `roles migrator and app created`, a table of checks all `t`, `ALL ROLE CHECKS PASSED`, then `0002_drop_ascents_climbers (head)` and `No new upgrade operations detected.` If `verify_roles.sql` fails on `analyst` (for example, the existing analyst role has a membership or `rolbypassrls`), paste the failing check names (no secrets) to the agent. Any failure stops the rollout. Error output contains no password. Delete the branch in the Console afterwards.
+
+- [ ] **Step 5 (owner): Create the roles on prod and verify**
+
+Only after Step 4 passes:
+
+```bash
+cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+( set -a; . ./.env.owner; set +a
+  export MIGRATOR_PASSWORD_SCRAM="$( set -a; . ./.env.migrator; uv run python -m scripts.write_role_url --role migrator --scram )"
+  export APP_PASSWORD_SCRAM="$( set -a; . ./.env.app; uv run python -m scripts.write_role_url --role app --scram )"
+  psql "$OWNER_DATABASE_URL" -X -q -f db/roles/create_roles.sql
+  psql "$OWNER_DATABASE_URL" -X -q -f db/roles/verify_roles.sql )
+```
+
+Expected: `roles migrator and app created`, a table of checks all `t`, then `ALL ROLE CHECKS PASSED`.
 
 - [ ] **Step 6 (owner): Stamp and upgrade prod, then lock `alembic_version`**
 
