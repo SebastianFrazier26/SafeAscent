@@ -48,6 +48,24 @@ def test_host_rule_reads_notebook_cells():
     assert rules("analysis/explore.ipynb", nb) == ["host"]
 
 
+def test_host_rule_flags_thecrag():
+    assert rules("src/thing.py", 'URL = "https://www.thecrag.com/route/1"') == ["host"]
+
+
+def test_host_rule_flags_8a_nu():
+    assert rules("src/thing.py", 'URL = "https://www.8a.nu/route/1"') == ["host"]
+
+
+def test_host_rule_flags_ukclimbing():
+    assert rules("src/thing.py", 'URL = "https://www.ukclimbing.com/route/1"') == ["host"]
+
+
+def test_host_rule_ignores_lookalike_strings_near_8a_nu():
+    # "v8a.number" contains the literal substring "8a.nu"; a naive substring
+    # check would misfire. Neither string is a real host reference.
+    assert rules("src/thing.py", "version = 'data.nu'\nbuild = 'v8a.number'\n") == []
+
+
 @pytest.mark.parametrize(
     "line",
     [
@@ -73,6 +91,13 @@ def test_import_rule_ignores_allowed_python_imports(line):
     assert rules("backend/app/x.py", f"{line}\n") == []
 
 
+@pytest.mark.parametrize("line", ["import BS4", "from BS4 import BeautifulSoup"])
+def test_import_rule_flags_python_import_case_insensitively(line):
+    # macOS's case-insensitive filesystem resolves `import BS4` to the real
+    # bs4 package, so the guard must not rely on exact-case matching.
+    assert rules("backend/app/x.py", f"{line}\n") == ["import"]
+
+
 @pytest.mark.parametrize(
     "line",
     [
@@ -89,6 +114,17 @@ def test_import_rule_flags_js_browser_automation(line):
 
 def test_import_rule_ignores_ordinary_js_imports():
     assert rules("frontend/src/x.jsx", "import axios from 'axios';\nimport React from 'react';\n") == []
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "import * as cheerio from 'cheerio';",
+        "const { JSDOM } = require('jsdom');",
+    ],
+)
+def test_import_rule_flags_js_html_parsing_libs(line):
+    assert rules("frontend/src/x.ts", f"{line}\n") == ["import"]
 
 
 def test_import_rule_reads_notebook_cells():
@@ -109,6 +145,20 @@ def test_lockfile_rule_allows_lxml_in_uv_lock():
 def test_lockfile_rule_flags_banned_npm_package():
     lock = json.dumps({"packages": {"": {}, "node_modules/@playwright/test": {}, "node_modules/react": {}}})
     assert rules("frontend/package-lock.json", lock) == ["lockfile"]
+
+
+def test_lockfile_rule_flags_cheerio_npm_package():
+    lock = json.dumps({"packages": {"": {}, "node_modules/cheerio": {}, "node_modules/react": {}}})
+    assert rules("frontend/package-lock.json", lock) == ["lockfile"]
+
+
+def test_lockfile_rule_ignores_jsdom_npm_package():
+    # jsdom is a mainstream Vitest/Jest DOM test-environment devDependency
+    # (this repo's own frontend/package-lock.json has it) — same carve-out as
+    # lxml above: usage is caught by the import rule, mere lockfile presence
+    # is not banned.
+    lock = json.dumps({"packages": {"": {}, "node_modules/jsdom": {}, "node_modules/react": {}}})
+    assert rules("frontend/package-lock.json", lock) == []
 
 
 def test_exempt_paths_are_exact():

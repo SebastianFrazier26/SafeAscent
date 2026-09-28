@@ -29,26 +29,40 @@ ALLOWLIST: frozenset[str] = frozenset()
 
 NAME_GLOBS = ("scrape*", "*scraper*")
 SOURCE_SUFFIXES = frozenset({".py", ".ts", ".tsx", ".js", ".jsx", ".ipynb", ".sh"})
-BANNED_HOST = "mountainproject.com"
+BANNED_HOSTS = frozenset({"mountainproject.com", "thecrag.com", "8a.nu", "ukclimbing.com"})
 
 BANNED_PY_MODULES = ("bs4", "lxml.html", "html5lib", "selectolax", "parsel", "scrapy", "selenium", "playwright")
-BANNED_JS_MODULES = ("playwright", "playwright-core", "@playwright/test", "selenium-webdriver")
+BANNED_JS_MODULES = ("playwright", "playwright-core", "@playwright/test", "selenium-webdriver", "cheerio", "jsdom")
 # Distribution names as they appear in lockfiles. lxml is deliberately absent:
 # it is a common transitive dependency, and lxml.html use is caught by the
 # import rule instead.
 BANNED_PY_DISTS = frozenset({"beautifulsoup4", "bs4", "html5lib", "selectolax", "parsel", "scrapy", "selenium", "playwright"})
-BANNED_NPM_PACKAGES = frozenset(BANNED_JS_MODULES)
+# Same treatment for jsdom as lxml above: it's a mainstream devDependency for
+# a Node DOM test environment (this repo's own frontend/package-lock.json has
+# it for Vitest), not itself a scraping tool. Its *use* in source is caught by
+# the import rule; mere presence in a lockfile is not banned.
+BANNED_NPM_PACKAGES = frozenset(BANNED_JS_MODULES) - {"jsdom"}
 
+# macOS's case-insensitive filesystem resolves `import BS4` to the real bs4
+# package, so both import regexes must match case-insensitively.
 _PY_IMPORT = re.compile(
     r"^\s*(?:import|from)\s+(" + "|".join(re.escape(m) for m in BANNED_PY_MODULES) + r")\b"
     r"|^\s*from\s+lxml\s+import\s+(?:[^\n]*\b)?html\b",
-    re.MULTILINE,
+    re.MULTILINE | re.IGNORECASE,
 )
 _JS_IMPORT = re.compile(
     r"""(?:\bfrom\s+|\brequire\(\s*|\bimport\(\s*|^\s*import\s+)['"]("""
     + "|".join(re.escape(m) for m in BANNED_JS_MODULES)
     + r""")(?:/[^'"]*)?['"]""",
-    re.MULTILINE,
+    re.MULTILINE | re.IGNORECASE,
+)
+# Host must be preceded/followed by a non-word character (protocol slash, a
+# dot before a subdomain, a quote, or start/end of string) so a literal
+# domain like "8a.nu" doesn't misfire inside an unrelated token such as
+# "v8a.number" (which contains "8a.nu" as a plain substring).
+_HOST_PATTERN = re.compile(
+    r"(?<!\w)(" + "|".join(re.escape(h) for h in BANNED_HOSTS) + r")(?!\w)",
+    re.IGNORECASE,
 )
 
 
@@ -103,8 +117,9 @@ def check_file(path: str, text: str | None) -> list[Violation]:
     suffix = pure.suffix.lower()
     if suffix in SOURCE_SUFFIXES:
         source = _notebook_source(text) if suffix == ".ipynb" else text
-        if BANNED_HOST in source.lower():
-            violations.append(Violation(path, "host", f"source mentions {BANNED_HOST}"))
+        hosts_found = {m.group(0).lower() for m in _HOST_PATTERN.finditer(source)}
+        for host in sorted(hosts_found):
+            violations.append(Violation(path, "host", f"source mentions {host}"))
         if suffix in {".py", ".ipynb"}:
             for match in _PY_IMPORT.finditer(source):
                 violations.append(Violation(path, "import", match.group(0).strip()))
