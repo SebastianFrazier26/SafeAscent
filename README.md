@@ -171,4 +171,4 @@ npm run dev
 
 ## License
 
-MIT
+Apache-2.0 (see [LICENSE](./LICENSE)). Data is not covered by the code license — see [DATA_LICENSE.md](./DATA_LICENSE.md).
