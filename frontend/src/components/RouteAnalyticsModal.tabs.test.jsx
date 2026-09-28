@@ -194,18 +194,13 @@ describe('RouteAnalyticsModal accident and ascent figures', () => {
   const ascents = {
     has_data: true,
     total_ascents: 40,
-    total_accidents: 1,
-    overall_accident_rate: undefined,
-    best_month: 'Jan',
-    worst_month: 'Feb',
+    total_accidents: 2,
     peak_month: 'Jan',
     monthly_stats: [
-      { month: 'Jan', ascent_count: 30, accident_count: 0, accident_rate: 0 },
-      { month: 'Feb', ascent_count: 10, accident_count: undefined, accident_rate: undefined },
-      { month: 'Mar', ascent_count: 5, accident_count: 1, accident_rate: 4 },
-      { month: 'Apr', ascent_count: 5, accident_count: 1, accident_rate: 7 },
-      { month: 'May', ascent_count: 5, accident_count: 3, accident_rate: 12 },
-      { month: 'Jun', ascent_count: 0, accident_count: 0, accident_rate: 0 },
+      { month: 'Jan', ascent_count: 30, accident_count: 0 },
+      { month: 'Feb', ascent_count: 10, accident_count: undefined },
+      { month: 'Mar', ascent_count: 1, accident_count: 1 },
+      { month: 'Apr', ascent_count: 0, accident_count: 1 },
     ],
   };
 
@@ -233,46 +228,41 @@ describe('RouteAnalyticsModal accident and ascent figures', () => {
     }
   });
 
-  it('a missing accident rate reads Unavailable, never 0%, and rate chips are readable', async () => {
+  it('shows plain counts in neutral chips, never a rate or a green zero', async () => {
     const user = userEvent.setup();
     render(<Modal routeData={route(1, 'Route A')} />);
     await user.click(screen.getByRole('tab', { name: 'Ascents' }));
-    await screen.findByText(/Accident Rate by Month/);
+    await screen.findByText(/Counts by Month/);
 
     const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText('2 accidents · 40 logged ascents')).toBeInTheDocument();
+    expect(within(dialog).getByText(/logged ascents, which undercount real ascents/)).toBeInTheDocument();
     expect(within(dialog).queryByText(/undefined|NaN/)).toBeNull();
-    // Feb (the worst month) has no rate: its highlight must not claim 0% or 0 accidents.
-    const worst = within(dialog).getByText(/Highest Risk Month/).closest('.MuiPaper-root');
-    expect(worst).not.toHaveTextContent(/\b0% rate|\b0 per 1,000/);
-    expect(worst).not.toHaveTextContent(/with 0 accidents/);
-    expect(worst).toHaveTextContent(/Unavailable/);
+    expect(within(dialog).queryByText(/\d%|per 1,000|per 10,000|Accident Rate|Safest|Highest Risk/i)).toBeNull();
 
-    // Rates are accidents per 1,000 ascents; the list header carries the unit.
-    expect(within(dialog).getByText('Accidents per 1,000 ascents')).toBeInTheDocument();
-    const best = within(dialog).getByText(/Safest Month:/).closest('.MuiPaper-root');
-    expect(best).toHaveTextContent('30 ascents with 0 accidents (0 per 1,000 ascents)');
-    expect(within(dialog).queryByText(/\d%/)).toBeNull();
-    for (const label of ['0', '4', '7', '12', 'No data']) {
-      expectReadable(within(dialog).getByText(label));
+    const labels = [
+      '0 accidents · 30 logged ascents',
+      '— accidents · 10 logged ascents',
+      '1 accident · 1 logged ascent',
+      '1 accident · 0 logged ascents',
+    ];
+    const chips = labels.map((label) => within(dialog).getByText(label).closest('.MuiChip-root'));
+    for (const chip of chips) {
+      expect(chip).toHaveClass('MuiChip-outlined');
+      expect(chip).not.toHaveClass('MuiChip-colorSuccess');
+      expect(chip).not.toHaveClass('MuiChip-colorError');
     }
-    const missingRateChip = within(dialog).getAllByText('Unavailable')
-      .map((el) => el.closest('.MuiChip-root')).find(Boolean);
-    expect(missingRateChip).toHaveStyle({ backgroundColor: NO_RISK_HEX });
-    expectReadable(missingRateChip);
   });
 
-  it('a route with no ascents never shows the backend 0.0 as a rate', async () => {
+  it('a route with no logged ascents shows the no-data state, not zero counts', async () => {
     const noAscents = {
       ...ascents,
       has_data: false,
       total_ascents: 0,
       total_accidents: 0,
-      overall_accident_rate: 0.0,
-      best_month: null,
-      worst_month: null,
       peak_month: null,
       message: 'No tick data available yet for this route.',
-      monthly_stats: ascents.monthly_stats.map((m) => ({ ...m, ascent_count: 0, accident_count: 0, accident_rate: 0 })),
+      monthly_stats: ascents.monthly_stats.map((m) => ({ ...m, ascent_count: 0, accident_count: 0 })),
     };
     vi.stubGlobal('fetch', vi.fn((url) => {
       if (url.endsWith('/ascent-analytics')) return Promise.resolve(jsonResponse(noAscents));
@@ -285,7 +275,7 @@ describe('RouteAnalyticsModal accident and ascent figures', () => {
     await screen.findByText('No tick data available yet for this route.');
 
     const dialog = screen.getByRole('dialog');
-    expect(within(dialog).queryByText(/per 1,000|Accident Rate by Month/)).toBeNull();
+    expect(within(dialog).queryByText(/Counts by Month|0 accidents/)).toBeNull();
   });
 });
 

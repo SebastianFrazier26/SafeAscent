@@ -284,7 +284,7 @@ import {
   isRiskScore,
 } from '../utils/riskUtils';
 import { readableTextOn } from '../utils/color';
-import { ACCIDENT_RATE_UNIT, formatAccidentRate, formatAccidentRateValue, hasAccidentRate } from '../utils/accidentRate';
+import { LOGGED_ASCENTS_NOTE, formatAccidentAscentCounts, formatCount } from '../utils/ascentCounts';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
 
@@ -308,29 +308,6 @@ function severityBg(severity) {
   if (s.includes('moderate')) return SEVERITY_BG.moderate;
   if (s.includes('minor')) return SEVERITY_BG.minor;
   return NO_RISK_HEX;
-}
-
-// MUI light-theme success.main / success.light / warning.main / error.main and grey.400.
-const ACCIDENT_RATE_BG = { none: '#2e7d32', low: '#4caf50', elevated: '#ed6c02', high: '#d32f2f', noAscents: '#bdbdbd' };
-
-const isFiniteNumber = (value) => typeof value === 'number' && Number.isFinite(value);
-
-function accidentRateBg(month) {
-  if (month.ascent_count === 0) return ACCIDENT_RATE_BG.noAscents;
-  const rate = month.accident_rate;
-  if (!isFiniteNumber(rate)) return NO_RISK_HEX;
-  if (rate === 0) return ACCIDENT_RATE_BG.none;
-  if (rate < 5) return ACCIDENT_RATE_BG.low;
-  if (rate < 10) return ACCIDENT_RATE_BG.elevated;
-  return ACCIDENT_RATE_BG.high;
-}
-
-const formatCount = (count) => (isFiniteNumber(count) ? count : '—');
-
-function monthSummary(month) {
-  const rate = formatAccidentRate(month?.accident_rate, month?.ascent_count);
-  return `${formatCount(month?.ascent_count)} ascents with ${formatCount(month?.accident_count)} accidents `
-    + `(${hasAccidentRate(month?.accident_rate, month?.ascent_count) ? rate : `rate ${rate}`})`;
 }
 
 /**
@@ -2399,7 +2376,7 @@ function AscentsTab({ data, loading, routeData }) {
     return (
       <DataOnTheWay
         title="Ascent Data on its way!"
-        message={data?.message || "We're collecting tick data for this route. Ascent records help calculate accident rates by comparing successful climbs to incidents."}
+        message={data?.message || "We're collecting Mountain Project logged ascents for this route."}
       />
     );
   }
@@ -2413,49 +2390,33 @@ function AscentsTab({ data, loading, routeData }) {
             <Typography variant="h6" gutterBottom fontWeight={600}>
               🧗 Ascent Analytics for {formatRouteNameWithType(routeData.name, routeData.type)}
             </Typography>
+            <Typography variant="body1" fontWeight={600}>
+              {formatAccidentAscentCounts(data.total_accidents, data.total_ascents)}
+            </Typography>
             <Typography variant="body2" color="text.secondary" paragraph>
-              Monthly breakdown of recorded ascents and accident rates.
+              {LOGGED_ASCENTS_NOTE}
             </Typography>
             <Grid container spacing={3} sx={{ mt: 1 }}>
-              <Grid size={{ xs: 6, md: 2.4 }}>
-                <Paper sx={{ p: 2, bgcolor: 'primary.50', textAlign: 'center' }}>
-                  <Typography variant="body2" color="text.secondary">Total Ascents</Typography>
-                  <Typography variant="h4" fontWeight={700} color="primary.main">
+              <Grid size={{ xs: 12, sm: 4 }}>
+                <Paper variant="outlined" sx={{ p: 2, textAlign: 'center' }}>
+                  <Typography variant="body2" color="text.secondary">Logged Ascents</Typography>
+                  <Typography variant="h4" fontWeight={700}>
                     {formatCount(data.total_ascents)}
                   </Typography>
                 </Paper>
               </Grid>
-              <Grid size={{ xs: 6, md: 2.4 }}>
-                <Paper sx={{ p: 2, bgcolor: 'error.50', textAlign: 'center' }}>
-                  <Typography variant="body2" color="text.secondary">Total Accidents</Typography>
-                  <Typography variant="h4" fontWeight={700} color="error.main">
+              <Grid size={{ xs: 12, sm: 4 }}>
+                <Paper variant="outlined" sx={{ p: 2, textAlign: 'center' }}>
+                  <Typography variant="body2" color="text.secondary">Accidents</Typography>
+                  <Typography variant="h4" fontWeight={700}>
                     {formatCount(data.total_accidents)}
                   </Typography>
                 </Paper>
               </Grid>
-              <Grid size={{ xs: 6, md: 2.4 }}>
-                <Paper sx={{ p: 2, bgcolor: 'warning.50', textAlign: 'center' }}>
-                  <Typography variant="body2" color="text.secondary">Accident Rate</Typography>
-                  <Typography variant="h4" fontWeight={700} color="warning.dark">
-                    {formatAccidentRateValue(data.overall_accident_rate, data.total_ascents)}
-                  </Typography>
-                  {hasAccidentRate(data.overall_accident_rate, data.total_ascents) && (
-                    <Typography variant="caption" color="text.secondary">{ACCIDENT_RATE_UNIT}</Typography>
-                  )}
-                </Paper>
-              </Grid>
-              <Grid size={{ xs: 6, md: 2.4 }}>
-                <Paper sx={{ p: 2, bgcolor: 'success.50', textAlign: 'center' }}>
-                  <Typography variant="body2" color="text.secondary">Safest Month</Typography>
-                  <Typography variant="h5" fontWeight={700} color="success.main">
-                    {data.best_month || 'N/A'}
-                  </Typography>
-                </Paper>
-              </Grid>
-              <Grid size={{ xs: 6, md: 2.4 }}>
-                <Paper sx={{ p: 2, bgcolor: 'info.50', textAlign: 'center' }}>
-                  <Typography variant="body2" color="text.secondary">Peak Activity</Typography>
-                  <Typography variant="h5" fontWeight={700} color="info.main">
+              <Grid size={{ xs: 12, sm: 4 }}>
+                <Paper variant="outlined" sx={{ p: 2, textAlign: 'center' }}>
+                  <Typography variant="body2" color="text.secondary">Most Logged Ascents</Typography>
+                  <Typography variant="h4" fontWeight={700}>
                     {data.peak_month || 'N/A'}
                   </Typography>
                 </Paper>
@@ -2470,10 +2431,10 @@ function AscentsTab({ data, loading, routeData }) {
         <Card>
           <CardContent>
             <Typography variant="h6" gutterBottom fontWeight={600}>
-              🌤️ Ascents by Season (12 months)
+              🌤️ Logged Ascents by Season (12 months)
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-              Shows when this route gets climbed the most. Dots show monthly ticks; line connects the seasonal trend.
+              Shows when this route gets logged the most. Dots show monthly logged ascents; line connects the seasonal trend.
             </Typography>
             <ResponsiveContainer width="100%" height={260}>
               <ComposedChart data={data.monthly_stats}>
@@ -2482,7 +2443,7 @@ function AscentsTab({ data, loading, routeData }) {
                 <YAxis />
                 <Tooltip />
                 <Line type="monotone" dataKey="ascent_count" stroke="#1976d2" strokeWidth={3} dot={false} />
-                <Scatter dataKey="ascent_count" fill="#ff9800" name="Ascents" />
+                <Scatter dataKey="ascent_count" fill="#ff9800" name="Logged ascents" />
               </ComposedChart>
             </ResponsiveContainer>
           </CardContent>
@@ -2494,7 +2455,7 @@ function AscentsTab({ data, loading, routeData }) {
         <Card>
           <CardContent>
             <Typography variant="h6" gutterBottom fontWeight={600}>
-              📊 Ascents & Accidents by Month
+              📊 Logged Ascents & Accidents by Month
             </Typography>
             <ResponsiveContainer width="100%" height={350}>
               <BarChart data={data.monthly_stats}>
@@ -2508,7 +2469,7 @@ function AscentsTab({ data, loading, routeData }) {
                   yAxisId="left"
                   dataKey="ascent_count"
                   fill="#1976d2"
-                  name="Ascents"
+                  name="Logged ascents"
                   radius={[4, 4, 0, 0]}
                 />
                 <Bar
@@ -2524,15 +2485,11 @@ function AscentsTab({ data, loading, routeData }) {
         </Card>
       </Grid>
 
-      {/* Monthly Accident Rate List */}
-      <Grid size={{ xs: 12, md: 6 }}>
+      <Grid size={12}>
         <Card>
           <CardContent>
             <Typography variant="h6" gutterBottom fontWeight={600}>
-              📈 Accident Rate by Month
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              Accidents {ACCIDENT_RATE_UNIT}
+              Counts by Month
             </Typography>
             <Box sx={{ maxHeight: 400, overflow: 'auto' }}>
               <List dense>
@@ -2541,21 +2498,17 @@ function AscentsTab({ data, loading, routeData }) {
                     <ListItem>
                       <ListItemText
                         primary={
-                          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 1 }}>
                             <Typography variant="body1" fontWeight={600}>
                               {month.month}
                             </Typography>
                             <Chip
-                              label={month.ascent_count > 0 ? formatAccidentRateValue(month.accident_rate, month.ascent_count) : 'No data'}
+                              label={formatAccidentAscentCounts(month.accident_count, month.ascent_count)}
                               size="small"
-                              sx={{
-                                ...chipColorsOn(accidentRateBg(month)),
-                                fontWeight: 600,
-                              }}
+                              variant="outlined"
                             />
                           </Box>
                         }
-                        secondary={`${formatCount(month.ascent_count)} ascents • ${formatCount(month.accident_count)} accidents`}
                       />
                     </ListItem>
                     {idx < 11 && <Divider />}
@@ -2567,62 +2520,6 @@ function AscentsTab({ data, loading, routeData }) {
         </Card>
       </Grid>
 
-      {/* Best/Worst Month Highlights */}
-      <Grid size={{ xs: 12, md: 6 }}>
-        <Grid container spacing={2}>
-          <Grid size={12}>
-            <Paper sx={{ p: 2, bgcolor: 'success.50', borderLeft: 4, borderColor: 'success.main' }}>
-              <Typography variant="subtitle2" fontWeight={600} color="success.dark">
-                ✅ Safest Month: {data.best_month || 'N/A'}
-              </Typography>
-              {data.best_month && (
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                  {monthSummary(data.monthly_stats?.find(m => m.month === data.best_month))}
-                </Typography>
-              )}
-            </Paper>
-          </Grid>
-          <Grid size={12}>
-            <Paper sx={{ p: 2, bgcolor: 'error.50', borderLeft: 4, borderColor: 'error.main' }}>
-              <Typography variant="subtitle2" fontWeight={600} color="error.dark">
-                ⚠️ Highest Risk Month: {data.worst_month || 'N/A'}
-              </Typography>
-              {data.worst_month && (
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                  {monthSummary(data.monthly_stats?.find(m => m.month === data.worst_month))}
-                </Typography>
-              )}
-            </Paper>
-          </Grid>
-          <Grid size={12}>
-            <Paper sx={{ p: 2, bgcolor: 'info.50', borderLeft: 4, borderColor: 'info.main' }}>
-              <Typography variant="subtitle2" fontWeight={600} color="info.dark">
-                📈 Peak Activity Month: {data.peak_month || 'N/A'}
-              </Typography>
-              {data.peak_month && (
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                  {formatCount(data.monthly_stats?.find(m => m.month === data.peak_month)?.ascent_count)} recorded ascents
-                  — the most popular month for this route
-                </Typography>
-              )}
-            </Paper>
-          </Grid>
-        </Grid>
-      </Grid>
-
-      {/* Disclaimer */}
-      <Grid size={12}>
-        <Alert severity="info">
-          <Typography variant="body2" fontWeight={600}>
-            About Accident Rates
-          </Typography>
-            <Typography variant="body2">
-            Accident rate is calculated as (accidents ÷ ascents × 1000). A lower rate indicates
-            safer conditions. Note that this data is based on reported ascents and accidents only,
-            and may not represent all climbing activity on this route.
-          </Typography>
-        </Alert>
-      </Grid>
     </Grid>
   );
 }
