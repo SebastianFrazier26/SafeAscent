@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Models aligned to the live schema until `alembic check` is clean: `index=True` flags replaced with the live `idx_*` index names (including the GIST indexes on `accidents.coordinates`/`weather.coordinates`), `accidents.mp_route_id` (live column + FK to `mp_routes`) added to `Accident`, and `climbers.username`'s live unique constraint named. No column types, nullability, or row contents changed.
 - `app/models/legacy.py` declares PK-only stubs for `routes`/`mountains` so the live `accidents` FKs resolve; `env.py` keeps them, and live tables with no model (`historical_predictions`, `area_weekly_weather`, `mp_ticks`), out of autogenerate.
 - New `backend/tests/test_migrations.py` builds a throwaway database, upgrades to head, and runs `alembic check`. It runs when `MIGRATIONS_TEST_ADMIN_URL` is set, which CI's `backend` job now does against its PostGIS service.
+- Revision `0002_drop_ascents_climbers` (D8 stage 1): drops `ascents` and `climbers`, both empty in the 2026-09-27 audit. The migration counts rows on each table first and raises `RuntimeError` instead of dropping if either is non-empty; downgrade raises (the tables were empty and their models are gone). `Ascent`/`Climber` models removed along with them.
 
 ### Phase 1 PR4 — 2026-09-27
 

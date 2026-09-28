@@ -80,3 +80,31 @@ def test_baseline_builds_live_schema_and_models_match(fresh_db):
     assert row == ["accidents", "weather", "routes", "mountains"]
     command.upgrade(cfg, "head")
     command.check(cfg)
+
+
+def test_head_drops_ascents_and_climbers_but_keeps_legacy_tables(fresh_db):
+    command.upgrade(_alembic_cfg(fresh_db), "head")
+    row = _fetch_row(
+        fresh_db,
+        "SELECT to_regclass('public.ascents')::text, to_regclass('public.climbers')::text, "
+        "to_regclass('public.routes')::text, to_regclass('public.mountains')::text, "
+        "(SELECT count(*) FROM pg_constraint WHERE conrelid = 'public.accidents'::regclass "
+        " AND contype = 'f' AND confrelid = 'public.routes'::regclass)",
+    )
+    assert row == [None, None, "routes", "mountains", 1]
+
+
+def test_0002_refuses_to_drop_non_empty_tables(fresh_db):
+    cfg = _alembic_cfg(fresh_db)
+    command.upgrade(cfg, "0001_baseline")
+    _run(fresh_db, "INSERT INTO climbers (username) VALUES ('fixture-user')")
+    with pytest.raises(RuntimeError, match="refusing to drop climbers"):
+        command.upgrade(cfg, "head")
+    assert _fetch_row(fresh_db, "SELECT to_regclass('public.ascents')::text") == ["ascents"]
+
+
+def test_models_no_longer_define_dropped_tables():
+    from app.db.session import Base
+
+    assert "ascents" not in Base.metadata.tables
+    assert "climbers" not in Base.metadata.tables
