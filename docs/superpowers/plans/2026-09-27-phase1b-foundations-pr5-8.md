@@ -1681,7 +1681,12 @@ cd /Users/sebastianfrazier/Developer/SafeAscent/backend
   uv run alembic current
   uv run alembic check
   # psql needs libpq spelling: postgresql:// and sslmode=, not asyncpg's +asyncpg and ssl=.
-  U="${MIGRATOR_DATABASE_URL/postgresql+asyncpg:/postgresql:}"; U="${U/ssl=require/sslmode=require}"
+  # The value (verify-full) is spelled the same in both; only the key changes. Unlike
+  # app.db.ssl (which loads certifi's bundle explicitly), libpq's verify-full has no
+  # built-in OS-trust fallback — if psql errors with "root certificate file ... does
+  # not exist", append &sslrootcert=system to $U (libpq 14+, uses the OS/OpenSSL trust
+  # store; Neon's certs are publicly trusted so this should verify cleanly).
+  U="${MIGRATOR_DATABASE_URL/postgresql+asyncpg:/postgresql:}"; U="${U/ssl=verify-full/sslmode=verify-full}"
   split_pg_url "$U"
   psql "$PG_URL_NOPASS" -X -q -c "REVOKE INSERT, UPDATE, DELETE ON public.alembic_version FROM app" )
 ```

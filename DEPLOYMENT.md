@@ -51,6 +51,7 @@ Worker notes for the relaunch:
   - `app` has `SELECT` on the tables and writes only `historical_predictions` (the nightly upsert and purge).
   - `analyst` is pre-existing and read-only: `SELECT` via default privileges, no DML or DDL. It must already exist before `create_roles.sql` runs (the script grants it default privileges and `verify_roles.sql` checks it).
   - Passwords reach the server only as client-side SCRAM-SHA-256 verifiers (from `backend/`: `python -m scripts.write_role_url --role <r> --scram`); `create_roles.sql` refuses anything else.
+  - Role URLs (`migrator`, `app`) connect with full certificate and hostname verification (asyncpg `ssl=verify-full`), not just encryption: `app/db/ssl.py` builds the SSLContext from certifi's CA bundle (the `python:3.12-slim` image has no `ca-certificates` package, and asyncpg's own verify-full has no OS-trust fallback), applied only for a non-local host so `docker-compose.yml`'s TLS-less local/CI Postgres is unaffected.
 - The step-by-step role and stamp procedure, including how credentials are generated and kept out of terminals and chat, is the owner runbook in `docs/superpowers/plans/2026-09-27-phase1b-foundations-pr5-8.md` (Task 8; relaunch steps in Task 26). This file does not repeat it.
 
 ## Nightly job

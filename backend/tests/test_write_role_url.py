@@ -29,13 +29,13 @@ RFC_SERVER_SIGNATURE = base64.b64decode("6rriTRBi23WpRR/wtup+mMhUZUn/dB5nLTJRsjl
 
 def test_build_role_url_swaps_credentials_and_uses_asyncpg_ssl():
     url = build_role_url(OWNER, "app", "abc123")
-    assert url == "postgresql+asyncpg://app:abc123@ep-x-123.us-east-2.aws.neon.tech/neondb?ssl=require"
+    assert url == "postgresql+asyncpg://app:abc123@ep-x-123.us-east-2.aws.neon.tech/neondb?ssl=verify-full"
     assert "ownerpw" not in url
 
 
 def test_build_role_url_keeps_port_and_escapes_password():
     url = build_role_url("postgresql://o:p@localhost:5433/db", "migrator", "a/b+c")
-    assert url == "postgresql+asyncpg://migrator:a%2Fb%2Bc@localhost:5433/db?ssl=require"
+    assert url == "postgresql+asyncpg://migrator:a%2Fb%2Bc@localhost:5433/db?ssl=verify-full"
 
 
 def test_build_role_url_rejects_hostless_url():

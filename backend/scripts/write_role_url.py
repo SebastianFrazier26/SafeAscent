@@ -24,8 +24,12 @@ def build_role_url(owner_url: str, role: str, password: str) -> str:
     if not parts.hostname:
         raise ValueError("owner URL has no host")
     host = f"{parts.hostname}:{parts.port}" if parts.port else parts.hostname
-    # asyncpg spells libpq's sslmode as ssl and rejects channel_binding.
-    return f"postgresql+asyncpg://{quote(role, safe='')}:{quote(password, safe='')}@{host}{parts.path}?ssl=require"
+    # asyncpg spells libpq's sslmode as ssl and rejects channel_binding. verify-full is a
+    # marker here, not the whole story: asyncpg's own verify-full needs a root cert file
+    # (no sslrootcert=system fallback), so app.db.ssl.connect_args_for builds an actual
+    # SSLContext (certifi's bundle) and passes it as connect_args, which SQLAlchemy merges
+    # in ahead of this query param.
+    return f"postgresql+asyncpg://{quote(role, safe='')}:{quote(password, safe='')}@{host}{parts.path}?ssl=verify-full"
 
 
 def upsert_env_line(path: Path, key: str, value: str) -> None:
