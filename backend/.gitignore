@@ -36,3 +36,6 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Raw schema dumps from prod; only the sanitized copy under alembic/versions is committed
+.schema/
