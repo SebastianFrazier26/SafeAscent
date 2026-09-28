@@ -7,6 +7,8 @@ maintenance database, e.g. postgresql://test_user:test_password@localhost:5432/p
 import asyncio
 import logging
 import os
+import shutil
+import subprocess
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
@@ -134,3 +136,72 @@ def test_baseline_refuses_a_database_that_already_has_the_schema(fresh_db):
         "to_regclass('public.alembic_version')::text",
     )
     assert row == [None, None, None]
+
+
+PSQL = shutil.which("psql")
+ROLES_DIR = BACKEND / "db" / "roles"
+TEST_ROLES = ("migrator", "app", "analyst")
+
+ANALYST_FIXTURE_SQL = """
+CREATE ROLE analyst LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD 'test-analyst-pw';
+ALTER ROLE analyst SET default_transaction_read_only = on;
+GRANT USAGE ON SCHEMA public TO analyst;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO analyst;
+"""
+
+
+def _drop_test_roles() -> None:
+    assert ADMIN_URL is not None
+    asyncio.run(_execute(ADMIN_URL, "DROP ROLE IF EXISTS " + ", ".join(TEST_ROLES)))
+
+
+@pytest.fixture
+def role_cleanup() -> Iterator[None]:
+    # Requested before fresh_db, so it tears down after the database (and every object
+    # these roles own in it) is gone; roles are cluster-wide.
+    _drop_test_roles()
+    yield
+    _drop_test_roles()
+
+
+def _psql(dbname: str, script: Path, env_extra: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    assert PSQL is not None
+    return subprocess.run(
+        [PSQL, _db_url(dbname), "-X", "-q", "-f", str(script)],
+        env={**os.environ, **env_extra},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@pytest.mark.skipif(PSQL is None, reason="psql (15+) not installed")
+def test_role_scripts_create_least_privilege_roles(role_cleanup, fresh_db):
+    command.upgrade(_alembic_cfg(fresh_db), "head")
+    _run(fresh_db, ANALYST_FIXTURE_SQL)
+
+    created = _psql(
+        fresh_db,
+        ROLES_DIR / "create_roles.sql",
+        {"MIGRATOR_PASSWORD": "test-migrator-pw", "APP_PASSWORD": "test-app-pw"},
+    )
+    assert created.returncode == 0, created.stderr
+    assert "test-migrator-pw" not in created.stdout + created.stderr
+    assert "test-app-pw" not in created.stdout + created.stderr
+
+    verified = _psql(fresh_db, ROLES_DIR / "verify_roles.sql", {})
+    assert verified.returncode == 0, verified.stdout + verified.stderr
+    assert "ALL ROLE CHECKS PASSED" in verified.stdout
+
+    base = _db_url(fresh_db).split("://", 1)[1].split("@", 1)[1]
+    app_url = f"postgresql://app:test-app-pw@{base}"
+    migrator_url = f"postgresql://migrator:test-migrator-pw@{base}"
+
+    asyncio.run(_execute(app_url, "SELECT count(*) FROM accidents"))
+    with pytest.raises(asyncpg.exceptions.InsufficientPrivilegeError):
+        asyncio.run(_execute(app_url, "CREATE TABLE app_should_not_create (x int)"))
+    with pytest.raises(asyncpg.exceptions.InsufficientPrivilegeError):
+        asyncio.run(_execute(app_url, "TRUNCATE accidents"))
+
+    asyncio.run(_execute(migrator_url, "CREATE TABLE new_after_roles (id serial PRIMARY KEY)"))
+    asyncio.run(_execute(app_url, "INSERT INTO new_after_roles DEFAULT VALUES"))
