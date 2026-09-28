@@ -5,7 +5,13 @@ import { describe, it, expect, vi } from 'vitest';
 import userEvent from '@testing-library/user-event';
 import { render, screen } from '../test/utils';
 import PredictionResult from './PredictionResult';
-import { NO_RISK_ICON_HEX, RISK_COLOR_HEX, RISK_ICON_HEX, RISK_TEXT_ON_HEX } from '../utils/riskUtils';
+import {
+  INSUFFICIENT_DATA_MESSAGE,
+  NO_RISK_ICON_HEX,
+  RISK_COLOR_HEX,
+  RISK_ICON_HEX,
+  RISK_TEXT_ON_HEX,
+} from '../utils/riskUtils';
 
 // Mock prediction data
 const mockPrediction = {
@@ -129,5 +135,27 @@ describe('PredictionResult', () => {
   it('colours the risk icon with the contrast-safe variant of the band hex', () => {
     render(<PredictionResult prediction={{ ...mockPrediction, risk_score: 30 }} />);
     expect(screen.getByTestId('risk-icon')).toHaveStyle({ color: RISK_ICON_HEX.yellow });
+  });
+
+  it('shows insufficient data in neutral grey with the explanation and no digits', () => {
+    render(
+      <PredictionResult
+        prediction={{
+          ...mockPrediction,
+          risk_score: null,
+          color_code: 'gray',
+          data_status: 'insufficient_data',
+          num_contributing_accidents: 0,
+        }}
+      />,
+    );
+
+    expect(screen.getByText('Insufficient data')).toBeInTheDocument();
+    expect(screen.getByText(INSUFFICIENT_DATA_MESSAGE)).toBeInTheDocument();
+    expect(screen.getByTestId('risk-icon')).toHaveStyle({ color: NO_RISK_ICON_HEX });
+    expect(screen.queryByText(/^\d+$/)).toBeNull();
+    expect(screen.queryByText(/RISK$/)).toBeNull();
+    expect(screen.queryByText('Top Contributing Factors')).toBeNull();
+    expect(screen.queryByRole('button', { name: /retry/i })).toBeNull();
   });
 });

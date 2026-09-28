@@ -1,10 +1,16 @@
 import { useCallback, useEffect, useState } from 'react';
 import { fetchRouteSafety, type SafetyResponse } from '../services/api';
 
+type Scored = Extract<SafetyResponse, { data_status: 'ok' }>;
+type Insufficient = Extract<SafetyResponse, { data_status: 'insufficient_data' }>;
+
+// 'insufficient' is neither ok nor error: the request worked, the route just has no
+// evidence yet (owner decision 2026-09-28), so there is nothing to retry.
 export type SafetyState =
   | { status: 'loading' }
   | { status: 'error'; message: string }
-  | { status: 'ok'; data: SafetyResponse };
+  | { status: 'ok'; data: Scored }
+  | { status: 'insufficient'; data: Insufficient };
 
 interface Settled {
   key: string;
@@ -25,7 +31,10 @@ export function useRouteSafety(
     let ignore = false;
     fetchRouteSafety(routeId, targetDate).then(
       (data) => {
-        if (!ignore) setSettled({ key: requestKey, state: { status: 'ok', data } });
+        if (ignore) return;
+        const state: SafetyState =
+          data.data_status === 'insufficient_data' ? { status: 'insufficient', data } : { status: 'ok', data };
+        setSettled({ key: requestKey, state });
       },
       (error: unknown) => {
         if (!ignore) {

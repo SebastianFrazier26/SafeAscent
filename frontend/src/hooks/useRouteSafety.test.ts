@@ -11,6 +11,16 @@ const OK: SafetyResponse = {
   target_date: '2026-09-27',
   risk_score: 42.3,
   color_code: 'yellow',
+  data_status: 'ok',
+};
+
+const INSUFFICIENT: SafetyResponse = {
+  route_id: 42,
+  route_name: 'Test Route',
+  target_date: '2026-09-27',
+  risk_score: null,
+  color_code: 'gray',
+  data_status: 'insufficient_data',
 };
 
 beforeEach(() => vi.mocked(fetchRouteSafety).mockReset());
@@ -38,6 +48,12 @@ describe('useRouteSafety', () => {
     expect(result.current.state).toEqual({ status: 'loading' });
     await waitFor(() => expect(result.current.state).toEqual({ status: 'ok', data: OK }));
     expect(fetchRouteSafety).toHaveBeenCalledTimes(2);
+  });
+
+  it('goes loading → insufficient (neither ok nor error) when the route has no evidence', async () => {
+    vi.mocked(fetchRouteSafety).mockResolvedValue(INSUFFICIENT);
+    const { result } = renderHook(() => useRouteSafety(42, '2026-09-27'));
+    await waitFor(() => expect(result.current.state).toEqual({ status: 'insufficient', data: INSUFFICIENT }));
   });
 
   it('ignores a stale response after the route changes', async () => {

@@ -3,7 +3,7 @@
  * callers check isRiskScore and show "Unavailable" instead.
  */
 
-import type { RiskColorCode } from '../services/api';
+import type { DataStatus, RiskColorCode } from '../services/api';
 import { darkenToContrast, readableTextOn } from './color';
 
 export type RiskLevel = 'low' | 'moderate' | 'high' | 'extreme';
@@ -129,3 +129,61 @@ export const RISK_ICON_HEX = Object.fromEntries(
 export const NO_RISK_ICON_HEX = darkenToContrast(NO_RISK_HEX, '#ffffff', ICON_MIN_CONTRAST);
 
 export const getMarkerColor = (riskScore: number): string => RISK_COLOR_HEX[getRiskColorCode(riskScore)];
+
+/**
+ * Owner decision 2026-09-28: a route with no contributing evidence is "insufficient data"
+ * (null score, gray), never a 0 shown green. Interim until the Phase 3 similarity model.
+ */
+export const INSUFFICIENT_DATA_LABEL = 'Insufficient data';
+export const INSUFFICIENT_DATA_MESSAGE = 'Not enough data to estimate risk for this route yet.';
+
+export const isInsufficientData = (value: unknown): boolean =>
+  typeof value === 'object' && value !== null && (value as { data_status?: unknown }).data_status === 'insufficient_data';
+
+export interface RouteSafetyProps {
+  risk_score: number | null;
+  color_code: RiskColorCode | 'gray';
+  data_status: DataStatus | null;
+}
+
+const UNSCORED: RouteSafetyProps = { risk_score: null, color_code: 'gray', data_status: null };
+
+const inRange = (value: unknown): value is number => isRiskScore(value) && value >= 0 && value <= 100;
+
+/** Map feature properties for one route's embedded bulk safety entry; unscored is gray + null. */
+export const routeSafetyProps = (safety: unknown): RouteSafetyProps => {
+  if (typeof safety !== 'object' || safety === null) return UNSCORED;
+  const { risk_score, color_code, data_status } = safety as Record<string, unknown>;
+  if (data_status === 'insufficient_data' && risk_score === null && color_code === 'gray') {
+    return { risk_score: null, color_code: 'gray', data_status: 'insufficient_data' };
+  }
+  if (data_status === 'ok' && inRange(risk_score)) {
+    return { risk_score, color_code: getRiskColorCode(risk_score), data_status: 'ok' };
+  }
+  return UNSCORED;
+};
+
+// The legend Paper renders on exactly this colour (theme background.paper, with MUI's
+// dark-mode elevation overlay switched off), so the computed contrast is the rendered one.
+export const LEGEND_PANEL_BG = '#1e1e1e';
+const LEGEND_BORDER_MIN_CONTRAST = 3;
+
+/** Swatch border that reaches 3:1 on the panel (WCAG 1.4.11); the fill stays the palette hex. */
+export const legendSwatchBorder = (fill: string, panel: string = LEGEND_PANEL_BG): string =>
+  darkenToContrast(fill, panel, LEGEND_BORDER_MIN_CONTRAST);
+
+const [LOW_MAX, MODERATE_MAX, HIGH_MAX] = RISK_BAND_THRESHOLDS;
+
+export interface LegendSwatch {
+  label: string;
+  caption: string;
+  fill: string;
+}
+
+export const LEGEND_SWATCHES: readonly LegendSwatch[] = [
+  { label: `Safe (0-${LOW_MAX})`, caption: 'Favorable conditions', fill: RISK_COLOR_HEX.green },
+  { label: `Moderate (${LOW_MAX}-${MODERATE_MAX})`, caption: 'Increased caution', fill: RISK_COLOR_HEX.yellow },
+  { label: `Elevated (${MODERATE_MAX}-${HIGH_MAX})`, caption: 'Consider postponing', fill: RISK_COLOR_HEX.orange },
+  { label: `High Risk (${HIGH_MAX}+)`, caption: 'Not recommended', fill: RISK_COLOR_HEX.red },
+  { label: INSUFFICIENT_DATA_LABEL, caption: 'No nearby evidence, or not scored yet', fill: NO_RISK_HEX },
+];

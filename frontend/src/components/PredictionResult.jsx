@@ -27,6 +27,8 @@ import {
   Refresh as RefreshIcon,
 } from '@mui/icons-material';
 import {
+  INSUFFICIENT_DATA_LABEL,
+  INSUFFICIENT_DATA_MESSAGE,
   NO_RISK_ICON_HEX,
   RISK_COLOR_HEX,
   RISK_ICON_HEX,
@@ -34,6 +36,7 @@ import {
   getRiskColorCode,
   getRiskLevel,
   getRiskDescription,
+  isInsufficientData,
   isRiskScore,
 } from '../utils/riskUtils';
 
@@ -79,7 +82,8 @@ export default function PredictionResult({ prediction, onReset, error, onRetry }
 
   if (!prediction) return null;
 
-  const riskScore = isRiskScore(prediction.risk_score) ? prediction.risk_score : null;
+  const insufficient = isInsufficientData(prediction);
+  const riskScore = !insufficient && isRiskScore(prediction.risk_score) ? prediction.risk_score : null;
   const riskLevel = riskScore === null ? null : getRiskLevel(riskScore);
   const riskColorCode = riskScore === null ? null : getRiskColorCode(riskScore);
 
@@ -99,8 +103,13 @@ export default function PredictionResult({ prediction, onReset, error, onRetry }
           </Box>
 
           <Typography variant="h2" component="div" fontWeight={700} gutterBottom>
-            {riskScore === null ? 'Unavailable' : Math.round(riskScore)}
+            {insufficient ? INSUFFICIENT_DATA_LABEL : riskScore === null ? 'Unavailable' : Math.round(riskScore)}
           </Typography>
+          {insufficient && (
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 2, maxWidth: 400, mx: 'auto' }}>
+              {INSUFFICIENT_DATA_MESSAGE}
+            </Typography>
+          )}
           {riskScore !== null && (
             <>
               <Typography variant="subtitle1" color="text.secondary" gutterBottom>
@@ -127,7 +136,7 @@ export default function PredictionResult({ prediction, onReset, error, onRetry }
 
         <Divider sx={{ my: 3 }} />
 
-        {prediction.top_contributing_accidents && prediction.top_contributing_accidents.length > 0 && (
+        {!insufficient && prediction.top_contributing_accidents && prediction.top_contributing_accidents.length > 0 && (
           <Box sx={{ mt: 3 }}>
             <Typography variant="subtitle1" fontWeight={500} gutterBottom>
               Top Contributing Factors

@@ -271,11 +271,14 @@ import {
 } from 'recharts';
 import { format, parseISO } from 'date-fns';
 import {
+  INSUFFICIENT_DATA_LABEL,
+  INSUFFICIENT_DATA_MESSAGE,
   NO_RISK_HEX,
   NO_RISK_TEXT_HEX,
   RISK_COLOR_HEX,
   RISK_TEXT_ON_HEX,
   getRiskColorCode,
+  isInsufficientData,
   isRiskScore,
 } from '../utils/riskUtils';
 import { readableTextOn } from '../utils/color';
@@ -454,6 +457,9 @@ function headerRiskChip(safety) {
   }
   if (safety.status === 'error') {
     return { label: 'Risk: Unavailable', colors: riskChipColors(null) };
+  }
+  if (safety.status === 'insufficient') {
+    return { label: `Risk: ${INSUFFICIENT_DATA_LABEL}`, colors: riskChipColors(null) };
   }
   const score = safety.data.risk_score;
   return { label: `Risk: ${formatRiskScore(score)}`, colors: riskChipColors(score) };
@@ -705,15 +711,16 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
     csv += `Grade,${routeData.grade}\n`;
     // Bare number like the forecast rows so the column stays numeric; missing -> empty cell.
     csv += `Risk Score,${isRiskScore(routeData.risk_score) ? routeData.risk_score : ''}\n`;
+    if (routeData.data_status) csv += `Data Status,${routeData.data_status}\n`;
     csv += `Date,${selectedDate}\n\n`;
 
     // Add 7-day forecast if available
     if (data.forecast && data.forecast.forecast_days) {
       csv += '\n7-Day Forecast\n';
-      csv += 'Date,Risk Score,Weather Summary,Temp High,Temp Low,Precip,Wind Speed\n';
+      csv += 'Date,Risk Score,Weather Summary,Temp High,Temp Low,Precip,Wind Speed,Data Status\n';
       data.forecast.forecast_days.forEach(day => {
         const precipMm = day.precip_mm || 0;
-        csv += `${day.date},${isRiskScore(day.risk_score) ? day.risk_score : ''},"${day.weather_summary}",${day.temp_high},${day.temp_low},${precipMm},${day.wind_speed}\n`;
+        csv += `${day.date},${isRiskScore(day.risk_score) ? day.risk_score : ''},"${day.weather_summary}",${day.temp_high},${day.temp_low},${precipMm},${day.wind_speed},${day.data_status ?? ''}\n`;
       });
     }
 
@@ -846,6 +853,11 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
             }
           >
             Couldn&apos;t load the risk score for this route. {safety.message}
+          </Alert>
+        )}
+        {safety?.status === 'insufficient' && (
+          <Alert severity="info" sx={{ mb: 2 }}>
+            {INSUFFICIENT_DATA_MESSAGE}
           </Alert>
         )}
         {error && (
@@ -1119,7 +1131,11 @@ function ForecastTab({ data, loading, selectedDate: _selectedDate, routeData, ro
                           </Typography>
                           <Chip
                             size="small"
-                            label={isRiskScore(day.risk_score) ? `${day.risk_score}` : 'N/A'}
+                            label={
+                              isInsufficientData(day)
+                                ? INSUFFICIENT_DATA_LABEL
+                                : isRiskScore(day.risk_score) ? `${day.risk_score}` : 'N/A'
+                            }
                             sx={{
                               ...riskChipColors(day.risk_score),
                               fontWeight: 600,
@@ -1554,7 +1570,9 @@ function RiskBreakdownTab({ data, loading, routeData }) {
     );
   }
 
-  const effectiveRiskScore = [data.risk_score, routeData.risk_score].find(isRiskScore) ?? null;
+  const effectiveRiskScore = isInsufficientData(data)
+    ? null
+    : [data.risk_score, routeData.risk_score].find(isRiskScore) ?? null;
   const scorePointsFor = (contribution) =>
     effectiveRiskScore === null ? null : Number(((effectiveRiskScore * contribution) / 100).toFixed(1));
   const extremeWeather = data.extreme_weather || null;
@@ -1578,8 +1596,11 @@ function RiskBreakdownTab({ data, loading, routeData }) {
         <Card elevation={3}>
           <CardContent>
             <Typography variant="h6" gutterBottom fontWeight={600}>
-              📊 Risk Score: {formatRiskScore(effectiveRiskScore)}
+              📊 Risk Score: {isInsufficientData(data) ? INSUFFICIENT_DATA_LABEL : formatRiskScore(effectiveRiskScore)}
             </Typography>
+            {isInsufficientData(data) && (
+              <Alert severity="info" sx={{ mb: 2 }}>{INSUFFICIENT_DATA_MESSAGE}</Alert>
+            )}
             <Typography variant="body2" color="text.secondary" paragraph>
               This risk score is calculated using statistical analysis of historical accident data,
               weather patterns, and route characteristics. Below is a breakdown of factors that
@@ -1708,7 +1729,8 @@ function RiskTrendsTab({ data, loading, routeData: _routeData, selectedDate }) {
     return <LoadingState message="Loading risk trends..." />;
   }
 
-  const daysOfData = data?.historical_predictions?.length || 0;
+  // Insufficient-data days carry no score, so they don't count toward the trend minimum.
+  const daysOfData = (data?.historical_predictions ?? []).filter((p) => isRiskScore(p.risk_score)).length;
   const MIN_DAYS_REQUIRED = 30;
   const hasRiskData = Boolean(data?.historical_predictions && daysOfData >= MIN_DAYS_REQUIRED);
   const weatherVolatility = data?.weather_volatility;
@@ -2162,6 +2184,12 @@ function TimeOfDayTab({ data, loading, routeData: _routeData, selectedDate }) {
         </Card>
       </Grid>
 
+      {isInsufficientData(data) && (
+        <Grid size={12}>
+          <Alert severity="info">{INSUFFICIENT_DATA_MESSAGE}</Alert>
+        </Grid>
+      )}
+
       {/* Best Climbing Window */}
       {data.best_window && (
         <Grid size={12}>
@@ -2259,7 +2287,11 @@ function TimeOfDayTab({ data, loading, routeData: _routeData, selectedDate }) {
                           {String(hour.hour).padStart(2, '0')}:00
                         </Typography>
                         <Chip
-                          label={isRiskScore(hour.risk_score) ? hour.risk_score : '—'}
+                          label={
+                            isInsufficientData(hour)
+                              ? INSUFFICIENT_DATA_LABEL
+                              : isRiskScore(hour.risk_score) ? hour.risk_score : '—'
+                          }
                           size="small"
                           sx={{
                             ...riskChipColors(hour.risk_score),

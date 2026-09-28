@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import userEvent from '@testing-library/user-event';
 import { act, render, screen, within } from '../test/utils';
 import RouteAnalyticsModal from './RouteAnalyticsModal';
-import { NO_RISK_HEX } from '../utils/riskUtils';
+import { INSUFFICIENT_DATA_MESSAGE, NO_RISK_HEX } from '../utils/riskUtils';
 import { contrastRatio, readableTextOn } from '../utils/color';
 
 const route = (id, name) => ({
@@ -254,5 +254,102 @@ describe('RouteAnalyticsModal accident and ascent figures', () => {
       .map((el) => el.closest('.MuiChip-root')).find(Boolean);
     expect(missingRateChip).toHaveStyle({ backgroundColor: NO_RISK_HEX });
     expectReadable(missingRateChip);
+  });
+});
+
+describe('RouteAnalyticsModal insufficient-data days and hours', () => {
+  const insufficientDay = (date) => ({
+    date,
+    risk_score: null,
+    color_code: 'gray',
+    data_status: 'insufficient_data',
+    weather_summary: 'Clear',
+    temp_high: 10,
+    temp_low: 2,
+    precip_mm: 0,
+    wind_speed: 3,
+  });
+  const forecast = {
+    forecast_days: [insufficientDay('2026-09-27'), insufficientDay('2026-09-28')],
+    today: insufficientDay('2026-09-27'),
+    elevation_meters: null,
+  };
+  const insufficientHour = (hour) => ({
+    hour,
+    risk_score: null,
+    color_code: 'gray',
+    data_status: 'insufficient_data',
+    is_climbable: null,
+    conditions_summary: 'No risk estimate',
+    temperature: 2,
+    wind_speed: 3,
+    precipitation: 0,
+  });
+  const timeOfDay = {
+    data_status: 'insufficient_data',
+    base_daily_risk: null,
+    hourly_data: [insufficientHour(9), insufficientHour(10)],
+    climbing_windows: [],
+    best_window: null,
+  };
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn((url) => {
+      if (url.includes('/forecast')) return Promise.resolve(jsonResponse(forecast));
+      if (url.includes('/time-of-day')) return Promise.resolve(jsonResponse(timeOfDay));
+      return Promise.resolve(jsonResponse(route(1, 'Route A')));
+    }));
+  });
+
+  const neutral = { backgroundColor: NO_RISK_HEX, color: readableTextOn(NO_RISK_HEX) };
+
+  it('forecast chips read "Insufficient data" in neutral grey, never a number', async () => {
+    const user = userEvent.setup();
+    render(<Modal routeData={route(1, 'Route A')} />);
+    await user.click(screen.getByRole('tab', { name: '7-Day Forecast' }));
+    await screen.findByText(/Weather Summary/);
+
+    const dialog = screen.getByRole('dialog');
+    const chips = within(dialog).getAllByText('Insufficient data');
+    expect(chips).toHaveLength(2);
+    for (const chip of chips) expect(chip.closest('.MuiChip-root')).toHaveStyle(neutral);
+    expect(within(dialog).queryByText('N/A', { selector: '.MuiChip-label' })).toBeNull();
+  });
+
+  it('hourly view explains insufficient data and marks no hour climbable', async () => {
+    const user = userEvent.setup();
+    render(<Modal routeData={route(1, 'Route A')} />);
+    await user.click(screen.getByRole('tab', { name: 'Time of Day' }));
+    await screen.findByText(/Hourly Conditions Detail/);
+
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText(INSUFFICIENT_DATA_MESSAGE)).toBeInTheDocument();
+    const chips = within(dialog).getAllByText('Insufficient data', { selector: '.MuiChip-label' });
+    expect(chips).toHaveLength(2);
+    for (const chip of chips) expect(chip.closest('.MuiChip-root')).toHaveStyle(neutral);
+    expect(within(dialog).queryByText(/Best Climbing Window/)).toBeNull();
+  });
+
+  it('CSV leaves the risk cells empty and names the status', async () => {
+    const parts = [];
+    vi.stubGlobal('Blob', class {
+      constructor(content) { parts.push(content.join('')); }
+    });
+    vi.stubGlobal('URL', { ...URL, createObjectURL: () => 'blob:x', revokeObjectURL: () => {} });
+    const user = userEvent.setup();
+    render(
+      <Modal routeData={{ ...route(1, 'Route A'), color_code: 'gray', data_status: 'insufficient_data' }} />,
+    );
+    await user.click(screen.getByRole('tab', { name: '7-Day Forecast' }));
+    await screen.findByText(/Weather Summary/);
+    await user.click(screen.getByTitle('Export Analytics Data'));
+    await user.click(await screen.findByText(/Export as CSV/));
+
+    expect(parts).toHaveLength(1);
+    const csv = parts[0];
+    expect(csv).toContain('Risk Score,\n');
+    expect(csv).toContain('Data Status,insufficient_data\n');
+    expect(csv).toContain('2026-09-27,,"Clear"');
+    expect(csv).not.toMatch(/Risk Score,0/);
   });
 });

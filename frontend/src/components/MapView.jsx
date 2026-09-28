@@ -16,6 +16,7 @@ import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFns';
 import { addDays, startOfToday, format } from 'date-fns';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import RouteAnalyticsModal from './RouteAnalyticsModal';
+import RiskLegend from './RiskLegend';
 import { useRouteSafety } from '../hooks/useRouteSafety';
 import {
   NO_RISK_HEX,
@@ -23,6 +24,7 @@ import {
   RISK_BAND_THRESHOLDS,
   RISK_COLOR_HEX,
   RISK_TEXT_ON_HEX,
+  routeSafetyProps,
 } from '../utils/riskUtils';
 import { hexToRgba, mixHex } from '../utils/color';
 
@@ -138,6 +140,7 @@ export default function MapView({ selectedRouteForZoom }) {
   );
 
   const okSafety = safetyState?.status === 'ok' ? safetyState.data : null;
+  const insufficientSafety = safetyState?.status === 'insufficient';
   // Memoized so the modal's props don't change on every map pan/hover render. Keyed on
   // okSafety, not safetyState, since the hook derives a fresh loading object each render.
   const modalRouteData = useMemo(() => (selectedRoute ? {
@@ -150,9 +153,10 @@ export default function MapView({ selectedRouteForZoom }) {
       longitude: selectedRoute.geometry.coordinates[0],
       elevation_meters: null,
       risk_score: okSafety ? okSafety.risk_score : null,
-      color_code: okSafety ? okSafety.color_code : null,
+      color_code: okSafety ? okSafety.color_code : insufficientSafety ? 'gray' : null,
+      data_status: okSafety ? 'ok' : insufficientSafety ? 'insufficient_data' : null,
       mp_route_id: selectedRoute.properties.mp_route_id,
-    } : null), [selectedRoute, okSafety]);
+    } : null), [selectedRoute, okSafety, insufficientSafety]);
 
   // Track safety score loading progress (now just for display, bulk fetch is fast)
   const [safetyLoadingProgress, setSafetyLoadingProgress] = useState({ loaded: 0, total: 0, isLoading: false });
@@ -273,8 +277,8 @@ export default function MapView({ selectedRouteForZoom }) {
           if (routesAtLocation.length === 1) {
             // Single route - use original coordinates
             const route = routesAtLocation[0];
-            const hasSafety = route.safety !== null;
-            if (hasSafety) routesWithSafety++;
+            const safetyProps = routeSafetyProps(route.safety);
+            if (safetyProps.data_status !== null) routesWithSafety++;
 
             features.push({
               type: 'Feature',
@@ -289,9 +293,9 @@ export default function MapView({ selectedRouteForZoom }) {
                 type: normalizeRouteTypeForDisplay(route.type),
                 mp_route_id: route.mp_route_id,
                 location_id: route.location_id,
-                // Safety scores embedded from bulk response!
-                color_code: hasSafety ? route.safety.color_code : 'gray',
-                risk_score: hasSafety ? route.safety.risk_score : null,
+                // Insufficient-data and unscored routes are gray with no score, so the
+                // cluster average (risk_score_sum / risk_score_count) leaves them out.
+                ...safetyProps,
               },
             });
           } else {
@@ -314,8 +318,8 @@ export default function MapView({ selectedRouteForZoom }) {
               const offsetLon = startLon + col * baseOffset;
               const offsetLat = startLat + row * baseOffset;
 
-              const hasSafety = route.safety !== null;
-              if (hasSafety) routesWithSafety++;
+              const safetyProps = routeSafetyProps(route.safety);
+              if (safetyProps.data_status !== null) routesWithSafety++;
 
               features.push({
                 type: 'Feature',
@@ -330,9 +334,7 @@ export default function MapView({ selectedRouteForZoom }) {
                   type: normalizeRouteTypeForDisplay(route.type),
                   mp_route_id: route.mp_route_id,
                   location_id: route.location_id,
-                  // Safety scores embedded from bulk response!
-                  color_code: hasSafety ? route.safety.color_code : 'gray',
-                  risk_score: hasSafety ? route.safety.risk_score : null,
+                  ...safetyProps,
                 },
               });
             });
@@ -1072,145 +1074,7 @@ export default function MapView({ selectedRouteForZoom }) {
           </Paper>
         )}
 
-        {/* Safety Gradient Legend */}
-        <Paper
-          elevation={3}
-          sx={{
-            position: 'absolute',
-            bottom: 40,
-            left: 16,
-            p: 2,
-            zIndex: 1,
-            bgcolor: 'background.paper',
-            borderRadius: 2,
-            minWidth: 200,
-          }}
-        >
-          <Typography variant="subtitle2" fontWeight={600} gutterBottom sx={{ mb: 1.5 }}>
-            🎯 Safety Score Legend
-          </Typography>
-
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-            {/* Green - Safe */}
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-              <Box
-                sx={{
-                  width: 24,
-                  height: 24,
-                  borderRadius: '50%',
-                  bgcolor: RISK_COLOR_HEX.green,
-                  border: '2px solid #fff',
-                  boxShadow: 1,
-                }}
-              />
-              <Box>
-                <Typography variant="body2" fontWeight={500}>
-                  Safe (0-{RISK_LOW_MAX})
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  Favorable conditions
-                </Typography>
-              </Box>
-            </Box>
-
-            {/* Yellow - Moderate */}
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-              <Box
-                sx={{
-                  width: 24,
-                  height: 24,
-                  borderRadius: '50%',
-                  bgcolor: RISK_COLOR_HEX.yellow,
-                  border: '2px solid #fff',
-                  boxShadow: 1,
-                }}
-              />
-              <Box>
-                <Typography variant="body2" fontWeight={500}>
-                  Moderate ({RISK_LOW_MAX}-{RISK_MODERATE_MAX})
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  Increased caution
-                </Typography>
-              </Box>
-            </Box>
-
-            {/* Orange - Elevated */}
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-              <Box
-                sx={{
-                  width: 24,
-                  height: 24,
-                  borderRadius: '50%',
-                  bgcolor: RISK_COLOR_HEX.orange,
-                  border: '2px solid #fff',
-                  boxShadow: 1,
-                }}
-              />
-              <Box>
-                <Typography variant="body2" fontWeight={500}>
-                  Elevated ({RISK_MODERATE_MAX}-{RISK_HIGH_MAX})
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  Consider postponing
-                </Typography>
-              </Box>
-            </Box>
-
-            {/* Red - High Risk */}
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-              <Box
-                sx={{
-                  width: 24,
-                  height: 24,
-                  borderRadius: '50%',
-                  bgcolor: RISK_COLOR_HEX.red,
-                  border: '2px solid #fff',
-                  boxShadow: 1,
-                }}
-              />
-              <Box>
-                <Typography variant="body2" fontWeight={500}>
-                  High Risk ({RISK_HIGH_MAX}+)
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  Not recommended
-                </Typography>
-              </Box>
-            </Box>
-
-            {/* Gray - No Data */}
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-              <Box
-                sx={{
-                  width: 24,
-                  height: 24,
-                  borderRadius: '50%',
-                  bgcolor: NO_RISK_HEX,
-                  border: '2px solid #fff',
-                  boxShadow: 1,
-                }}
-              />
-              <Box>
-                <Typography variant="body2" fontWeight={500}>
-                  No Data
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  Insufficient information
-                </Typography>
-              </Box>
-            </Box>
-          </Box>
-
-          <Divider sx={{ my: 1.5 }} />
-
-          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
-            💡 <strong>Heatmap:</strong> Regional risk coverage across entire map
-          </Typography>
-          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-            📍 <strong>Markers:</strong> Individual routes • Clusters show average score
-          </Typography>
-        </Paper>
+        <RiskLegend />
 
         {/* Mapbox attribution (required) */}
         <Paper

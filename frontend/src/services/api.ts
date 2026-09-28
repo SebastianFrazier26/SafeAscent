@@ -42,14 +42,21 @@ api.interceptors.response.use(
 );
 
 export type RiskColorCode = 'green' | 'yellow' | 'orange' | 'red';
+export type DataStatus = 'ok' | 'insufficient_data';
 
-export interface SafetyResponse {
+/**
+ * A risk result is either a real 0-100 score with its band colour, or (owner decision
+ * 2026-09-28) insufficient data: no contributing evidence, so no number and gray.
+ */
+export type ScoredRisk = { risk_score: number; color_code: RiskColorCode; data_status: 'ok' };
+export type InsufficientRisk = { risk_score: null; color_code: 'gray'; data_status: 'insufficient_data' };
+export type RiskResult = ScoredRisk | InsufficientRisk;
+
+export type SafetyResponse = {
   route_id: number;
   route_name: string;
   target_date: string;
-  risk_score: number;
-  color_code: RiskColorCode;
-}
+} & RiskResult;
 
 export interface PredictionParams {
   latitude: number;
@@ -75,14 +82,30 @@ export interface ContributingAccident {
   grade_weight?: number;
 }
 
-export interface PredictionResponse {
-  risk_score: number;
+export type PredictionResponse = {
   num_contributing_accidents: number;
   top_contributing_accidents: ContributingAccident[];
   metadata: Record<string, unknown>;
-}
+} & RiskResult;
 
 const COLOR_CODES: readonly string[] = ['green', 'yellow', 'orange', 'red'];
+
+// Exactly the two legal shapes: a gray colour with a number, or a number with an
+// insufficient status, is malformed (the backend schema rejects both too).
+const isRiskResult = (body: Record<string, unknown>): boolean => {
+  if (body.data_status === 'insufficient_data') {
+    return body.risk_score === null && body.color_code === 'gray';
+  }
+  return (
+    body.data_status === 'ok' &&
+    typeof body.risk_score === 'number' &&
+    Number.isFinite(body.risk_score) &&
+    body.risk_score >= 0 &&
+    body.risk_score <= 100 &&
+    typeof body.color_code === 'string' &&
+    COLOR_CODES.includes(body.color_code)
+  );
+};
 
 export const isSafetyResponse = (value: unknown): value is SafetyResponse => {
   if (typeof value !== 'object' || value === null) return false;
@@ -91,12 +114,19 @@ export const isSafetyResponse = (value: unknown): value is SafetyResponse => {
     typeof body.route_id === 'number' &&
     typeof body.route_name === 'string' &&
     typeof body.target_date === 'string' &&
-    typeof body.risk_score === 'number' &&
-    Number.isFinite(body.risk_score) &&
-    body.risk_score >= 0 &&
-    body.risk_score <= 100 &&
-    typeof body.color_code === 'string' &&
-    COLOR_CODES.includes(body.color_code)
+    isRiskResult(body)
+  );
+};
+
+export const isPredictionResponse = (value: unknown): value is PredictionResponse => {
+  if (typeof value !== 'object' || value === null) return false;
+  const body = value as Record<string, unknown>;
+  return (
+    typeof body.num_contributing_accidents === 'number' &&
+    Array.isArray(body.top_contributing_accidents) &&
+    typeof body.metadata === 'object' &&
+    body.metadata !== null &&
+    isRiskResult(body)
   );
 };
 
@@ -130,15 +160,20 @@ export const fetchRouteSafety = async (routeId: number, targetDate: string): Pro
 };
 
 export const predictRouteSafety = async (params: PredictionParams): Promise<PredictionResponse> => {
+  let data: unknown;
   try {
-    const response = await api.post<PredictionResponse>('/predict', params);
-    return response.data;
+    const response = await api.post('/predict', params);
+    data = response.data;
   } catch (error) {
     if (axios.isAxiosError(error) && error.response?.status === 422) {
       throw new Error('Invalid prediction parameters. Please check your input.');
     }
     throw toReadableError(error);
   }
+  if (!isPredictionResponse(data)) {
+    throw new Error('Malformed prediction response from the API.');
+  }
+  return data;
 };
 
 export const fetchNearbyAccidents = async (
