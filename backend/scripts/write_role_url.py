@@ -33,8 +33,9 @@ def upsert_env_line(path: Path, key: str, value: str) -> None:
     lines = [line for line in lines if not line.startswith(f"{key}=")]
     lines.append(f"{key}={value}")
     # mkstemp creates the file 0600, so the secret is never readable at a looser mode,
-    # even if the existing file was 0644; os.replace swaps it in atomically.
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    # even if the existing file was 0644; os.replace swaps it in atomically. The fixed
+    # ".env.tmp." prefix keeps a leftover from a killed run under the `.env.*` ignore rule.
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".env.tmp.")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write("\n".join(lines) + "\n")

@@ -1,11 +1,17 @@
 import base64
+import fnmatch
 import hashlib
 import hmac
 import io
+import os
+import shutil
 import stat
+import subprocess
+from pathlib import Path
 
 import pytest
 
+import scripts.write_role_url as write_role_url
 from scripts.write_role_url import build_role_url, main, scram_verifier, upsert_env_line
 
 OWNER = "postgresql://neondb_owner:ownerpw@ep-x-123.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
@@ -60,6 +66,31 @@ def test_upsert_env_line_creates_missing_file_0600(tmp_path):
     upsert_env_line(env, "APP_DATABASE_URL", "u")
     assert env.read_text() == "APP_DATABASE_URL=u\n"
     assert stat.S_IMODE(env.stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize("name", [".env.app", "role.env"])
+def test_upsert_env_line_temp_file_is_gitignored_0600_and_beside_target(tmp_path, monkeypatch, name):
+    # A run killed mid-write leaves the temp file (holding a DB URL with a password) behind.
+    seen: list[tuple[str, int]] = []
+    real_replace = os.replace
+
+    def spy(src, dst):
+        seen.append((str(src), stat.S_IMODE(os.stat(src).st_mode)))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(write_role_url.os, "replace", spy)
+    upsert_env_line(tmp_path / name, "APP_DATABASE_URL", "u")
+    [(tmp, mode)] = seen
+    assert Path(tmp).parent == tmp_path
+    assert mode == 0o600
+    assert fnmatch.fnmatch(Path(tmp).name, ".env.*")
+    backend = Path(__file__).resolve().parents[1]
+    if shutil.which("git") and (backend.parent / ".git").exists():
+        probe = f"backend/{Path(tmp).name}"
+        result = subprocess.run(
+            ["git", "check-ignore", "-q", probe], cwd=backend.parent, capture_output=True, check=False
+        )
+        assert result.returncode == 0, f"{probe} is not gitignored"
 
 
 def test_main_writes_url_without_printing_secrets(tmp_path, monkeypatch, capsys):
