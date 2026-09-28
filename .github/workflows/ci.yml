@@ -72,6 +72,8 @@ jobs:
 
       - name: Test
         run: uv run pytest
+        env:
+          MIGRATIONS_TEST_ADMIN_URL: postgresql://test_user:test_password@localhost:5432/postgres
 
       - name: Build image and smoke-test imports
         run: |
