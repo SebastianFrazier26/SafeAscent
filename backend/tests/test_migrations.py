@@ -5,6 +5,7 @@ maintenance database, e.g. postgresql://test_user:test_password@localhost:5432/p
 """
 
 import asyncio
+import logging
 import os
 import uuid
 from collections.abc import Iterator
@@ -55,6 +56,7 @@ def _alembic_cfg(dbname: str) -> Config:
     cfg = Config(str(BACKEND / "alembic.ini"))
     cfg.set_main_option("script_location", str(BACKEND / "alembic"))
     cfg.set_main_option("sqlalchemy.url", _db_url(dbname).replace("postgresql://", "postgresql+asyncpg://", 1))
+    cfg.attributes["configure_logger"] = False
     return cfg
 
 
@@ -108,3 +110,27 @@ def test_models_no_longer_define_dropped_tables():
 
     assert "ascents" not in Base.metadata.tables
     assert "climbers" not in Base.metadata.tables
+
+
+def test_running_alembic_leaves_app_loggers_enabled(fresh_db, caplog):
+    probe = logging.getLogger("app.migration_probe")
+    root_level = logging.getLogger().level
+    command.upgrade(_alembic_cfg(fresh_db), "0001_baseline")
+    assert not probe.disabled
+    assert probe.propagate
+    assert logging.getLogger().level == root_level
+    with caplog.at_level(logging.WARNING):
+        probe.warning("still captured")
+    assert "still captured" in caplog.text
+
+
+def test_baseline_refuses_a_database_that_already_has_the_schema(fresh_db):
+    _run(fresh_db, "CREATE TABLE accidents (accident_id integer)")
+    with pytest.raises(RuntimeError, match="alembic stamp 0001_baseline"):
+        command.upgrade(_alembic_cfg(fresh_db), "0001_baseline")
+    row = _fetch_row(
+        fresh_db,
+        "SELECT to_regclass('public.weather')::text, to_regclass('public.routes')::text, "
+        "to_regclass('public.alembic_version')::text",
+    )
+    assert row == [None, None, None]

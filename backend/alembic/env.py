@@ -10,7 +10,9 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 config = context.config
-if config.config_file_name is not None:
+# fileConfig disables every logger that already exists; callers running Alembic inside
+# another process (the test suite) opt out so app.* loggers keep working.
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
     fileConfig(config.config_file_name)
 
 
