@@ -12,7 +12,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `[tool.mypy]` added with `plugins = ["pydantic.mypy"]`, an `app.*` allowlist that ignores errors for untyped legacy code, and an empty strict-allowlist override block (`module = []`) for later PRs to append to as modules are typed.
 - `mypy==2.3.1` and `pip-audit==2.10.1` added to the `dev` dependency group.
 - README backend quickstart updated to `uv sync` / `uv run uvicorn ...` / `uv run pytest`.
-- CI (`.github/workflows/ci.yml`) still installs via `pip install -r requirements.txt`, which no longer exists; updating CI to `uv` is a separate task in this PR and is not done here.
+- One `backend/Dockerfile` (uv-built, non-root) serves the api, worker and beat; `Dockerfile.worker` removed. `backend/railway-worker.toml` now points at the shared `Dockerfile`; the worker/beat process split stays in `startCommand` (unchanged, part B of this PR).
+- CI (`.github/workflows/ci.yml`) now installs with `uv sync --frozen`, lints and audits (`uv export --no-dev` piped to `pip-audit`) via `uv run`, matching the local toolchain instead of a separate `pip`/`pip-audit` install.
+- Commands: `cd backend && uv sync`, `uv run pytest`, `uv run ruff check app/`, `uv run mypy`.
 
 ### Phase 1 PR1: maintenance mode and www redirect (2026-09-27)
 

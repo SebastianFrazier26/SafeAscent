@@ -50,35 +50,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v10
         with:
-          python-version: '3.12'
-          cache: 'pip'
-          cache-dependency-path: 'backend/requirements.txt'
+          version: "0.11.3"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
 
       - name: Install dependencies
         working-directory: backend
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+        run: uv sync --frozen
 
       - name: Run linting
         working-directory: backend
-        run: |
-          # Pinned to match backend/ruff.toml's rule set; unpinned installs have
-          # picked up hundreds of new findings across ruff releases.
-          pip install ruff==0.8.4
-          ruff check app/
+        run: uv run ruff check app/
 
       - name: Dependency audit
         working-directory: backend
         run: |
-          # Audits the environment installed above (with transitive deps already
-          # resolved) rather than `-r requirements.txt`, which re-resolves in an
-          # isolated venv and misses nothing but is slower and duplicates work.
-          pip install pip-audit
-          pip-audit
+          uv export --frozen --no-dev --no-emit-project --format requirements.txt \
+            | uv run pip-audit -r /dev/stdin --require-hashes --disable-pip
 
       - name: Run tests
         working-directory: backend
@@ -100,7 +91,7 @@ jobs:
           # - test_predict_integration.py, test_prediction_integration.py
           # - test_known_outcomes_validation.py, test_edge_cases_performance.py
           # - test_performance.py, test_weather_caching.py (performance-sensitive)
-          pytest tests/test_api_endpoints.py \
+          uv run pytest tests/test_api_endpoints.py \
                  tests/test_weather_service.py \
                  tests/test_route_type_mapper.py \
                  tests/test_temporal_weighting.py \

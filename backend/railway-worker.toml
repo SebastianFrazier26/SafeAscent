@@ -3,7 +3,7 @@
 
 [build]
 builder = "dockerfile"
-dockerfilePath = "Dockerfile.worker"
+dockerfilePath = "Dockerfile"
 
 [deploy]
 # No healthcheck for background workers
