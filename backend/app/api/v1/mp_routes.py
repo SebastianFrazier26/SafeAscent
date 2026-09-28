@@ -1698,11 +1698,12 @@ async def get_ascent_analytics(
     # Build monthly ascent dict
     monthly_ascent_dict = {int(row[0]): int(row[1]) for row in monthly_ascent_rows}
 
-    # Get accidents linked directly to this route_id (route-linked only)
+    # accidents.mp_route_id is the MP route FK; accidents.route_id is the legacy
+    # routes-table FK and holds different ids (fixed 2026-09-28).
     accident_count_query = text("""
         SELECT COUNT(*)
         FROM accidents
-        WHERE route_id = :route_id
+        WHERE mp_route_id = :route_id
     """)
 
     total_accidents = 0
@@ -1718,7 +1719,7 @@ async def get_ascent_analytics(
             EXTRACT(MONTH FROM date) as month,
             COUNT(*) as accident_count
         FROM accidents
-        WHERE route_id = :route_id
+        WHERE mp_route_id = :route_id
           AND date IS NOT NULL
         GROUP BY EXTRACT(MONTH FROM date)
         ORDER BY month
