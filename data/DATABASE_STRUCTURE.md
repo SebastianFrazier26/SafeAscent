@@ -104,7 +104,7 @@ WHERE ST_DWithin(
 
 ---
 
-### 4. weather_patterns
+### 4. weather
 **Purpose:** 7-day weather windows for accident dates
 **Records:** ~25,000
 
@@ -165,10 +165,10 @@ mp_locations (45K)
 
 accidents (6.9K)
     │
-    └── weather_patterns (25K)
+    └── weather (25K)
 ```
 
-**Note:** Routes and accidents are NOT directly linked via foreign keys. The safety algorithm uses spatial proximity (PostGIS) to find relevant accidents for each route dynamically.
+**Note:** MP routes and accidents are not linked by foreign keys; the safety algorithm finds relevant accidents by spatial proximity (PostGIS). Accidents do carry legacy FKs, `accidents.route_id → routes` and `accidents.mountain_id → mountains`. Phase 2a relinks them to `mp_routes`/`mp_locations` and drops the legacy tables. `ascents` and `climbers` were dropped by migration `0002_drop_ascents_climbers`.
 
 ---
 
@@ -178,7 +178,7 @@ accidents (6.9K)
 |-------|-----------|-------|
 | mp_locations | 6 decimals | ~0.1m precision |
 | accidents | 4-6 decimals | Varies by source |
-| weather_patterns | 2 decimals | ~1km grid (intentional) |
+| weather | 2 decimals | ~1km grid (intentional) |
 
 All coordinates use **WGS84 (SRID 4326)** - standard GPS coordinate system.
 
@@ -212,7 +212,7 @@ WHERE l.latitude IS NOT NULL
 ### Weather Pattern Matching
 ```sql
 -- Get 7-day weather window for an accident
-SELECT * FROM weather_patterns
+SELECT * FROM weather
 WHERE accident_id = :id
 ORDER BY date ASC;
 ```

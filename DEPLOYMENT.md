@@ -116,7 +116,7 @@
 | `mp_routes` | ~168,000 | Mountain Project climbing routes |
 | `mp_locations` | ~45,000 | Location hierarchy (areas → crags) |
 | `accidents` | ~6,900 | Historical climbing accidents |
-| `weather_patterns` | ~25,000 | 7-day weather windows for accidents |
+| `weather` | ~25,000 | 7-day weather windows for accidents |
 
 ### Cache Tables
 | Table | Purpose |

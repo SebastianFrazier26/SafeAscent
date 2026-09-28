@@ -117,7 +117,7 @@ For detailed database documentation, see [data/DATABASE_STRUCTURE.md](./data/DAT
 | Table | Records | Description |
 |-------|---------|-------------|
 | **accidents** | ~6,900 | Combined from AAC, Avalanche.org, NPS |
-| **weather_patterns** | ~25,000 | 7-day windows for each accident |
+| **weather** | ~25,000 | 7-day windows for each accident |
 | **mp_routes** | ~168,000 | Mountain Project climbing routes |
 | **mp_locations** | ~45,000 | Location hierarchy (areas → crags) |
 | **historical_predictions** | Growing | Daily safety score history |
