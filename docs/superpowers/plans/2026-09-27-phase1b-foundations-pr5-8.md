@@ -1581,11 +1581,14 @@ Expected: `psql (PostgreSQL) 15` or newer (`\getenv` needs 15+).
 split_pg_url() {
   { read -r PG_URL_NOPASS; read -r PGPASSWORD; } < <(uv run python3 -c '
 import sys
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit, quote, unquote
 u = urlsplit(sys.argv[1])
-netloc = (f"{u.username}@" if u.username else "") + (u.hostname or "") + (f":{u.port}" if u.port else "")
+# urlsplit does not decode; u.password is still percent-encoded, and PGPASSWORD must be
+# the literal characters libpq expects, not the URL-escaped form.
+username = quote(unquote(u.username), safe="") if u.username else None
+netloc = (f"{username}@" if username else "") + (u.hostname or "") + (f":{u.port}" if u.port else "")
 print(urlunsplit((u.scheme, netloc, u.path, u.query, u.fragment)))
-print(u.password or "")
+print(unquote(u.password) if u.password else "")
 ' "$1")
   export PGPASSWORD
 }
