@@ -1,13 +1,33 @@
 import { describe, expect, it } from 'vitest';
 import { contrastRatio } from './color';
 import {
+  INSUFFICIENT_DATA_MESSAGE,
   LEGEND_PANEL_BG,
   LEGEND_SWATCHES,
   NO_RISK_HEX,
   RISK_COLOR_HEX,
+  formatRiskTooltip,
   legendSwatchBorder,
   routeSafetyProps,
 } from './riskUtils';
+
+describe('insufficient-data wording (owner decision 2026-09-28)', () => {
+  it('says too little evidence, not no evidence', () => {
+    expect(INSUFFICIENT_DATA_MESSAGE).toBe('Too little evidence to estimate risk yet');
+    const gray = LEGEND_SWATCHES[LEGEND_SWATCHES.length - 1];
+    expect(gray?.caption).toMatch(/^Too little evidence to estimate risk yet/);
+    expect(gray?.caption).not.toMatch(/no .*evidence/i);
+  });
+
+  it('chart tooltips say "Too little evidence" for an insufficient point and 1 decimal otherwise', () => {
+    expect(formatRiskTooltip(null, 'Risk Score', { payload: { data_status: 'insufficient_data' } })).toEqual([
+      'Too little evidence',
+      'Risk Score',
+    ]);
+    expect(formatRiskTooltip(30, 'Risk Score', { payload: { data_status: 'ok' } })).toEqual(['30.0/100', 'Risk Score']);
+    expect(formatRiskTooltip(undefined, 'Risk Score', {})).toEqual(['Unavailable', 'Risk Score']);
+  });
+});
 
 describe('routeSafetyProps (map feature properties from the bulk safety payload)', () => {
   it('keeps a real score and re-derives its band colour', () => {

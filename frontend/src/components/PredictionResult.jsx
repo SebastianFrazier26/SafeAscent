@@ -103,7 +103,7 @@ export default function PredictionResult({ prediction, onReset, error, onRetry }
           </Box>
 
           <Typography variant="h2" component="div" fontWeight={700} gutterBottom>
-            {insufficient ? INSUFFICIENT_DATA_LABEL : riskScore === null ? 'Unavailable' : Math.round(riskScore)}
+            {insufficient ? INSUFFICIENT_DATA_LABEL : riskScore === null ? 'Unavailable' : riskScore.toFixed(1)}
           </Typography>
           {insufficient && (
             <Typography variant="body2" color="text.secondary" sx={{ mt: 2, maxWidth: 400, mx: 'auto' }}>

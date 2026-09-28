@@ -24,8 +24,10 @@ describe('isRiskScore', () => {
 
 describe('formatRiskScore', () => {
   it('formats a real score, including zero', () => {
-    expect(formatRiskScore(35.5)).toBe('36/100');
-    expect(formatRiskScore(0)).toBe('0/100');
+    // One decimal everywhere (owner decision 2026-09-28), matching the backend value.
+    expect(formatRiskScore(35.5)).toBe('35.5/100');
+    expect(formatRiskScore(8.9)).toBe('8.9/100');
+    expect(formatRiskScore(30)).toBe('30.0/100');
   });
 
   it('never invents a number for a missing score', () => {

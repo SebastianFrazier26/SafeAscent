@@ -11,7 +11,7 @@ const OK = {
   data_status: 'ok',
 };
 
-// Owner decision 2026-09-28: no contributing evidence -> null score, gray, explicit status.
+// Owner decision 2026-09-28: too little evidence -> null score, gray, explicit status.
 const INSUFFICIENT = { ...OK, risk_score: null, color_code: 'gray', data_status: 'insufficient_data' };
 
 afterEach(() => vi.restoreAllMocks());

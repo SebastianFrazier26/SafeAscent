@@ -92,8 +92,9 @@ export const getConfidenceInfo = (confidence: number): ConfidenceInfo => {
   };
 };
 
+// One decimal everywhere, the same value the backend stores and colours (owner decision 2026-09-28).
 export const formatRiskScore = (riskScore: number | null | undefined): string =>
-  isRiskScore(riskScore) ? `${Math.round(riskScore)}/100` : 'Unavailable';
+  isRiskScore(riskScore) ? `${riskScore.toFixed(1)}/100` : 'Unavailable';
 
 export const formatConfidence = (confidence: number): string => `${Math.round(confidence)}%`;
 
@@ -131,14 +132,26 @@ export const NO_RISK_ICON_HEX = darkenToContrast(NO_RISK_HEX, '#ffffff', ICON_MI
 export const getMarkerColor = (riskScore: number): string => RISK_COLOR_HEX[getRiskColorCode(riskScore)];
 
 /**
- * Owner decision 2026-09-28: a route with no contributing evidence is "insufficient data"
- * (null score, gray), never a 0 shown green. Interim until the Phase 3 similarity model.
+ * Owner decision 2026-09-28: a route with too little evidence (no contributing accident, or a
+ * score that would show as 0.0) is "insufficient data" (null score, gray), never a 0 shown
+ * green. Interim until the Phase 3 similarity model.
  */
 export const INSUFFICIENT_DATA_LABEL = 'Insufficient data';
-export const INSUFFICIENT_DATA_MESSAGE = 'Not enough data to estimate risk for this route yet.';
+export const INSUFFICIENT_DATA_MESSAGE = 'Too little evidence to estimate risk yet';
+const INSUFFICIENT_DATA_TOOLTIP = 'Too little evidence';
 
 export const isInsufficientData = (value: unknown): boolean =>
   typeof value === 'object' && value !== null && (value as { data_status?: unknown }).data_status === 'insufficient_data';
+
+/** Recharts Tooltip formatter for risk series: insufficient points say so, never a number. */
+export const formatRiskTooltip = (
+  value: unknown,
+  name: string,
+  item: { payload?: unknown } | undefined,
+): [string, string] => [
+  isInsufficientData(item?.payload) ? INSUFFICIENT_DATA_TOOLTIP : formatRiskScore(isRiskScore(value) ? value : null),
+  name,
+];
 
 export interface RouteSafetyProps {
   risk_score: number | null;
@@ -185,5 +198,5 @@ export const LEGEND_SWATCHES: readonly LegendSwatch[] = [
   { label: `Moderate (${LOW_MAX}-${MODERATE_MAX})`, caption: 'Increased caution', fill: RISK_COLOR_HEX.yellow },
   { label: `Elevated (${MODERATE_MAX}-${HIGH_MAX})`, caption: 'Consider postponing', fill: RISK_COLOR_HEX.orange },
   { label: `High Risk (${HIGH_MAX}+)`, caption: 'Not recommended', fill: RISK_COLOR_HEX.red },
-  { label: INSUFFICIENT_DATA_LABEL, caption: 'No nearby evidence, or not scored yet', fill: NO_RISK_HEX },
+  { label: INSUFFICIENT_DATA_LABEL, caption: `${INSUFFICIENT_DATA_MESSAGE}, or not scored`, fill: NO_RISK_HEX },
 ];

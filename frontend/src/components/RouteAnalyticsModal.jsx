@@ -277,6 +277,8 @@ import {
   NO_RISK_TEXT_HEX,
   RISK_COLOR_HEX,
   RISK_TEXT_ON_HEX,
+  formatRiskScore,
+  formatRiskTooltip,
   getRiskColorCode,
   isInsufficientData,
   isRiskScore,
@@ -443,10 +445,6 @@ function formatRouteNameWithType(name, routeType) {
   }
 
   return safeName;
-}
-
-function formatRiskScore(score) {
-  return isRiskScore(score) ? `${score.toFixed(1)}/100` : 'Unavailable';
 }
 
 // Driven by the fetch state, not routeData.risk_score, so "still loading" and "failed"
@@ -1095,7 +1093,7 @@ function ForecastTab({ data, loading, selectedDate: _selectedDate, routeData, ro
                 />
                 <Tooltip
                   labelFormatter={(date) => formatDateForDisplay(date, 'EEEE, MMM d', String(date))}
-                  formatter={(value) => [formatRiskScore(value), 'Risk Score']}
+                  formatter={formatRiskTooltip}
                 />
                 <Legend />
                 <Line
@@ -1134,7 +1132,7 @@ function ForecastTab({ data, loading, selectedDate: _selectedDate, routeData, ro
                             label={
                               isInsufficientData(day)
                                 ? INSUFFICIENT_DATA_LABEL
-                                : isRiskScore(day.risk_score) ? `${day.risk_score}` : 'N/A'
+                                : isRiskScore(day.risk_score) ? day.risk_score.toFixed(1) : 'N/A'
                             }
                             sx={{
                               ...riskChipColors(day.risk_score),
@@ -1558,6 +1556,17 @@ function RiskBreakdownTab({ data, loading, routeData }) {
     );
   }
 
+  if (isInsufficientData(data)) {
+    return (
+      <Alert severity="info">
+        <Typography variant="body2" fontWeight={600} sx={{ color: 'text.primary' }}>
+          Risk Score: {INSUFFICIENT_DATA_LABEL}
+        </Typography>
+        <Typography variant="body2" sx={{ color: 'text.primary' }}>{INSUFFICIENT_DATA_MESSAGE}</Typography>
+      </Alert>
+    );
+  }
+
   if (!data || !data.factors) {
     return (
       <Alert severity="info">
@@ -1570,9 +1579,7 @@ function RiskBreakdownTab({ data, loading, routeData }) {
     );
   }
 
-  const effectiveRiskScore = isInsufficientData(data)
-    ? null
-    : [data.risk_score, routeData.risk_score].find(isRiskScore) ?? null;
+  const effectiveRiskScore = [data.risk_score, routeData.risk_score].find(isRiskScore) ?? null;
   const scorePointsFor = (contribution) =>
     effectiveRiskScore === null ? null : Number(((effectiveRiskScore * contribution) / 100).toFixed(1));
   const extremeWeather = data.extreme_weather || null;
@@ -1596,11 +1603,8 @@ function RiskBreakdownTab({ data, loading, routeData }) {
         <Card elevation={3}>
           <CardContent>
             <Typography variant="h6" gutterBottom fontWeight={600}>
-              📊 Risk Score: {isInsufficientData(data) ? INSUFFICIENT_DATA_LABEL : formatRiskScore(effectiveRiskScore)}
+              📊 Risk Score: {formatRiskScore(effectiveRiskScore)}
             </Typography>
-            {isInsufficientData(data) && (
-              <Alert severity="info" sx={{ mb: 2 }}>{INSUFFICIENT_DATA_MESSAGE}</Alert>
-            )}
             <Typography variant="body2" color="text.secondary" paragraph>
               This risk score is calculated using statistical analysis of historical accident data,
               weather patterns, and route characteristics. Below is a breakdown of factors that
@@ -1900,7 +1904,7 @@ function RiskTrendsTab({ data, loading, routeData: _routeData, selectedDate }) {
                     <YAxis domain={[0, 100]} />
                     <Tooltip
                       labelFormatter={(date) => formatDateForDisplay(date, 'MMM d, yyyy', String(date))}
-                      formatter={(value) => [formatRiskScore(value), 'Risk Score']}
+                      formatter={formatRiskTooltip}
                     />
                     <Area
                       type="monotone"
@@ -1943,9 +1947,9 @@ function RiskTrendsTab({ data, loading, routeData: _routeData, selectedDate }) {
                     </Typography>
                   </Grid>
                   <Grid size={6}>
-                    <Typography variant="body2" color="text.secondary">Days Tracked</Typography>
+                    <Typography variant="body2" color="text.secondary">Days Scored</Typography>
                     <Typography variant="h5" fontWeight={600}>
-                      {data.historical_predictions?.length || 0}
+                      {daysOfData}
                     </Typography>
                   </Grid>
                 </Grid>
@@ -1961,11 +1965,11 @@ function RiskTrendsTab({ data, loading, routeData: _routeData, selectedDate }) {
                 </Typography>
                 <Typography variant="body2" color="text.secondary" paragraph>
                   {data.trend?.direction === 'increasing' &&
-                    '⚠️ Risk has been trending upward over the past 30 days.'}
+                    '⚠️ Risk is trending upward (latest 7 scored days vs earliest 7 scored days).'}
                   {data.trend?.direction === 'decreasing' &&
-                    '✅ Risk has been trending downward over the past 30 days.'}
+                    '✅ Risk is trending downward (latest 7 scored days vs earliest 7 scored days).'}
                   {data.trend?.direction === 'stable' &&
-                    '➡️ Risk has remained relatively stable over the past 30 days.'}
+                    '➡️ Risk is relatively stable (latest 7 scored days vs earliest 7 scored days).'}
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
                   {data.trend?.description || 'Trend analysis not available.'}
@@ -2246,7 +2250,7 @@ function TimeOfDayTab({ data, loading, routeData: _routeData, selectedDate }) {
                 <YAxis domain={[0, 100]} />
                 <Tooltip
                   labelFormatter={(hour) => `${String(hour).padStart(2, '0')}:00`}
-                  formatter={(value) => [formatRiskScore(value), 'Risk Score']}
+                  formatter={formatRiskTooltip}
                 />
                 <Legend />
                 <Line
@@ -2290,7 +2294,7 @@ function TimeOfDayTab({ data, loading, routeData: _routeData, selectedDate }) {
                           label={
                             isInsufficientData(hour)
                               ? INSUFFICIENT_DATA_LABEL
-                              : isRiskScore(hour.risk_score) ? hour.risk_score : '—'
+                              : isRiskScore(hour.risk_score) ? hour.risk_score.toFixed(1) : '—'
                           }
                           size="small"
                           sx={{

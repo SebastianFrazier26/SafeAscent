@@ -50,7 +50,7 @@ describe('useRouteSafety', () => {
     expect(fetchRouteSafety).toHaveBeenCalledTimes(2);
   });
 
-  it('goes loading → insufficient (neither ok nor error) when the route has no evidence', async () => {
+  it('goes loading → insufficient (neither ok nor error) when the route has too little evidence', async () => {
     vi.mocked(fetchRouteSafety).mockResolvedValue(INSUFFICIENT);
     const { result } = renderHook(() => useRouteSafety(42, '2026-09-27'));
     await waitFor(() => expect(result.current.state).toEqual({ status: 'insufficient', data: INSUFFICIENT }));

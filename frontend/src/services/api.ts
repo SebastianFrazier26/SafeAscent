@@ -46,7 +46,7 @@ export type DataStatus = 'ok' | 'insufficient_data';
 
 /**
  * A risk result is either a real 0-100 score with its band colour, or (owner decision
- * 2026-09-28) insufficient data: no contributing evidence, so no number and gray.
+ * 2026-09-28) insufficient data: too little evidence, so no number and gray.
  */
 export type ScoredRisk = { risk_score: number; color_code: RiskColorCode; data_status: 'ok' };
 export type InsufficientRisk = { risk_score: null; color_code: 'gray'; data_status: 'insufficient_data' };

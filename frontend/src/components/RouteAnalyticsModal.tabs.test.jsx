@@ -353,3 +353,75 @@ describe('RouteAnalyticsModal insufficient-data days and hours', () => {
     expect(csv).not.toMatch(/Risk Score,0/);
   });
 });
+
+describe('RouteAnalyticsModal breakdown, trends and 1-decimal chips (fix round 1)', () => {
+  const breakdown = {
+    route_id: 1,
+    risk_score: null,
+    color_code: 'gray',
+    data_status: 'insufficient_data',
+    message: 'Too little evidence to estimate risk yet',
+    num_contributing_accidents: 0,
+    factors: [],
+    top_accidents: [],
+  };
+  const okDay = (date, risk_score) => ({
+    date, risk_score, color_code: 'yellow', data_status: 'ok', weather_summary: 'Clear',
+    temp_high: 10, temp_low: 2, precip_mm: 0, wind_speed: 3,
+  });
+  const forecast = { forecast_days: [okDay('2026-09-27', 30), okDay('2026-09-28', 42.5)], elevation_meters: null };
+  const scored = Array.from({ length: 30 }, (_, i) => ({
+    date: `2026-08-${String(i + 1).padStart(2, '0')}`, risk_score: 20, color_code: 'green', data_status: 'ok',
+  }));
+  const historical = {
+    reference_date: '2026-09-27',
+    historical_predictions: [
+      ...scored,
+      { date: '2026-09-01', risk_score: null, color_code: 'gray', data_status: 'insufficient_data' },
+    ],
+    days_available: 30,
+    summary: { avg_risk: 20, min_risk: 20, max_risk: 20 },
+    trend: { direction: 'stable', description: 'Risk is about the same in the latest 7 scored days vs the earliest 7 scored days' },
+  };
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn((url) => {
+      if (url.includes('/risk-breakdown')) return Promise.resolve(jsonResponse(breakdown));
+      if (url.includes('/forecast')) return Promise.resolve(jsonResponse(forecast));
+      if (url.includes('/historical-trends')) return Promise.resolve(jsonResponse(historical));
+      return Promise.resolve(jsonResponse(route(1, 'Route A')));
+    }));
+  });
+
+  it('an insufficient breakdown shows the message and no factors or zero-contribution slice', async () => {
+    const user = userEvent.setup();
+    render(<Modal routeData={route(1, 'Route A')} />);
+    await user.click(screen.getByRole('tab', { name: 'Risk Breakdown' }));
+    const dialog = screen.getByRole('dialog');
+    expect(await within(dialog).findByText(INSUFFICIENT_DATA_MESSAGE)).toBeInTheDocument();
+    expect(within(dialog).queryByText(/No Data/)).toBeNull();
+    expect(within(dialog).queryByText(/Factor Contributions|pts/)).toBeNull();
+  });
+
+  it('forecast chips show one decimal', async () => {
+    const user = userEvent.setup();
+    render(<Modal routeData={route(1, 'Route A')} />);
+    await user.click(screen.getByRole('tab', { name: '7-Day Forecast' }));
+    await screen.findByText(/Weather Summary/);
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText('30.0', { selector: '.MuiChip-label' })).toBeInTheDocument();
+    expect(within(dialog).getByText('42.5', { selector: '.MuiChip-label' })).toBeInTheDocument();
+  });
+
+  it('counts scored days only and names the trend window as scored days', async () => {
+    const user = userEvent.setup();
+    render(<Modal routeData={route(1, 'Route A')} />);
+    await user.click(screen.getByRole('tab', { name: 'Risk Trends' }));
+    const dialog = screen.getByRole('dialog');
+    const label = await within(dialog).findByText('Days Scored');
+    expect(label.parentElement).toHaveTextContent('30');
+    expect(label.parentElement).not.toHaveTextContent('31');
+    expect(within(dialog).getByText(/Risk is relatively stable \(latest 7 scored days/)).toBeInTheDocument();
+    expect(within(dialog).queryByText(/past 30 days/)).toBeNull();
+  });
+});

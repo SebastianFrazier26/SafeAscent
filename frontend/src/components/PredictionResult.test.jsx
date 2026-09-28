@@ -32,11 +32,10 @@ const mockPrediction = {
 };
 
 describe('PredictionResult', () => {
-  it('renders risk score correctly (rounded)', () => {
+  it('renders the risk score with one decimal, as the backend sends it', () => {
     render(<PredictionResult prediction={mockPrediction} />);
 
-    // Component rounds risk_score (35.5 → 36)
-    expect(screen.getByText('36')).toBeInTheDocument();
+    expect(screen.getByText('35.5')).toBeInTheDocument();
   });
 
   it('renders top contributing factors section', () => {
@@ -57,7 +56,7 @@ describe('PredictionResult', () => {
     render(<PredictionResult prediction={highRiskPrediction} />);
 
     // High risk should be displayed (we test that it renders without error)
-    expect(screen.getByText('75')).toBeInTheDocument();
+    expect(screen.getByText('75.0')).toBeInTheDocument();
   });
 
   it('colours the level badge with the shared band hex', () => {
@@ -96,7 +95,7 @@ describe('PredictionResult', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Cannot connect to SafeAscent API.');
     await userEvent.click(screen.getByRole('button', { name: /retry/i }));
     expect(onRetry).toHaveBeenCalledOnce();
-    expect(screen.queryByText(/^\d+$/)).toBeNull();
+    expect(screen.queryByText(/^\d+(\.\d)?$/)).toBeNull();
     expect(screen.queryByText(/RISK$/)).toBeNull();
   });
 
@@ -104,7 +103,7 @@ describe('PredictionResult', () => {
     render(<PredictionResult prediction={{ ...mockPrediction, risk_score: undefined }} />);
 
     expect(screen.getByText('Unavailable')).toBeInTheDocument();
-    expect(screen.queryByText(/^\d+$/)).toBeNull();
+    expect(screen.queryByText(/^\d+(\.\d)?$/)).toBeNull();
     expect(screen.queryByText(/RISK$/)).toBeNull();
     expect(screen.queryByText(/NaN|undefined/)).toBeNull();
   });
@@ -153,7 +152,7 @@ describe('PredictionResult', () => {
     expect(screen.getByText('Insufficient data')).toBeInTheDocument();
     expect(screen.getByText(INSUFFICIENT_DATA_MESSAGE)).toBeInTheDocument();
     expect(screen.getByTestId('risk-icon')).toHaveStyle({ color: NO_RISK_ICON_HEX });
-    expect(screen.queryByText(/^\d+$/)).toBeNull();
+    expect(screen.queryByText(/^\d+(\.\d)?$/)).toBeNull();
     expect(screen.queryByText(/RISK$/)).toBeNull();
     expect(screen.queryByText('Top Contributing Factors')).toBeNull();
     expect(screen.queryByRole('button', { name: /retry/i })).toBeNull();
