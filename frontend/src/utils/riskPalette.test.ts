@@ -69,16 +69,26 @@ describe('components use the shared palette, not their own', () => {
 
 describe('no fabricated risk score', () => {
   // `risk_score || 0` turned a failed request into "Risk 0.0" (a green "safe" route).
-  const scoreFallback = /risk_score[^\n]*(\|\||\?\?)\s*0\b/;
+  const scoreFallback = /risk\w*[^\n]*(\|\||\?\?)\s*0\b/i;
+  const appSources = import.meta.glob('../App.jsx', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
+  const files: Record<string, string> = {
+    'MapView.jsx': source('MapView.jsx'),
+    'RouteAnalyticsModal.jsx': source('RouteAnalyticsModal.jsx'),
+    'PredictionResult.jsx': source('PredictionResult.jsx'),
+    'App.jsx': appSources['../App.jsx'] ?? '',
+  };
 
-  it.each(['MapView.jsx', 'RouteAnalyticsModal.jsx'])('%s never falls a risk_score back to 0', (name) => {
-    const hits = source(name).split('\n').filter((line) => scoreFallback.test(line));
+  it.each(Object.keys(files))('%s never falls a risk value back to 0', (name) => {
+    expect(files[name]).not.toBe('');
+    const hits = files[name].split('\n').filter((line) => scoreFallback.test(line));
     expect(hits).toEqual([]);
   });
 
-  it('catches the old pattern and spares the cluster coalesce', () => {
+  it('catches the old patterns and spares the cluster coalesce', () => {
     expect(scoreFallback.test('risk_score: safetyData.risk_score || 0,')).toBe(true);
     expect(scoreFallback.test('const s = route.risk_score ?? 0;')).toBe(true);
+    expect(scoreFallback.test('{data.summary?.avg_risk || 0}/100')).toBe(true);
+    expect(scoreFallback.test('const riskScore = prediction.riskScore ?? 0;')).toBe(true);
     expect(scoreFallback.test("risk_score_sum: ['+', ['coalesce', ['get', 'risk_score'], 0]],")).toBe(false);
     expect(source('MapView.jsx')).toContain("['coalesce', ['get', 'risk_score'], 0]");
   });

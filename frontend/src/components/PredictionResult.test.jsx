@@ -5,7 +5,7 @@ import { describe, it, expect, vi } from 'vitest';
 import userEvent from '@testing-library/user-event';
 import { render, screen } from '../test/utils';
 import PredictionResult from './PredictionResult';
-import { NO_RISK_HEX, RISK_COLOR_HEX, RISK_TEXT_ON_HEX } from '../utils/riskUtils';
+import { NO_RISK_ICON_HEX, RISK_COLOR_HEX, RISK_ICON_HEX, RISK_TEXT_ON_HEX } from '../utils/riskUtils';
 
 // Mock prediction data
 const mockPrediction = {
@@ -106,7 +106,7 @@ describe('PredictionResult', () => {
   it('shows the missing-score icon in the neutral no-data grey', () => {
     for (const risk_score of [undefined, null, NaN]) {
       const { unmount } = render(<PredictionResult prediction={{ ...mockPrediction, risk_score }} />);
-      expect(screen.getByTestId('risk-icon')).toHaveStyle({ color: NO_RISK_HEX });
+      expect(screen.getByTestId('risk-icon')).toHaveStyle({ color: NO_RISK_ICON_HEX });
       expect(screen.queryByText(/NaN|undefined/)).toBeNull();
       unmount();
     }
@@ -117,5 +117,17 @@ describe('PredictionResult', () => {
     expect(screen.getByText('EXTREME RISK').closest('.MuiChip-root')).toHaveStyle({
       color: RISK_TEXT_ON_HEX.red,
     });
+  });
+
+  it('the error Alert can be dismissed, which resets', async () => {
+    const onReset = vi.fn();
+    render(<PredictionResult prediction={null} error="boom" onRetry={() => {}} onReset={onReset} />);
+    await userEvent.click(screen.getByRole('button', { name: /close/i }));
+    expect(onReset).toHaveBeenCalledOnce();
+  });
+
+  it('colours the risk icon with the contrast-safe variant of the band hex', () => {
+    render(<PredictionResult prediction={{ ...mockPrediction, risk_score: 30 }} />);
+    expect(screen.getByTestId('risk-icon')).toHaveStyle({ color: RISK_ICON_HEX.yellow });
   });
 });

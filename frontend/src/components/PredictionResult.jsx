@@ -13,20 +13,23 @@ import {
   Paper,
   Chip,
   Button,
+  IconButton,
   Divider,
   Stack,
 } from '@mui/material';
 import {
   Warning as WarningIcon,
   CheckCircle as CheckCircleIcon,
+  Close as CloseIcon,
   Error as ErrorIcon,
   HelpOutline as HelpOutlineIcon,
   Print as PrintIcon,
   Refresh as RefreshIcon,
 } from '@mui/icons-material';
 import {
-  NO_RISK_HEX,
+  NO_RISK_ICON_HEX,
   RISK_COLOR_HEX,
+  RISK_ICON_HEX,
   RISK_TEXT_ON_HEX,
   getRiskColorCode,
   getRiskLevel,
@@ -52,11 +55,20 @@ export default function PredictionResult({ prediction, onReset, error, onRetry }
     return (
       <Alert
         severity="error"
+        onClose={onReset}
         sx={{ mt: 3, mb: 3 }}
+        // MUI drops its own close button whenever `action` is set, so the Retry case adds one.
         action={onRetry ? (
-          <Button color="inherit" size="small" onClick={onRetry}>
-            Retry
-          </Button>
+          <>
+            <Button color="inherit" size="small" onClick={onRetry}>
+              Retry
+            </Button>
+            {onReset && (
+              <IconButton color="inherit" size="small" aria-label="Close" onClick={onReset}>
+                <CloseIcon fontSize="small" />
+              </IconButton>
+            )}
+          </>
         ) : undefined}
       >
         <AlertTitle>Prediction failed</AlertTitle>
@@ -81,7 +93,7 @@ export default function PredictionResult({ prediction, onReset, error, onRetry }
         <Box sx={{ textAlign: 'center', my: 4 }}>
           <Box
             data-testid="risk-icon"
-            sx={{ color: riskColorCode ? RISK_COLOR_HEX[riskColorCode] : NO_RISK_HEX, mb: 2 }}
+            sx={{ color: riskColorCode ? RISK_ICON_HEX[riskColorCode] : NO_RISK_ICON_HEX, mb: 2 }}
           >
             <RiskIcon level={riskLevel} />
           </Box>

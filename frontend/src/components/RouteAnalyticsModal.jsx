@@ -278,6 +278,7 @@ import {
   getRiskColorCode,
   isRiskScore,
 } from '../utils/riskUtils';
+import { readableTextOn } from '../utils/color';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
 
@@ -287,6 +288,43 @@ function riskChipColors(score) {
   if (!isRiskScore(score)) return { bgcolor: NO_RISK_HEX, color: NO_RISK_TEXT_HEX };
   const code = getRiskColorCode(score);
   return { bgcolor: RISK_COLOR_HEX[code], color: RISK_TEXT_ON_HEX[code] };
+}
+
+const chipColorsOn = (bgcolor) => ({ bgcolor, color: readableTextOn(bgcolor) });
+
+// Hexes, not theme names, so the text colour can be computed from them.
+const SEVERITY_BG = { fatal: '#b71c1c', serious: '#e65100', moderate: '#f57c00', minor: '#fbc02d' };
+
+function severityBg(severity) {
+  const s = severity.toLowerCase();
+  if (s.includes('fatal') || s.includes('death')) return SEVERITY_BG.fatal;
+  if (s.includes('serious') || s.includes('severe')) return SEVERITY_BG.serious;
+  if (s.includes('moderate')) return SEVERITY_BG.moderate;
+  if (s.includes('minor')) return SEVERITY_BG.minor;
+  return NO_RISK_HEX;
+}
+
+// MUI light-theme success.main / success.light / warning.main / error.main and grey.400.
+const ACCIDENT_RATE_BG = { none: '#2e7d32', low: '#4caf50', elevated: '#ed6c02', high: '#d32f2f', noAscents: '#bdbdbd' };
+
+const isFiniteNumber = (value) => typeof value === 'number' && Number.isFinite(value);
+
+function accidentRateBg(month) {
+  if (month.ascent_count === 0) return ACCIDENT_RATE_BG.noAscents;
+  const rate = month.accident_rate;
+  if (!isFiniteNumber(rate)) return NO_RISK_HEX;
+  if (rate === 0) return ACCIDENT_RATE_BG.none;
+  if (rate < 5) return ACCIDENT_RATE_BG.low;
+  if (rate < 10) return ACCIDENT_RATE_BG.elevated;
+  return ACCIDENT_RATE_BG.high;
+}
+
+const formatRate = (rate) => (isFiniteNumber(rate) ? `${rate}%` : 'Unavailable');
+const formatCount = (count) => (isFiniteNumber(count) ? count : '—');
+
+function monthSummary(month) {
+  return `${formatCount(month?.ascent_count)} ascents with ${formatCount(month?.accident_count)} accidents `
+    + `(${isFiniteNumber(month?.accident_rate) ? `${month.accident_rate}% rate` : 'rate Unavailable'})`;
 }
 
 /**
@@ -450,10 +488,15 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
   const [currentTab, setCurrentTab] = useState(1);  // Default to Route Details tab
   const [loading, setLoading] = useState({});
   const routeId = routeData?.route_id ?? null;
-  const dataKey = routeId === null ? null : `${routeId}|${selectedDate}`;
+  const routeDateKey = routeId === null ? null : `${routeId}|${selectedDate}`;
+  // Every change of route or date opens a new visit, so A -> B -> A does not accept
+  // responses still in flight from the first visit to A.
+  const [visit, setVisit] = useState({ routeDateKey, n: 0 });
+  if (visit.routeDateKey !== routeDateKey) setVisit({ routeDateKey, n: visit.n + 1 });
+  const dataKey = routeDateKey === null ? null : `${routeDateKey}#${visit.n}`;
   const [tabData, setTabData] = useState({ key: null, ...EMPTY_TAB_DATA });
-  // Tab data is filed under the route+date it was requested for, so another route's
-  // (or date's) response can never render here even if it lands after a switch.
+  // Tab data is filed under the visit it was requested in, so another route's (or date's)
+  // response can never render here even if it lands after a switch.
   const data = tabData.key === dataKey ? tabData : EMPTY_TAB_DATA;
   const currentKeyRef = useRef(dataKey);
   const [error, setError] = useState(null);
@@ -1303,11 +1346,7 @@ function AccidentsTab({ data, loading, routeData }) {
                           size="small"
                           sx={{
                             fontWeight: 600,
-                            bgcolor: accident.injury_severity.toLowerCase().includes('fatal') || accident.injury_severity.toLowerCase().includes('death') ? '#b71c1c' :
-                                     accident.injury_severity.toLowerCase().includes('serious') || accident.injury_severity.toLowerCase().includes('severe') ? '#e65100' :
-                                     accident.injury_severity.toLowerCase().includes('moderate') ? '#f57c00' :
-                                     accident.injury_severity.toLowerCase().includes('minor') ? '#fbc02d' : '#9e9e9e',
-                            color: 'white',
+                            ...chipColorsOn(severityBg(accident.injury_severity)),
                           }}
                         />
                       )}
@@ -2345,7 +2384,7 @@ function AscentsTab({ data, loading, routeData }) {
                 <Paper sx={{ p: 2, bgcolor: 'primary.50', textAlign: 'center' }}>
                   <Typography variant="body2" color="text.secondary">Total Ascents</Typography>
                   <Typography variant="h4" fontWeight={700} color="primary.main">
-                    {data.total_ascents}
+                    {formatCount(data.total_ascents)}
                   </Typography>
                 </Paper>
               </Grid>
@@ -2353,7 +2392,7 @@ function AscentsTab({ data, loading, routeData }) {
                 <Paper sx={{ p: 2, bgcolor: 'error.50', textAlign: 'center' }}>
                   <Typography variant="body2" color="text.secondary">Total Accidents</Typography>
                   <Typography variant="h4" fontWeight={700} color="error.main">
-                    {data.total_accidents}
+                    {formatCount(data.total_accidents)}
                   </Typography>
                 </Paper>
               </Grid>
@@ -2361,7 +2400,7 @@ function AscentsTab({ data, loading, routeData }) {
                 <Paper sx={{ p: 2, bgcolor: 'warning.50', textAlign: 'center' }}>
                   <Typography variant="body2" color="text.secondary">Accident Rate</Typography>
                   <Typography variant="h4" fontWeight={700} color="warning.dark">
-                    {data.overall_accident_rate}%
+                    {formatRate(data.overall_accident_rate)}
                   </Typography>
                   <Typography variant="caption" color="text.secondary">per 1000 ascents</Typography>
                 </Paper>
@@ -2465,20 +2504,16 @@ function AscentsTab({ data, loading, routeData }) {
                               {month.month}
                             </Typography>
                             <Chip
-                              label={month.ascent_count > 0 ? `${month.accident_rate}%` : 'No data'}
+                              label={month.ascent_count > 0 ? formatRate(month.accident_rate) : 'No data'}
                               size="small"
                               sx={{
-                                bgcolor: month.ascent_count === 0 ? 'grey.400' :
-                                         month.accident_rate === 0 ? 'success.main' :
-                                         month.accident_rate < 5 ? 'success.light' :
-                                         month.accident_rate < 10 ? 'warning.main' : 'error.main',
-                                color: 'white',
+                                ...chipColorsOn(accidentRateBg(month)),
                                 fontWeight: 600,
                               }}
                             />
                           </Box>
                         }
-                        secondary={`${month.ascent_count} ascents • ${month.accident_count} accidents`}
+                        secondary={`${formatCount(month.ascent_count)} ascents • ${formatCount(month.accident_count)} accidents`}
                       />
                     </ListItem>
                     {idx < 11 && <Divider />}
@@ -2500,9 +2535,7 @@ function AscentsTab({ data, loading, routeData }) {
               </Typography>
               {data.best_month && (
                 <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                  {data.monthly_stats?.find(m => m.month === data.best_month)?.ascent_count || 0} ascents
-                  with {data.monthly_stats?.find(m => m.month === data.best_month)?.accident_count || 0} accidents
-                  ({data.monthly_stats?.find(m => m.month === data.best_month)?.accident_rate || 0}% rate)
+                  {monthSummary(data.monthly_stats?.find(m => m.month === data.best_month))}
                 </Typography>
               )}
             </Paper>
@@ -2514,9 +2547,7 @@ function AscentsTab({ data, loading, routeData }) {
               </Typography>
               {data.worst_month && (
                 <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                  {data.monthly_stats?.find(m => m.month === data.worst_month)?.ascent_count || 0} ascents
-                  with {data.monthly_stats?.find(m => m.month === data.worst_month)?.accident_count || 0} accidents
-                  ({data.monthly_stats?.find(m => m.month === data.worst_month)?.accident_rate || 0}% rate)
+                  {monthSummary(data.monthly_stats?.find(m => m.month === data.worst_month))}
                 </Typography>
               )}
             </Paper>
@@ -2528,7 +2559,7 @@ function AscentsTab({ data, loading, routeData }) {
               </Typography>
               {data.peak_month && (
                 <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                  {data.monthly_stats?.find(m => m.month === data.peak_month)?.ascent_count || 0} recorded ascents
+                  {formatCount(data.monthly_stats?.find(m => m.month === data.peak_month)?.ascent_count)} recorded ascents
                   — the most popular month for this route
                 </Typography>
               )}

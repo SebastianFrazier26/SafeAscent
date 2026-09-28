@@ -39,3 +39,15 @@ export const mixHex = (a: string, b: string, t: number): string => {
   const cb = channels(b);
   return toHex(ca.map((c, i) => c + (cb[i] - c) * t));
 };
+
+/**
+ * `fg`, darkened toward black in small steps until it reaches `min` contrast on `bg`;
+ * unchanged if it already does. Keeps the hue recognisable while meeting a floor.
+ */
+export const darkenToContrast = (fg: string, bg: string, min: number): string => {
+  for (let step = 0; step <= 100; step += 1) {
+    const candidate = mixHex(fg, '#000000', step / 100);
+    if (contrastRatio(candidate, bg) >= min) return candidate;
+  }
+  return '#000000';
+};

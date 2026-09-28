@@ -4,7 +4,7 @@
  */
 
 import type { RiskColorCode } from '../services/api';
-import { readableTextOn } from './color';
+import { darkenToContrast, readableTextOn } from './color';
 
 export type RiskLevel = 'low' | 'moderate' | 'high' | 'extreme';
 
@@ -118,5 +118,14 @@ export const RISK_TEXT_ON_HEX = Object.fromEntries(
 ) as Record<RiskColorCode, string>;
 
 export const NO_RISK_TEXT_HEX = readableTextOn(NO_RISK_HEX);
+
+// Risk icons sit on white cards; WCAG 1.4.11 wants 3:1 for meaningful graphics and the
+// yellow band hex is ~1.4:1 there. Icons use a darkened shade; map colours stay as they are.
+const ICON_MIN_CONTRAST = 3;
+export const RISK_ICON_HEX = Object.fromEntries(
+  Object.entries(RISK_COLOR_HEX).map(([code, hex]) => [code, darkenToContrast(hex, '#ffffff', ICON_MIN_CONTRAST)]),
+) as Record<RiskColorCode, string>;
+
+export const NO_RISK_ICON_HEX = darkenToContrast(NO_RISK_HEX, '#ffffff', ICON_MIN_CONTRAST);
 
 export const getMarkerColor = (riskScore: number): string => RISK_COLOR_HEX[getRiskColorCode(riskScore)];
