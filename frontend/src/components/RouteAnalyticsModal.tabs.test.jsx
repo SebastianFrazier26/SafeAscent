@@ -355,7 +355,27 @@ describe('RouteAnalyticsModal accident and ascent figures', () => {
     render(<Modal routeData={route(1, 'Route A')} />);
     await user.click(screen.getByRole('tab', { name: 'Accident Reports' }));
 
-    expect(await screen.findByText('Showing 5 of 120 accidents.', { exact: false })).toBeInTheDocument();
+    expect(await screen.findByText(/Showing 5 of 120 accidents/)).toBeInTheDocument();
+  });
+
+  it('says how many were loaded when the total exceeds the loaded reports', async () => {
+    stubFetch({ accidentsBody: { ...accidents, total_accidents: 120, nearby_search: true } });
+    const user = userEvent.setup();
+    render(<Modal routeData={route(1, 'Route A')} />);
+    await user.click(screen.getByRole('tab', { name: 'Accident Reports' }));
+
+    const line = await screen.findByText(/Showing 5 of 120 accidents/);
+    expect(line).toHaveTextContent('Showing 5 of 120 accidents (first 5 loaded).');
+  });
+
+  it('adds no loaded note when everything was loaded', async () => {
+    stubFetch({ accidentsBody: { ...accidents, total_accidents: 5, nearby_search: true } });
+    const user = userEvent.setup();
+    render(<Modal routeData={route(1, 'Route A')} />);
+    await user.click(screen.getByRole('tab', { name: 'Accident Reports' }));
+
+    const line = await screen.findByText(/Showing 5 of 5 accidents/);
+    expect(line).not.toHaveTextContent(/loaded/);
   });
 
   it('a route with accidents but no logged ascents still shows the accident count', async () => {

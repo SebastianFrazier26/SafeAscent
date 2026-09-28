@@ -1327,7 +1327,8 @@ function AccidentsTab({ data, loading, routeData }) {
         ⚠️ Accident Reports for {getBestLocationName([data.location_name, routeData.mountain_name, formatRouteNameWithType(routeData.name, routeData.type)])}
       </Typography>
       <Typography variant="body2" color="text.secondary" paragraph>
-        Showing {displayedAccidents.length} of {totalAccidents} accidents.
+        Showing {displayedAccidents.length} of {totalAccidents} accidents
+        {totalAccidents > data.accidents.length && ` (first ${data.accidents.length} loaded)`}.
         Accidents on the same route are highlighted.
       </Typography>
       {nearbyUnavailable && nearbyUnavailableAlert}
