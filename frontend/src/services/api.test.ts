@@ -1,6 +1,6 @@
 import { AxiosError, AxiosHeaders } from 'axios';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import api, { fetchRouteSafety, isPredictionResponse, isSafetyResponse, predictRouteSafety } from './api';
+import api, { fetchNearbyAccidents, fetchRouteSafety, isPredictionResponse, isSafetyResponse, predictRouteSafety } from './api';
 
 const OK = {
   route_id: 42,
@@ -128,5 +128,25 @@ describe('fetchRouteSafety', () => {
     const error = new AxiosError('Network Error', 'ERR_NETWORK', { headers: new AxiosHeaders() });
     vi.spyOn(api, 'post').mockRejectedValue(error);
     await expect(fetchRouteSafety(42, '2026-09-27')).rejects.toThrow('Cannot connect to SafeAscent API');
+  });
+});
+
+describe('fetchNearbyAccidents', () => {
+  it('sends the lat/lon/radius_km names the API reads and returns the list', async () => {
+    const get = vi.spyOn(api, 'get').mockResolvedValue({ data: { total: 1, data: [{ accident_id: 7 }] } } as never);
+    await expect(fetchNearbyAccidents(40.1, -105.2, 10)).resolves.toEqual([{ accident_id: 7 }]);
+    expect(get).toHaveBeenCalledWith('/accidents', {
+      params: { lat: 40.1, lon: -105.2, radius_km: 10, limit: 100 },
+    });
+  });
+
+  it('throws on a failed request instead of reporting no accidents', async () => {
+    vi.spyOn(api, 'get').mockRejectedValue(new Error('down'));
+    await expect(fetchNearbyAccidents(40, -105)).rejects.toThrow();
+  });
+
+  it('throws on a malformed body', async () => {
+    vi.spyOn(api, 'get').mockResolvedValue({ data: [{ accident_id: 7 }] } as never);
+    await expect(fetchNearbyAccidents(40, -105)).rejects.toThrow('Malformed accident list');
   });
 });

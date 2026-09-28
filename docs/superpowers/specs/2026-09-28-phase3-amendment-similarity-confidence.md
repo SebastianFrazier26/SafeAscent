@@ -1,7 +1,7 @@
 # Phase 3 Amendment: Similarity Pooling, Confidence, Unified Scorer
 
 - **Date:** 2026-09-28
-- **Status:** Owner decisions D1–D5 recorded 2026-09-28 (§2). Still pending owner review: the replacement for the per-1,000 metric (§3.4) and the questions in §6.
+- **Status:** Owner decisions D1–D5 recorded 2026-09-28 (§2). Per-10,000-logged-ascents unit and counts-only interim recorded 2026-09-28 (§3.4). Still pending owner review: the §3.4 headline choice and the questions in §6.
 - **Amends:** `docs/superpowers/specs/2026-09-27-phase3-model-v2-design.md` (cited below as "P3:line").
 - **Principle:** accuracy of safety results comes first. Everything here must still pass the P3 validation gate.
 
@@ -109,9 +109,14 @@ MVP-1 therefore needs elevation and climate normals in `route_static_features` (
 - The Ascents tab uses the same fields.
 - The old response `confidence` (0-100) is still advertised in the `predict.py:89-91` docstring but no longer exists in the schema. Delete that stale text.
 
-### 3.4 Replacing "accidents per 1,000 ascents" (pending owner review)
+### 3.4 Replacing "accidents per 1,000 ascents" (owner decision 2026-09-28)
 
 MP ticks may be displayed (D5), but they remain a partial, capped sample, not exposure (§1B).
+
+**Owner decision (2026-09-28): unit and interim display.**
+- The Phase 3 shrunk estimate (option B's form, prior from similar routes) is stated **per 10,000 logged ascents**, never per 1,000, per 100 or as a percentage. Display wording: "About N per 10,000 logged ascents (likely A–B) · <confidence>", with the range from the posterior interval and the confidence label from §3.3.
+- Until that model exists, the Ascents tab shows counts only ("N accidents · M logged ascents", overall and per month) in neutral styling, with no rate of any kind. Shipped on `fix/ascents-counts-and-join`, which also moved the accident join to `accidents.mp_route_id`.
+- Whether option C's relative index is the headline above the per-10,000 line is still open (§6 Q1).
 
 | Option | Display | Trade-offs |
 |---|---|---|
@@ -169,7 +174,7 @@ MP ticks may be displayed (D5), but they remain a partial, capped sample, not ex
 
 ## 6. Open questions for the owner
 
-1. **Per-1,000 replacement:** approve option C from §3.4 (a relative index with an interval, plus raw counts as context)?
+1. **Per-1,000 replacement:** the unit is decided (per 10,000 logged ascents, shrunk, counts-only until then; §3.4). Still open: approve option C as the headline above it?
 2. **Aligning the MP text with D5:** once the lawyer's review is in, who updates P3:20, P3:252 and P3:343, `DATA_LICENSE.md:20` and the `CLAUDE.md` data rules, and when? Until then the repo gives two contradictory answers on whether ticks may be displayed.
 3. **Green under 25/50/75:** the lowest band renders green today (`risk_bands.py`). Keep green through MVP-1, or use a neutral colour for it in line with "shouldn't show as safe" (P3:444)?
 4. **Feature weights:** learned only from data (recommended), or with owner or expert priors, for example forcing alpine and ice to count as similar?

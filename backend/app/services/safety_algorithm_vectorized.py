@@ -39,6 +39,7 @@ from app.services.algorithm_config import (
     GRADE_MIN_WEIGHT,
 )
 from app.services.grade_weighting import parse_grade
+from app.services.temporal_weighting import is_future_dated, utc_today
 
 
 def haversine_distance_vectorized(
@@ -115,9 +116,12 @@ def calculate_temporal_weights_vectorized(
     current_date: date,
     accident_dates: np.ndarray,  # Array of date objects
     route_type: str,
+    today: Optional[date] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Vectorized temporal weight calculation.
+
+    Accidents dated after `today` (default: the UTC day at call time) get weight 0.
 
     Args:
         current_date: Current date
@@ -131,7 +135,11 @@ def calculate_temporal_weights_vectorized(
     lambda_val = TEMPORAL_LAMBDA.get(route_type.lower(), TEMPORAL_LAMBDA["default"])
 
     # Calculate days elapsed for each accident
-    days_elapsed = np.array([(current_date - acc_date).days for acc_date in accident_dates])
+    today = today or utc_today()
+    # An accident after a past target date but not after today is real: clip it to the
+    # most-recent weight rather than let lambda**negative exceed 1.
+    days_elapsed = np.clip(np.array([(current_date - acc_date).days for acc_date in accident_dates]), 0, None)
+    future = np.array([is_future_dated(acc_date, today) for acc_date in accident_dates], dtype=bool)
 
     # Exponential decay baseline and damped temporal contribution
     base_decay = lambda_val ** days_elapsed
@@ -150,7 +158,7 @@ def calculate_temporal_weights_vectorized(
                 seasonal_boosts[i] = seasonal_multiplier
                 break
 
-    weights = base_weights * seasonal_boosts
+    weights = np.where(future, 0.0, base_weights * seasonal_boosts)
 
     return weights, days_elapsed
 
@@ -290,6 +298,7 @@ def calculate_safety_score_vectorized(
     accidents: List[AccidentData],
     historical_weather_stats: Optional[Dict[str, Tuple[float, float]]] = None,
     route_grade: Optional[str] = None,
+    today: Optional[date] = None,
 ) -> SafetyPrediction:
     """
     Vectorized safety score calculation - 3-5× faster than loop-based version.
@@ -302,6 +311,8 @@ def calculate_safety_score_vectorized(
     Returns:
         SafetyPrediction object
     """
+    today = today or utc_today()
+    accidents = [acc for acc in accidents if not is_future_dated(acc.accident_date, today)]
     if not accidents:
         # Return zero-risk prediction
         return SafetyPrediction(
@@ -329,7 +340,7 @@ def calculate_safety_score_vectorized(
     )
 
     temporal_weights, days_elapsed = calculate_temporal_weights_vectorized(
-        current_date, accident_dates, route_type
+        current_date, accident_dates, route_type, today
     )
 
     elevation_weights = calculate_elevation_weights_vectorized(

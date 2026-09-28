@@ -2,10 +2,10 @@
 Accidents API endpoints with PostGIS spatial query support.
 """
 from typing import Optional
-from datetime import date
+from datetime import date, datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, type_coerce
+from sqlalchemy import select, func, or_, type_coerce
 from geoalchemy2 import Geography
 from geoalchemy2.functions import ST_MakePoint
 
@@ -19,8 +19,8 @@ router = APIRouter()
 @router.get("/accidents", response_model=AccidentListResponse)
 async def list_accidents(
     # Location filters (spatial)
-    lat: Optional[float] = Query(None, description="Latitude for spatial search"),
-    lon: Optional[float] = Query(None, description="Longitude for spatial search"),
+    lat: Optional[float] = Query(None, ge=-90, le=90, description="Latitude for spatial search"),
+    lon: Optional[float] = Query(None, ge=-180, le=180, description="Longitude for spatial search"),
     radius_km: Optional[float] = Query(None, ge=0.1, le=500, description="Search radius in kilometers"),
     # Text filters
     state: Optional[str] = Query(None, description="Filter by state"),
@@ -35,7 +35,10 @@ async def list_accidents(
     end_date: Optional[date] = Query(None, description="End date (YYYY-MM-DD)"),
     # Foreign key filters
     mountain_id: Optional[int] = Query(None, description="Filter by mountain ID"),
-    route_id: Optional[int] = Query(None, description="Filter by route ID"),
+    mp_route_id: Optional[int] = Query(None, description="Filter by Mountain Project route ID"),
+    # Accepted only to reject it: it used to filter the legacy accidents.route_id, and an
+    # ignored filter would silently return every accident.
+    route_id: Optional[int] = Query(None, include_in_schema=False),
     # Pagination
     limit: int = Query(100, ge=1, le=1000, description="Number of results to return"),
     offset: int = Query(0, ge=0, description="Number of results to skip"),
@@ -65,8 +68,17 @@ async def list_accidents(
     - **limit**: Max 1000 results
     - **offset**: Skip N results
     """
-    # Build query
-    query = select(Accident)
+    if route_id is not None:
+        raise HTTPException(status_code=422, detail="route_id is not supported; use mp_route_id")
+    spatial = (lat, lon, radius_km)
+    if any(v is not None for v in spatial) and not all(v is not None for v in spatial):
+        raise HTTPException(
+            status_code=422, detail="Spatial search needs lat, lon and radius_km together"
+        )
+
+    # Future-dated rows are data errors, not accidents (same UTC cutoff as the route endpoints).
+    today = datetime.now(timezone.utc).date()
+    query = select(Accident).where(or_(Accident.date.is_(None), Accident.date <= today))
 
     # Spatial filter (PostGIS ST_DWithin)
     if lat is not None and lon is not None and radius_km is not None:
@@ -109,8 +121,8 @@ async def list_accidents(
     # Foreign key filters
     if mountain_id is not None:
         query = query.where(Accident.mountain_id == mountain_id)
-    if route_id is not None:
-        query = query.where(Accident.route_id == route_id)
+    if mp_route_id is not None:
+        query = query.where(Accident.mp_route_id == mp_route_id)
 
     # Order by date descending (most recent first)
     query = query.order_by(Accident.date.desc().nullslast())

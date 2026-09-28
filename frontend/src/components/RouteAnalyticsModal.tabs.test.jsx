@@ -194,18 +194,15 @@ describe('RouteAnalyticsModal accident and ascent figures', () => {
   const ascents = {
     has_data: true,
     total_ascents: 40,
-    total_accidents: 1,
-    overall_accident_rate: undefined,
-    best_month: 'Jan',
-    worst_month: 'Feb',
+    total_accidents: 2,
     peak_month: 'Jan',
+    accident_years: { first: 1998, last: 2021 },
+    ascent_years: { first: 2024, last: 2026 },
     monthly_stats: [
-      { month: 'Jan', ascent_count: 30, accident_count: 0, accident_rate: 0 },
-      { month: 'Feb', ascent_count: 10, accident_count: undefined, accident_rate: undefined },
-      { month: 'Mar', ascent_count: 5, accident_count: 1, accident_rate: 4 },
-      { month: 'Apr', ascent_count: 5, accident_count: 1, accident_rate: 7 },
-      { month: 'May', ascent_count: 5, accident_count: 3, accident_rate: 12 },
-      { month: 'Jun', ascent_count: 0, accident_count: 0, accident_rate: 0 },
+      { month: 'Jan', ascent_count: 30, accident_count: 0 },
+      { month: 'Feb', ascent_count: 10, accident_count: undefined },
+      { month: 'Mar', ascent_count: 1, accident_count: 1 },
+      { month: 'Apr', ascent_count: 0, accident_count: 1 },
     ],
   };
 
@@ -233,46 +230,200 @@ describe('RouteAnalyticsModal accident and ascent figures', () => {
     }
   });
 
-  it('a missing accident rate reads Unavailable, never 0%, and rate chips are readable', async () => {
+  it('an FK-linked accident with no coordinates is listed, flagged and exported', async () => {
+    const withUnlocated = {
+      ...accidents,
+      accidents: [
+        {
+          accident_id: 9, date: '2018-05-01', route_name: 'Route A', injury_severity: 'Serious',
+          same_route: true, distance_km: null, impact_score: null, coordinates: null,
+        },
+        ...accidents.accidents,
+      ],
+    };
+    vi.stubGlobal('fetch', vi.fn((url) => {
+      if (url.endsWith('/accidents')) return Promise.resolve(jsonResponse(withUnlocated));
+      if (url.endsWith('/ascent-analytics')) return Promise.resolve(jsonResponse(ascents));
+      return Promise.resolve(jsonResponse(route(1, 'Route A')));
+    }));
+    const parts = [];
+    vi.stubGlobal('Blob', class {
+      constructor(content) { parts.push(content.join('')); }
+    });
+    vi.stubGlobal('URL', { ...URL, createObjectURL: () => 'blob:x', revokeObjectURL: () => {} });
+    const user = userEvent.setup();
+    render(<Modal routeData={route(1, 'Route A')} />);
+    await user.click(screen.getByRole('tab', { name: 'Accident Reports' }));
+    await screen.findByText('SAME ROUTE');
+
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText('Showing 6 of 6 accidents.', { exact: false })).toBeInTheDocument();
+    expect(within(dialog).getAllByText('Distance unknown')).toHaveLength(6);
+    expect(within(dialog).queryByText(/NaN|undefined|null km/)).toBeNull();
+
+    await user.click(screen.getByTitle('Export Analytics Data'));
+    await user.click(await screen.findByText(/Export as CSV/));
+    expect(parts).toHaveLength(1);
+    expect(parts[0]).toContain('2018-05-01,Route A,Yes,Serious,');
+  });
+
+  it('shows plain counts in neutral chips, never a rate or a green zero', async () => {
     const user = userEvent.setup();
     render(<Modal routeData={route(1, 'Route A')} />);
     await user.click(screen.getByRole('tab', { name: 'Ascents' }));
-    await screen.findByText(/Accident Rate by Month/);
+    await screen.findByText(/Counts by Month/);
 
     const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText('2 accidents · 40 logged ascents')).toBeInTheDocument();
+    expect(within(dialog).getByText(/logged ascents, which undercount real ascents/)).toBeInTheDocument();
+    expect(within(dialog).getByText('Accidents: all recorded years (1998–2021). Logged ascents: 2024–2026.'))
+      .toBeInTheDocument();
     expect(within(dialog).queryByText(/undefined|NaN/)).toBeNull();
-    // Feb (the worst month) has no rate: its highlight must not claim 0% or 0 accidents.
-    const worst = within(dialog).getByText(/Highest Risk Month/).closest('.MuiPaper-root');
-    expect(worst).not.toHaveTextContent(/\b0% rate|\b0 per 1,000/);
-    expect(worst).not.toHaveTextContent(/with 0 accidents/);
-    expect(worst).toHaveTextContent(/Unavailable/);
+    expect(within(dialog).queryByText(/\d%|per 1,000|per 10,000|Accident Rate|Safest|Highest Risk/i)).toBeNull();
 
-    // Rates are accidents per 1,000 ascents; the list header carries the unit.
-    expect(within(dialog).getByText('Accidents per 1,000 ascents')).toBeInTheDocument();
-    const best = within(dialog).getByText(/Safest Month:/).closest('.MuiPaper-root');
-    expect(best).toHaveTextContent('30 ascents with 0 accidents (0 per 1,000 ascents)');
-    expect(within(dialog).queryByText(/\d%/)).toBeNull();
-    for (const label of ['0', '4', '7', '12', 'No data']) {
-      expectReadable(within(dialog).getByText(label));
+    const labels = [
+      '0 accidents · 30 logged ascents',
+      '— accidents · 10 logged ascents',
+      '1 accident · 1 logged ascent',
+      '1 accident · 0 logged ascents',
+    ];
+    const chips = labels.map((label) => within(dialog).getByText(label).closest('.MuiChip-root'));
+    for (const chip of chips) {
+      expect(chip).toHaveClass('MuiChip-outlined');
+      expect(chip).not.toHaveClass('MuiChip-colorSuccess');
+      expect(chip).not.toHaveClass('MuiChip-colorError');
     }
-    const missingRateChip = within(dialog).getAllByText('Unavailable')
-      .map((el) => el.closest('.MuiChip-root')).find(Boolean);
-    expect(missingRateChip).toHaveStyle({ backgroundColor: NO_RISK_HEX });
-    expectReadable(missingRateChip);
   });
 
-  it('a route with no ascents never shows the backend 0.0 as a rate', async () => {
+  it('a side with no dated records gets no span', async () => {
+    vi.stubGlobal('fetch', vi.fn((url) => {
+      if (url.endsWith('/ascent-analytics')) {
+        return Promise.resolve(jsonResponse({ ...ascents, accident_years: null }));
+      }
+      if (url.endsWith('/accidents')) return Promise.resolve(jsonResponse(accidents));
+      return Promise.resolve(jsonResponse(route(1, 'Route A')));
+    }));
+    const user = userEvent.setup();
+    render(<Modal routeData={route(1, 'Route A')} />);
+    await user.click(screen.getByRole('tab', { name: 'Ascents' }));
+    await screen.findByText(/Counts by Month/);
+
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText('Logged ascents: 2024–2026.')).toBeInTheDocument();
+    expect(within(dialog).queryByText(/all recorded years/)).toBeNull();
+  });
+
+  const stubFetch = ({ accidentsBody = accidents, ascentsBody = ascents } = {}) => {
+    vi.stubGlobal('fetch', vi.fn((url) => {
+      if (url.endsWith('/ascent-analytics')) return Promise.resolve(jsonResponse(ascentsBody));
+      if (url.endsWith('/accidents')) return Promise.resolve(jsonResponse(accidentsBody));
+      return Promise.resolve(jsonResponse(route(1, 'Route A')));
+    }));
+  };
+
+  it('a route without coordinates says nearby accidents are unavailable, not that there are none', async () => {
+    stubFetch({ accidentsBody: { location_name: 'Unknown Area', accidents: [], total_accidents: 0, nearby_search: false } });
+    const user = userEvent.setup();
+    render(<Modal routeData={route(1, 'Route A')} />);
+    await user.click(screen.getByRole('tab', { name: 'Accident Reports' }));
+
+    expect(await screen.findByText("Nearby accidents unavailable: this route's area has no coordinates."))
+      .toBeInTheDocument();
+    expect(screen.queryByText(/No accident reports found/)).toBeNull();
+  });
+
+  it('linked reports on a route without coordinates are listed under the unavailable notice', async () => {
+    stubFetch({
+      accidentsBody: {
+        location_name: 'Unknown Area',
+        total_accidents: 1,
+        nearby_search: false,
+        accidents: [{ accident_id: 9, date: '2018-05-01', injury_severity: 'Serious', same_route: true, distance_km: null }],
+      },
+    });
+    const user = userEvent.setup();
+    render(<Modal routeData={route(1, 'Route A')} />);
+    await user.click(screen.getByRole('tab', { name: 'Accident Reports' }));
+    await screen.findByText('SAME ROUTE');
+
+    expect(screen.getByText("Nearby accidents unavailable: this route's area has no coordinates.")).toBeInTheDocument();
+  });
+
+  it('"Showing X of Y" uses the true total, not the returned page', async () => {
+    stubFetch({ accidentsBody: { ...accidents, total_accidents: 120, nearby_search: true } });
+    const user = userEvent.setup();
+    render(<Modal routeData={route(1, 'Route A')} />);
+    await user.click(screen.getByRole('tab', { name: 'Accident Reports' }));
+
+    expect(await screen.findByText(/Showing 5 of 120 accidents/)).toBeInTheDocument();
+  });
+
+  it('says how many were loaded when the total exceeds the loaded reports', async () => {
+    stubFetch({ accidentsBody: { ...accidents, total_accidents: 120, nearby_search: true } });
+    const user = userEvent.setup();
+    render(<Modal routeData={route(1, 'Route A')} />);
+    await user.click(screen.getByRole('tab', { name: 'Accident Reports' }));
+
+    const line = await screen.findByText(/Showing 5 of 120 accidents/);
+    expect(line).toHaveTextContent('Showing 5 of 120 accidents (first 5 loaded).');
+  });
+
+  it('adds no loaded note when everything was loaded', async () => {
+    stubFetch({ accidentsBody: { ...accidents, total_accidents: 5, nearby_search: true } });
+    const user = userEvent.setup();
+    render(<Modal routeData={route(1, 'Route A')} />);
+    await user.click(screen.getByRole('tab', { name: 'Accident Reports' }));
+
+    const line = await screen.findByText(/Showing 5 of 5 accidents/);
+    expect(line).not.toHaveTextContent(/loaded/);
+  });
+
+  it('a route with accidents but no logged ascents still shows the accident count', async () => {
+    stubFetch({
+      ascentsBody: {
+        ...ascents,
+        has_data: false,
+        total_ascents: 0,
+        total_accidents: 3,
+        ascent_years: null,
+        peak_month: null,
+        message: 'No tick data available yet for this route.',
+      },
+    });
+    const user = userEvent.setup();
+    render(<Modal routeData={route(1, 'Route A')} />);
+    await user.click(screen.getByRole('tab', { name: 'Ascents' }));
+
+    expect(await screen.findByText('3 accidents · no logged ascents yet')).toBeInTheDocument();
+    expect(screen.queryByText('No tick data available yet for this route.')).toBeNull();
+  });
+
+  it('undated records are named next to the spans and the month breakdown', async () => {
+    stubFetch({ ascentsBody: { ...ascents, undated_accidents: 1, undated_ascents: 2 } });
+    const user = userEvent.setup();
+    render(<Modal routeData={route(1, 'Route A')} />);
+    await user.click(screen.getByRole('tab', { name: 'Ascents' }));
+    await screen.findByText(/Counts by Month/);
+
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText(
+      'Accidents: all recorded years (1998–2021) (+1 undated). Logged ascents: 2024–2026 (+2 undated).',
+    )).toBeInTheDocument();
+    expect(within(dialog).getByText('Not in any month: accidents (+1 undated), logged ascents (+2 undated).'))
+      .toBeInTheDocument();
+    expect(within(dialog).getByText('Logged ascents by month (+2 undated)')).toBeInTheDocument();
+    expect(within(dialog).getByText('Accidents by month (+1 undated)')).toBeInTheDocument();
+  });
+
+  it('a route with no logged ascents shows the no-data state, not zero counts', async () => {
     const noAscents = {
       ...ascents,
       has_data: false,
       total_ascents: 0,
       total_accidents: 0,
-      overall_accident_rate: 0.0,
-      best_month: null,
-      worst_month: null,
       peak_month: null,
       message: 'No tick data available yet for this route.',
-      monthly_stats: ascents.monthly_stats.map((m) => ({ ...m, ascent_count: 0, accident_count: 0, accident_rate: 0 })),
+      monthly_stats: ascents.monthly_stats.map((m) => ({ ...m, ascent_count: 0, accident_count: 0 })),
     };
     vi.stubGlobal('fetch', vi.fn((url) => {
       if (url.endsWith('/ascent-analytics')) return Promise.resolve(jsonResponse(noAscents));
@@ -285,7 +436,7 @@ describe('RouteAnalyticsModal accident and ascent figures', () => {
     await screen.findByText('No tick data available yet for this route.');
 
     const dialog = screen.getByRole('dialog');
-    expect(within(dialog).queryByText(/per 1,000|Accident Rate by Month/)).toBeNull();
+    expect(within(dialog).queryByText(/Counts by Month|0 accidents/)).toBeNull();
   });
 });
 

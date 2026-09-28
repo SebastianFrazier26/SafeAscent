@@ -51,6 +51,7 @@ from app.services.algorithm_config import (
     TEMPORAL_SEASONAL_IMPACT,
 )
 from app.services.grade_weighting import parse_grade
+from app.services.temporal_weighting import is_future_dated, utc_today
 
 
 @dataclass
@@ -125,9 +126,12 @@ def compute_location_base_score(
     accidents: List[Dict],
     weather_similarity_map: Dict[int, float],
     default_route_type: str = "trad",
+    today: Optional[date] = None,
 ) -> LocationBaseScore:
     """
     Compute base scores for a single location.
+
+    Accidents dated after `today` (default: the UTC day at call time) get weight 0.
 
     This calculates the location-dependent weights for each accident:
     - Spatial weight (distance from location)
@@ -177,6 +181,7 @@ def compute_location_base_score(
     WEATHER_POWER = 3
     WEATHER_EXCLUSION_THRESHOLD = 0.25
 
+    today = today or utc_today()
     total_base = 0.0
 
     for accident in accidents:
@@ -190,9 +195,10 @@ def compute_location_base_score(
         spatial_weight = calculate_spatial_weight(distance_km, bandwidth)
 
         # 2. Temporal weight (exponential decay + seasonal boost)
-        days_elapsed = (target_date - accident["accident_date"]).days
-        if days_elapsed < 0:
-            # Future accident (shouldn't happen, but handle gracefully)
+        # Clipped like the vectorized path: after a past target date but not after today is
+        # a real accident at the most-recent weight.
+        days_elapsed = max(0, (target_date - accident["accident_date"]).days)
+        if is_future_dated(accident["accident_date"], today):
             temporal_weight = 0.0
         else:
             base_decay = lambda_val ** days_elapsed
@@ -308,12 +314,15 @@ def compute_location_base_score_vectorized(
     weather_similarity_map: Dict[int, float],
     default_route_type: str = "trad",
     max_distance_km: float = 300.0,
+    today: Optional[date] = None,
 ) -> LocationBaseScore:
     """
     Vectorized version of compute_location_base_score for ~50x speedup.
 
-    Uses numpy vectorization instead of Python loops.
+    Uses numpy vectorization instead of Python loops. Accidents dated after `today`
+    (default: the UTC day at call time) get weight 0.
     """
+    today = today or utc_today()
     lat, lon, ids, days_since_epoch, elevations, severity_weights, route_types, grades = accident_arrays
     n = len(lat)
 
@@ -372,6 +381,7 @@ def compute_location_base_score_vectorized(
     seasonal_boost = np.full(n, avg_seasonal_boost, dtype=np.float64)
 
     temporal_weights *= seasonal_boost
+    temporal_weights[days_since_epoch > (today - epoch).days] = 0.0
 
     # 5. VECTORIZED ELEVATION WEIGHT
     if location_elevation_m is None:
