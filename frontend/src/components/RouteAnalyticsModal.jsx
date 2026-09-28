@@ -1354,13 +1354,13 @@ function AccidentsTab({ data, loading, routeData }) {
                       <Box
                         sx={{
                           height: '100%',
-                          width: `${Number.isFinite(accident.impact_score) ? accident.impact_score : 10}%`,
+                          width: `${Number.isFinite(accident.impact_score) ? accident.impact_score : 0}%`,
                           bgcolor: accident.same_route ? 'error.main' : (Number.isFinite(accident.impact_score) && accident.impact_score > 50 ? 'warning.main' : 'info.main'),
                         }}
                       />
                     </Box>
                     <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem' }}>
-                      {Number.isFinite(accident.distance_km) ? `${accident.distance_km.toFixed(1)} km away` : ''}
+                      {Number.isFinite(accident.distance_km) ? `${accident.distance_km.toFixed(1)} km away` : 'Distance unknown'}
                     </Typography>
                   </Box>
                 </Box>

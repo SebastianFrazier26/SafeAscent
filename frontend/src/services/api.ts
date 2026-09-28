@@ -176,20 +176,26 @@ export const predictRouteSafety = async (params: PredictionParams): Promise<Pred
   return data;
 };
 
+// Names must match GET /accidents (lat, lon, radius_km); the API rejects a partial set with
+// 422 rather than ignoring it. A failure throws: an empty list would read as "no accidents".
 export const fetchNearbyAccidents = async (
   latitude: number,
   longitude: number,
   radiusKm = 50,
 ): Promise<unknown[]> => {
+  let data: unknown;
   try {
-    const response = await api.get<unknown[]>('/accidents', {
-      params: { latitude, longitude, radius_km: radiusKm, limit: 100 },
-    });
-    return response.data;
+    ({ data } = await api.get<unknown>('/accidents', {
+      params: { lat: latitude, lon: longitude, radius_km: radiusKm, limit: 100 },
+    }));
   } catch (error) {
-    console.error('Failed to fetch nearby accidents:', error);
-    return [];
+    throw toReadableError(error);
   }
+  const body = data as { total?: unknown; data?: unknown } | null;
+  if (!body || typeof body.total !== 'number' || !Array.isArray(body.data)) {
+    throw new Error('Malformed accident list from the API.');
+  }
+  return body.data;
 };
 
 export const healthCheck = async (): Promise<boolean> => {

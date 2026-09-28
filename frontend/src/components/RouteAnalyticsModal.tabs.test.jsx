@@ -230,6 +230,43 @@ describe('RouteAnalyticsModal accident and ascent figures', () => {
     }
   });
 
+  it('an FK-linked accident with no coordinates is listed, flagged and exported', async () => {
+    const withUnlocated = {
+      ...accidents,
+      accidents: [
+        {
+          accident_id: 9, date: '2018-05-01', route_name: 'Route A', injury_severity: 'Serious',
+          same_route: true, distance_km: null, impact_score: null, coordinates: null,
+        },
+        ...accidents.accidents,
+      ],
+    };
+    vi.stubGlobal('fetch', vi.fn((url) => {
+      if (url.endsWith('/accidents')) return Promise.resolve(jsonResponse(withUnlocated));
+      if (url.endsWith('/ascent-analytics')) return Promise.resolve(jsonResponse(ascents));
+      return Promise.resolve(jsonResponse(route(1, 'Route A')));
+    }));
+    const parts = [];
+    vi.stubGlobal('Blob', class {
+      constructor(content) { parts.push(content.join('')); }
+    });
+    vi.stubGlobal('URL', { ...URL, createObjectURL: () => 'blob:x', revokeObjectURL: () => {} });
+    const user = userEvent.setup();
+    render(<Modal routeData={route(1, 'Route A')} />);
+    await user.click(screen.getByRole('tab', { name: 'Accident Reports' }));
+    await screen.findByText('SAME ROUTE');
+
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText('Showing 6 of 6 accidents.', { exact: false })).toBeInTheDocument();
+    expect(within(dialog).getAllByText('Distance unknown')).toHaveLength(6);
+    expect(within(dialog).queryByText(/NaN|undefined|null km/)).toBeNull();
+
+    await user.click(screen.getByTitle('Export Analytics Data'));
+    await user.click(await screen.findByText(/Export as CSV/));
+    expect(parts).toHaveLength(1);
+    expect(parts[0]).toContain('2018-05-01,Route A,Yes,Serious,');
+  });
+
   it('shows plain counts in neutral chips, never a rate or a green zero', async () => {
     const user = userEvent.setup();
     render(<Modal routeData={route(1, 'Route A')} />);
