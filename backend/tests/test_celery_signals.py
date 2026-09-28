@@ -4,12 +4,15 @@ from types import SimpleNamespace
 
 import fakeredis
 import pytest
+from celery import Celery
+from kombu.asynchronous.timer import Timer
 
 import app.celery_signals as signals
 from app.celery_signals import (
     EXPIRED_KEY_PREFIX,
     HEARTBEAT_KEY,
     HeartbeatStep,
+    install,
     heartbeat_interval_seconds,
     read_worker_health,
     record_expired,
@@ -118,3 +121,50 @@ def test_heartbeat_step_survives_missing_redis(monkeypatch, caplog):
     with caplog.at_level(logging.ERROR, logger="app.celery_signals"):
         HeartbeatStep(parent).start(parent)
     assert "heartbeat" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [(HEARTBEAT_KEY, "not-a-float"), (f"{EXPIRED_KEY_PREFIX}t:2026-09-27", "not-an-int")],
+)
+def test_health_down_on_garbage_values(fake, key, value):
+    fake.set(key, value)
+    assert read_worker_health(fake, now=1.0, today=TODAY) == {
+        "status": "down",
+        "last_heartbeat_age_seconds": None,
+        "expired_tasks_7d": {},
+    }
+
+
+def _live_heartbeat_entries(timer: Timer) -> list[object]:
+    return [s.entry for s in timer.queue if not s.entry.canceled]
+
+
+def test_heartbeat_rescheduled_exactly_once_after_consumer_restart(fake, monkeypatch):
+    # Consumer.on_close() clears the shared timer, then blueprint.restart() stops and
+    # restarts every consumer step (celery/worker/consumer/consumer.py).
+    monkeypatch.setattr(signals, "get_redis_client", lambda: fake)
+    parent = SimpleNamespace(timer=Timer())
+    step = HeartbeatStep(parent)
+    step.start(parent)
+    assert len(_live_heartbeat_entries(parent.timer)) == 1
+
+    parent.timer.clear()
+    fake.delete(HEARTBEAT_KEY)
+    step.stop(parent)
+    step.start(parent)
+    assert len(_live_heartbeat_entries(parent.timer)) == 1
+    assert fake.get(HEARTBEAT_KEY) is not None
+
+    step.start(parent)
+    assert len(_live_heartbeat_entries(parent.timer)) == 1
+
+    step.shutdown(parent)
+    assert _live_heartbeat_entries(parent.timer) == []
+
+
+def test_install_registers_step_in_consumer_blueprint():
+    celery_app = Celery("t")
+    install(celery_app)
+    assert HeartbeatStep in celery_app.steps["consumer"]
+    assert HeartbeatStep not in celery_app.steps["worker"]

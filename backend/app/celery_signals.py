@@ -1,9 +1,13 @@
 """Celery worker liveness (Redis heartbeat) and expired-task accounting.
 
 The 2026-08 outage: the worker's consumer hung while embedded beat kept publishing,
-and every nightly message expired and was discarded below ERROR. The heartbeat runs on
-the worker's own timer, so it stops when the consumer loop stops. The beat-scheduled
-healthchecks ping (app.tasks.ops) covers hangs where the loop is alive but not consuming.
+and every nightly message expired and was discarded below ERROR.
+
+The heartbeat is a Consumer bootstep on the consumer's timer. With the prefork pool and
+the Redis broker that timer is fired by the consumer's event loop, so the key lapses when
+the loop stops turning. It does not cover a consume socket that dies silently while the
+loop keeps turning, or `-P gevent`/`-P eventlet` (the timer becomes its own thread); the
+beat-scheduled healthchecks ping (app.tasks.ops) covers those.
 """
 
 from __future__ import annotations
@@ -79,16 +83,13 @@ def read_worker_health(client: redis.Redis | None, now: float, today: date) -> W
     try:
         raw = client.get(HEARTBEAT_KEY)
         expired = _expired_counts(client, today)
-    except redis.RedisError:
+        age = None if raw is None else round(now - float(raw), 1)
+    except (redis.RedisError, ValueError):
         logger.exception("worker health read failed")
         return down
-    if raw is None:
+    if age is None:
         return {"status": "down", "last_heartbeat_age_seconds": None, "expired_tasks_7d": expired}
-    return {
-        "status": "ok",
-        "last_heartbeat_age_seconds": round(now - float(raw), 1),
-        "expired_tasks_7d": expired,
-    }
+    return {"status": "ok", "last_heartbeat_age_seconds": age, "expired_tasks_7d": expired}
 
 
 def on_task_revoked(
@@ -119,19 +120,28 @@ def on_task_revoked(
 
 
 class HeartbeatStep(bootsteps.StartStopStep):
-    requires = {"celery.worker.components:Timer"}
+    # Consumer blueprint, not Worker: on a broker error Consumer.on_close() clears the
+    # shared timer and then restarts only consumer steps, so a worker step's entry would
+    # be wiped for good. Requiring Tasks also means the first write follows a live consumer.
+    requires = {"celery.worker.consumer.tasks:Tasks"}
 
     def __init__(self, parent: Any, **kwargs: Any) -> None:
         super().__init__(parent, **kwargs)
         self._tref: Any = None
 
     def start(self, parent: Any) -> None:
+        self._cancel()
         self._beat()
         self._tref = parent.timer.call_repeatedly(
             heartbeat_interval_seconds(settings.WORKER_HEARTBEAT_TTL_SECONDS), self._beat
         )
 
     def stop(self, parent: Any) -> None:
+        self._cancel()
+
+    shutdown = stop
+
+    def _cancel(self) -> None:
         if self._tref is not None:
             self._tref.cancel()
             self._tref = None
@@ -148,5 +158,5 @@ class HeartbeatStep(bootsteps.StartStopStep):
 
 
 def install(app: Celery) -> None:
-    app.steps["worker"].add(HeartbeatStep)
+    app.steps["consumer"].add(HeartbeatStep)
     task_revoked.connect(on_task_revoked, weak=False)
