@@ -118,6 +118,30 @@ def test_0002_refuses_to_drop_non_empty_tables(fresh_db):
     assert _fetch_row(fresh_db, "SELECT to_regclass('public.ascents')::text") == ["ascents"]
 
 
+def test_0003_stores_insufficient_days_as_null_gray_and_rejects_mixed_pairs(fresh_db):
+    cfg = _alembic_cfg(fresh_db)
+    command.upgrade(cfg, "head")
+    _run(
+        fresh_db,
+        "INSERT INTO historical_predictions (route_id, prediction_date, risk_score, color_code) "
+        "VALUES (1, '2026-09-28', NULL, 'gray'), (2, '2026-09-28', 30.0, 'yellow')",
+    )
+    for values in ("(3, '2026-09-28', NULL, 'yellow')", "(4, '2026-09-28', 12.0, 'gray')"):
+        with pytest.raises(asyncpg.CheckViolationError):
+            _run(
+                fresh_db,
+                "INSERT INTO historical_predictions (route_id, prediction_date, risk_score, color_code) "
+                f"VALUES {values}",
+            )
+    command.downgrade(cfg, "0002_drop_ascents_climbers")
+    assert _fetch_row(fresh_db, "SELECT count(*), bool_and(risk_score IS NOT NULL) FROM historical_predictions") == [1, True]
+    assert _fetch_row(
+        fresh_db,
+        "SELECT is_nullable FROM information_schema.columns "
+        "WHERE table_name = 'historical_predictions' AND column_name = 'risk_score'",
+    ) == ["NO"]
+
+
 def test_models_no_longer_define_dropped_tables():
     from app.db.session import Base
 

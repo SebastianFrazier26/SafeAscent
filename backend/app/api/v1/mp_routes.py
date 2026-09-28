@@ -41,7 +41,13 @@ from app.services.weather_service import (
     fetch_weather_statistics,
 )
 from app.utils.time_utils import get_season
-from app.services.risk_bands import RISK_BAND_THRESHOLDS, color_code_for, valid_risk_score
+from app.services.risk_bands import (
+    INSUFFICIENT_DATA_COLOR,
+    RISK_BAND_THRESHOLDS,
+    cached_safety,
+    color_code_for,
+    valid_risk_score,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -153,6 +159,34 @@ def normalize_route_type(route_type: Optional[str]) -> str:
 
 def get_safety_color_code(risk_score: float) -> str:
     return color_code_for(risk_score)
+
+
+def _safety_response(route_id: int, route_name: str, date_str: str, risk_score: Optional[float]) -> MpRouteSafetyResponse:
+    if risk_score is None:
+        return MpRouteSafetyResponse(
+            route_id=route_id,
+            route_name=route_name,
+            target_date=date_str,
+            risk_score=None,
+            color_code=INSUFFICIENT_DATA_COLOR,
+            data_status="insufficient_data",
+        )
+    return MpRouteSafetyResponse(
+        route_id=route_id,
+        route_name=route_name,
+        target_date=date_str,
+        risk_score=risk_score,
+        color_code=color_code_for(risk_score),
+        data_status="ok",
+    )
+
+
+def _rounded_risk_fields(risk_score: Optional[float]) -> dict:
+    """risk_score/color_code/data_status for analytics payloads; None means insufficient_data."""
+    if risk_score is None:
+        return {"risk_score": None, "color_code": INSUFFICIENT_DATA_COLOR, "data_status": "insufficient_data"}
+    stored = round(risk_score, 1)
+    return {"risk_score": stored, "color_code": color_code_for(stored), "data_status": "ok"}
 
 
 async def get_route_with_location_coords(db: AsyncSession, mp_route_id: int):
@@ -452,20 +486,24 @@ async def get_mp_routes_with_safety(
     routes_with_safety = []
     cached_count = 0
     missing_count = 0
+    insufficient_count = 0
 
     for row in rows:
-        cached = cached_scores.get(row.mp_route_id)
-        # An entry without a real 0-100 score is a miss, never a 0; colour is re-derived
-        # from the score so entries written under older band sets can't disagree.
-        score = valid_risk_score(cached.get("risk_score")) if cached else None
+        # An entry without a real 0-100 score (and no explicit insufficient_data status)
+        # is a miss, never a 0; colour is re-derived from the score.
+        parsed = cached_safety(cached_scores.get(row.mp_route_id))
 
-        if score is not None:
+        if parsed is not None:
+            score, color_code, data_status = parsed
             safety = SafetyScore(
                 risk_score=score,
-                color_code=color_code_for(score),
+                color_code=color_code,
+                data_status=data_status,
                 status="cached"
             )
             cached_count += 1
+            if data_status == "insufficient_data":
+                insufficient_count += 1
         else:
             safety = None
             missing_count += 1
@@ -489,6 +527,7 @@ async def get_mp_routes_with_safety(
         cached_routes=cached_count,
         computed_routes=0,  # We don't compute on-demand in bulk endpoint
         missing_routes=missing_count,
+        insufficient_routes=insufficient_count,
         target_date=date_str,
         season=season or "rock",
     )
@@ -611,20 +650,18 @@ async def calculate_mp_route_safety(
     date_str = target_date.isoformat()
     cache_key = build_safety_score_key(mp_route_id, date_str)
     if not bypass_cache:
-        cached_result = cache_get(cache_key)
-        # A cached entry without a real 0-100 score falls through to a recompute.
-        cached_score = (
-            valid_risk_score(cached_result.get("risk_score"))
-            if isinstance(cached_result, dict)
-            else None
-        )
-        if cached_score is not None:
+        # A cached entry without a real 0-100 score (or explicit insufficient_data)
+        # falls through to a recompute.
+        parsed = cached_safety(cache_get(cache_key))
+        if parsed is not None:
+            cached_score, cached_color, cached_status = parsed
             return MpRouteSafetyResponse(
                 route_id=mp_route_id,
                 route_name=route.name,
                 target_date=date_str,
                 risk_score=cached_score,
-                color_code=color_code_for(cached_score),
+                color_code=cached_color,
+                data_status=cached_status,
             )
 
     # Build prediction request
@@ -639,14 +676,7 @@ async def calculate_mp_route_safety(
     # Get prediction
     prediction_response = await predict_route_safety(prediction_request, db)
 
-    # Build response
-    response = MpRouteSafetyResponse(
-        route_id=mp_route_id,
-        route_name=route.name,
-        target_date=date_str,
-        risk_score=prediction_response.risk_score,
-        color_code=get_safety_color_code(prediction_response.risk_score),
-    )
+    response = _safety_response(mp_route_id, route.name, date_str, prediction_response.risk_score)
 
     # Cache the result (1 hour TTL) - cache_set is sync, not async
     if not bypass_cache:
@@ -757,7 +787,7 @@ async def get_route_forecast(
 
             forecast_days.append({
                 "date": target_date.isoformat(),
-                "risk_score": round(prediction.risk_score, 1),
+                **_rounded_risk_fields(prediction.risk_score),
                 "weather_summary": weather_summary,
                 "temp_high": round(temp_max, 1) if temp_max is not None else None,
                 "temp_low": round(temp_min, 1) if temp_min is not None else None,
@@ -1055,7 +1085,7 @@ async def get_risk_breakdown(
     # Build factor breakdown with actual data
     factors = []
 
-    if prediction.num_contributing_accidents > 0:
+    if prediction.risk_score is not None:
         factors.append({
             "name": "Spatial Proximity",
             "contribution": round(avg_spatial, 1),
@@ -1100,7 +1130,7 @@ async def get_risk_breakdown(
         "route_id": mp_route_id,
         "route_name": route.name,
         "target_date": target_date.isoformat(),
-        "risk_score": round(prediction.risk_score, 1),
+        **_rounded_risk_fields(prediction.risk_score),
         "num_contributing_accidents": prediction.num_contributing_accidents,
         "extreme_weather": extreme_weather,
         "factors": factors,
@@ -1335,7 +1365,9 @@ async def get_time_of_day_analysis(
             elif visibility is not None and visibility < 5000:
                 risk_adjustment += 5
 
-            hourly_risk = min(max(base_risk + risk_adjustment, 0), 100)
+            # No evidence: no hourly number either (weather adjustments would otherwise
+            # turn "unknown" into an apparently low score).
+            hourly_risk = None if base_risk is None else min(max(base_risk + risk_adjustment, 0), 100)
 
             # Determine condition summary
             conditions = []
@@ -1350,7 +1382,9 @@ async def get_time_of_day_analysis(
             if visibility is not None and visibility < 5000:
                 conditions.append("Low Visibility")
 
-            if not conditions:
+            if not conditions and hourly_risk is None:
+                conditions.append("No risk estimate")
+            elif not conditions:
                 band = color_code_for(hourly_risk)
                 if band == "green":
                     conditions.append("Good Conditions")
@@ -1362,17 +1396,21 @@ async def get_time_of_day_analysis(
             is_daylight = 6 <= hour <= 18
             # Owner decision 2026-09-28: cut-off is the high band's lower edge
             # (RISK_BAND_THRESHOLDS[2] = 75), not an independent literal.
-            is_climbable = (
-                hourly_risk < RISK_BAND_THRESHOLDS[2]
-                and (precip is None or precip < 5)
-                and (wind is None or wind < 20)
-                and (gust is None or gust < 20)
-            )
+            # Insufficient data: climbability is unknown (None), never True.
+            is_climbable: Optional[bool] = None
+            if hourly_risk is not None:
+                is_climbable = (
+                    hourly_risk < RISK_BAND_THRESHOLDS[2]
+                    and (precip is None or precip < 5)
+                    and (wind is None or wind < 20)
+                    and (gust is None or gust < 20)
+                    and is_daylight
+                )
 
             hourly_data.append({
                 "hour": hour,
                 "time": times[i],
-                "risk_score": round(hourly_risk, 1),
+                **_rounded_risk_fields(hourly_risk),
                 "temperature": round(temp, 1) if temp is not None else None,
                 "precipitation": round(precip, 2) if precip is not None else None,
                 "wind_speed": round(wind, 1) if wind is not None else None,
@@ -1381,7 +1419,7 @@ async def get_time_of_day_analysis(
                 "visibility": round(visibility, 0) if visibility is not None else None,
                 "conditions_summary": ", ".join(conditions),
                 "is_daylight": is_daylight,
-                "is_climbable": is_climbable and is_daylight,
+                "is_climbable": is_climbable,
             })
 
         # Find best climbing windows
@@ -1419,14 +1457,19 @@ async def get_time_of_day_analysis(
             "route_id": mp_route_id,
             "route_name": route.name,
             "target_date": target_date.isoformat(),
-            "base_daily_risk": round(base_risk, 1),
+            "base_daily_risk": round(base_risk, 1) if base_risk is not None else None,
+            "data_status": "ok" if base_risk is not None else "insufficient_data",
             "hourly_data": hourly_data,
             "climbing_windows": windows,
             "best_window": windows[0] if windows else None,
             "recommendation": (
-                f"Best window: {windows[0]['start_hour']:02d}:00-{windows[0]['end_hour']:02d}:00 "
-                f"(Risk: {windows[0]['avg_risk']}/100)"
-            ) if windows else "No suitable climbing windows identified for this date",
+                "Not enough data to estimate risk for this route yet."
+                if base_risk is None
+                else (
+                    f"Best window: {windows[0]['start_hour']:02d}:00-{windows[0]['end_hour']:02d}:00 "
+                    f"(Risk: {windows[0]['avg_risk']}/100)"
+                ) if windows else "No suitable climbing windows identified for this date"
+            ),
         }
 
     except Exception as e:
@@ -1546,19 +1589,22 @@ async def get_historical_trends(
 
         predictions = []
         for row in historical_data:
+            if row[1] is None and row[2] == INSUFFICIENT_DATA_COLOR:
+                predictions.append({"date": row[0].isoformat(), **_rounded_risk_fields(None)})
+                continue
             stored_score = valid_risk_score(float(row[1])) if row[1] is not None else None
             if stored_score is None:
                 logger.warning(f"Skipping historical prediction without a valid score: route {mp_route_id} {row[0]}")
                 continue
             predictions.append({
                 "date": row[0].isoformat(),
-                "risk_score": round(stored_score, 1),
-                # Re-derived rather than trusting the stored column, so rows written under
-                # older band sets can never disagree with the live marker colour.
-                "color_code": color_code_for(stored_score),
+                # Colour re-derived rather than trusting the stored column, so rows written
+                # under older band sets can never disagree with the live marker colour.
+                **_rounded_risk_fields(stored_score),
             })
 
-        risk_scores = [p["risk_score"] for p in predictions]
+        # Insufficient-data days carry no number, so they are left out of the summary/trend.
+        risk_scores = [p["risk_score"] for p in predictions if p["risk_score"] is not None]
         summary = {
             "avg_risk": round(sum(risk_scores) / len(risk_scores), 1),
             "min_risk": round(min(risk_scores), 1),
@@ -1566,7 +1612,7 @@ async def get_historical_trends(
         } if risk_scores else None
 
         trend = None
-        if len(predictions) >= 7:
+        if len(risk_scores) >= 7:
             recent_avg = sum(risk_scores[-7:]) / 7
             older_avg = sum(risk_scores[:7]) / 7
 
@@ -1580,7 +1626,7 @@ async def get_historical_trends(
         return {
             "route_id": mp_route_id,
             "route_name": route.name,
-            "days_available": len(predictions),
+            "days_available": len(risk_scores),
             "historical_predictions": predictions,
             "summary": summary,
             "trend": trend,

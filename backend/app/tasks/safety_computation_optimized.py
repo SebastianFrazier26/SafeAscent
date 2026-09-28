@@ -789,7 +789,7 @@ async def _process_location_batch(
     3. Compute base scores for all accidents (VECTORIZED for speed)
     4. Apply route-specific adjustments for all routes at this location
 
-    Returns {route_id: {"risk_score": float, "color_code": str}}
+    Returns {route_id: {"risk_score": float | None, "color_code": str, "data_status": str}}
     """
     all_scores = {}
 
@@ -850,6 +850,9 @@ async def _save_to_historical(
 ) -> None:
     """
     Save scores to historical_predictions table.
+
+    An insufficient_data route is stored as risk_score NULL + color_code 'gray'
+    (migration 0003), not skipped and never 0.
 
     Uses batched inserts to avoid PostgreSQL parameter limits.
     Also purges data older than 1 year for storage efficiency.

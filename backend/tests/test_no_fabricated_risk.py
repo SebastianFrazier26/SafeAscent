@@ -101,8 +101,10 @@ async def test_historical_trends_drops_rows_without_valid_score(monkeypatch):
         AsyncMock(return_value=SimpleNamespace(name="R", latitude=None, longitude=None)),
     )
     result = MagicMock()
+    # (None, "gray") is now an explicit insufficient_data row (test_insufficient_data.py);
+    # a null score under any other colour is still malformed and dropped.
     result.fetchall.return_value = [
-        (date(2026, 9, 1), None, "gray"),
+        (date(2026, 9, 1), None, "red"),
         (date(2026, 9, 2), 140.0, "red"),
         (date(2026, 9, 3), 30.0, "yellow"),
     ]

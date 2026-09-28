@@ -15,7 +15,7 @@ import logging
 from typing import Optional, Any, Dict, List
 from urllib.parse import urlparse
 
-from app.services.risk_bands import color_code_for, valid_risk_score
+from app.services.risk_bands import cached_safety
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -391,14 +391,17 @@ def set_bulk_cached_safety_scores(
 
         written = 0
         for route_id, data in scores.items():
-            # Never write a placeholder score: readers would serve it as a real 0.
-            risk_score = valid_risk_score(data.get("risk_score"))
-            if risk_score is None:
+            # Never write a placeholder score: readers would serve it as a real 0. An
+            # explicit insufficient_data entry is stored as such (null score, gray).
+            parsed = cached_safety(data)
+            if parsed is None:
                 continue
+            risk_score, color_code, data_status = parsed
             key = build_safety_score_key(route_id, target_date)
             cache_data = {
                 "risk_score": risk_score,
-                "color_code": color_code_for(risk_score),
+                "color_code": color_code,
+                "data_status": data_status,
                 "confidence": data.get("confidence", 1.0),
                 "computed_at": computed_at,
                 "status": "cached"
