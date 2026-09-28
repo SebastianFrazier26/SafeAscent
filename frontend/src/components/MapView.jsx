@@ -27,6 +27,7 @@ import {
   routeSafetyProps,
 } from '../utils/riskUtils';
 import { hexToRgba, mixHex } from '../utils/color';
+import { clusterColorExpression } from '../utils/clusterColor';
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
 
@@ -38,21 +39,6 @@ const HEATMAP_BLEND = 2;
 const ROUTE_COLOR_MATCH_ARMS = [
   ...Object.entries(RISK_COLOR_HEX).flat(),
   'gray', NO_RISK_HEX,
-];
-// Cluster fill and its count label pick from parallel band tables on the same average score,
-// so the label colour always matches the fill it sits on.
-const clusterBandColor = (byBand, none) => [
-  'case',
-  ['>', ['get', 'risk_score_count'], 0],
-  [
-    'step',
-    ['/', ['get', 'risk_score_sum'], ['get', 'risk_score_count']],
-    byBand.green,
-    RISK_LOW_MAX, byBand.yellow,
-    RISK_MODERATE_MAX, byBand.orange,
-    RISK_HIGH_MAX, byBand.red,
-  ],
-  none,
 ];
 // Heatmap ramps come from the band palette so the heatmap cannot drift from the markers.
 // Edges and peaks lean toward the neighbouring band's hue so overlapping layers blend.
@@ -293,8 +279,8 @@ export default function MapView({ selectedRouteForZoom }) {
                 type: normalizeRouteTypeForDisplay(route.type),
                 mp_route_id: route.mp_route_id,
                 location_id: route.location_id,
-                // Insufficient-data and unscored routes are gray with no score, so the
-                // cluster average (risk_score_sum / risk_score_count) leaves them out.
+                // Insufficient-data and unscored routes are gray with no score: the cluster
+                // average leaves them out, and clusterColorExpression grays a mostly-unscored cluster.
                 ...safetyProps,
               },
             });
@@ -571,14 +557,14 @@ export default function MapView({ selectedRouteForZoom }) {
                 risk_score_count: ['+', ['case', ['==', ['typeof', ['get', 'risk_score']], 'number'], 1, 0]],
               }}
             >
-              {/* Clustered points - color by average safety score */}
+              {/* Clustered points - gray unless half are scored, else the scored average */}
               <Layer
                 id="clusters"
                 type="circle"
                 source="routes"
                 filter={['has', 'point_count']}
                 paint={{
-                  'circle-color': clusterBandColor(RISK_COLOR_HEX, NO_RISK_HEX),
+                  'circle-color': clusterColorExpression(RISK_COLOR_HEX, NO_RISK_HEX),
                   'circle-radius': [
                     'step',
                     ['get', 'point_count'],
@@ -601,7 +587,7 @@ export default function MapView({ selectedRouteForZoom }) {
                   'text-size': 14,
                 }}
                 paint={{
-                  'text-color': clusterBandColor(RISK_TEXT_ON_HEX, NO_RISK_TEXT_HEX),
+                  'text-color': clusterColorExpression(RISK_TEXT_ON_HEX, NO_RISK_TEXT_HEX),
                 }}
               />
 
