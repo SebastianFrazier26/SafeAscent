@@ -41,7 +41,7 @@ from app.services.weather_service import (
     fetch_weather_statistics,
 )
 from app.utils.time_utils import get_season
-from app.services.risk_bands import color_code_for, valid_risk_score
+from app.services.risk_bands import RISK_BAND_THRESHOLDS, color_code_for, valid_risk_score
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -1360,8 +1360,10 @@ async def get_time_of_day_analysis(
                     conditions.append("Cautious")
 
             is_daylight = 6 <= hour <= 18
+            # Owner decision 2026-09-28: cut-off is the high band's lower edge
+            # (RISK_BAND_THRESHOLDS[2] = 75), not an independent literal.
             is_climbable = (
-                hourly_risk < 70
+                hourly_risk < RISK_BAND_THRESHOLDS[2]
                 and (precip is None or precip < 5)
                 and (wind is None or wind < 20)
                 and (gust is None or gust < 20)

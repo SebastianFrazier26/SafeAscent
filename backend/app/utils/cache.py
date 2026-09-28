@@ -311,41 +311,6 @@ def get_cached_safety_score(route_id: int, target_date: str) -> Optional[Dict]:
     return cache_get(key)
 
 
-def set_cached_safety_score(
-    route_id: int,
-    target_date: str,
-    risk_score: float,
-    color_code: str,
-    confidence: float = 1.0,
-    computed_at: Optional[str] = None
-) -> bool:
-    """
-    Cache a single safety score.
-
-    Args:
-        route_id: Route ID
-        target_date: Date string (YYYY-MM-DD)
-        risk_score: Risk score 0-100
-        color_code: 'green', 'yellow', 'orange', 'red', or 'gray'
-        confidence: Confidence level 0-1 (default: 1.0)
-        computed_at: ISO timestamp when computed (default: now)
-
-    Returns:
-        True if cached successfully
-    """
-    from datetime import datetime
-
-    key = build_safety_score_key(route_id, target_date)
-    data = {
-        "risk_score": risk_score,
-        "color_code": color_code,
-        "confidence": confidence,
-        "computed_at": computed_at or datetime.utcnow().isoformat(),
-        "status": "cached"
-    }
-    return cache_set(key, data, ttl_seconds=SAFETY_SCORE_TTL)
-
-
 def get_bulk_cached_safety_scores(
     route_ids: List[int],
     target_date: str

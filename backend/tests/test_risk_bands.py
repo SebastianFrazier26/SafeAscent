@@ -21,6 +21,21 @@ BOUNDARY_CASES = [
     (100.0, "red"),
 ]
 
+# compute_batch_route_scores rounds to 1 decimal before deriving colour (2026-09-28
+# fix: colour must match the stored rounded value), so an epsilon-below-boundary raw
+# score like 24.99 rounds *up* to the boundary itself. Cases already at 1-decimal
+# precision round-trip unchanged and still exercise both sides of each edge.
+ROUNDED_BOUNDARY_CASES = [
+    (0.0, "green"),
+    (24.9, "green"),
+    (25.0, "yellow"),
+    (49.9, "yellow"),
+    (50.0, "orange"),
+    (74.9, "orange"),
+    (75.0, "red"),
+    (100.0, "red"),
+]
+
 
 def test_owner_decided_bands():
     assert RISK_BAND_THRESHOLDS == (25.0, 50.0, 75.0)
@@ -36,7 +51,7 @@ def test_live_safety_path_uses_shared_bands(score, expected):
     assert get_safety_color_code(score) == expected
 
 
-@pytest.mark.parametrize("score,expected", BOUNDARY_CASES)
+@pytest.mark.parametrize("score,expected", ROUNDED_BOUNDARY_CASES)
 def test_nightly_batch_path_uses_shared_bands(monkeypatch, score, expected):
     monkeypatch.setattr(
         "app.services.location_safety_computation.compute_route_risk_score",
@@ -44,6 +59,18 @@ def test_nightly_batch_path_uses_shared_bands(monkeypatch, score, expected):
     )
     result = compute_batch_route_scores({}, [{"route_id": 1, "route_type": "sport", "grade": None}])
     assert result[1]["color_code"] == expected
+
+
+def test_nightly_batch_colour_matches_stored_rounded_score(monkeypatch):
+    # Raw 24.96 rounds (for storage) to 25.0, which is yellow. The colour must
+    # agree with what's actually stored, not with the unrounded raw value (green).
+    monkeypatch.setattr(
+        "app.services.location_safety_computation.compute_route_risk_score",
+        lambda **_: (24.96, {}),
+    )
+    result = compute_batch_route_scores({}, [{"route_id": 1, "route_type": "sport", "grade": None}])
+    assert result[1]["risk_score"] == 25.0
+    assert result[1]["color_code"] == "yellow"
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), -0.1, 100.1])

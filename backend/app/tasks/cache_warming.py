@@ -114,15 +114,18 @@ async def _warm_cache_async() -> dict:
                             allow_elevation_lookup=False,
                         )
 
-                        # Determine color code
-                        color_code = get_safety_color_code(prediction.risk_score)
+                        # Colour must match the rounded score actually stored
+                        # (see location_safety_computation.compute_batch_route_scores
+                        # for the same fix), not the raw pre-round value.
+                        stored_score = round(prediction.risk_score, 1)
+                        color_code = get_safety_color_code(stored_score)
 
                         # Build response
                         safety_response = MpRouteSafetyResponse(
                             route_id=route.mp_route_id,
                             route_name=route.name,
                             target_date=target_date.isoformat(),
-                            risk_score=round(prediction.risk_score, 1),
+                            risk_score=stored_score,
                             color_code=color_code
                         )
 

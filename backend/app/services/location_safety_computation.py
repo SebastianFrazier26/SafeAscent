@@ -539,9 +539,14 @@ def compute_batch_route_scores(
             route_grade=route_grade,
         )
 
+        # Colour must be derived from the rounded score, not the raw value:
+        # otherwise a score just under a band edge (e.g. 24.96) can round up to
+        # the stored value on one side of the edge (25.0, yellow) while its
+        # colour is computed from the pre-round value on the other (green).
+        stored_score = round(risk_score, 1)
         results[route_id] = {
-            "risk_score": round(risk_score, 1),
-            "color_code": color_code_for(risk_score),
+            "risk_score": stored_score,
+            "color_code": color_code_for(stored_score),
         }
 
     return results
