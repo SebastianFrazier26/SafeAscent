@@ -148,3 +148,31 @@ def test_main_argument_shape(tmp_path):
         main(["--role", "app", "--scram"])
     with pytest.raises(SystemExit):
         main(["--role", "app", "--env-file", str(tmp_path / "x"), "--generate-password", "--password-stdin"])
+
+
+def test_main_generate_writes_nothing_when_the_url_cannot_be_built(tmp_path, monkeypatch):
+    env = tmp_path / ".env.app"
+    monkeypatch.setenv("OWNER_DATABASE_URL", "postgresql:///neondb")
+    with pytest.raises(ValueError):
+        main(["--role", "app", "--env-file", str(env), "--generate-password"])
+    assert not env.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("from_stdin", [False, True])
+def test_main_refuses_a_stale_password_line_that_differs(tmp_path, monkeypatch, capsys, from_stdin):
+    env = tmp_path / ".env.app"
+    env.write_text("APP_PASSWORD=stale-old-password\n")
+    monkeypatch.setenv("OWNER_DATABASE_URL", OWNER)
+    args = ["--role", "app", "--env-file", str(env)]
+    if from_stdin:
+        monkeypatch.setattr("sys.stdin", io.StringIO("new-password\n"))
+        args.append("--password-stdin")
+    else:
+        monkeypatch.setenv("APP_PASSWORD", "new-password")
+    with pytest.raises(SystemExit, match="has a different APP_PASSWORD") as exc:
+        main(args)
+    assert "stale-old-password" not in str(exc.value) and "new-password" not in str(exc.value)
+    assert env.read_text() == "APP_PASSWORD=stale-old-password\n"
+    out = capsys.readouterr()
+    assert "new-password" not in out.out + out.err

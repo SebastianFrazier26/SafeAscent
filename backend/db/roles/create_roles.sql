@@ -1,11 +1,17 @@
 -- Run as the database owner. MIGRATOR_PASSWORD / APP_PASSWORD come via \getenv, never argv,
 -- and reach the server as plaintext over verify-full TLS; the server stores SCRAM-SHA-256.
--- Neon rejects pre-hashed verifiers ("Neon only supports being given plaintext passwords",
--- rehearsal 2026-09-28), which is why this no longer takes client-side SCRAM verifiers.
 -- Create roles only through this file: neonctl / Console / API roles join neon_superuser.
 \set ON_ERROR_STOP on
 \set VERBOSITY terse
 \set SHOW_CONTEXT never
+
+-- Secret-free, so a rerun stops here instead of sending a CREATE ROLE ... PASSWORD that
+-- fails and lands in the server log via log_min_error_statement.
+SELECT NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname IN ('migrator', 'app')) AS roles_absent \gset
+\if :roles_absent
+\else
+  DO $$ BEGIN RAISE EXCEPTION 'migrator/app already exist; do not rerun create_roles.sql'; END $$;
+\endif
 
 \getenv migrator_password MIGRATOR_PASSWORD
 \getenv app_password APP_PASSWORD

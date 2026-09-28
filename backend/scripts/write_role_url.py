@@ -29,10 +29,10 @@ def build_role_url(owner_url: str, role: str, password: str) -> str:
     return f"postgresql+asyncpg://{quote(role, safe='')}:{quote(password, safe='')}@{host}{parts.path}?ssl=verify-full"
 
 
-def upsert_env_line(path: Path, key: str, value: str) -> None:
+def upsert_env_lines(path: Path, values: dict[str, str]) -> None:
     lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-    lines = [line for line in lines if not line.startswith(f"{key}=")]
-    lines.append(f"{key}={value}")
+    lines = [line for line in lines if line.split("=", 1)[0] not in values]
+    lines.extend(f"{key}={value}" for key, value in values.items())
     # mkstemp creates the file 0600, so the secret is never readable at a looser mode,
     # even if the existing file was 0644; os.replace swaps it in atomically. The fixed
     # ".env.tmp." prefix keeps a leftover from a killed run under the `.env.*` ignore rule.
@@ -46,10 +46,17 @@ def upsert_env_line(path: Path, key: str, value: str) -> None:
         raise
 
 
-def env_file_has_key(path: Path, key: str) -> bool:
-    return path.exists() and any(
-        line.startswith(f"{key}=") for line in path.read_text(encoding="utf-8").splitlines()
-    )
+def upsert_env_line(path: Path, key: str, value: str) -> None:
+    upsert_env_lines(path, {key: value})
+
+
+def env_file_value(path: Path, key: str) -> str | None:
+    if not path.exists():
+        return None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith(f"{key}="):
+            return line.split("=", 1)[1]
+    return None
 
 
 def _password(prefix: str, from_stdin: bool) -> str:
@@ -76,19 +83,25 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     prefix = args.role.upper()
+    password_key, url_key = f"{prefix}_PASSWORD", f"{prefix}_DATABASE_URL"
     owner_url = os.environ["OWNER_DATABASE_URL"]
+    existing = env_file_value(args.env_file, password_key)
     if args.generate_password:
         # Refusing to overwrite keeps a rerun from silently rotating a password the
         # server may already hold; delete the file to start over.
-        if env_file_has_key(args.env_file, f"{prefix}_PASSWORD"):
-            raise SystemExit(f"{args.env_file} already has {prefix}_PASSWORD; delete the file to generate a new one")
+        if existing is not None:
+            raise SystemExit(f"{args.env_file} already has {password_key}; delete the file to generate a new one")
         password = secrets.token_hex(32)
-        upsert_env_line(args.env_file, f"{prefix}_PASSWORD", password)
+        values = {password_key: password, url_key: build_role_url(owner_url, args.role, password)}
     else:
         password = _password(prefix, args.password_stdin)
-    upsert_env_line(args.env_file, f"{prefix}_DATABASE_URL", build_role_url(owner_url, args.role, password))
-    written = f"{prefix}_PASSWORD and {prefix}_DATABASE_URL" if args.generate_password else f"{prefix}_DATABASE_URL"
-    print(f"wrote {written} to {args.env_file}")
+        # A URL built from one password beside a stale line holding another would leave
+        # create_roles.sql and the services disagreeing about the role's password.
+        if existing is not None and existing != password:
+            raise SystemExit(f"{args.env_file} has a different {password_key}; remove that line or the file first")
+        values = {url_key: build_role_url(owner_url, args.role, password)}
+    upsert_env_lines(args.env_file, values)
+    print(f"wrote {' and '.join(values)} to {args.env_file}")
     return 0
 
 

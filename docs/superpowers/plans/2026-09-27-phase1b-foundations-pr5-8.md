@@ -1561,7 +1561,7 @@ PR5 is ready for the owner to review and `/commitandpush`. Task 8 runs only afte
 
 All commands run in the owner's terminal (zsh or bash; both verified 2026-09-28) from `/Users/sebastianfrazier/Developer/SafeAscent/backend` on an up-to-date `main` that includes PR5 and the Neon plaintext-password fix. Nothing here prints a password. Agents do not run the prod steps.
 
-> **Revised 2026-09-28 (Neon rehearsals 1 and 2, owner decision D1).** Neon's control plane rejects pre-hashed passwords in `CREATE ROLE ... PASSWORD` (`Neon only supports being given plaintext passwords`). `create_roles.sql` therefore reads the plaintext from `MIGRATOR_PASSWORD` / `APP_PASSWORD` via psql `\getenv` (never argv) and sends it over `verify-full` TLS; Neon stores SCRAM-SHA-256 (checked on the rehearsal branch: `pg_authid.rolpassword` starts `SCRAM-SHA-256$`). The script refuses a value shaped like a SCRAM or md5 verifier and anything under 32 characters. On this compute `log_statement=none`, `log_min_duration_statement=-1`, and `pg_stat_statements` is not installed in `neondb`, so the statement is not logged by Postgres; Neon's control plane does receive the plaintext. Also folded in: the owner URL is single-quoted (D2); `create_roles.sql` itself revokes the owner's older default `SELECT` grant to `analyst` (D3); Step 7 revokes **all** privileges on `alembic_version` from `app` (D4); the prod branch is `production` (D5). The sequence passed on branch `rehearsal2-2026-09-28` (Steps 3, 7 and 8 run verbatim from this text, the rest with the same commands) — see `.superpowers/sdd/2026-09-27-phase1b-foundations-pr5-8/neon-fix-rehearsal2-report.md`.
+> **Revised 2026-09-28 (Neon rehearsals 1 and 2, owner decision D1).** Neon's control plane rejects pre-hashed passwords in `CREATE ROLE ... PASSWORD` (`Neon only supports being given plaintext passwords`). `create_roles.sql` therefore reads the plaintext from `MIGRATOR_PASSWORD` / `APP_PASSWORD` via psql `\getenv` (never argv) and sends it over `verify-full` TLS; Neon stores SCRAM-SHA-256 (checked on the rehearsal branch: `pg_authid.rolpassword` starts `SCRAM-SHA-256$`). The script refuses a value shaped like a SCRAM or md5 verifier and anything under 32 characters. On this compute (read on `rehearsal2-2026-09-28`) `log_statement=none`, `log_min_duration_statement=-1`, `log_min_error_statement=panic`, and `pg_stat_statements` is not installed in `neondb`, so Postgres logs neither the statement nor a failed one; Neon's control plane does receive the plaintext. `create_roles.sql` also stops, before sending any password, if `migrator` or `app` already exists, so a rerun never sends a failing `CREATE ROLE ... PASSWORD`. `neonctl roles list` returns no password field for `migrator`/`app` (name, `authentication_method: password`, timestamps only). Whether `neonctl connection-string --role-name migrator` (Neon's reveal-password API) can return an SQL-created role's password was deliberately not tried; treat Neon project access as able to read or reset these passwords. Also folded in: the owner URL is single-quoted (D2); `create_roles.sql` itself revokes the owner's older default `SELECT` grant to `analyst` (D3); Step 7 revokes **all** privileges on `alembic_version` from `app` (D4); the prod branch is `production` (D5). The sequence passed on branch `rehearsal2-2026-09-28` (Steps 3, 7 and 8 run verbatim from this text, the rest with the same commands) — see `.superpowers/sdd/2026-09-27-phase1b-foundations-pr5-8/neon-fix-rehearsal2-report.md`.
 
 **Files (gitignored by `.env.*`, mode 0600, never committed):** `backend/.env.owner`, `backend/.env.migrator`, `backend/.env.app` for prod; `backend/.env.rehearsal.owner`, `.env.rehearsal.migrator`, `.env.rehearsal.app` for the rehearsal. The rehearsal gets its own role passwords; never reuse them on prod.
 
@@ -1633,20 +1633,23 @@ The prod branch is named `production` (not `main`). Commands scoped by `--projec
 ```bash
 cd /Users/sebastianfrazier/Developer/SafeAscent/backend
 umask 077
+rm -f .env.rehearsal.owner .env.rehearsal.migrator .env.rehearsal.app
 B=p1-roles-rehearsal
-neonctl branches create --project-id still-morning-74008008 --name "$B" --parent production --output json \
+neonctl branches create --project-id still-morning-74008008 --name "${B:?}" --parent production --output json \
   | python3 -c 'import json,sys; b=json.load(sys.stdin)["branch"]; print(b["id"], b["name"], b["parent_id"])'
-neonctl connection-string "$B" --project-id still-morning-74008008 --role-name neondb_owner --database-name neondb \
+neonctl connection-string "${B:?}" --project-id still-morning-74008008 --role-name neondb_owner --database-name neondb \
   | python3 -c '
-import sys
+import os, sys
 from urllib.parse import urlsplit
 url = sys.stdin.read().strip()
 assert url.startswith("postgresql://") and "\x27" not in url
-open(".env.rehearsal.owner", "w").write("OWNER_DATABASE_URL=\x27" + url + "\x27\n")
+with os.fdopen(os.open(".env.rehearsal.owner", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as fh:
+    fh.write("OWNER_DATABASE_URL=\x27" + url + "\x27\n")
 print("wrote .env.rehearsal.owner for", urlsplit(url).hostname)'
+ls -l .env.rehearsal.owner
 ```
 
-Expected: the branch id with parent `br-restless-bar-ajw5zy4b` (production), then `wrote .env.rehearsal.owner for ep-…c-3.us-east-2.aws.neon.tech`. `neonctl connection-string` prints a bare URL (not JSON). Neon roles are per branch, so roles created on the rehearsal branch never exist on `production`.
+Expected: the branch id with parent `br-restless-bar-ajw5zy4b` (production), then `wrote .env.rehearsal.owner for ep-…c-3.us-east-2.aws.neon.tech` and `-rw-------`. `${B:?}` matters: with an empty branch name `neonctl connection-string` silently returns the default branch's, i.e. **production's**, owner URL (seen 2026-09-28). The `rm -f` clears files left by an earlier rehearsal, whose passwords belong to a different branch; the file is created 0600 regardless of umask. `neonctl connection-string` prints a bare URL (not JSON). Neon roles are per branch, so roles created on the rehearsal branch never exist on `production`.
 
 - [ ] **Step 4 (owner): Rehearse the whole rollout (Steps 5–8 with `E=.env.rehearsal`)**
 
@@ -1677,7 +1680,7 @@ Expected: `wrote MIGRATOR_PASSWORD and MIGRATOR_DATABASE_URL to .env….migrator
 
 ```bash
 ( set -a; . "./$E.owner"; . "./$E.migrator"; . "./$E.app"; set +a
-  U="$(pg_verify_full "$OWNER_DATABASE_URL")" || exit 1; split_pg_url "$U"
+  U="$(pg_verify_full "$OWNER_DATABASE_URL")" || exit 1; split_pg_url "$U" && [ -n "$PG_URL_NOPASS" ] || exit 1
   psql "$PG_URL_NOPASS" -X -q -f db/roles/create_roles.sql &&
   psql "$PG_URL_NOPASS" -X -q -f db/roles/verify_roles.sql )
 ```
@@ -1692,7 +1695,7 @@ Expected: `roles migrator and app created`, a table of checks all `t` (96 rows b
   uv run alembic upgrade head &&
   uv run alembic current &&
   uv run alembic check &&
-  U="$(pg_verify_full "$MIGRATOR_DATABASE_URL")" && split_pg_url "$U" &&
+  U="$(pg_verify_full "$MIGRATOR_DATABASE_URL")" && split_pg_url "$U" && [ -n "$PG_URL_NOPASS" ] &&
   psql "$PG_URL_NOPASS" -X -q -c "REVOKE ALL ON public.alembic_version FROM app" && echo 'alembic_version revoked from app' )
 ```
 
@@ -1702,13 +1705,13 @@ Expected: `Running stamp_revision -> 0001_baseline`, `Running upgrade 0001_basel
 
 ```bash
 ( set -a; . "./$E.owner"; set +a
-  U="$(pg_verify_full "$OWNER_DATABASE_URL")" || exit 1; split_pg_url "$U"
+  U="$(pg_verify_full "$OWNER_DATABASE_URL")" || exit 1; split_pg_url "$U" && [ -n "$PG_URL_NOPASS" ] || exit 1
   psql "$PG_URL_NOPASS" -X -q -f db/roles/verify_roles.sql &&
   psql "$PG_URL_NOPASS" -XAt -c "SELECT version_num FROM alembic_version" \
     -c "SELECT to_regclass('public.ascents'), to_regclass('public.climbers'), to_regclass('public.routes'), to_regclass('public.mountains')" \
     -c "SELECT conname FROM pg_constraint WHERE conrelid = 'public.accidents'::regclass AND contype = 'f' ORDER BY 1" )
 ( set -a; . "./$E.app"; set +a
-  U="$(pg_verify_full "$APP_DATABASE_URL")" || exit 1; split_pg_url "$U"
+  U="$(pg_verify_full "$APP_DATABASE_URL")" || exit 1; split_pg_url "$U" && [ -n "$PG_URL_NOPASS" ] || exit 1
   psql "$PG_URL_NOPASS" -X -q -v ON_ERROR_STOP=1 <<'SQL'
 \conninfo
 SELECT current_user, count(*) FROM accidents;
@@ -4608,11 +4611,13 @@ curl -s https://api.safeascent.us/health/worker
 
 Expected: `200`, and `"status":"ok"`.
 
-- [ ] **Step 2 (owner): Rotate the `neondb_owner` password** (it leaked in public git history). Use the Neon Console → Branch `production` → Roles → `neondb_owner` → Reset password. Put the new URL in `backend/.env.owner` with an editor. Confirm the old password no longer authenticates, by pasting the old URL from the leaked history into a gitignored `backend/.env.oldowner` as `OLD_OWNER_DATABASE_URL=...`:
+- [ ] **Step 2 (owner): Rotate the `neondb_owner` password** (it leaked in public git history). Use the Neon Console → Branch `production` → Roles → `neondb_owner` → Reset password. Put the new URL in `backend/.env.owner` with an editor. Confirm the old password no longer authenticates, by pasting the old URL from the leaked history, with an editor, into a gitignored `backend/.env.oldowner` as `OLD_OWNER_DATABASE_URL='...'` (single quotes: the URL may contain `&`):
 
 ```bash
 cd /Users/sebastianfrazier/Developer/SafeAscent/backend
-( set -a; . ./.env.oldowner; set +a; psql "$OLD_OWNER_DATABASE_URL" -XAtc 'select 1' ) ; echo "exit=$?"
+( set -a; . ./.env.oldowner; set +a
+  U="$(pg_verify_full "$OLD_OWNER_DATABASE_URL")" || exit 1; split_pg_url "$U" && [ -n "$PG_URL_NOPASS" ] || exit 1
+  psql "$PG_URL_NOPASS" -XAtc 'select 1' ) ; echo "exit=$?"
 rm -f .env.oldowner
 ```
 
@@ -4623,7 +4628,7 @@ Expected: `password authentication failed for user "neondb_owner"` and `exit=2`.
 ```bash
 cd /Users/sebastianfrazier/Developer/SafeAscent/backend
 ( set -a; . ./.env.owner; set +a
-  U="$(pg_verify_full "$OWNER_DATABASE_URL")" || exit 1; split_pg_url "$U"
+  U="$(pg_verify_full "$OWNER_DATABASE_URL")" || exit 1; split_pg_url "$U" && [ -n "$PG_URL_NOPASS" ] || exit 1
   psql "$PG_URL_NOPASS" -X -q -c "REVOKE migrator FROM CURRENT_USER" &&
   psql "$PG_URL_NOPASS" -X -q -f db/roles/verify_roles.sql )
 ```
@@ -4637,7 +4642,7 @@ Expected: `ALL ROLE CHECKS PASSED`. The owner no longer inherits table access, w
 ```bash
 cd /Users/sebastianfrazier/Developer/SafeAscent/backend
 ( set -a; . ./.env.analyst; set +a
-  U="$(pg_verify_full "$ANALYST_DATABASE_URL")" || exit 1; split_pg_url "$U"
+  U="$(pg_verify_full "$ANALYST_DATABASE_URL")" || exit 1; split_pg_url "$U" && [ -n "$PG_URL_NOPASS" ] || exit 1
   psql "$PG_URL_NOPASS" -XAtc "SELECT count(*) FROM historical_predictions WHERE prediction_date = CURRENT_DATE" )
 ```
 

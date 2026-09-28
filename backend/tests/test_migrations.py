@@ -392,6 +392,26 @@ def test_create_roles_refuses_verifiers_and_short_passwords(role_cleanup, fresh_
     assert _fetch_row(fresh_db, "SELECT count(*) FROM pg_roles WHERE rolname IN ('migrator', 'app')") == [0]
 
 
+def test_create_roles_refuses_a_rerun_before_sending_any_password(role_cleanup, fresh_db):
+    _require_psql()
+    command.upgrade(_alembic_cfg(fresh_db), "head")
+    _run(fresh_db, ANALYST_FIXTURE_SQL)
+    first = _psql(_db_url(fresh_db), ROLES_DIR / "create_roles.sql", ROLE_PASSWORD_ENV)
+    assert first.returncode == 0, first.stderr
+    rerun = subprocess.run(
+        [_require_psql(), _db_url(fresh_db), "-X", "-q", "-e", "-f", str(ROLES_DIR / "create_roles.sql")],
+        env={**os.environ, **ROLE_PASSWORD_ENV},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert rerun.returncode != 0
+    assert "migrator/app already exist; do not rerun create_roles.sql" in rerun.stderr
+    # -e echoes every statement psql sent, so this proves no password left the client.
+    for plaintext in (PASSWORDS["migrator"], PASSWORDS["app"]):
+        assert plaintext not in rerun.stdout + rerun.stderr
+
+
 def test_create_roles_requires_both_passwords(role_cleanup, fresh_db):
     _require_psql()
     _run(fresh_db, ANALYST_FIXTURE_SQL)
