@@ -22,6 +22,9 @@ import {
   Refresh as RefreshIcon,
 } from '@mui/icons-material';
 import {
+  RISK_COLOR_HEX,
+  RISK_TEXT_ON_HEX,
+  getRiskColorCode,
   getRiskLevel,
   getRiskDescription,
 } from '../utils/riskUtils';
@@ -38,14 +41,6 @@ export default function PredictionResult({ prediction, onReset }) {
   const riskLevel = getRiskLevel(prediction.risk_score);
   const riskDescription = getRiskDescription(prediction.risk_score);
 
-  // Get risk color based on level
-  const getRiskColor = () => {
-    if (riskLevel === 'low') return 'success';
-    if (riskLevel === 'moderate') return 'warning';
-    if (riskLevel === 'high') return 'error';
-    return 'error';
-  };
-
   // Get risk icon
   const getRiskIcon = () => {
     if (riskLevel === 'low') return <CheckCircleIcon sx={{ fontSize: 40 }} />;
@@ -53,7 +48,7 @@ export default function PredictionResult({ prediction, onReset }) {
     return <ErrorIcon sx={{ fontSize: 40 }} />;
   };
 
-  const riskColor = getRiskColor();
+  const riskColorCode = getRiskColorCode(prediction.risk_score);
 
   return (
     <Card elevation={3}>
@@ -65,7 +60,7 @@ export default function PredictionResult({ prediction, onReset }) {
         {/* Risk Score Display */}
         <Box sx={{ textAlign: 'center', my: 4 }}>
           {/* Icon */}
-          <Box sx={{ color: `${riskColor}.main`, mb: 2 }}>
+          <Box sx={{ color: RISK_COLOR_HEX[riskColorCode], mb: 2 }}>
             {getRiskIcon()}
           </Box>
 
@@ -80,8 +75,9 @@ export default function PredictionResult({ prediction, onReset }) {
           {/* Risk Level Badge */}
           <Chip
             label={`${riskLevel.toUpperCase()} RISK`}
-            color={riskColor}
             sx={{
+              bgcolor: RISK_COLOR_HEX[riskColorCode],
+              color: RISK_TEXT_ON_HEX[riskColorCode],
               mt: 2,
               px: 2,
               py: 1,

@@ -16,7 +16,8 @@ import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFns';
 import { addDays, startOfToday, format } from 'date-fns';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import RouteAnalyticsModal from './RouteAnalyticsModal';
-import { RISK_BAND_THRESHOLDS, getRiskColorCode, isRiskScore } from '../utils/riskUtils';
+import { useRouteSafety } from '../hooks/useRouteSafety';
+import { NO_RISK_HEX, RISK_BAND_THRESHOLDS, RISK_COLOR_HEX } from '../utils/riskUtils';
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
 
@@ -24,6 +25,11 @@ const [RISK_LOW_MAX, RISK_MODERATE_MAX, RISK_HIGH_MAX] = RISK_BAND_THRESHOLDS;
 // Heatmap layers overlap by this many points either side of each band edge so adjacent
 // colours blend. It is a rendering overlap only; markers/clusters/legend use exact edges.
 const HEATMAP_BLEND = 2;
+// 'gray' is what the map endpoint sends for a route with no score.
+const ROUTE_COLOR_MATCH_ARMS = [
+  ...Object.entries(RISK_COLOR_HEX).flat(),
+  'gray', NO_RISK_HEX,
+];
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
 
 // Default view: Centered on Rocky Mountains (major climbing destination)
@@ -61,8 +67,28 @@ export default function MapView({ selectedRouteForZoom }) {
 
   // Selected route for detail popup
   const [selectedRoute, setSelectedRoute] = useState(null);
-  const [safetyData, setSafetyData] = useState(null);
-  const [_loadingSafety, setLoadingSafety] = useState(false);
+  const { state: safetyState, retry: retrySafety } = useRouteSafety(
+    selectedRoute?.properties?.id ?? null,
+    format(selectedDate, 'yyyy-MM-dd'),
+  );
+
+  const okSafety = safetyState?.status === 'ok' ? safetyState.data : null;
+  // Memoized because the modal refetches its tab data whenever this object's identity
+  // changes; an inline literal is new on every map pan/hover render. Keyed on okSafety,
+  // not safetyState, since the hook derives a fresh loading object each render.
+  const modalRouteData = useMemo(() => (selectedRoute ? {
+      route_id: selectedRoute.properties.id,
+      name: selectedRoute.properties.name,
+      mountain_name: selectedRoute.properties.mountain_name || 'Unknown Mountain',
+      type: selectedRoute.properties.type,
+      grade: selectedRoute.properties.grade,
+      latitude: selectedRoute.geometry.coordinates[1],
+      longitude: selectedRoute.geometry.coordinates[0],
+      elevation_meters: null,
+      risk_score: okSafety ? okSafety.risk_score : null,
+      color_code: okSafety ? okSafety.color_code : null,
+      mp_route_id: selectedRoute.properties.mp_route_id,
+    } : null), [selectedRoute, okSafety]);
 
   // Track safety score loading progress (now just for display, bulk fetch is fast)
   const [safetyLoadingProgress, setSafetyLoadingProgress] = useState({ loaded: 0, total: 0, isLoading: false });
@@ -344,54 +370,6 @@ export default function MapView({ selectedRouteForZoom }) {
   }, [selectedRouteForZoom, routes, seasonFilter]);
 
   /**
-   * Fetch safety score for selected route
-   */
-  useEffect(() => {
-    if (!selectedRoute) {
-      setSafetyData(null);
-      return;
-    }
-
-    let ignoreResponse = false;
-
-    const fetchSafety = async () => {
-      try {
-        setSafetyData(null); // Prevent stale score flash from previously selected route
-        setLoadingSafety(true);
-        const dateStr = format(selectedDate, 'yyyy-MM-dd');
-        const response = await fetch(
-          `${API_BASE_URL}/mp-routes/${selectedRoute.properties.id}/safety?target_date=${dateStr}&bypass_cache=true`,
-          { method: 'POST' }
-        );
-
-        if (!response.ok) {
-          throw new Error(`Failed to fetch safety score: ${response.statusText}`);
-        }
-
-        const data = await response.json();
-        if (!ignoreResponse) {
-          setSafetyData(data);
-        }
-      } catch (err) {
-        if (!ignoreResponse) {
-          console.error('Error fetching safety score:', err);
-          setSafetyData({ error: err.message });
-        }
-      } finally {
-        if (!ignoreResponse) {
-          setLoadingSafety(false);
-        }
-      }
-    };
-
-    fetchSafety();
-
-    return () => {
-      ignoreResponse = true;
-    };
-  }, [selectedRoute, selectedDate]);
-
-  /**
    * Log when map view mode changes
    */
   useEffect(() => {
@@ -540,12 +518,12 @@ export default function MapView({ selectedRouteForZoom }) {
                     [
                       'step',
                       ['/', ['get', 'risk_score_sum'], ['get', 'risk_score_count']],
-                      '#4caf50',
-                      RISK_LOW_MAX, '#fdd835',
-                      RISK_MODERATE_MAX, '#ff9800',
-                      RISK_HIGH_MAX, '#f44336',
+                      RISK_COLOR_HEX.green,
+                      RISK_LOW_MAX, RISK_COLOR_HEX.yellow,
+                      RISK_MODERATE_MAX, RISK_COLOR_HEX.orange,
+                      RISK_HIGH_MAX, RISK_COLOR_HEX.red,
                     ],
-                    '#9e9e9e'  // Gray: no data
+                    NO_RISK_HEX
                   ],
                   'circle-radius': [
                     'step',
@@ -583,11 +561,7 @@ export default function MapView({ selectedRouteForZoom }) {
                   'circle-color': [
                     'match',
                     ['get', 'color_code'],
-                    'green', '#4caf50',
-                    'yellow', '#fdd835',
-                    'orange', '#ff9800',
-                    'red', '#f44336',
-                    'gray', '#9e9e9e',
+                    ...ROUTE_COLOR_MATCH_ARMS,
                     '#11b4da'
                   ],
                   'circle-radius': 6,
@@ -799,11 +773,7 @@ export default function MapView({ selectedRouteForZoom }) {
                   'circle-color': [
                     'match',
                     ['get', 'color_code'],
-                    'green', '#4caf50',
-                    'yellow', '#fdd835',
-                    'orange', '#ff9800',
-                    'red', '#f44336',
-                    'gray', '#9e9e9e',
+                    ...ROUTE_COLOR_MATCH_ARMS,
                     '#11b4da'
                   ],
                   // Smaller markers in risk view to avoid clutter
@@ -1110,7 +1080,7 @@ export default function MapView({ selectedRouteForZoom }) {
                   width: 24,
                   height: 24,
                   borderRadius: '50%',
-                  bgcolor: '#4caf50',
+                  bgcolor: RISK_COLOR_HEX.green,
                   border: '2px solid #fff',
                   boxShadow: 1,
                 }}
@@ -1132,7 +1102,7 @@ export default function MapView({ selectedRouteForZoom }) {
                   width: 24,
                   height: 24,
                   borderRadius: '50%',
-                  bgcolor: '#fdd835',
+                  bgcolor: RISK_COLOR_HEX.yellow,
                   border: '2px solid #fff',
                   boxShadow: 1,
                 }}
@@ -1154,7 +1124,7 @@ export default function MapView({ selectedRouteForZoom }) {
                   width: 24,
                   height: 24,
                   borderRadius: '50%',
-                  bgcolor: '#ff9800',
+                  bgcolor: RISK_COLOR_HEX.orange,
                   border: '2px solid #fff',
                   boxShadow: 1,
                 }}
@@ -1176,7 +1146,7 @@ export default function MapView({ selectedRouteForZoom }) {
                   width: 24,
                   height: 24,
                   borderRadius: '50%',
-                  bgcolor: '#f44336',
+                  bgcolor: RISK_COLOR_HEX.red,
                   border: '2px solid #fff',
                   boxShadow: 1,
                 }}
@@ -1198,7 +1168,7 @@ export default function MapView({ selectedRouteForZoom }) {
                   width: 24,
                   height: 24,
                   borderRadius: '50%',
-                  bgcolor: '#9e9e9e',
+                  bgcolor: NO_RISK_HEX,
                   border: '2px solid #fff',
                   boxShadow: 1,
                 }}
@@ -1246,39 +1216,13 @@ export default function MapView({ selectedRouteForZoom }) {
       <RouteAnalyticsModal
         open={!!selectedRoute}
         onClose={() => setSelectedRoute(null)}
-        routeData={selectedRoute && safetyData ? {
-          route_id: selectedRoute.properties.id,
-          name: selectedRoute.properties.name,
-          mountain_name: selectedRoute.properties.mountain_name || 'Unknown Mountain',
-          type: selectedRoute.properties.type,
-          grade: selectedRoute.properties.grade,
-          latitude: selectedRoute.geometry.coordinates[1],
-          longitude: selectedRoute.geometry.coordinates[0],
-          elevation_meters: null,
-          // A failed fetch leaves risk_score null ("Unavailable"), never 0.
-          risk_score: isRiskScore(safetyData.risk_score) ? safetyData.risk_score : null,
-          color_code: isRiskScore(safetyData.risk_score) ? getRiskColorCode(safetyData.risk_score) : null,
-          mp_route_id: selectedRoute.properties.mp_route_id,
-        } : null}
+        routeData={modalRouteData}
         selectedDate={format(selectedDate, 'yyyy-MM-dd')}
+        safety={safetyState}
+        onRetrySafety={retrySafety}
       />
     </LocalizationProvider>
   );
-}
-
-/**
- * Get background color for safety score display
- * @deprecated Kept for potential future use
- */
-function _getSafetyBackgroundColor(colorCode) {
-  const colors = {
-    green: '#4caf50',
-    yellow: '#ffeb3b',
-    orange: '#ff9800',
-    red: '#f44336',
-    gray: '#9e9e9e',
-  };
-  return colors[colorCode] || colors.gray;
 }
 
 /**

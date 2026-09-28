@@ -270,29 +270,22 @@ import {
   ReferenceDot,
 } from 'recharts';
 import { format, parseISO } from 'date-fns';
-import { getRiskColorCode, isRiskScore } from '../utils/riskUtils';
+import {
+  NO_RISK_HEX,
+  RISK_COLOR_HEX,
+  RISK_TEXT_ON_HEX,
+  getRiskColorCode,
+  isRiskScore,
+} from '../utils/riskUtils';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
 
-const RISK_CHIP_BG = {
-  green: 'success.main',
-  yellow: 'warning.main',
-  orange: 'warning.dark',
-  red: 'error.main',
-};
-
-const HOURLY_CHIP_BG = {
-  green: '#4caf50',
-  yellow: '#ff9800',
-  orange: '#f57c00',
-  red: '#f44336',
-};
-
-const NO_SCORE_CHIP_BG = 'grey.500';
-
-// Bands come from riskUtils so these chips can never disagree with the map marker.
-function riskChipBg(score, palette = RISK_CHIP_BG) {
-  return isRiskScore(score) ? palette[getRiskColorCode(score)] : NO_SCORE_CHIP_BG;
+// Band and hex both come from riskUtils, the same source the map markers use, so a
+// score is the same colour here and on the map.
+function riskChipColors(score) {
+  if (!isRiskScore(score)) return { bgcolor: NO_RISK_HEX, color: '#ffffff' };
+  const code = getRiskColorCode(score);
+  return { bgcolor: RISK_COLOR_HEX[code], color: RISK_TEXT_ON_HEX[code] };
 }
 
 /**
@@ -414,6 +407,19 @@ function formatRiskScore(score) {
   return isRiskScore(score) ? `${score.toFixed(1)}/100` : 'Unavailable';
 }
 
+// Driven by the fetch state, not routeData.risk_score, so "still loading" and "failed"
+// read differently and neither shows a number.
+function headerRiskChip(safety) {
+  if (!safety || safety.status === 'loading') {
+    return { label: 'Risk: loading…', colors: riskChipColors(null) };
+  }
+  if (safety.status === 'error') {
+    return { label: 'Risk: Unavailable', colors: riskChipColors(null) };
+  }
+  const score = safety.data.risk_score;
+  return { label: `Risk: ${formatRiskScore(score)}`, colors: riskChipColors(score) };
+}
+
 // Tab panel component
 function TabPanel({ children, value, index, ...other }) {
   return (
@@ -429,7 +435,7 @@ function TabPanel({ children, value, index, ...other }) {
   );
 }
 
-export default function RouteAnalyticsModal({ open, onClose, routeData, selectedDate }) {
+export default function RouteAnalyticsModal({ open, onClose, routeData, selectedDate, safety, onRetrySafety }) {
   const [currentTab, setCurrentTab] = useState(1);  // Default to Route Details tab
   const [loading, setLoading] = useState({});
   const [data, setData] = useState({
@@ -444,7 +450,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
   const [error, setError] = useState(null);
   const [exportMenuAnchor, setExportMenuAnchor] = useState(null);
   const displayRouteName = formatRouteNameWithType(routeData?.name, routeData?.type);
-  const formattedRouteRiskScore = formatRiskScore(routeData?.risk_score);
+  const riskChip = headerRiskChip(safety);
 
   // Reset tab when modal opens - default to Route Details (tab 1)
   useEffect(() => {
@@ -641,7 +647,8 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
     csv += `Location,${getBestLocationName([data.routeDetails?.location_name, routeData.mountain_name, routeData.location_name])}\n`;
     csv += `Type,${routeData.type}\n`;
     csv += `Grade,${routeData.grade}\n`;
-    csv += `Risk Score,${formatRiskScore(routeData.risk_score)}\n`;
+    // Bare number like the forecast rows so the column stays numeric; missing -> empty cell.
+    csv += `Risk Score,${isRiskScore(routeData.risk_score) ? routeData.risk_score : ''}\n`;
     csv += `Date,${selectedDate}\n\n`;
 
     // Add 7-day forecast if available
@@ -649,7 +656,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
       csv += '\n7-Day Forecast\n';
       csv += 'Date,Risk Score,Weather Summary,Temp High,Temp Low,Precip,Wind Speed\n';
       data.forecast.forecast_days.forEach(day => {
-        csv += `${day.date},${isRiskScore(day.risk_score) ? day.risk_score : 'Unavailable'},"${day.weather_summary}",${day.temp_high},${day.temp_low},${day.precip_mm || 0},${day.wind_speed}\n`;
+        csv += `${day.date},${isRiskScore(day.risk_score) ? day.risk_score : ''},"${day.weather_summary}",${day.temp_high},${day.temp_low},${day.precip_mm || 0},${day.wind_speed}\n`;
       });
     }
 
@@ -699,10 +706,9 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
             </Typography>
           </Box>
           <Chip
-            label={`Risk: ${formattedRouteRiskScore}`}
+            label={riskChip.label}
             sx={{
-              bgcolor: riskChipBg(routeData.risk_score),
-              color: 'white',
+              ...riskChip.colors,
               fontWeight: 600,
               fontSize: '1rem',
               mr: 2,
@@ -772,6 +778,19 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
       </Box>
 
       <DialogContent sx={{ bgcolor: 'grey.50', overflow: 'auto' }}>
+        {safety?.status === 'error' && (
+          <Alert
+            severity="error"
+            sx={{ mb: 2 }}
+            action={
+              <Button color="inherit" size="small" onClick={onRetrySafety}>
+                Retry
+              </Button>
+            }
+          >
+            Couldn&apos;t load the risk score for this route. {safety.message}
+          </Alert>
+        )}
         {error && (
           <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
             {error}
@@ -1045,8 +1064,7 @@ function ForecastTab({ data, loading, selectedDate: _selectedDate, routeData, ro
                             size="small"
                             label={isRiskScore(day.risk_score) ? `${day.risk_score}` : 'N/A'}
                             sx={{
-                              bgcolor: riskChipBg(day.risk_score),
-                              color: 'white',
+                              ...riskChipColors(day.risk_score),
                               fontWeight: 600,
                             }}
                           />
@@ -2191,8 +2209,7 @@ function TimeOfDayTab({ data, loading, routeData: _routeData, selectedDate }) {
                           label={hour.risk_score}
                           size="small"
                           sx={{
-                            bgcolor: riskChipBg(hour.risk_score, HOURLY_CHIP_BG),
-                            color: 'white',
+                            ...riskChipColors(hour.risk_score),
                             fontWeight: 600,
                           }}
                         />
@@ -2234,8 +2251,7 @@ function TimeOfDayTab({ data, loading, routeData: _routeData, selectedDate }) {
                               label={`${window.avg_risk}/100`}
                               size="small"
                               sx={{
-                                bgcolor: riskChipBg(window.avg_risk),
-                                color: 'white',
+                                ...riskChipColors(window.avg_risk),
                                 fontWeight: 600,
                               }}
                             />

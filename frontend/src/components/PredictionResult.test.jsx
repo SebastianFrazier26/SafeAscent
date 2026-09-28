@@ -4,6 +4,7 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '../test/utils';
 import PredictionResult from './PredictionResult';
+import { RISK_COLOR_HEX } from '../utils/riskUtils';
 
 // Mock prediction data
 const mockPrediction = {
@@ -50,6 +51,13 @@ describe('PredictionResult', () => {
 
     // High risk should be displayed (we test that it renders without error)
     expect(screen.getByText('75')).toBeInTheDocument();
+  });
+
+  it('colours the level badge with the shared band hex', () => {
+    render(<PredictionResult prediction={{ ...mockPrediction, risk_score: 61.3 }} />);
+    expect(screen.getByText('HIGH RISK').closest('.MuiChip-root')).toHaveStyle({
+      backgroundColor: RISK_COLOR_HEX.orange,
+    });
   });
 
   it('handles zero risk score', () => {

@@ -96,11 +96,26 @@ export const formatRiskScore = (riskScore: number | null | undefined): string =>
 
 export const formatConfidence = (confidence: number): string => `${Math.round(confidence)}%`;
 
-const MARKER_COLORS: Record<RiskLevel, string> = {
-  low: '#10b981',
-  moderate: '#f59e0b',
-  high: '#ef4444',
-  extreme: '#7c2d12',
+/**
+ * The only band -> hex palette (controller ruling 2026-09-28: the map marker colours).
+ * Map markers, clusters, legend, modal chips and PredictionResult all read it, so one
+ * score is one colour everywhere.
+ */
+export const RISK_COLOR_HEX: Record<RiskColorCode, string> = {
+  green: '#4caf50',
+  yellow: '#fdd835',
+  orange: '#ff9800',
+  red: '#f44336',
 };
 
-export const getMarkerColor = (riskScore: number): string => MARKER_COLORS[getRiskLevel(riskScore)];
+export const NO_RISK_HEX = '#9e9e9e';
+
+// White on #fdd835 is ~1.6:1 and unreadable, so the yellow band gets dark text.
+export const RISK_TEXT_ON_HEX: Record<RiskColorCode, string> = {
+  green: '#ffffff',
+  yellow: 'rgba(0, 0, 0, 0.87)',
+  orange: '#ffffff',
+  red: '#ffffff',
+};
+
+export const getMarkerColor = (riskScore: number): string => RISK_COLOR_HEX[getRiskColorCode(riskScore)];
