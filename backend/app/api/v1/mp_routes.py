@@ -1643,19 +1643,16 @@ async def get_ascent_analytics(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Get ascent analytics for a route including monthly breakdown and accident rate.
+    Get logged-ascent and accident counts for a route, overall and by calendar month.
 
-    Queries the mp_ticks table for tick/ascent data linked via route_id (mp_route_id).
-    Combines with nearby accident data to calculate accident rates.
-    Coordinates are inherited from the route's parent location.
+    Counts only, no accidents-per-ascent rate: MP ticks are a capped, recent, self-reported
+    sample, so a raw ratio misstates risk. A shrunk rate arrives with the Phase 3 model.
     """
-    # Fetch route with location coordinates
     route = await get_route_with_location_coords(db, mp_route_id)
 
     if not route:
         raise HTTPException(status_code=404, detail="Route not found")
 
-    # Check if route is a boulder problem (excluded from analytics)
     route_type = (route.type or '').lower()
     if route_type in ['boulder', 'bouldering']:
         return {
@@ -1664,16 +1661,13 @@ async def get_ascent_analytics(
             "route_type": route.type,
             "total_ascents": 0,
             "total_accidents": 0,
-            "overall_accident_rate": 0.0,
             "monthly_stats": [],
-            "best_month": None,
-            "worst_month": None,
+            "peak_month": None,
             "has_data": False,
             "excluded_reason": "Boulder problems are excluded from safety analytics",
         }
 
-    # Query mp_ticks table for ascent data
-    # The mp_ticks table uses route_id which matches mp_route_id
+    # mp_ticks.route_id is text holding the MP route id.
     route_id_str = str(mp_route_id)
     total_ascents_query = text("""
         SELECT COUNT(*) FROM mp_ticks WHERE route_id = :route_id
@@ -1681,7 +1675,6 @@ async def get_ascent_analytics(
     total_result = await db.execute(total_ascents_query, {"route_id": route_id_str})
     total_ascents = total_result.scalar() or 0
 
-    # Get monthly ascent breakdown
     monthly_ascents_query = text("""
         SELECT
             EXTRACT(MONTH FROM tick_date) as month,
@@ -1693,89 +1686,45 @@ async def get_ascent_analytics(
         ORDER BY month
     """)
     monthly_result = await db.execute(monthly_ascents_query, {"route_id": route_id_str})
-    monthly_ascent_rows = monthly_result.fetchall()
-
-    # Build monthly ascent dict
-    monthly_ascent_dict = {int(row[0]): int(row[1]) for row in monthly_ascent_rows}
+    monthly_ascent_dict = {int(row[0]): int(row[1]) for row in monthly_result.fetchall()}
 
     # accidents.mp_route_id is the MP route FK; accidents.route_id is the legacy
     # routes-table FK and holds different ids (fixed 2026-09-28).
     accident_count_query = text("""
         SELECT COUNT(*)
         FROM accidents
-        WHERE mp_route_id = :route_id
+        WHERE mp_route_id = :mp_route_id
     """)
-
-    total_accidents = 0
-    accident_result = await db.execute(
-        accident_count_query,
-        {"route_id": mp_route_id}
-    )
+    accident_result = await db.execute(accident_count_query, {"mp_route_id": mp_route_id})
     total_accidents = accident_result.scalar() or 0
 
-    # Monthly accident breakdown for this route only
     monthly_accidents_query = text("""
         SELECT
             EXTRACT(MONTH FROM date) as month,
             COUNT(*) as accident_count
         FROM accidents
-        WHERE mp_route_id = :route_id
+        WHERE mp_route_id = :mp_route_id
           AND date IS NOT NULL
         GROUP BY EXTRACT(MONTH FROM date)
         ORDER BY month
     """)
+    monthly_acc_result = await db.execute(monthly_accidents_query, {"mp_route_id": mp_route_id})
+    monthly_accident_dict = {int(row[0]): int(row[1]) for row in monthly_acc_result.fetchall()}
 
-    monthly_accident_dict = {}
-    monthly_acc_result = await db.execute(
-        monthly_accidents_query,
-        {"route_id": mp_route_id}
-    )
-    monthly_accident_rows = monthly_acc_result.fetchall()
-    monthly_accident_dict = {int(row[0]): int(row[1]) for row in monthly_accident_rows}
-
-    # Build monthly stats array with both ascents and accidents
     month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-    monthly_stats = []
-    for i in range(12):
-        month_num = i + 1
-        ascent_count = monthly_ascent_dict.get(month_num, 0)
-        accident_count = monthly_accident_dict.get(month_num, 0)
-
-        # Calculate accident rate per 1000 ascents (if we have ascent data)
-        if ascent_count > 0:
-            accident_rate = round((accident_count / ascent_count) * 1000, 2)
-        else:
-            accident_rate = 0.0
-
-        monthly_stats.append({
+    monthly_stats = [
+        {
             "month": month_names[i],
-            "month_num": month_num,
-            "ascent_count": ascent_count,
-            "accident_count": accident_count,
-            "accident_rate": accident_rate,
-        })
+            "month_num": i + 1,
+            "ascent_count": monthly_ascent_dict.get(i + 1, 0),
+            "accident_count": monthly_accident_dict.get(i + 1, 0),
+        }
+        for i in range(12)
+    ]
 
-    # Calculate overall accident rate
-    if total_ascents > 0:
-        overall_accident_rate = round((total_accidents / total_ascents) * 1000, 2)
-    else:
-        overall_accident_rate = 0.0
-
-    # Find best/worst months (only among months with ascent data)
     months_with_ascents = [m for m in monthly_stats if m["ascent_count"] > 0]
-
-    best_month = None
-    worst_month = None
-    peak_month = None
-
-    if months_with_ascents:
-        # Best month = lowest accident rate
-        best_month = min(months_with_ascents, key=lambda x: x["accident_rate"])
-        # Worst month = highest accident rate
-        worst_month = max(months_with_ascents, key=lambda x: x["accident_rate"])
-        # Peak month = most ascents
-        peak_month = max(months_with_ascents, key=lambda x: x["ascent_count"])
+    peak_month = max(months_with_ascents, key=lambda x: x["ascent_count"]) if months_with_ascents else None
 
     has_data = total_ascents > 0
 
@@ -1785,10 +1734,7 @@ async def get_ascent_analytics(
         "route_type": route.type,
         "total_ascents": total_ascents,
         "total_accidents": total_accidents,
-        "overall_accident_rate": overall_accident_rate,
         "monthly_stats": monthly_stats,
-        "best_month": best_month["month"] if best_month else None,
-        "worst_month": worst_month["month"] if worst_month else None,
         "peak_month": peak_month["month"] if peak_month else None,
         "has_data": has_data,
     }

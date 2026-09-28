@@ -91,3 +91,12 @@ def test_seed_really_has_the_colliding_legacy_link(seeded_db):
             await conn.close()
 
     assert asyncio.run(count()) == 1
+
+
+def test_response_carries_counts_only_no_rate(seeded_db):
+    data = asyncio.run(_analytics(seeded_db, ROUTE))
+
+    rate_keys = {"overall_accident_rate", "best_month", "worst_month"}
+    assert rate_keys.isdisjoint(data)
+    assert all(set(m) == {"month", "month_num", "ascent_count", "accident_count"} for m in data["monthly_stats"])
+    assert data["peak_month"] == "Jan"
