@@ -132,6 +132,9 @@ def calculate_temporal_weights_vectorized(
 
     # Calculate days elapsed for each accident
     days_elapsed = np.array([(current_date - acc_date).days for acc_date in accident_dates])
+    # A future-dated row would get lambda**negative > 1 and outweigh every real accident;
+    # clip as location_safety_computation does.
+    days_elapsed = np.clip(days_elapsed, 0, None)
 
     # Exponential decay baseline and damped temporal contribution
     base_decay = lambda_val ** days_elapsed
