@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `app.config` added to the mypy strict allowlist in `backend/pyproject.toml`.
 - New `backend/tests/test_settings.py` covers the required field, the production default, explicit `SQL_ECHO`, the new fields' defaults, and a repo-wide rule that `app/` never calls `os.getenv`/`os.environ` directly.
 - The last three `os.getenv` call sites in `app/` now read from `Settings`: `backend/app/api/v1/predict.py`'s vectorized-algorithm flag, and `backend/app/services/weather_service.py`'s `OPEN_METEO_API_KEY` module constant and `SKIP_WEATHER_STATISTICS` short-circuit. No behavior change — same defaults, now enforced by the `test_settings.py` rule above.
+- Root `.env.example` rewritten to mirror `Settings.model_fields` exactly (plus the frontend `VITE_API_BASE_URL`/`VITE_MAPBOX_TOKEN` build args): dropped the docker-compose-only `POSTGRES_*`, `REDIS_PORT`, `BACKEND_PORT`, `FRONTEND_PORT` keys that never backed a `Settings` field, and added the fields introduced above. New `backend/tests/test_env_example_parity.py` enforces this as a standing CI rule — a `Settings` field added without a matching `.env.example` line now fails the suite.
 
 ### Phase 1 PR3 — 2026-09-27
 
