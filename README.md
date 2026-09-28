@@ -140,8 +140,9 @@ For detailed database documentation, see [data/DATABASE_STRUCTURE.md](./data/DAT
 ### Backend
 ```bash
 cd backend
-pip install -r requirements.txt
-uvicorn app.main:app --reload
+uv sync
+uv run uvicorn app.main:app --reload
+uv run pytest
 ```
 
 ### Frontend

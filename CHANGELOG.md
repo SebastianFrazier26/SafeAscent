@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Phase 1 PR2 — 2026-09-27
+
+- Backend dependency management moved from `requirements.txt`/`pip` to `uv`: `backend/pyproject.toml` (`[project]` deps + `[dependency-groups] dev`) and `backend/uv.lock` replace `requirements.txt`; `pytest.ini` and `ruff.toml` settings moved into `[tool.pytest.ini_options]` and `[tool.ruff]` in `pyproject.toml`. All Phase 0 pins carried forward unchanged (fastapi 0.141.1, uvicorn 0.53.0, requests 2.34.2, python-dotenv 1.2.3, pydantic-settings 2.15.0, pytest 9.1.1, pytest-asyncio 1.4.0, python-multipart 0.0.32).
+- `[tool.mypy]` added with `plugins = ["pydantic.mypy"]`, an `app.*` allowlist that ignores errors for untyped legacy code, and an empty strict-allowlist override block (`module = []`) for later PRs to append to as modules are typed.
+- `mypy==2.3.1` and `pip-audit==2.10.1` added to the `dev` dependency group.
+- README backend quickstart updated to `uv sync` / `uv run uvicorn ...` / `uv run pytest`.
+- CI (`.github/workflows/ci.yml`) still installs via `pip install -r requirements.txt`, which no longer exists; updating CI to `uv` is a separate task in this PR and is not done here.
+
 ### Phase 1 PR1: maintenance mode and www redirect (2026-09-27)
 
 - Frontend image takes a `MAINTENANCE_MODE` build arg. When `true` it serves a static page with HTTP 503, `Retry-After` and `Cache-Control: no-store` for every path, while `/health` stays 200.
