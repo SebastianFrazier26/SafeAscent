@@ -60,7 +60,7 @@ jobs:
         run: uv sync --frozen
 
       - name: Lint
-        run: uv run ruff check app/ ../scripts/
+        run: uv run ruff check . ../scripts/
 
       - name: Type check
         run: uv run mypy

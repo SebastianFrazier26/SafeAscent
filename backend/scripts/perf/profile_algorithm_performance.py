@@ -7,7 +7,6 @@ Focuses on where time is actually spent during prediction.
 import cProfile
 import pstats
 import io
-from datetime import date
 from fastapi.testclient import TestClient
 import sys
 import os
@@ -50,7 +49,7 @@ profiler.disable()
 # Check response
 if response.status_code == 200:
     data = response.json()
-    print(f"✓ Prediction successful")
+    print("✓ Prediction successful")
     print(f"  Risk Score: {data['risk_score']:.1f}/100")
     print(f"  Confidence: {data['confidence']:.0f}%")
     print(f"  Accidents: {data['num_contributing_accidents']}")

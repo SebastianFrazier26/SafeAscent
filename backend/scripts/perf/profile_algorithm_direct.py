@@ -11,7 +11,6 @@ from datetime import date
 import sys
 import os
 import asyncio
-import psycopg2
 from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
@@ -19,7 +18,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..',
 from app.services.safety_algorithm import calculate_safety_score, AccidentData
 from app.services.weather_similarity import WeatherPattern
 from app.models.accident import Accident
-from app.models.weather import Weather
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import select, and_
@@ -118,7 +116,7 @@ async def main():
 
     profiler.disable()
 
-    print(f"✓ Prediction complete:")
+    print("✓ Prediction complete:")
     print(f"  Risk Score: {prediction.risk_score:.1f}/100")
     print(f"  Confidence: {prediction.confidence:.0f}%")
     print(f"  Contributing accidents: {prediction.num_contributing_accidents}")

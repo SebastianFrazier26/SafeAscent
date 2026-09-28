@@ -6,7 +6,7 @@ missing data scenarios, and performance constraints.
 """
 
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime
 import time
 import statistics
 
@@ -36,8 +36,8 @@ class TestExtremeLocations:
         # Should return valid prediction even at extreme latitude
         assert 0 <= data["risk_score"] <= 100
 
-        print(f"\n✅ Alaska (Denali) Prediction:")
-        print(f"   Latitude: 63.069° N (extreme north)")
+        print("\n✅ Alaska (Denali) Prediction:")
+        print("   Latitude: 63.069° N (extreme north)")
         print(f"   Risk Score: {data['risk_score']}/100")
         print(f"   Accidents Found: {data['num_contributing_accidents']}")
 
@@ -58,10 +58,10 @@ class TestExtremeLocations:
         # Should handle sparse data gracefully
         assert 0 <= data["risk_score"] <= 100
 
-        print(f"\n✅ Hawaii (Mauna Kea) Prediction:")
+        print("\n✅ Hawaii (Mauna Kea) Prediction:")
         print(f"   Risk Score: {data['risk_score']}/100")
         print(f"   Accidents Found: {data['num_contributing_accidents']}")
-        print(f"   Note: Sparse data area - lower accident count expected")
+        print("   Note: Sparse data area - lower accident count expected")
 
     def test_washington_cascades_high_activity(self, test_client):
         """Test prediction for Washington Cascades (high accident density)."""
@@ -80,7 +80,7 @@ class TestExtremeLocations:
         # Should have many accidents (Rainier is very popular and dangerous)
         assert data["num_contributing_accidents"] > 50
 
-        print(f"\n✅ Mount Rainier Prediction:")
+        print("\n✅ Mount Rainier Prediction:")
         print(f"   Risk Score: {data['risk_score']}/100")
         print(f"   Accidents Found: {data['num_contributing_accidents']}")
 
@@ -106,7 +106,7 @@ class TestSparseDataScenarios:
         # Should handle gracefully even with few accidents
         assert 0 <= data["risk_score"] <= 100
 
-        print(f"\n✅ Remote Wyoming Prediction:")
+        print("\n✅ Remote Wyoming Prediction:")
         print(f"   Accidents Found: {data['num_contributing_accidents']}")
         print(f"   Risk Score: {data['risk_score']}/100")
 
@@ -127,10 +127,10 @@ class TestSparseDataScenarios:
         # Should return prediction even with zero nearby accidents
         assert 0 <= data["risk_score"] <= 100
 
-        print(f"\n✅ Ocean Location Prediction:")
+        print("\n✅ Ocean Location Prediction:")
         print(f"   Accidents Found: {data['num_contributing_accidents']}")
         print(f"   Risk Score: {data['risk_score']}/100")
-        print(f"   Note: Zero/few accidents expected - algorithm should handle gracefully")
+        print("   Note: Zero/few accidents expected - algorithm should handle gracefully")
 
     def test_very_large_search_radius(self, test_client):
         """Test with maximum search radius to find distant accidents."""
@@ -149,7 +149,7 @@ class TestSparseDataScenarios:
         # Should find many accidents with such a large radius
         assert data["num_contributing_accidents"] > 100
 
-        print(f"\n✅ Large Radius (500km) Prediction:")
+        print("\n✅ Large Radius (500km) Prediction:")
         print(f"   Accidents Found: {data['num_contributing_accidents']}")
 
 
@@ -180,7 +180,7 @@ class TestBoundaryValues:
         assert south_response.status_code == 200
         assert north_response.status_code == 200
 
-        print(f"\n✅ Latitude Boundaries:")
+        print("\n✅ Latitude Boundaries:")
         print(f"   South (25°N): {south_response.json()['risk_score']}/100")
         print(f"   North (70°N): {north_response.json()['risk_score']}/100")
 
@@ -210,10 +210,10 @@ class TestBoundaryValues:
         assert today_response.status_code == 200
         assert future_response.status_code == 200
 
-        print(f"\n✅ Date Range Testing:")
-        print(f"   Past (2023): Valid prediction generated")
-        print(f"   Today: Valid prediction generated")
-        print(f"   Future (2025): Valid prediction generated")
+        print("\n✅ Date Range Testing:")
+        print("   Past (2023): Valid prediction generated")
+        print("   Today: Valid prediction generated")
+        print("   Future (2025): Valid prediction generated")
 
     def test_minimum_search_radius(self, test_client):
         """Test with minimum valid search radius (10km)."""
@@ -228,7 +228,7 @@ class TestBoundaryValues:
         assert response.status_code == 200
         data = response.json()
 
-        print(f"\n✅ Minimum Radius (10km) Prediction:")
+        print("\n✅ Minimum Radius (10km) Prediction:")
         print(f"   Accidents Found: {data['num_contributing_accidents']}")
         print(f"   Risk Score: {data['risk_score']}/100")
 
@@ -251,7 +251,7 @@ class TestBoundaryValues:
                 "accidents": data["num_contributing_accidents"]
             }
 
-        print(f"\n✅ All Route Types Tested:")
+        print("\n✅ All Route Types Tested:")
         for rt, res in results.items():
             print(f"   {rt:8s}: Risk={res['risk']:5.1f}, Accidents={res['accidents']}")
 
@@ -286,19 +286,19 @@ class TestPerformanceBenchmarks:
 
         assert response.status_code == 200
 
-        print(f"\n✅ Single Request Performance:")
+        print("\n✅ Single Request Performance:")
         print(f"   Response Time: {response_time_ms:.0f}ms")
 
         # Note: Target is <500ms for production, but with real-time weather API
         # calls and no caching, we expect 2-5 seconds currently
         if response_time_ms < 500:
-            print(f"   Status: ✅ EXCELLENT (under 500ms target!)")
+            print("   Status: ✅ EXCELLENT (under 500ms target!)")
         elif response_time_ms < 2000:
-            print(f"   Status: ✅ GOOD (under 2s)")
+            print("   Status: ✅ GOOD (under 2s)")
         elif response_time_ms < 5000:
-            print(f"   Status: ⚠️  ACCEPTABLE (2-5s, will improve with caching)")
+            print("   Status: ⚠️  ACCEPTABLE (2-5s, will improve with caching)")
         else:
-            print(f"   Status: ⚠️  SLOW (>5s, needs optimization)")
+            print("   Status: ⚠️  SLOW (>5s, needs optimization)")
 
     def test_multiple_predictions_sequential(self, test_client):
         """Benchmark sequential prediction requests."""
@@ -349,7 +349,7 @@ class TestPerformanceBenchmarks:
             times.append((end_time - start_time) * 1000)
             accident_counts.append(response.json()["num_contributing_accidents"])
 
-        print(f"\n✅ Database Query Performance by Radius:")
+        print("\n✅ Database Query Performance by Radius:")
         for i, radius in enumerate(radii):
             print(f"   {radius:3d}km: {times[i]:6.0f}ms ({accident_counts[i]:4d} accidents)")
 
@@ -465,10 +465,10 @@ class TestConsistencyAndReproducibility:
         assert data1["risk_score"] == data2["risk_score"]
         assert data1["num_contributing_accidents"] == data2["num_contributing_accidents"]
 
-        print(f"\n✅ Consistency Test:")
+        print("\n✅ Consistency Test:")
         print(f"   Request 1: Risk={data1['risk_score']}, Accidents={data1['num_contributing_accidents']}")
         print(f"   Request 2: Risk={data2['risk_score']}, Accidents={data2['num_contributing_accidents']}")
-        print(f"   Status: Identical results ✅")
+        print("   Status: Identical results ✅")
 
 
 if __name__ == "__main__":

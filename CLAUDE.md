@@ -7,11 +7,11 @@ Climbing-route risk forecasts from historical accident data and weather. FastAPI
 Backend (run from `backend/`):
 - `uv sync`: install (lockfile committed; CI runs `uv sync --frozen`)
 - `uv run pytest`: tests. `needs_data` tests (populated DB/live services) are deselected by default (`-m 'not needs_data'`); run them explicitly with `-m needs_data`. Migration and role tests (`tests/test_migrations.py`) additionally need `MIGRATIONS_TEST_ADMIN_URL` (a superuser URL to a maintenance DB) and `psql` 15+ on `PATH`, and skip otherwise.
-- `uv run ruff check app/ ../scripts/`: lint (rules `E4,E7,E9,F`, pinned ruff 0.8.4). Note this lints the top-level `scripts/`, not `backend/scripts/`.
-- `uv run mypy`: types. Scope comes from `pyproject.toml` (`files = ["app"]`); most of `app/` is an ignore-errors allowlist until typed, strict on `app.config` and `app.services.risk_bands` — extend that list as modules graduate.
+- `uv run ruff check . ../scripts/`: lint (rules `E4,E7,E9,F`, pinned ruff 0.8.4). Covers all of `backend/` (ruff's default excludes skip `.venv`, `__pycache__`, etc.) plus the top-level `scripts/`.
+- `uv run mypy`: types. Scope comes from `pyproject.toml` (`files = ["app"]`); most of `app/` is an ignore-errors allowlist until typed, strict on `app.config`, `app.services.risk_bands`, and `app.healthchecks`, with a celery-adjacent variant (same flags minus the subclassing-Any/untyped-decorator checks celery's own missing types always trip) on `app.celery_signals` and `app.tasks.ops` — extend either list as modules graduate.
 - `uv run alembic upgrade head`: migrations. Needs `MIGRATOR_DATABASE_URL` (the `migrator` role). Never runs on app startup; prod is `alembic stamp 0001_baseline` once, then upgrades from there.
 - `uv run uvicorn app.main:app --reload`: API
-- `uv run celery -A app.celery_app worker --loglevel=info --concurrency=2 -E` and `uv run celery -A app.celery_app beat --schedule=/tmp/celerybeat-schedule`: background jobs (beat is a separate process/service from the worker, never combined)
+- `uv run celery -A app.celery_app worker --loglevel=info --concurrency=2 -E` and `uv run celery -A app.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule`: background jobs (beat is a separate process/service from the worker, never combined)
 
 Frontend (run from `frontend/`): `npm ci`, `npm run dev`, `npm test` (watch), `npm run test:run`, `npm run lint`, `npm run typecheck`, `npm run build` (CI also sets `VITE_API_BASE_URL`/`VITE_MAPBOX_TOKEN` build args). `frontend/docker-tests/test_images.sh all` builds and HTTP-checks both `MAINTENANCE_MODE` image variants.
 

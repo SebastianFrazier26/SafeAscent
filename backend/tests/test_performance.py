@@ -16,7 +16,6 @@ import pytest
 import asyncio
 import time
 from statistics import mean, median, stdev
-from datetime import date
 from httpx import AsyncClient
 
 # Mark all tests in this file as performance tests. needs_data (deselected by default,
@@ -64,7 +63,7 @@ class TestPredictEndpointPerformance:
         min_time = min(times)
         std_dev = stdev(times) if len(times) > 1 else 0
 
-        print(f"\n📊 Baseline Performance:")
+        print("\n📊 Baseline Performance:")
         print(f"   Average: {avg_time:.1f}ms")
         print(f"   Median:  {median_time:.1f}ms")
         print(f"   Min:     {min_time:.1f}ms")
@@ -99,7 +98,7 @@ class TestPredictEndpointPerformance:
             times.append((end - start) * 1000)
 
         avg_time = mean(times)
-        print(f"\n📊 Small Radius Performance:")
+        print("\n📊 Small Radius Performance:")
         print(f"   Average: {avg_time:.1f}ms (10km radius)")
 
         # Should be faster than baseline with minimal data
@@ -126,13 +125,12 @@ class TestPredictEndpointPerformance:
             end = time.perf_counter()
 
             assert response.status_code == 200
-            data = response.json()
             times.append((end - start) * 1000)
 
         avg_time = mean(times)
         num_accidents = response.json()["num_contributing_accidents"]
 
-        print(f"\n📊 Large Radius Performance:")
+        print("\n📊 Large Radius Performance:")
         print(f"   Average: {avg_time:.1f}ms (300km radius)")
         print(f"   Accidents processed: {num_accidents}")
 
@@ -175,9 +173,9 @@ class TestPredictEndpointPerformance:
                 "num_accidents": num_accidents,
             })
 
-        print(f"\n📊 Performance Scaling:")
-        print(f"   Radius | Accidents | Avg Time")
-        print(f"   -------|-----------|----------")
+        print("\n📊 Performance Scaling:")
+        print("   Radius | Accidents | Avg Time")
+        print("   -------|-----------|----------")
         for r in results:
             print(f"   {r['radius_km']:>4}km | {r['num_accidents']:>9} | {r['avg_time_ms']:>7.1f}ms")
 
@@ -228,7 +226,7 @@ class TestConcurrentPerformance:
         individual_times = [time for _, time in results]
         avg_individual = mean(individual_times)
 
-        print(f"\n📊 Concurrent Performance (10 requests):")
+        print("\n📊 Concurrent Performance (10 requests):")
         print(f"   Total time: {total_time:.1f}ms")
         print(f"   Avg individual: {avg_individual:.1f}ms")
         print(f"   Throughput: {10 / (total_time / 1000):.1f} req/s")
@@ -321,7 +319,7 @@ class TestDatabaseQueryPerformance:
             times.append((end - start) * 1000)
 
         avg_time = mean(times)
-        print(f"\n📊 Spatial Query Performance:")
+        print("\n📊 Spatial Query Performance:")
         print(f"   Average: {avg_time:.1f}ms across {len(locations)} locations")
 
         # Most time is algorithm execution, but DB query should be fast
@@ -348,7 +346,7 @@ class TestAlgorithmPerformance:
             ("High density", 40.0150, -105.2705, 300),   # Boulder - large radius
         ]
 
-        print(f"\n📊 Algorithm Performance by Accident Count:")
+        print("\n📊 Algorithm Performance by Accident Count:")
 
         for label, lat, lon, radius in test_cases:
             payload = {
@@ -407,7 +405,7 @@ class TestValidationPerformance:
             times.append((end - start) * 1000)
 
         avg_time = mean(times)
-        print(f"\n📊 Validation Error Performance:")
+        print("\n📊 Validation Error Performance:")
         print(f"   Average: {avg_time:.1f}ms")
 
         # Validation should be very fast
@@ -443,7 +441,7 @@ class TestMemoryPerformance:
         data = response.json()
         num_accidents = len(data["top_contributing_accidents"])
 
-        print(f"\n📊 Response Size:")
+        print("\n📊 Response Size:")
         print(f"   Size: {response_kb:.2f} KB")
         print(f"   Contributing accidents: {num_accidents}")
         print(f"   Bytes per accident: {response_bytes / max(num_accidents, 1):.0f}")

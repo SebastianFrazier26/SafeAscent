@@ -12,7 +12,7 @@ Expected improvement: 4-5× faster for high-density areas like Longs Peak
 """
 import time
 import asyncio
-from datetime import date, timedelta
+from datetime import timedelta
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
@@ -195,7 +195,7 @@ async def run_benchmark():
         new_results = await fetch_weather_new_way(db, accidents)
         new_duration = time.time() - start_time
         print(f"Time: {new_duration:.4f} seconds")
-        print(f"Queries: 1 bulk query with JOIN")
+        print("Queries: 1 bulk query with JOIN")
         print(f"Weather records fetched: {sum(len(v) if v else 0 for v in new_results.values())}")
         print()
 

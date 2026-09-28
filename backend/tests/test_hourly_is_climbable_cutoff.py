@@ -6,7 +6,6 @@ from datetime import date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-import pytest
 
 from app.api.v1 import mp_routes
 from app.services.risk_bands import RISK_BAND_THRESHOLDS

@@ -10,10 +10,12 @@ Uses PostgreSQL's EXPLAIN ANALYZE to show:
 - Rows scanned vs rows returned
 - Cost estimates
 """
-import psycopg2
 import os
+import time
+from datetime import timedelta
+
+import psycopg2
 from dotenv import load_dotenv
-from datetime import date, timedelta
 
 load_dotenv()
 
@@ -121,7 +123,7 @@ WHERE accident_id = {accident_id}
 ORDER BY date;
 """
 
-print(f"Query:")
+print("Query:")
 print(f"  Fetching 7-day weather pattern for accident {accident_id}")
 print(f"  Date range: {start_date} to {end_date}")
 print()
@@ -145,8 +147,6 @@ print()
 print("Simulating current approach: fetching weather for 476 accidents...")
 print("(Running first 10 queries as sample)")
 print()
-
-import time
 
 # Get first 10 accident IDs from Longs Peak area
 cur.execute("""

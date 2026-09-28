@@ -19,12 +19,9 @@ os.environ.setdefault("ENVIRONMENT", "test")
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-from sqlalchemy.pool import NullPool
 from typing import AsyncGenerator
 
 from app.main import app
-from app.db.session import get_db
 
 
 # Configure pytest-asyncio

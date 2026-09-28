@@ -8,7 +8,6 @@ from datetime import date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-import pytest
 
 from app.tasks import cache_warming
 

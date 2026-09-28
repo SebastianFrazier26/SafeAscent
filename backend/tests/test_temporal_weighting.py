@@ -10,7 +10,7 @@ Key formulas tested:
 - Half-life: Alpine ~9.5 years, Sport ~1.9 years
 """
 import pytest
-from datetime import date, timedelta
+from datetime import date
 from app.services.temporal_weighting import (
     calculate_temporal_weight,
     calculate_temporal_weight_detailed,

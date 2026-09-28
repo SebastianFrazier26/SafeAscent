@@ -13,7 +13,6 @@ Tests focus on:
 """
 
 import pytest
-from datetime import datetime
 
 
 class TestHighRiskVsLowRisk:
@@ -57,7 +56,7 @@ class TestHighRiskVsLowRisk:
         assert florida_data["risk_score"] < 50, \
             f"Florida should show low risk (got {florida_data['risk_score']})"
 
-        print(f"\n✅ High-Risk vs Low-Risk Comparison:")
+        print("\n✅ High-Risk vs Low-Risk Comparison:")
         print(f"   Longs Peak: Risk={longs_data['risk_score']:.1f}, Accidents={longs_data['num_contributing_accidents']}")
         print(f"   Florida:    Risk={florida_data['risk_score']:.1f}, Accidents={florida_data['num_contributing_accidents']}")
         print(f"   Risk Difference: {longs_data['risk_score'] - florida_data['risk_score']:.1f} points")
@@ -92,7 +91,7 @@ class TestHighRiskVsLowRisk:
         assert rainier_data["risk_score"] > smith_data["risk_score"], \
             f"Mount Rainier ({rainier_data['risk_score']}) should be riskier than Smith Rock ({smith_data['risk_score']})"
 
-        print(f"\n✅ Alpine vs Sport Comparison:")
+        print("\n✅ Alpine vs Sport Comparison:")
         print(f"   Mount Rainier (alpine): Risk={rainier_data['risk_score']:.1f}, Accidents={rainier_data['num_contributing_accidents']}")
         print(f"   Smith Rock (sport):     Risk={smith_data['risk_score']:.1f}, Accidents={smith_data['num_contributing_accidents']}")
 
@@ -126,7 +125,7 @@ class TestHighRiskVsLowRisk:
         assert denali_data["risk_score"] >= acadia_data["risk_score"], \
             f"Denali ({denali_data['risk_score']}) should be at least as risky as Acadia ({acadia_data['risk_score']})"
 
-        print(f"\n✅ Extreme Alpine vs Sea Cliffs:")
+        print("\n✅ Extreme Alpine vs Sea Cliffs:")
         print(f"   Denali (alpine): Risk={denali_data['risk_score']:.1f}, Accidents={denali_data['num_contributing_accidents']}")
         print(f"   Acadia (trad):   Risk={acadia_data['risk_score']:.1f}, Accidents={acadia_data['num_contributing_accidents']}")
 
@@ -161,10 +160,10 @@ class TestSeasonalVariations:
         winter_data = winter.json()
         summer_data = summer.json()
 
-        print(f"\n✅ Seasonal Variation (Colorado):")
+        print("\n✅ Seasonal Variation (Colorado):")
         print(f"   Winter (Jan): Risk={winter_data['risk_score']:.1f}, Accidents={winter_data['num_contributing_accidents']}")
         print(f"   Summer (Jul): Risk={summer_data['risk_score']:.1f}, Accidents={summer_data['num_contributing_accidents']}")
-        print(f"   Note: Seasonal boost applies to winter predictions in mountain areas")
+        print("   Note: Seasonal boost applies to winter predictions in mountain areas")
 
     def test_early_season_vs_late_season(self, test_client):
         """Early season (spring) might show different patterns than late season (fall)."""
@@ -193,7 +192,7 @@ class TestSeasonalVariations:
         early_data = early_season.json()
         late_data = late_season.json()
 
-        print(f"\n✅ Early vs Late Season (Mount Rainier):")
+        print("\n✅ Early vs Late Season (Mount Rainier):")
         print(f"   Early (May): Risk={early_data['risk_score']:.1f}, Accidents={early_data['num_contributing_accidents']}")
         print(f"   Late (Sep):  Risk={late_data['risk_score']:.1f}, Accidents={late_data['num_contributing_accidents']}")
 
@@ -219,7 +218,7 @@ class TestKnownDangerousAreas:
         assert data["num_contributing_accidents"] > 20, \
             "Yosemite area should have many accidents"
 
-        print(f"\n✅ Half Dome Area (Known Dangerous):")
+        print("\n✅ Half Dome Area (Known Dangerous):")
         print(f"   Risk Score: {data['risk_score']:.1f}/100")
         print(f"   Accidents Found: {data['num_contributing_accidents']}")
         print(f"   Top Accident Influence: {data['top_contributing_accidents'][0]['total_influence']:.3f}")
@@ -241,7 +240,7 @@ class TestKnownDangerousAreas:
         # Should have accidents and show risk
         assert data["num_contributing_accidents"] > 10
 
-        print(f"\n✅ Grand Teton Area:")
+        print("\n✅ Grand Teton Area:")
         print(f"   Risk Score: {data['risk_score']:.1f}/100")
         print(f"   Accidents Found: {data['num_contributing_accidents']}")
 
@@ -259,7 +258,7 @@ class TestKnownDangerousAreas:
         assert whitney.status_code == 200
         data = whitney.json()
 
-        print(f"\n✅ Mount Whitney Area:")
+        print("\n✅ Mount Whitney Area:")
         print(f"   Risk Score: {data['risk_score']:.1f}/100")
         print(f"   Accidents Found: {data['num_contributing_accidents']}")
 
@@ -294,10 +293,10 @@ class TestRouteTypeRiskDifferences:
         alpine_data = alpine.json()
         sport_data = sport.json()
 
-        print(f"\n✅ Route Type Comparison (Same Location):")
+        print("\n✅ Route Type Comparison (Same Location):")
         print(f"   Alpine: Risk={alpine_data['risk_score']:.1f}, Accidents={alpine_data['num_contributing_accidents']}")
         print(f"   Sport:  Risk={sport_data['risk_score']:.1f}, Accidents={sport_data['num_contributing_accidents']}")
-        print(f"   Note: Risk difference reflects route type weighting and accident patterns")
+        print("   Note: Risk difference reflects route type weighting and accident patterns")
 
     def test_ice_climbing_winter_risk(self, test_client):
         """Ice climbing should show appropriate risk levels."""
@@ -313,7 +312,7 @@ class TestRouteTypeRiskDifferences:
         assert ice.status_code == 200
         data = ice.json()
 
-        print(f"\n✅ Ice Climbing (Winter):")
+        print("\n✅ Ice Climbing (Winter):")
         print(f"   Risk Score: {data['risk_score']:.1f}/100")
         print(f"   Accidents Found: {data['num_contributing_accidents']}")
 
@@ -342,7 +341,7 @@ class TestRouteTypeRiskDifferences:
         boulder_data = boulder.json()
         trad_data = trad.json()
 
-        print(f"\n✅ Bouldering vs Roped Climbing:")
+        print("\n✅ Bouldering vs Roped Climbing:")
         print(f"   Boulder: Risk={boulder_data['risk_score']:.1f}, Accidents={boulder_data['num_contributing_accidents']}")
         print(f"   Trad:    Risk={trad_data['risk_score']:.1f}, Accidents={trad_data['num_contributing_accidents']}")
 
@@ -377,7 +376,7 @@ class TestHistoricalAccidentCorrelation:
                 "accidents": data["num_contributing_accidents"]
             })
 
-        print(f"\n✅ Historical Accident Correlation:")
+        print("\n✅ Historical Accident Correlation:")
         for res in results:
             print(f"   {res['name']:20s}: Risk={res['risk']:5.1f}, Accidents={res['accidents']:4d}")
 
@@ -402,7 +401,7 @@ class TestHistoricalAccidentCorrelation:
         # Check temporal weights in top accidents
         top_accidents = data["top_contributing_accidents"][:5]
 
-        print(f"\n✅ Temporal Weighting Analysis:")
+        print("\n✅ Temporal Weighting Analysis:")
         print(f"   Examining top {len(top_accidents)} contributing accidents:")
         for i, acc in enumerate(top_accidents, 1):
             print(f"   {i}. Days ago: {acc['days_ago']:5d}, Temporal weight: {acc['temporal_weight']:.3f}, Distance: {acc['distance_km']:.1f}km")
@@ -438,7 +437,7 @@ class TestRiskScoreCalibration:
         assert data["risk_score"] > 30, \
             f"High accident density should produce risk >30 (got {data['risk_score']})"
 
-        print(f"\n✅ High Density Risk:")
+        print("\n✅ High Density Risk:")
         print(f"   Accidents: {data['num_contributing_accidents']}")
         print(f"   Risk Score: {data['risk_score']:.1f}/100")
 
@@ -456,7 +455,7 @@ class TestRiskScoreCalibration:
         assert low_density.status_code == 200
         data = low_density.json()
 
-        print(f"\n✅ Low Density Risk:")
+        print("\n✅ Low Density Risk:")
         print(f"   Accidents: {data['num_contributing_accidents']}")
         print(f"   Risk Score: {data['risk_score']:.1f}/100")
 
@@ -481,7 +480,7 @@ class TestRiskScoreCalibration:
             assert influences == sorted(influences, reverse=True), \
                 "Top accidents should be sorted by total_influence descending"
 
-        print(f"\n✅ Top Accidents Sorted:")
+        print("\n✅ Top Accidents Sorted:")
         print(f"   Total Accidents: {data['num_contributing_accidents']}")
         print(f"   Top 5 Influences: {[f'{acc['total_influence']:.3f}' for acc in top_accidents[:5]]}")
 

@@ -46,7 +46,7 @@ if response.status_code == 200:
     print()
 
     print("COMPARISON:")
-    print(f"  OLD (476 accidents, 50km filter):  ~0.55s")
+    print("  OLD (476 accidents, 50km filter):  ~0.55s")
     print(f"  NEW (all accidents, no filter):     {elapsed:.2f}s")
     print(f"  Slowdown: {elapsed / 0.55:.1f}×")
     print()

@@ -10,9 +10,7 @@ These tests validate the full request-response cycle including:
 import pytest
 from datetime import date, timedelta
 from httpx import AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.main import app
 
 # needs_data: needs a populated database or live Redis/network; deselected by default
 # (pyproject addopts). Applied per class below — TestPredictValidation asserts 422s

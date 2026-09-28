@@ -14,8 +14,6 @@ Expected performance impact:
 - Algorithm: 500ms → ~10 seconds (needs optimization)
 """
 import time
-import asyncio
-from datetime import date
 from fastapi.testclient import TestClient
 import sys
 import os
