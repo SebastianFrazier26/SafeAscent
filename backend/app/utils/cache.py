@@ -219,7 +219,8 @@ def get_cache_stats() -> dict:
         }
     except redis.RedisError as e:
         logger.error(f"Cache stats error: {e}")
-        return {"status": "error", "error": str(e)}
+        # Redis error text can name the host/port; callers get the type, the log gets the detail.
+        return {"status": "error", "error": f"Redis error ({type(e).__name__})"}
 
 
 # Cache key builders for common use cases
@@ -450,7 +451,7 @@ def get_safety_cache_stats(target_date: str) -> Dict:
         }
     except redis.RedisError as e:
         logger.error(f"Safety cache stats error: {e}")
-        return {"status": "error", "error": str(e), "cached_count": 0}
+        return {"status": "error", "error": f"Redis error ({type(e).__name__})", "cached_count": 0}
 
 
 def clear_stale_safety_score_keys(keep_dates: List[str]) -> int:

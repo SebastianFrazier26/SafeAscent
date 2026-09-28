@@ -1023,9 +1023,10 @@ async def _compute_all_dates_async() -> Dict:
                     logger.warning(f"Retrying {date_str} in {delay_seconds}s")
                     await asyncio.sleep(delay_seconds)
                 else:
+                    # Full text is in the log above; the stats dict is task-result material.
                     all_stats["failed_dates"].append({
                         "date": date_str,
-                        "error": str(exc),
+                        "error": f"computation failed ({type(exc).__name__})",
                     })
 
         if not date_success:
