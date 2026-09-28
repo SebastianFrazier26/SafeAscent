@@ -284,6 +284,7 @@ import {
   isRiskScore,
 } from '../utils/riskUtils';
 import { readableTextOn } from '../utils/color';
+import { ACCIDENT_RATE_UNIT, formatAccidentRate, formatAccidentRateValue, hasAccidentRate } from '../utils/accidentRate';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
 
@@ -324,12 +325,12 @@ function accidentRateBg(month) {
   return ACCIDENT_RATE_BG.high;
 }
 
-const formatRate = (rate) => (isFiniteNumber(rate) ? `${rate}%` : 'Unavailable');
 const formatCount = (count) => (isFiniteNumber(count) ? count : '—');
 
 function monthSummary(month) {
+  const rate = formatAccidentRate(month?.accident_rate, month?.ascent_count);
   return `${formatCount(month?.ascent_count)} ascents with ${formatCount(month?.accident_count)} accidents `
-    + `(${isFiniteNumber(month?.accident_rate) ? `${month.accident_rate}% rate` : 'rate Unavailable'})`;
+    + `(${hasAccidentRate(month?.accident_rate, month?.ascent_count) ? rate : `rate ${rate}`})`;
 }
 
 /**
@@ -2436,9 +2437,11 @@ function AscentsTab({ data, loading, routeData }) {
                 <Paper sx={{ p: 2, bgcolor: 'warning.50', textAlign: 'center' }}>
                   <Typography variant="body2" color="text.secondary">Accident Rate</Typography>
                   <Typography variant="h4" fontWeight={700} color="warning.dark">
-                    {formatRate(data.overall_accident_rate)}
+                    {formatAccidentRateValue(data.overall_accident_rate, data.total_ascents)}
                   </Typography>
-                  <Typography variant="caption" color="text.secondary">per 1000 ascents</Typography>
+                  {hasAccidentRate(data.overall_accident_rate, data.total_ascents) && (
+                    <Typography variant="caption" color="text.secondary">{ACCIDENT_RATE_UNIT}</Typography>
+                  )}
                 </Paper>
               </Grid>
               <Grid size={{ xs: 6, md: 2.4 }}>
@@ -2528,6 +2531,9 @@ function AscentsTab({ data, loading, routeData }) {
             <Typography variant="h6" gutterBottom fontWeight={600}>
               📈 Accident Rate by Month
             </Typography>
+            <Typography variant="body2" color="text.secondary">
+              Accidents {ACCIDENT_RATE_UNIT}
+            </Typography>
             <Box sx={{ maxHeight: 400, overflow: 'auto' }}>
               <List dense>
                 {data.monthly_stats?.map((month, idx) => (
@@ -2540,7 +2546,7 @@ function AscentsTab({ data, loading, routeData }) {
                               {month.month}
                             </Typography>
                             <Chip
-                              label={month.ascent_count > 0 ? formatRate(month.accident_rate) : 'No data'}
+                              label={month.ascent_count > 0 ? formatAccidentRateValue(month.accident_rate, month.ascent_count) : 'No data'}
                               size="small"
                               sx={{
                                 ...chipColorsOn(accidentRateBg(month)),

@@ -243,17 +243,49 @@ describe('RouteAnalyticsModal accident and ascent figures', () => {
     expect(within(dialog).queryByText(/undefined|NaN/)).toBeNull();
     // Feb (the worst month) has no rate: its highlight must not claim 0% or 0 accidents.
     const worst = within(dialog).getByText(/Highest Risk Month/).closest('.MuiPaper-root');
-    expect(worst).not.toHaveTextContent(/\b0% rate/);
+    expect(worst).not.toHaveTextContent(/\b0% rate|\b0 per 1,000/);
     expect(worst).not.toHaveTextContent(/with 0 accidents/);
     expect(worst).toHaveTextContent(/Unavailable/);
 
-    for (const label of ['0%', '4%', '7%', '12%', 'No data']) {
+    // Rates are accidents per 1,000 ascents; the list header carries the unit.
+    expect(within(dialog).getByText('Accidents per 1,000 ascents')).toBeInTheDocument();
+    const best = within(dialog).getByText(/Safest Month:/).closest('.MuiPaper-root');
+    expect(best).toHaveTextContent('30 ascents with 0 accidents (0 per 1,000 ascents)');
+    expect(within(dialog).queryByText(/\d%/)).toBeNull();
+    for (const label of ['0', '4', '7', '12', 'No data']) {
       expectReadable(within(dialog).getByText(label));
     }
     const missingRateChip = within(dialog).getAllByText('Unavailable')
       .map((el) => el.closest('.MuiChip-root')).find(Boolean);
     expect(missingRateChip).toHaveStyle({ backgroundColor: NO_RISK_HEX });
     expectReadable(missingRateChip);
+  });
+
+  it('a route with no ascents never shows the backend 0.0 as a rate', async () => {
+    const noAscents = {
+      ...ascents,
+      has_data: false,
+      total_ascents: 0,
+      total_accidents: 0,
+      overall_accident_rate: 0.0,
+      best_month: null,
+      worst_month: null,
+      peak_month: null,
+      message: 'No tick data available yet for this route.',
+      monthly_stats: ascents.monthly_stats.map((m) => ({ ...m, ascent_count: 0, accident_count: 0, accident_rate: 0 })),
+    };
+    vi.stubGlobal('fetch', vi.fn((url) => {
+      if (url.endsWith('/ascent-analytics')) return Promise.resolve(jsonResponse(noAscents));
+      if (url.endsWith('/accidents')) return Promise.resolve(jsonResponse(accidents));
+      return Promise.resolve(jsonResponse(route(1, 'Route A')));
+    }));
+    const user = userEvent.setup();
+    render(<Modal routeData={route(1, 'Route A')} />);
+    await user.click(screen.getByRole('tab', { name: 'Ascents' }));
+    await screen.findByText('No tick data available yet for this route.');
+
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).queryByText(/per 1,000|Accident Rate by Month/)).toBeNull();
   });
 });
 
