@@ -60,7 +60,7 @@ export default function RiskLegend() {
         💡 <strong>Heatmap:</strong> Regional risk coverage across entire map
       </Typography>
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-        📍 <strong>Markers:</strong> Individual routes • Clusters show average score
+        📍 <strong>Markers:</strong> Individual routes • Clusters show average score, gray when fewer than half their routes have one
       </Typography>
     </Paper>
   );
