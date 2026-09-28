@@ -1351,7 +1351,7 @@ async def get_time_of_day_analysis(
             elif visibility is not None and visibility < 5000:
                 risk_adjustment += 5
 
-            # No evidence: no hourly number either (weather adjustments would otherwise
+            # Too little evidence: no hourly number either (weather adjustments would otherwise
             # turn "unknown" into an apparently low score).
             hourly_risk = None if base_risk is None else min(max(base_risk + risk_adjustment, 0), 100)
 

@@ -116,7 +116,7 @@ async def _warm_cache_async() -> dict:
                         )
 
                         if prediction.risk_score is None:
-                            # No evidence: cache the explicit insufficient_data state
+                            # Too little evidence: cache the explicit insufficient_data state
                             # rather than skipping (a miss would trigger recomputes) or 0.
                             safety_response = MpRouteSafetyResponse(
                                 route_id=route.mp_route_id,
