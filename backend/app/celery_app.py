@@ -24,6 +24,7 @@ celery_app = Celery(
     backend=settings.celery_result_backend,
     include=[
         "app.tasks.safety_computation_optimized",  # Active location-level task
+        "app.tasks.ops",
     ],
 )
 
@@ -45,6 +46,9 @@ celery_app.conf.update(
     task_acks_late=True,
     # Don't retry failed tasks by default
     task_reject_on_worker_lost=True,
+    # A lost broker connection cancels in-flight work so acks_late redelivers it,
+    # instead of the task finishing against a dead channel.
+    worker_cancel_long_running_tasks_on_connection_loss=True,
 )
 
 # Celery Beat schedule - periodic tasks
@@ -58,4 +62,15 @@ celery_app.conf.beat_schedule = {
         # worker restart can still execute and finish the overnight run.
         "options": {"expires": 28800},  # 8 hours
     },
+    # Dead-man's switch for the consumer: an alert fires within 30 min (15 min period +
+    # 15 min grace on healthchecks.io) instead of at the next nightly run.
+    "beat-heartbeat": {
+        "task": "app.tasks.ops.beat_heartbeat",
+        "schedule": 900.0,
+        "options": {"expires": 600},
+    },
 }
+
+from app.celery_signals import install as install_ops_signals  # noqa: E402
+
+install_ops_signals(celery_app)

@@ -135,6 +135,9 @@ jobs:
           echo "compose services: $services"
           [ "$services" = "api beat db frontend redis worker " ]
 
+      - name: docker-compose worker/beat commands match Railway startCommand
+        run: python scripts/check_compose_matches_railway.py
+
   # The single required status check (branch protection and Railway "Wait for
   # CI" key on this name). always() so a failed or skipped dependency reports
   # as a failure here instead of leaving the check pending forever.

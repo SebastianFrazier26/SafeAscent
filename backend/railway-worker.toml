@@ -1,13 +1,12 @@
-# Railway Configuration for SafeAscent Celery Worker
-# No healthcheck - Celery workers don't serve HTTP
+# Railway: Celery worker. Beat runs as its own service (railway-beat.toml); embedding it
+# here let beat keep publishing while the consumer was hung (2026-08 outage).
 
 [build]
 builder = "dockerfile"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-# No healthcheck for background workers
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 10
 numReplicas = 1
-startCommand = "celery -A app.celery_app worker --beat --loglevel=info --concurrency=1"
+startCommand = "celery -A app.celery_app worker --loglevel=info --concurrency=1 -E"

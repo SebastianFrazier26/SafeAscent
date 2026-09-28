@@ -31,6 +31,8 @@ from app.models.mp_route import MpRoute
 from app.models.mp_location import MpLocation
 from app.models.accident import Accident
 from app.celery_app import celery_app
+from app.config import settings
+from app.healthchecks import ping
 from app.services.location_safety_computation import (
     compute_location_base_score_vectorized,
     compute_batch_route_scores,
@@ -916,6 +918,7 @@ def compute_daily_safety_scores_optimized():
         }
 
     try:
+        ping(settings.HEALTHCHECKS_NIGHTLY_URL, "/start")
         logger.warning("Creating event loop...")
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -929,9 +932,11 @@ def compute_daily_safety_scores_optimized():
         logger.info("=" * 60)
         logger.info(f"OPTIMIZED COMPUTATION COMPLETE: {result}")
         logger.info("=" * 60)
+        ping(settings.HEALTHCHECKS_NIGHTLY_URL)
         return result
     except Exception as e:
         logger.error(f"Optimized computation failed: {e}", exc_info=True)
+        ping(settings.HEALTHCHECKS_NIGHTLY_URL, "/fail")
         raise
     finally:
         _release_population_lock(lock_token)

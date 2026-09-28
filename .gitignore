@@ -153,6 +153,7 @@ frontend/MATERIAL_DESIGN_MIGRATION_COMPLETE.md
 # =============================================================================
 /scripts/*
 !/scripts/check_no_scrapers.py
+!/scripts/check_compose_matches_railway.py
 
 # =============================================================================
 # Local automation metadata
