@@ -489,3 +489,6 @@ class TestRiskScoreCalibration:
 if __name__ == "__main__":
     # Run tests with pytest
     pytest.main([__file__, "-v", "-s"])
+
+# Needs a populated database or live Redis/network; deselected by default (pyproject addopts).
+pytestmark = pytest.mark.needs_data

@@ -46,3 +46,6 @@ class TestDailyVariationYosemite:
             data = response.json()
             
             print(f"   {date} → Risk: {data['risk_score']:.2f}/100")
+
+# Needs a populated database or live Redis/network; deselected by default (pyproject addopts).
+pytestmark = pytest.mark.needs_data

@@ -20,7 +20,7 @@ from datetime import date
 from httpx import AsyncClient
 
 # Mark all tests in this file as performance tests
-pytestmark = pytest.mark.performance
+pytestmark = [pytest.mark.performance, pytest.mark.needs_data]
 
 
 @pytest.mark.asyncio

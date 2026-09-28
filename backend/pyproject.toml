@@ -39,12 +39,13 @@ package = false
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-addopts = "--verbose --cov=app --cov-report=term-missing --cov-report=html"
+addopts = "--verbose --cov=app --cov-report=term-missing --cov-report=html -m 'not needs_data'"
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 markers = [
     "performance: marks tests as performance benchmarks (deselect with '-m \"not performance\"')",
+    "needs_data: needs a populated database or live services; run with -m needs_data",
 ]
 
 [tool.ruff]

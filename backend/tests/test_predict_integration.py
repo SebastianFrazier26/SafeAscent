@@ -518,3 +518,6 @@ class TestPredictResponseConsistency:
         if len(accidents) > 1:
             influences = [acc["total_influence"] for acc in accidents]
             assert influences == sorted(influences, reverse=True)
+
+# Needs a populated database or live Redis/network; deselected by default (pyproject addopts).
+pytestmark = pytest.mark.needs_data

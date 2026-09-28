@@ -244,3 +244,6 @@ class TestPredictionEndpointWithCaching:
         assert data1["risk_score"] == data2["risk_score"]
         assert data1["confidence"] == data2["confidence"]
         assert data1["num_contributing_accidents"] == data2["num_contributing_accidents"]
+
+# Needs a populated database or live Redis/network; deselected by default (pyproject addopts).
+pytestmark = pytest.mark.needs_data
