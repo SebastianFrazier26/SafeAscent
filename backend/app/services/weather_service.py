@@ -13,13 +13,13 @@ Caching (Phase 8):
 - Weather statistics cached for 24 hours (historical data is static)
 - Uses Redis for fast in-memory storage
 """
-import os
 import requests
 from datetime import date, timedelta
 from math import exp, sqrt
 from typing import Optional, Dict, Any, List, Tuple
 import logging
 
+from app.config import settings
 from app.services.weather_similarity import WeatherPattern
 from app.utils.cache import (
     cache_get,
@@ -32,7 +32,7 @@ from app.utils.cache import (
 logger = logging.getLogger(__name__)
 
 # Open-Meteo API endpoint (commercial API if key provided, otherwise free)
-OPEN_METEO_API_KEY = os.getenv("OPEN_METEO_API_KEY")
+OPEN_METEO_API_KEY = settings.OPEN_METEO_API_KEY
 if OPEN_METEO_API_KEY:
     WEATHER_API_URL = "https://customer-api.open-meteo.com/v1/forecast"
     ARCHIVE_WEATHER_API_URL = "https://customer-archive-api.open-meteo.com/v1/archive"
@@ -324,7 +324,7 @@ async def fetch_weather_statistics(
         >>> print(f"Mean temp: {stats['temperature'][0]:.1f}°C")
         Mean temp: 11.3°C
     """
-    if os.getenv("SKIP_WEATHER_STATISTICS", "false").lower() == "true":
+    if settings.SKIP_WEATHER_STATISTICS:
         return None
 
     target_date = reference_date or date.today()

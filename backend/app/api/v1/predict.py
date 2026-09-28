@@ -3,7 +3,6 @@ Safety Prediction API Endpoint
 
 POST /api/v1/predict - Calculate safety prediction for a planned climbing route
 """
-import os
 import logging
 from datetime import timedelta
 from typing import List, Optional, Dict
@@ -13,6 +12,7 @@ from sqlalchemy import select, and_, func
 from geoalchemy2.functions import ST_DWithin, ST_MakePoint
 
 from app.db.session import get_db
+from app.config import settings
 from app.models.accident import Accident
 from app.models.weather import Weather
 from app.schemas.prediction import (
@@ -269,7 +269,7 @@ async def predict_route_safety(
 
     # Step 6: Calculate safety prediction
     # Feature flag: Use vectorized algorithm if enabled (default: True)
-    use_vectorized = os.getenv("USE_VECTORIZED_ALGORITHM", "true").lower() == "true"
+    use_vectorized = settings.USE_VECTORIZED_ALGORITHM
 
     # Use route_grade from function parameter (batch processing) or request
     effective_grade = route_grade if route_grade is not None else getattr(request, 'route_grade', None)
