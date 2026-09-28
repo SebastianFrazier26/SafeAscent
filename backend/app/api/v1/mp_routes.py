@@ -847,24 +847,28 @@ async def get_route_accidents(
             accident_type, injury_severity, location, route as route_name,
             source, state, mountain, activity, age_range, tags, elevation_meters,
             mp_route_id,
-            (
-                6371 * acos(
+            distance_km
+        FROM (
+            SELECT
+                *,
+                -- The CASE is required: LEAST/GREATEST skip NULLs, so without it a missing
+                -- coordinate becomes acos(-1), about 20,015 km. The clamp keeps acos in its
+                -- domain when rounding pushes the cosine just past 1 for coincident points.
+                CASE WHEN latitude IS NULL OR longitude IS NULL THEN NULL
+                ELSE 6371 * acos(LEAST(1.0, GREATEST(-1.0,
                     cos(radians(:lat)) * cos(radians(latitude)) *
                     cos(radians(longitude) - radians(:lon)) +
                     sin(radians(:lat)) * sin(radians(latitude))
-                )
-            ) as distance_km
-        FROM accidents
-        WHERE latitude IS NOT NULL AND longitude IS NOT NULL
-          AND (date IS NULL OR date <= :today)
-          AND (
-              6371 * acos(
-                  cos(radians(:lat)) * cos(radians(latitude)) *
-                  cos(radians(longitude) - radians(:lon)) +
-                  sin(radians(:lat)) * sin(radians(latitude))
-              )
-          ) < 50
-        ORDER BY distance_km ASC, date DESC NULLS LAST
+                ))) END as distance_km
+            FROM accidents
+            WHERE (date IS NULL OR date <= :today)
+        ) a
+        -- An FK-linked accident belongs to this route even without coordinates; only
+        -- unlinked nearby accidents need a distance.
+        WHERE mp_route_id = :mp_route_id OR distance_km < 50
+        ORDER BY (mp_route_id = :mp_route_id) IS TRUE DESC,
+                 distance_km ASC NULLS LAST,
+                 date DESC NULLS LAST
         LIMIT :limit
     """)
 
@@ -875,6 +879,7 @@ async def get_route_accidents(
             "lon": route.longitude,
             "limit": limit,
             "today": datetime.now(timezone.utc).date(),
+            "mp_route_id": mp_route_id,
         }
     )
     accidents = accidents_result.fetchall()
@@ -889,7 +894,9 @@ async def get_route_accidents(
         # Calculate impact score based on proximity (closer = higher score)
         # Using exponential decay: 100 * e^(-distance/10)
         # At 0km = 100, at 10km ≈ 37, at 20km ≈ 14, at 50km ≈ 0.7
-        impact_score = round(100 * math.exp(-distance_km / 10), 1)
+        impact_score = (
+            round(100 * math.exp(-distance_km / 10), 1) if distance_km is not None else None
+        )
 
         # FK equality only: name matching labelled nearby routes with similar names
         # (e.g. "X" vs "X Direct") as this route.
@@ -972,7 +979,7 @@ async def get_route_accidents(
             "location": location,
             "weather": weather_data,
             # New relevance fields
-            "distance_km": round(distance_km, 1) if distance_km else None,
+            "distance_km": round(distance_km, 1) if distance_km is not None else None,
             "impact_score": impact_score,
             "same_route": same_route,
             # Additional detail fields
@@ -983,7 +990,7 @@ async def get_route_accidents(
             "age_range": age_range,
             "tags": tags,
             "elevation_meters": round(elevation_m) if elevation_m else None,
-            "coordinates": {"lat": acc_lat, "lon": acc_lon} if acc_lat and acc_lon else None,
+            "coordinates": {"lat": acc_lat, "lon": acc_lon} if acc_lat is not None and acc_lon is not None else None,
         })
 
     # Get location name if available

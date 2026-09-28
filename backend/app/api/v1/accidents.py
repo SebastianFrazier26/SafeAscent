@@ -36,6 +36,9 @@ async def list_accidents(
     # Foreign key filters
     mountain_id: Optional[int] = Query(None, description="Filter by mountain ID"),
     mp_route_id: Optional[int] = Query(None, description="Filter by Mountain Project route ID"),
+    # Accepted only to reject it: it used to filter the legacy accidents.route_id, and an
+    # ignored filter would silently return every accident.
+    route_id: Optional[int] = Query(None, include_in_schema=False),
     # Pagination
     limit: int = Query(100, ge=1, le=1000, description="Number of results to return"),
     offset: int = Query(0, ge=0, description="Number of results to skip"),
@@ -65,7 +68,14 @@ async def list_accidents(
     - **limit**: Max 1000 results
     - **offset**: Skip N results
     """
-    # Build query
+    if route_id is not None:
+        raise HTTPException(status_code=422, detail="route_id is not supported; use mp_route_id")
+    spatial = (lat, lon, radius_km)
+    if any(v is not None for v in spatial) and not all(v is not None for v in spatial):
+        raise HTTPException(
+            status_code=422, detail="Spatial search needs lat, lon and radius_km together"
+        )
+
     query = select(Accident)
 
     # Spatial filter (PostGIS ST_DWithin)

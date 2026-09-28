@@ -52,7 +52,9 @@ INSERT INTO accidents (accident_id, date, route, mp_route_id, latitude, longitud
     (11, '2015-05-01', 'Unrelated Name', {THIRD_ROUTE}, 40.005, -105.0),
     (12, '2016-05-01', 'Third Route Direct', {FOURTH_ROUTE}, 40.006, -105.0),
     (13, '2017-05-01', 'Third Route', NULL, 40.007, -105.0),
-    (14, '3901-05-01', 'Third Route', {THIRD_ROUTE}, 40.008, -105.0);
+    (14, '3901-05-01', 'Third Route', {THIRD_ROUTE}, 40.008, -105.0),
+    (15, '2018-05-01', 'Third Route', {THIRD_ROUTE}, NULL, NULL),
+    (16, '2018-06-01', 'Third Route', NULL, NULL, NULL);
 """
 
 
@@ -150,7 +152,7 @@ def test_future_dated_accidents_are_excluded_from_ascent_analytics(seeded_db):
     assert data["accident_years"]["last"] == 2019
 
 
-async def _get(dbname: str, path: str, **params: Any) -> Any:
+async def _get(dbname: str, path: str, expect: int = 200, **params: Any) -> Any:
     engine = create_async_engine(_db_url(dbname).replace("postgresql://", "postgresql+asyncpg://", 1))
 
     async def override() -> Any:
@@ -161,7 +163,7 @@ async def _get(dbname: str, path: str, **params: Any) -> Any:
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get(path, params=params)
-        assert response.status_code == 200, response.text
+        assert response.status_code == expect, response.text
         return response.json()
     finally:
         app.dependency_overrides.pop(get_db, None)
@@ -200,3 +202,40 @@ def test_accident_list_filters_by_mp_route_id_not_legacy_route_id(seeded_db):
     assert 1 not in ids  # legacy route_id == ROUTE, mp_route_id elsewhere
     assert {2, 3, 4} <= ids
     assert all(a["mp_route_id"] == ROUTE for a in data["data"])
+
+
+def test_fk_linked_accident_without_coordinates_is_listed_first(seeded_db, no_weather_calls):
+    data = asyncio.run(_get(seeded_db, f"/api/v1/mp-routes/{THIRD_ROUTE}/accidents"))
+
+    by_id = {a["accident_id"]: a for a in data["accidents"]}
+    assert by_id[15]["same_route"] is True
+    assert by_id[15]["distance_km"] is None
+    assert by_id[15]["impact_score"] is None
+    assert by_id[15]["coordinates"] is None
+    assert 16 not in by_id  # no FK and no coordinates: not nearby, not this route
+    # Same-route rows lead, so the limit never cuts one off in favour of a nearby row.
+    assert [a["same_route"] for a in data["accidents"]] == [True, True, False, False]
+    limited = asyncio.run(_get(seeded_db, f"/api/v1/mp-routes/{THIRD_ROUTE}/accidents", limit=1))
+    assert limited["accidents"][0]["same_route"] is True
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"route_id": ROUTE},
+        {"lat": 40.0},
+        {"lon": -105.0},
+        {"radius_km": 10},
+        {"lat": 40.0, "radius_km": 10},
+        {"lat": 40.0, "lon": -105.0},
+    ],
+)
+def test_accident_list_rejects_ignored_filters(seeded_db, params):
+    body = asyncio.run(_get(seeded_db, "/api/v1/accidents", expect=422, **params))
+    assert "mp_route_id" in body["detail"] if "route_id" in params else "lat, lon and radius_km" in body["detail"]
+
+
+def test_accident_list_spatial_search_with_all_three_params(seeded_db):
+    data = asyncio.run(_get(seeded_db, "/api/v1/accidents", lat=40.0, lon=-105.0, radius_km=5))
+    assert {11, 12, 13} <= {a["accident_id"] for a in data["data"]}
+    assert not {1, 2, 3, 15} & {a["accident_id"] for a in data["data"]}
