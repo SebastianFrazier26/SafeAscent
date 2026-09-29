@@ -28,6 +28,30 @@ from tests.test_migrations import (
 
 pytestmark = requires_pg
 CREATE_PHASE2 = ROLES_DIR / "create_roles_phase2.sql"
+GRANTS_PHASE2 = ROLES_DIR / "grants_phase2.sql"
+VERIFY_PHASE2 = ROLES_DIR / "verify_roles_phase2.sql"
+
+# The shape of Task 5's R8 QUARANTINE_SQL, so a column missing from ingest's mp_ticks grant
+# fails here rather than on the first prod run.
+R8_SHAPED_SQL = """
+WITH classified AS (
+  SELECT t.tick_id,
+         CASE
+           WHEN t.tick_date > LEAST(DATE '2026-09-29', t.created_at::date + 1) THEN 'future'
+           WHEN CASE WHEN t.route_id ~ '^[0-9]{1,18}$'
+                     THEN NOT EXISTS (SELECT 1 FROM mp_routes r WHERE r.mp_route_id = t.route_id::bigint)
+                     ELSE true END THEN 'orphan_route'
+           WHEN t.tick_date < DATE '1970-01-01' THEN 'pre_1970'
+         END AS reason
+  FROM mp_ticks t
+)
+UPDATE mp_ticks m
+SET quarantine_reason = c.reason, quarantine_rule_version = 'r8-v1'
+FROM classified c
+WHERE m.tick_id = c.tick_id
+  AND (m.quarantine_reason IS DISTINCT FROM c.reason OR m.quarantine_rule_version IS DISTINCT FROM 'r8-v1');
+SELECT coalesce(quarantine_reason, 'clean'), count(*) FROM mp_ticks GROUP BY 1;
+"""
 
 # PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views; those belong to the
 # extension, not to any grant this project makes, so the check skips them as verify_roles.sql does.
@@ -99,9 +123,9 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db):  # noqa: F811
     migrator_url = _role_url(fresh_db, "migrator", PASSWORDS["migrator"])
     command.upgrade(_alembic_cfg_as(fresh_db, migrator_url), "head")
 
-    granted = _psql(owner_url, ROLES_DIR / "grants_phase2.sql", {})
+    granted = _psql(owner_url, GRANTS_PHASE2, {})
     assert granted.returncode == 0, granted.stderr
-    again = _psql(owner_url, ROLES_DIR / "grants_phase2.sql", {})
+    again = _psql(owner_url, GRANTS_PHASE2, {})
     assert again.returncode == 0, again.stderr  # idempotent
 
     for script in ("verify_roles.sql", "verify_roles_phase2.sql"):
@@ -129,6 +153,9 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db):  # noqa: F811
     _denied(ingest, "DELETE FROM internal.ingest_quarantine")
     _denied(ingest, "SELECT count(*) FROM internal.accidents_raw")
     _as(ingest, "UPDATE mp_ticks SET quarantine_reason = NULL WHERE false")
+    _as(ingest, R8_SHAPED_SQL)
+    _denied(ingest, "SELECT climber_name FROM mp_ticks")
+    _denied(ingest, "SELECT * FROM mp_ticks")
     _denied(ingest, "UPDATE mp_ticks SET climber_name = 'x' WHERE false")
     _denied(ingest, "UPDATE accidents SET accident_id = accident_id WHERE false")
     _denied(ingest, "DELETE FROM source_ingest_log")
@@ -149,12 +176,45 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db):  # noqa: F811
 
     # The schema belongs to migrator, so the stray grant is made as migrator.
     _as(owner_url, "SET ROLE migrator; GRANT USAGE ON SCHEMA internal TO app; RESET ROLE;")
-    stray = _psql(owner_url, ROLES_DIR / "verify_roles_phase2.sql", {})
+    stray = _psql(owner_url, VERIFY_PHASE2, {})
     assert stray.returncode != 0
     assert "app has no USAGE on schema internal" in stray.stderr
 
 
-def test_verify_phase2_catches_stray_ingest_and_trainer_grants(role_cleanup, fresh_db):  # noqa: F811
+def test_after_relaunch_revoke_owner_regrants_set_and_migrator_runs_grants(role_cleanup, fresh_db):  # noqa: F811
+    _require_psql()
+    owner_url = _owner_db(fresh_db)
+    command.upgrade(_alembic_cfg_as(fresh_db, owner_url), "0003_hist_insufficient_data")
+    _as(owner_url, ANALYST_FIXTURE_SQL)
+    assert _psql(owner_url, ROLES_DIR / "create_roles.sql", ROLE_PASSWORD_ENV).returncode == 0
+
+    # Phase 1 relaunch step 3; the owner keeps only its creator ADMIN grant, which has no SET.
+    _as(owner_url, "REVOKE migrator FROM CURRENT_USER")
+    refused = _psql(owner_url, CREATE_PHASE2, PHASE2_PASSWORD_ENV)
+    assert refused.returncode != 0
+    assert "owner needs SET on migrator: GRANT migrator TO CURRENT_USER WITH SET TRUE, INHERIT FALSE" in refused.stderr
+    assert PHASE2_PASSWORDS["ingest"] not in refused.stdout + refused.stderr
+    assert _fetch_row(fresh_db, "SELECT count(*) FROM pg_roles WHERE rolname IN ('ingest', 'trainer')") == [0]
+
+    _as(owner_url, "GRANT migrator TO CURRENT_USER WITH SET TRUE, INHERIT FALSE")
+    created = _psql(owner_url, CREATE_PHASE2, PHASE2_PASSWORD_ENV)
+    assert created.returncode == 0, created.stderr
+
+    migrator_url = _role_url(fresh_db, "migrator", PASSWORDS["migrator"])
+    command.upgrade(_alembic_cfg_as(fresh_db, migrator_url), "head")
+    granted = _psql(migrator_url, GRANTS_PHASE2, {})
+    assert granted.returncode == 0, granted.stderr
+    for script in ("verify_roles.sql", "verify_roles_phase2.sql"):
+        verified = _psql(owner_url, ROLES_DIR / script, {})
+        assert verified.returncode == 0, verified.stdout + verified.stderr
+
+    _as(owner_url, "REVOKE migrator FROM CURRENT_USER")
+    no_set = _psql(owner_url, GRANTS_PHASE2, {})
+    assert no_set.returncode != 0
+    assert "run as migrator, or as an owner with SET on migrator" in no_set.stderr
+
+
+def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F811
     _require_psql()
     owner_url = _owner_db(fresh_db)
     command.upgrade(_alembic_cfg_as(fresh_db, owner_url), "0003_hist_insufficient_data")
@@ -163,16 +223,37 @@ def test_verify_phase2_catches_stray_ingest_and_trainer_grants(role_cleanup, fre
     assert _psql(owner_url, CREATE_PHASE2, PHASE2_PASSWORD_ENV).returncode == 0
     migrator_url = _role_url(fresh_db, "migrator", PASSWORDS["migrator"])
     command.upgrade(_alembic_cfg_as(fresh_db, migrator_url), "head")
-    assert _psql(owner_url, ROLES_DIR / "grants_phase2.sql", {}).returncode == 0
+    assert _psql(owner_url, GRANTS_PHASE2, {}).returncode == 0
 
     _as(
         migrator_url,
         "GRANT DELETE ON public.source_ingest_log TO ingest;"
         "GRANT UPDATE ON internal.mp_tick_aggregates TO ingest;"
-        "GRANT SELECT ON public.accidents TO trainer;",
+        "GRANT SELECT ON internal.accidents_raw TO ingest;"
+        "GRANT SELECT (climber_name) ON public.mp_ticks TO ingest;"
+        "GRANT USAGE ON SEQUENCE public.mp_ticks_tick_id_seq TO ingest;"
+        "ALTER DEFAULT PRIVILEGES IN SCHEMA internal GRANT SELECT ON TABLES TO ingest;"
+        "GRANT SELECT ON public.accidents TO trainer;"
+        "GRANT CREATE ON SCHEMA internal TO app;"
+        "REVOKE SELECT ON internal.accident_revisions FROM analyst;",
     )
-    stray = _psql(owner_url, ROLES_DIR / "verify_roles_phase2.sql", {})
+    _as(owner_url, "GRANT ingest TO analyst")
+    # CREATE without USAGE is enough to create a table, which is why verify checks both.
+    _as(_role_url(fresh_db, "app", PASSWORDS["app"]), "CREATE TABLE internal.app_stray (x int)")
+
+    stray = _psql(owner_url, VERIFY_PHASE2, {})
     assert stray.returncode != 0
-    assert "ingest DELETE on public.source_ingest_log matches the expected set" in stray.stderr
-    assert "ingest UPDATE on internal.mp_tick_aggregates matches the expected set" in stray.stderr
-    assert "trainer holds no privilege on public.accidents" in stray.stderr
+    for check in (
+        "ingest DELETE on public.source_ingest_log matches the expected set",
+        "ingest UPDATE on internal.mp_tick_aggregates matches the expected set",
+        "ingest SELECT on internal.accidents_raw matches the expected set",
+        "ingest mp_ticks column privileges match the expected set: climber_name",
+        "ingest has nothing on sequence public.mp_ticks_tick_id_seq",
+        "no default privileges grant ingest or trainer anything",
+        "trainer holds no privilege on public.accidents",
+        "app has no CREATE on schema internal",
+        "analyst can SELECT internal.accident_revisions",
+        "nobody can SET or INHERIT ingest",
+        "nobody but CURRENT_USER holds ADMIN on ingest",
+    ):
+        assert check in stray.stderr, check

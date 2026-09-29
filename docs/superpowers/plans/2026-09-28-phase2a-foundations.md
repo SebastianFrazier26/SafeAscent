@@ -3025,6 +3025,11 @@ Expected: `wrote INGEST_PASSWORD and INGEST_DATABASE_URL to .env.ingest` (0600, 
 
 - [ ] **Step 2 (owner/agent): Rehearse on a Neon branch** (Console: new branch `p2a-0-rehearsal` from `main`, current data; copy its direct host)
 
+**Owner membership in `migrator` (ordering vs the Phase 1 relaunch).** `create_roles_phase2.sql` needs the owner to hold SET on `migrator` (`CREATE SCHEMA internal AUTHORIZATION migrator`). Phase 1's `create_roles.sql` granted it `WITH SET TRUE, INHERIT TRUE`, and the Phase 1 relaunch gate (plan 2026-09-27-phase1b Task 26 Step 3, `REVOKE migrator FROM CURRENT_USER`) removes it:
+- **Before that REVOKE has run** (current state): run the steps below as written.
+- **After it has run:** `create_roles_phase2.sql` refuses up front, before any password is sent (`owner needs SET on migrator: …`). As the owner, run `GRANT migrator TO CURRENT_USER WITH SET TRUE, INHERIT FALSE` first. SET without INHERIT lets the owner act as `migrator` explicitly but does not give it `migrator`'s table access back, and `verify_roles.sql` still passes. Optionally `REVOKE migrator FROM CURRENT_USER` again once Step 2 is done.
+- `grants_phase2.sql` can instead be run as `migrator` directly (`MIGRATOR_DATABASE_URL`, through `split_pg_url; verify_full_url`), which needs no owner membership. Every later plan's grants step can use this route. As the owner without SET it refuses with `run as migrator, or as an owner with SET on migrator`.
+
 ```bash
 cd /Users/sebastianfrazier/Developer/SafeAscent/backend
 BRANCH_HOST='<p2a-0-rehearsal direct host>'

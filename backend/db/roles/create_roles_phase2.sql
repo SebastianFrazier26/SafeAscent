@@ -21,6 +21,15 @@ SELECT to_regrole('migrator') IS NOT NULL AND to_regrole('app') IS NOT NULL AND 
   DO $$ BEGIN RAISE EXCEPTION 'run create_roles.sql first (migrator, app, analyst must exist)'; END $$;
 \endif
 
+-- CREATE SCHEMA ... AUTHORIZATION migrator needs SET on migrator, which the Phase 1 relaunch
+-- step (REVOKE migrator FROM CURRENT_USER) removes; INHERIT FALSE restores it without
+-- handing the owner migrator's table access again.
+SELECT pg_has_role(current_user, 'migrator', 'SET') AS owner_can_set_migrator \gset
+\if :owner_can_set_migrator
+\else
+  DO $$ BEGIN RAISE EXCEPTION 'owner needs SET on migrator: GRANT migrator TO CURRENT_USER WITH SET TRUE, INHERIT FALSE'; END $$;
+\endif
+
 \getenv ingest_password INGEST_PASSWORD
 \if :{?ingest_password}
 \else
@@ -47,7 +56,11 @@ CREATE ROLE trainer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
 
 -- migrator cannot create schemas (verify_roles.sql asserts it), so the owner does it here.
 CREATE SCHEMA IF NOT EXISTS internal AUTHORIZATION migrator;
+-- As migrator: an owner holding SET but not INHERIT (post-relaunch) is not treated as the
+-- schema owner for REVOKE.
+SET ROLE migrator;
 REVOKE ALL ON SCHEMA internal FROM PUBLIC;
+RESET ROLE;
 
 GRANT USAGE ON SCHEMA public TO ingest;
 
