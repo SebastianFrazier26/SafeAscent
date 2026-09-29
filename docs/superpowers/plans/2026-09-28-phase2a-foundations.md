@@ -10,110 +10,232 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-27-phase2-data-platform-design.md` (binding), amended by `docs/superpowers/specs/2026-09-28-phase3-amendment-similarity-confidence.md` (D1–D5, §3.1). Phase 3 consumer contract: `docs/superpowers/specs/2026-09-27-phase3-model-v2-design.md` (P3:150–161).
 
+**Revised:** 2026-09-28 after the plan review (`.superpowers/sdd/2026-09-27-phase1b-foundations-pr5-8/phase2-plan-review.md`) and the owner decisions below.
+
+---
+
+## Defaults pending owner confirmation
+
+The owner had not yet decided these on 2026-09-28. Each default is the option most consistent with "accurate safety results first, then security, then low cost". Every plan implements the default; the places that depend on one are marked `[default pending: DPn]`. If the owner picks the alternative, only the marked tasks change.
+
+| # | Question | Default (implemented) | Alternative | Why the default |
+|---|---|---|---|---|
+| DP1 | ERA5 incident backfill start year (plan 3) | 1940-01-01, the earliest ERA5 day in the Open-Meteo archive. Days before 1979 are pre-satellite reanalysis; the date alone identifies them, and the docs say so. Pre-1940 incidents stay `conditions_missing` (NULL, never 0). | Start in 1990 (the spec's cost figure). Pre-1990 incidents are flagged `conditions_missing`. | Every clean incident with a date gets its case-crossover windows, so old incidents are not silently dropped. The extra units fit inside the Professional month's 5M. |
+| DP2 | Toprope- or aid-only climbs with no bolt information (plan 4) | `unknown` type group. Spec rule 6 says "if neither is known → `unknown`", and the catalog has no gear flag. | Map them to `trad`. | Guessing a type scores the route against the wrong peer group. |
+| DP3 | Lightning windows (plan 7) | NLDN SWDI tiles from 1989-01-01 through the latest published month, appended monthly. This also covers GLM's 2018-01-01..2018-02-12 gap. GLM from 2018-02-13. Before 1989: NULL, because the network was not yet national and counts would read low. Overlap calibration uses every full year where both exist (2018 onward). | (a) NLDN from 1986, including the pre-national years, with a coverage flag. (b) NLDN 1989–2017 only, with NULL for 2018-01-01..02-12. | One homogeneous cloud-to-ground series over the longest reliable span. Incomplete early coverage would read as "little lightning", which reads as safe. |
+| DP4 | Coverage badge when a place has 1–4 scorable routes (plan 6) | `thin`, with the reason `few_routes` recorded. Never `route`. | The original plan: `route`. | The spec's `route` badge needs ≥5 routes. Amendment D1 forbids thin evidence reading as confident. |
+| DP5 | Timing of the first Open-Meteo Professional window (plan 3) | Buy it when plan 3's runbook is ready. Yearly windows follow each January. | Wait for January 2027 and do the first backfill then. | MVP-0 is not held back 3+ months. The yearly January window is bought either way. |
+
+Prices and limits were read on 2026-09-28. Re-check them before any purchase.
+
+## Owner decisions 2026-09-28 (binding; they supersede the recommendations further down where they differ)
+
+- **Open-Meteo.** Buy **one** Professional month ($99) per year, in January, started on or after Jan 10 so ERA5's ~5-day lag has cleared.
+  - That window batch-appends the prior year's ERA5 days and recomputes the monthly normals and day-of-year climatology. It also gives normals and 3-year history to every grid bucket first seen since the last window.
+  - Between windows, recent days come from the Forecast API's `past_days`. This is a clearly flagged non-ERA5 stopgap (`cell_daily_conditions.record_kind = 'stopgap'`). The January batch replaces stopgap rows with ERA5.
+  - There is **no weekly ERA5 append**. A bucket without normals is `pending` (missing), never 0.
+  - Spec P2-5 ("one Professional month, then Standard; weekly append") is wrong on one point: the Standard tier excludes the historical/archive API (Open-Meteo pricing FAQ, read 2026-09-28). The spec is not edited here; these plans carry the correction.
+  - The nightly forecast (and its `past_days`) runs on the paid Standard plan the spec already budgets for the forecast. The free tier is non-commercial only.
+- **OpenBeta stays the primary rock catalog source.** `ob_ticks` stays missing (D17), and plan 4 adds a one-time stratified sample (~1–2K climbs) that measures OpenBeta tick coverage, with an explicit revisit trigger for P2-9.
+- **Private MP crawler (backup, outside the repo).** A private crawler in `~/Developer/safeascent-private` (never on GitHub) collects rock route facts and tick aggregates (month × style counts; no usernames, no prose) as a backup, beside the existing private ice/mixed tick job. Ingesting its outputs is a separate owner-gated task (legal review pending) and is not part of these plans. No repo code references the MP site.
+- **Weather day = the crag's local calendar day** in the point's IANA timezone, not UTC.
+  - Daily conditions are keyed by series `(grid_bucket, tz)`, and Open-Meteo is requested with `timezone=<tz>`.
+  - Accidents carry `tz`. GLM flashes are bucketed into local days.
+  - NLDN tiles are UTC days and cannot be localised. They are stored with `day_basis = 'utc'`, and a local day L is matched to UTC days {L, L+1}.
+  - "Future" still means after the current UTC day at run time. US local days never run ahead of UTC.
+
 ---
 
 ## How Phase 2 is split, and why
 
-The spec is too large for one PR or one plan. It is cut into eight plans, each producing working, tested software on `main`, ordered so the Phase 3 critical path (MVP-0 needs 2a; MVP-1 needs 2a plus the similarity features the amendment pulled forward) lands first.
+The spec is too large for one PR or one plan, so it is cut into eight plans. Each produces working, tested software on `main`. The order puts the Phase 3 critical path first: MVP-0 needs 2a, and MVP-1 needs 2a plus the similarity features the amendment pulled forward.
+
+The **Needs** column lists the plans each plan must have merged and applied. Because Alembic history is linear, every plan also sits after all lower-numbered plans (see the paragraph after the table). The content dependency is named in brackets.
 
 | # | File | Spec milestones | Produces | Needs |
 |---|---|---|---|---|
-| 1 | `2026-09-28-phase2a-foundations.md` (this) | 2a-0, R8, P2-14 load | validation core, run log, `internal` schema, accident columns, `accidents_raw`, roles, tick quarantine, tick-aggregate loader | Phase 1 merged |
+| 1 | `2026-09-28-phase2a-foundations.md` (this) | 2a-0, R8, P2-14 load | validation core, `grid_bucket_key`, run log, `internal` schema, accident columns, `accidents_raw`, roles, tick quarantine, tick-aggregate loader | Phase 1 merged |
 | 2 | `2026-09-28-phase2a-accident-repair.md` | 2a-1, 2a-2 | R1–R5, R9, R12, GNIS summits, `accidents_clean` | 1 |
-| 3 | `2026-09-28-phase2a-conditions-refresh.md` | 2a-3, 2a-4 | Open-Meteo archive client, `cell_daily_conditions`, incident backfill, R6 (build + verify), R7, R11 loaders | 1, 2 |
-| 4 | `2026-09-28-phase2b-catalog.md` | 2b-1 | OpenBeta catalog, route types, matcher, `mp_facts`, MP schema split, `check_no_mp_data.py` | 1 |
-| 5 | `2026-09-28-phase2b-similarity-features.md` | 2b-2 (part), amendment §3.1 | point elevation (3DEP), monthly climate normals, `route_static_features` MVP-1 columns, R10 legacy cleanup | 1, 3, 4 |
-| 6 | `2026-09-28-phase2b-objectives-coverage.md` | 2b-2 (rest) | objectives, curated routes, coverage badges | 2, 4, 5 |
-| 7 | `2026-09-28-phase2b-live-feeds-lightning.md` | 2b-3 | nightly forecast, alerts, AQI, SNOTEL, GLM live/daily, NLDN backfill, day-of-year climatology, `/health/data` | 3, 5 |
-| 8 | `2026-09-28-phase2b-exposure-compaction.md` | 2b-4, 2b-5 | `exposure_index` v1, prediction archive compaction | 4, 6, 7 |
+| 3 | `2026-09-28-phase2a-conditions-refresh.md` | 2a-3, 2a-4, P2-5, amendment §3.1 normals | Open-Meteo archive client, `localday`, `grid_bucket_series`, `cell_daily_conditions`, incident backfill, **monthly normals + day-of-year climatology** (moved here from plan 5 so they fall inside the Professional window), `era5_window` January batch, R6 (build + verify), R7, R11 loaders | 1, 2 (`accidents_clean`) |
+| 4 | `2026-09-28-phase2b-catalog.md` | 2b-1 | OpenBeta catalog, route types, matcher, `mp_facts`, MP schema split, `check_no_mp_data.py`, OpenBeta tick-coverage sample | 1, 2 (`textsim`/`geo`), 3 (chain) |
+| 5 | `2026-09-28-phase2b-similarity-features.md` | 2b-2 (part), amendment §3.1 | point elevation (3DEP), `feature_points` (with `tz`), `route_static_features` MVP-1 columns, scoring-unit features view, R10 relink job + first run, `internal.r10_unresolved` | 3 (normals tables, `grid_bucket_series`), 4 (`0010` FKs `canonical_routes`; points read `canonical_areas`) |
+| 6 | `2026-09-28-phase2b-objectives-coverage.md` | 2b-2 (rest), R10 drop | objectives, curated routes, coverage badges, R10 re-run, guarded legacy drop `0012` | 2, 4, 5 (R10 job) |
+| 7 | `2026-09-28-phase2b-live-feeds-lightning.md` | 2b-3 | nightly forecast + `past_days` stopgap, alerts, AQI, SNOTEL, GLM live/daily, NLDN backfill + monthly append, lightning-day frequency, `/health/data` | 3, 5 (`feature_points`), 6 (chain on `0012`) |
+| 8 | `2026-09-28-phase2b-exposure-compaction.md` | 2b-4, 2b-5 | `exposure_index` v1, prediction archive compaction | 4, 5, 6, 7 |
 
-Alembic history is linear, so plans **merge** in numeric order of their revisions (`0004` plan 1, `0005`–`0006` plan 2, `0007` plan 3, `0008`–`0009` plan 4, `0010`–`0011` plan 5, `0012` plan 6, `0013` plan 7, `0014`–`0015` plan 8); a plan developed in parallel rebases its first revision's `down_revision` onto the current head (and renumbers) before merging.
+Alembic history is linear, so plans **merge** in the numeric order of their revisions:
 
-Why this cut: each plan is one reviewable PR (plans 2, 3 and 7 are two PRs each, marked inside), each owns its own migration(s), and each ends with owner/agent runbook tasks that put its data in Neon. Plans 4 and 2/3 are independent after plan 1 and can run in parallel. Plan 5 keys features on **points**, not routes (Decision D7), so elevation and normals for every MP location can be computed before the OpenBeta catalog exists; only the per-route table waits for plan 4. 2b-6 (optional OpenBeta contribution) needs maintainer agreement and has no plan.
+`0004_phase2a_foundation` (plan 1) → `0005_gnis_and_duplicate_decisions`, `0006_accidents_clean` (plan 2) → `0007_cell_daily_conditions` (plan 3) → `0008_catalog`, `0009_mp_ticks_internal` (plan 4) → `0010_static_features` (plan 5) → `0011_objectives`, `0012_drop_legacy_routes` (plan 6) → `0013_live_feeds` (plan 7) → `0014_exposure`, `0015_prediction_archive` (plan 8).
 
-## Decisions needed (owner) — read before starting any Phase 2 plan
+Plan 5 no longer owns a drop migration. The guarded legacy drop moved to plan 6, so R10 can be re-run after plan 6's objective areas exist and before the columns go. A plan developed in parallel must rebase its first revision's `down_revision` onto the current head (and renumber) before merging.
 
-Each item is a real choice the spec leaves open or that later owner decisions reopened. Every plan is written assuming the **Recommendation**, and each place that depends on it is marked `[assumes D<n>]`. Overrule any of them and the marked tasks change; nothing else does.
+Why this cut:
+- Each plan is one reviewable PR (plans 2, 3 and 7 are two PRs each, marked inside) and owns its own migration(s).
+- Each ends with owner/agent runbook tasks that put its data in Neon.
+- Plan 4 cannot run ahead of plan 3. It imports plan 2's helpers and chains on `0007`.
+- Plan 5 needs the catalog: `0010` foreign-keys `canonical_routes`, and points are read from `canonical_areas`.
+- 2b-6 (optional OpenBeta contribution) needs maintainer agreement and has no plan.
+
+## Refresh cadence (every feed, one table) `[D8]`
+
+"Future" is always relative to the run-time UTC day. The owning plan's cron line is authoritative for the exact minute; this table fixes the frequency and the rule.
+
+| Data | Cadence | Mechanism (owning plan) | Rule |
+|---|---|---|---|
+| OpenBeta catalog | weekly | GitHub Actions `catalog-weekly.yml` (plan 4) | Rows unseen in a successful full load get `retired_at`. A load that drops the US total by >3% is rejected. |
+| Open-Meteo forecast | nightly 01:00 UTC | Celery beat on the ingest service (plan 7) | Future days are `record_kind='forecast'`. |
+| Open-Meteo `past_days` stopgap | nightly, same request as the forecast (`past_days=3`) | plan 7 | Past days are `record_kind='stopgap'`. They replace forecast rows and never replace `era5` rows. |
+| ERA5 Professional window | yearly, one 30-day window starting on or after Jan 10; the first window per DP5 | `python -m app.pipelines.era5_window run` (plan 3), owner-started | Appends ERA5 from each series' `last_era5_date` to `today − 5` and replaces stopgap/forecast rows. Adds 3-year history for new series. Runs the incident backfill for new clean accidents. Prunes non-incident ERA5 rows older than 3 years. The `--max-units` budget is cumulative per window. |
+| Monthly normals + day-of-year climatology | rebuilt in every January window from the trailing 10 complete calendar years | `era5_window` → `normals` (plan 3) | A bucket first seen between windows is `cell_normals_status.status = 'pending'` (missing, never 0) until the next window. |
+| Elevation / static features | once per new point, after each catalog load | `static_features points|elevation|routes` (plan 5) | Transient HTTP errors are retried, never stored as `no_tile`. |
+| GNIS summits | quarterly | plan 2 loader (plan 6 re-seeds objectives) | |
+| MP tick quarantine (R8) | on every tick load and weekly | `data-weekly.yml` (plan 7) runs `mp_ticks_quarantine` | Relative to `LEAST(today, capture day + 1)`. |
+| MP ice/mixed tick aggregates | after each completed private scrape | owner runs `mp_tick_aggregates` (plan 1) | The scrape month and later stay `partial_month`. Closed months are INSERT-only; changed counts are quarantined `count_changed`. |
+| `mp_tick_counts` | weekly after R8 | `data-weekly.yml` (plans 4/7) | |
+| Accidents (R1–R5, R9, R12) | on each refresh load | plan 2 jobs, re-run by plan 3's R11 runbook | R1/R2 touch only ids present in `internal.accidents_raw`. |
+| R10 legacy relink | once in plan 5; re-run after plan 6's data load, before `0012` | plan 5 job, plan 6 runbook | Unresolved rows go to `internal.r10_unresolved`; nothing is nulled. |
+| NWS alerts | hourly (:05) | beat (plan 7) | "Not collected" is distinct from "no alert". |
+| AirNow AQI | hourly (:35) | beat (plan 7) | Every run is logged, including failures. |
+| SNOTEL | daily | `data-daily.yml` (plan 7) | Stations selected by `stationTriplets=*:*:SNTL`. |
+| GLM live | every 10 minutes | beat (plan 7) | Every run is logged. Consumers require freshness; no data never reads as "no lightning". |
+| GLM daily totals | daily | `data-daily.yml` (plan 7) | Non-zero local-day totals plus coverage periods; an incomplete hour → NULL/`none`. |
+| NLDN tiles | monthly append (3rd of the month) | `data-weekly.yml` monthly schedule (plan 7) | Only new months are downloaded. Pre-1989 → NULL (DP3). |
+| Exposure index | monthly, with a training `cutoff` parameter | plan 8 | Missing components are flagged, never 0. |
+| Prediction fold | daily, outside the nightly scoring window | plan 8 | Folds rows older than 7 days into `prediction_archive_v1`. The archive keeps 400 days. |
+| OpenBeta tick-coverage sample | once (plan 4 runbook), repeated only when its revisit trigger fires | plan 4 | `ob_ticks` stays missing until the trigger fires (D17). |
+
+## Decisions (owner) — read before starting any Phase 2 plan
+
+Each item is a choice the spec leaves open or that later owner decisions reopened. The review verdicts of 2026-09-28 are folded in. Every plan implements the **Decision** line, and each place that depends on it is marked `[assumes D<n>]`.
 
 **D1. Boundary validation library.**
 - (a) pandera (the spec's word): DataFrame schemas; pulls in pandas (+~60 MB in the API image unless isolated) and typeguard.
-- (b) pydantic 2 models per source row (already a dependency, typed, mypy plugin configured) plus a small in-house `ValidationReport` that counts and quarantines.
-- *Recommendation: (b).* Same checks the spec lists (ranges, unique non-null keys, US bbox, ±5% row count) with no new dependency; row-level quarantine is easier to express per row than per frame.
+- (b) pydantic 2 models per source row (already a dependency) plus a small in-house `ValidationReport` that counts and quarantines.
+- *Decision: (b)* (review: agree). Same checks the spec lists (ranges, unique non-null keys, US bbox, ±5% row count), with no new dependency.
 
-**D2. MP data placement after owner decision D5 (2026-09-28).** The spec moves all `mp_*` tables to `internal` with no `app` access. D5 later allowed MP rock routes and tick aggregates to be displayed, and the live app reads `mp_routes`, `mp_locations` and `mp_ticks` today.
-- (a) Spec as written: everything MP goes to `internal`. Breaks the map and the Ascents tab.
-- (b) Split by content: `mp_routes`/`mp_locations` stay in `public` (displayable facts, no prose columns exist); raw `mp_ticks` (it has `climber_name`) moves to `internal`; the app reads ticks only through a public aggregate table (`mp_tick_counts`) built by `ingest`; `mp_tick_aggregates` stays `internal` until a display feature needs it.
-- (c) Move nothing until the legal review of `DATA_LICENSE.md` lands.
-- *Recommendation: (b)*, done in plan 4. It keeps personal data (climber names) out of the `app` role's reach, matches D5, and costs one endpoint change covered by the existing `test_ascent_analytics.py`.
+**D2. MP data placement after owner decision D5 (2026-09-28).**
+- (a) Spec as written: everything MP goes to `internal`. This breaks the map and the Ascents tab.
+- (b) Split by content:
+  - `mp_routes`/`mp_locations` stay in `public` (displayable facts, no prose columns).
+  - Raw `mp_ticks` (it has `climber_name`) moves to `internal`.
+  - The app reads ticks only through a public aggregate table (`mp_tick_counts`) built by `ingest`.
+  - `mp_tick_aggregates` stays `internal`.
+- (c) Move nothing until the legal review lands.
+- *Decision: (b)*, done in plan 4, with two review additions:
+  - Plan 4's `-m db` acceptance asserts `has_table_privilege('app', 'internal.mp_ticks', 'SELECT')` is false.
+  - Plan 8's `0014` runs `REVOKE ALL ON exposure_index FROM app`, because `exposure_index` holds MP-derived covariates and `app` would otherwise get SELECT through default privileges. `verify_roles_phase2.sql` gains a row for it.
 
 **D3. What "future" means for stored and aggregated ticks.** Owner rule: reject ticks dated after the current UTC day at load time, and years after the current year.
-- Stored `mp_ticks` rows were loaded at `created_at`. *Recommendation:* quarantine `future` when `tick_date > LEAST(created_at::date, run-time UTC today)`; a tick dated after the day it was captured is impossible and stays quarantined even after that date passes. Assumes Neon's `created_at` defaults were written in UTC (Neon's default `TimeZone`); Task 10 checks it.
-- The private tick export is aggregated to `YYYY-MM`, so a day cannot be checked inside the current month. *Recommendation:* quarantine months after the current UTC month as `future_month`, and the current month as `month_not_closed`; a reload after the month ends picks those rows up.
+- **Stored `mp_ticks`.** Quarantine `future` when `tick_date > LEAST(run-time UTC today, created_at::date + 1)`. A tick dated after the day it was captured is impossible, and it stays quarantined even after that date passes.
+  - Why the one-day slack: `created_at` is `timestamp without time zone DEFAULT CURRENT_TIMESTAMP`, so it holds the **writer session's** local time. That session's zone cannot be proven from `SHOW TimeZone` in a later session.
+  - US zones are at most 10 h behind UTC, so the slack makes the rule correct whatever zone the writer used.
+  - Task 10 checks load provenance (per-role/per-database `TimeZone` overrides and the private loader's recorded run time) and records it.
+- **Private tick export, aggregated to `YYYY-MM`.** A day cannot be checked inside a month.
+  - The cut-off is `min(today, scraped_at)` per route.
+  - Months after the current UTC month → `future_month`.
+  - Months at or after the route's scrape month → `partial_month`, **permanently for that export**. Only a newer scrape can supply them.
+  - A route whose `scraped_at` is after today → `scrape_after_today`.
+  - The outcome no longer depends on the load date, so a reload of the same file is a true no-op.
 
 **D4. Grid-bucket key.** P3 says "lat/lon rounded to 0.1°" and uses one column.
-- (a) text `'40.0:-105.3'` (readable, 12+ bytes);
-- (b) integer `floor(lat*10+0.5)*10000 + floor(lon*10+0.5) + 5000` (4 bytes; same float math in Python and SQL; decodes exactly);
-- (c) two smallint columns.
-- *Recommendation: (b).* `cell_daily_conditions` will hold tens of millions of rows; the key is in its PK.
+- *Decision:* integer `floor(lat*10+0.5)*10000 + floor(lon*10+0.5) + 5000` (4 bytes; decodes exactly), with the review's changes:
+  - `0004` creates one immutable SQL function, `grid_bucket_key(lat double precision, lon double precision) RETURNS integer` (IMMUTABLE, PARALLEL SAFE).
+  - `grid.grid_bucket_sql(lat, lon)` renders `grid_bucket_key((lat)::float8, (lon)::float8)`. The float8 cast is required: a `numeric` value just off a .x5 step (more digits than a double holds) lands in a different bucket in numeric math than as the double Python reads.
+  - Every later SQL use calls the function; no plan copies the expression.
+  - `test_migration_0004.py` checks Python/SQL parity at negative-longitude .x5 points.
+  - NLDN tile centres sit on 0.1° multiples, so they align with this key.
 
 **D5. Elevation / DEM source for every route point** (amendment §3.1, MVP-1).
-- (a) USGS 3DEP 1/3″ (~10 m) read as remote Cloud-Optimized GeoTIFFs with rasterio, sampling only the blocks under our points (no bulk tile download), 2″ fallback where 1/3″ is missing (parts of Alaska); EPQS 200-point cross-check. Public domain; the same source v2.2 aspect/slope needs. Cost: rasterio (bundled GDAL) in a `pipelines` dependency group that the Railway image does not install.
-- (b) Open-Meteo elevation API (Copernicus GLO-90, 90 m): 100 points per call, trivial client, attribution required, not reusable for aspect.
-- (c) USGS EPQS per point: public domain, 3DEP-backed, no GDAL, but one point per request (~30K requests) and no aspect.
-- *Recommendation: (a).* Highest accuracy, free, and no second DEM when v2.2 adds aspect.
+- (a) USGS 3DEP 1/3″ (~10 m) read as remote Cloud-Optimized GeoTIFFs with rasterio, sampling only the blocks under our points.
+  - The 2″ fallback applies where a 1/3″ tile is missing. 1/3″ covers most of Alaska, so the fallback is rare.
+  - Public domain, and the same source v2.2 aspect/slope needs.
+- (b) Open-Meteo elevation API (Copernicus GLO-90, 90 m).
+- (c) USGS EPQS per point.
+- *Decision: (a)* (review: agree with changes):
+  - Masked sampling: nodata and a missing `nodata` tag are NULL, never 0.
+  - A 404 means `no_tile`. Transient errors are retried and never stored.
+  - The EPQS cross-check is redesigned. EPQS serves the best available DEM (often 1 m lidar), not 1/3″, so a per-point 5 m gate fails by design. Plan 5 compares |Δ| median and p90 against tolerances **stratified by slope**, needs ≥180 successful points, and makes slow, retried calls.
 
 **D6. Monthly climate normals source** (amendment §3.1: mean tmax, tmin, precipitation, snowfall, freeze-thaw days).
-- (a) Open-Meteo archive `era5_seamless` (ERA5 + ERA5-Land), daily for the trailing 10 complete calendar years per 0.1° bucket, reduced to monthly normals. Same source as `cell_daily_conditions`, covers Alaska and Hawaii, gives snowfall and freeze-thaw directly. ~9–25 km native resolution smooths mountain temperatures. Cost is inside the already-decided P2-5 budget (one $99 Professional month).
-- (b) PRISM 1991–2020 normals (800 m): best mountain temperatures in CONUS, free with citation, but CONUS only (a second source for AK/HI) and no snowfall or freeze-thaw days.
-- (c) Daymet v4 (1 km daily, North America): freeze-thaw derivable, free, but one pixel per request and about a one-year publication lag.
-- *Recommendation: (a)*, recording the reference elevation Open-Meteo used per bucket so the model can see the route-vs-bucket elevation gap; PRISM can be a v2.2 challenger through the gate.
+- *Decision:* Open-Meteo archive `era5_seamless` (ERA5 0.25° + ERA5-Land 0.1°) over the trailing 10 complete calendar years per 0.1° bucket.
+  - Computed inside the Professional window (owner decision above) by plan 3.
+  - A month with too few valid days is NULL, not a sum over zeros. Missing days are never summed as 0; freeze-thaw days are scaled by valid days.
+  - Open-Meteo's returned `elevation` is the 90 m DEM height of the request point, and its output is already lapse-rate-downscaled to it. It is recorded per bucket (`ref_elevation_m`) so the model sees the route-vs-bucket gap. `elevation=<route elevation>` downscaling is a v2.2 option.
+- *Challenger:* PRISM daily 800 m data has been free since 2025-03-27, so CONUS freeze-thaw is derivable. That makes PRISM a stronger v2.2 challenger through the gate. PRISM has no snowfall, and AK/HI need another source.
 
 **D7. Storage shape for static features and normals.**
-- Spec: `route_static_features` per route and `cell_climatology(grid_bucket, doy, var, mean, p10, p90, n_years)` (long, day-of-year).
-- *Recommendation:* (i) `feature_points` keyed by a rounded point (5 decimals) holding elevation and keys, so the work is per distinct point (spec: "computed once per distinct point") and independent of the catalog; `route_static_features` is then a per-route join table in the P3 shape. (ii) A wide monthly `cell_climate_normals(grid_bucket, month, ...)` (~5K buckets × 12 rows) for MVP-1, plus a wide day-of-year `cell_climatology(grid_bucket, doy, <var>_mean/_p10/_p90, ...)` (~1.8M rows, ≈0.2 GB, the spec's estimate) computed in the **same** paid ERA5 pass, because a second 10-year fetch would double the Open-Meteo cost; its lightning-day frequency column is filled later by plan 7. (iii) The 10-year daily series used to build normals is not persisted beyond the spec's 3-year window, which keeps Neon within the ~3.9 GB estimate.
+- *Decision:*
+  - (i) `feature_points` holds elevation and keys, keyed by a rounded point (`point_key`, 5 decimals, computed only in Python).
+    - `point_key` is **stored** on `canonical_areas` and objectives, never rebuilt with SQL `to_char`.
+    - `feature_points.tz` carries the local-day timezone.
+  - (ii) `cell_climate_normals(grid_bucket, month, …)` and a wide day-of-year `cell_climatology` are created in plan 3's `0007` and filled in the same paid pass. Their completion is tracked per bucket in `cell_normals_status`.
+  - (iii) Plan 5 adds one scoring-unit features view, so objectives and routes expose the same feature contract to Phase 3, normals included.
+  - (iv) The 10-year daily series is not persisted beyond the 3-year window.
+- The earlier claim that points could be computed "before the catalog" is withdrawn: `0010` foreign-keys `canonical_routes`.
 
-**D8. Refresh cadence.** Data is continuously updated and "future" is always relative to run time.
-- *Recommendation:* OpenBeta weekly (spec); Open-Meteo forecast nightly 01:00 UTC (spec); ERA5 archive weekly append of the days now ≥5 days old (ERA5 lag); climate normals yearly in January when a new complete year exists, never on a fixed year span; elevation computed once per new point (weekly after OpenBeta); GNIS quarterly; tick quarantine re-evaluated on every tick load and weekly; accidents on each refresh load.
+**D8. Refresh cadence.** *Decision:* the single table "Refresh cadence" above. It replaces the earlier weekly-ERA5-append recommendation, which the Standard tier cannot serve.
 
 **D9. The `weather` table (R6).** The live kernel (`app/api/v1/predict.py:571`, `app/tasks/safety_computation_optimized.py`) still joins `weather` on `accident_id`, and amendment D4 forbids interim scorer changes.
-- (a) Spec: rename to `weather_legacy` and drop at 2a-3 (breaks the live kernel).
-- (b) Build `cell_daily_conditions`, verify it against `weather` (r > 0.95), leave `weather` read-only in place, and drop it in the Phase 3 MVP-1 PR that deletes the kernel.
-- *Recommendation: (b).* Plan 3 does everything in R6 except the drop and records the drop as a Phase 3 MVP-1 prerequisite.
+- *Decision:* build `cell_daily_conditions`, verify it against `weather` (r > 0.95), and leave `weather` read-only in place.
+- Dropping `weather` is a **hard gate of the Phase 3 MVP-1 PR** that deletes the kernel. That PR's checklist must contain "drop `weather` (plan 3 D9)"; MVP-1 does not merge while `weather` is still read.
+- The relaunch caveat must also say the live kernel's legacy `weather` rows include mislinked incidents (the R3/R5 defects), so live scores until MVP-1 inherit them.
 
-**D10. R1 rows whose year stays unverified.** Spec marks them `unknown` + `year_unverified` but does not say what happens to `accidents.date`, which the live kernel reads.
-- (a) Null the date (the row leaves the live kernel: fewer accidents, lower live risk);
-- (b) leave `date` untouched and only set the new columns; Phase 3 excludes the row through `excluded_reason`.
-- *Recommendation: (b).* Missing data must never read as safe; a corrupted-year row only over-weights recency (conservative). Rows the rule dates confidently get the repaired date, with a revision row.
+**D10. R1 rows whose year stays unverified.**
+- *Decision:* leave `accidents.date` untouched and set only the new columns; Phase 3 excludes the row through `excluded_reason`.
+- The same principle covers `region_fallback` geocodes: coordinates are **kept** and labelled by `geocode_precision`. Only foreign rows (`outside_us`) lose coordinates.
+- Plan 2's runbook reports the unverified-year count as a Phase 3 recency-bias note.
 
-**D11. OpenBeta ingest source.** The spec says weekly parquet bulk load plus GraphQL deltas. The exporter's `schema.sql` (read 2026-09-28) has no area UUIDs, no `mp_id`, no pitches and no `ice`/`mixed`/`aid`/`snow` flags, so the parquet file cannot build `canonical_areas` or `type_group`.
-- *Recommendation:* a weekly full GraphQL load (`bulkAreas` per US state) is the only OpenBeta source; the spec's "reject if the US count drops more than 3%" compares against the previous successful weekly load, so the parquet file is not needed. Plan 4 Task 3 verifies the live GraphQL schema before coding; if the parquet export later gains area UUIDs and discipline flags, switching back is a contained change to `catalog.py`.
+**D11. OpenBeta ingest source.**
+- The exporter's `schema.sql` (verified 2026-09-28) has no area UUIDs, no `mp_id`, no pitches and no `ice`/`mixed`/`aid`/`snow` flags. The parquet file therefore cannot build `canonical_areas` or `type_group`.
+- *Decision:* a weekly full GraphQL load (`bulkAreas` per US state) is the only OpenBeta source (review: agree). Caveats plan 4 implements:
+  - `bulkAreas` takes **≥2 ancestor area UUIDs** (the USA area UUID plus the state's UUID), not names. Plan 4 resolves and records the UUIDs first.
+  - Pages hold ≤2000 items (the default is 500), with a deterministic ordering, so a page boundary never skips or repeats a climb.
+  - `metadata.mp_id` is a **String**; the validator parses it to an integer and quarantines non-numeric values.
+  - Empty or failed responses are retried with backoff, since 2 of 12 test calls came back empty. An empty state is never recorded as "no climbs".
+  - Each load is rejected if the US total drops >3% **or** any single state drops beyond its own tolerance, against the previous successful load.
+  - Coordinates of exactly (0, 0) are missing, never a location.
+- If the parquet export later gains area UUIDs and discipline flags, switching back is a contained change to `catalog.py`.
 
-**D12. Where filled manual CSVs live.** `data/manual/aac_refresh.csv` (R11) holds AAC facts + URLs; Legal Q6 (AAC terms) is open, and the repo is public.
-- *Recommendation:* commit only a header-only template and the loader; keep the filled CSV in `~/Developer/safeascent-private/manual/` until Q6 is answered. Same for owner review CSVs that contain accident text (`data/review/` is gitignored).
+**D12. Where filled manual CSVs live.** *Decision:* commit only header-only templates and loaders. Filled CSVs stay in `~/Developer/safeascent-private/manual/` until legal Q6 is answered. R5 and matcher review CSVs stay private too (`data/review/` is gitignored).
 
-**D13. `trainer` role timing.** Phase 2 needs only `ingest`.
-- *Recommendation:* create `trainer` now, read-only (`default_transaction_read_only = on`, SELECT on training inputs as they appear), so Phase 3 only adds its model-table writes. `triage_worker` is Phase 4 and is not created.
+**D13. `trainer` role timing.**
+- *Decision:* create `trainer` now as **NOLOGIN with no grants**. Phase 3 adds LOGIN, a SCRAM password and SELECT on training views.
+- `default_transaction_read_only` is a session default any client can override, not a privilege boundary. Granting SELECT on raw `accidents` would expose narratives.
+- `triage_worker` is Phase 4 and is not created.
 
-**D14. Pipeline credentials.** Settings is the only config surface, and `DATABASE_URL` is required at import.
-- *Recommendation:* add `INGEST_DATABASE_URL: str | None = None` to `Settings`. Job CLIs refuse to run without it. GitHub Actions data workflows get it from an Actions secret and also set `DATABASE_URL` to the same value (the job never opens that engine; this only satisfies `Settings`). Railway gets it on the worker only when plan 7's beat-driven feeds land.
+**D14. Pipeline credentials.**
+- *Decision:* add `INGEST_DATABASE_URL: str | None = None` to `Settings`. Job CLIs refuse to run without it.
+- `db.ingest_engine()` refuses a non-local URL that asks for anything weaker than verify-full.
+- GitHub Actions data workflows get the URL from an Actions secret and also set `DATABASE_URL` to the same value, only to satisfy `Settings`.
+- When plan 7's beat-driven feeds land, the ingest credential goes on a **dedicated ingest worker/beat service**, never on the general `worker`.
 
-**D15. Lithology fallback (v2.2 feature, plan 5 PR 2b-2b).** The spec falls back to USGS SGMC polygons in PostGIS when Macrostrat returns nothing.
-- (a) Load SGMC now: a national polygon layer, roughly 0.5–1 GB in Neon (storage cost and the 4.5 GB ceiling), used only for misses.
-- (b) Macrostrat only; a miss is stored as `lithology = NULL`, `lithology_source = 'none'` (missing, never guessed); measure the miss rate first.
-- *Recommendation: (b)*, revisit with the measured miss rate before v2.2 trains. Lithology is not an MVP-1 feature (amendment §3.1).
+**D15. Lithology fallback** (v2.2 feature, plan 5 PR 2b-2b).
+- *Decision:* Macrostrat only. A miss is `lithology = NULL`, `lithology_source = 'none'`. Non-200 responses are retried and never stored as `none`.
+- Neon Launch has no storage cap; storage costs about $0.35/GB-month. SGMC (~0.5–1 GB) is a cost question, not a limit. Revisit with the measured miss rate before v2.2 trains.
 
-**D16. R10 legacy cleanup mechanics.** The spec drops `accidents.route_id`/`mountain_id` and the `routes`/`mountains` tables after relinking.
-- *Recommendation:* the R10 job writes `accident_route_links`, then nulls `route_id`/`mountain_id` through the audited repair writer (old values kept in `internal.accident_revisions` and the pre-drop dump); migration `0011` refuses to run while any accident still has either column set. The API's `mountain_id` filter then returns 422 like `route_id` does today, and the two fields leave `AccidentResponse`. Tests that exist only to prove the old legacy-link bug (`test_accidents_count_by_mp_route_id_not_legacy_route_id`, `test_seed_really_has_the_colliding_legacy_link`) are deleted with the column.
+**D16. R10 legacy cleanup mechanics.**
+- *Decision:*
+  - The R10 job writes `accident_route_links` and **never nulls** an unresolved legacy link. Unresolved accidents go to `internal.r10_unresolved` for owner review (`owner_decision IN ('link','no_link')`).
+  - Rule 4 derives the type via `route_types.map_type_group`. The 0.80–0.90 score band goes to review, not auto-link.
+  - R10 runs in plan 5 and is re-run after plan 6's data load.
+  - `0012_drop_legacy_routes` (plan 6) refuses unless every accident with a non-null `route_id` or `mountain_id` has an `accident_route_links` row, or an `r10_unresolved` row with a non-null `owner_decision`. Old values survive in `internal.accidents_raw`, `internal.accident_revisions` and `r10_unresolved`.
+- After the drop, the API's `mountain_id` filter returns 422 like `route_id` does today, and the two fields leave `AccidentResponse`. The two legacy-bug tests are deleted with the column.
 
-**D17. OpenBeta tick counts (`ob_ticks` exposure component).** OpenBeta ticks exist only per climb in GraphQL (`Climb.ticks`), are sparse (17 on 320 Lumpy Ridge climbs), and are not in the export.
-- (a) Monthly per-climb crawl: ~200K GraphQL requests per run, for a component that is near-empty.
-- (b) Missing-flag `ob_ticks` everywhere in exposure v1 (Phase 3 estimates its coefficient as zero-information) and revisit if OpenBeta adds a bulk tick query.
-- *Recommendation: (b).* Plan 8 writes the component as missing with reason `no_bulk_source`.
+**D17. OpenBeta tick counts (`ob_ticks` exposure component).** OpenBeta ticks exist only per climb in GraphQL (`userTicksByClimbId`), are sparse, and are not in the export. There is no bulk tick query.
+- *Decision:* `ob_ticks` is missing-flagged everywhere in exposure v1 (reason `no_bulk_source`); Phase 3 treats it as zero-information. This overrides P2-9 ("rock popularity from OpenBeta ticks") with owner sign-off (2026-09-28).
+- Plan 4 adds a **one-time stratified sample** of ~1–2K climbs (strata: state × type group × catalog popularity) that measures tick coverage: the share of climbs with any tick, and ticks per climb-year.
+- **Revisit trigger for P2-9:** reconsider using OpenBeta ticks if any of these happens:
+  - the sample's coverage clears the threshold recorded in plan 4's sample task;
+  - OpenBeta adds a bulk tick query;
+  - the sample is re-run a year later and shows a material rise.
 
-**D18. Prediction compaction mechanics (P2-8).** The spec has the nightly run upsert `internal.prediction_archive_v1.scores[day]`. The owner rule keeps `app` SELECT-only except `historical_predictions`, and the historical-trends endpoint (`app/api/v1/mp_routes.py:1570`) must read old days.
-- (a) Spec as written: `app` gains INSERT/UPDATE on an `internal` table (breaks both the owner rule and the "`app` has no privilege on `internal`" guard).
-- (b) The nightly run keeps writing `historical_predictions`; a daily `ingest` job folds rows older than 7 days into `public.prediction_archive_v1(route_id, month_start, scores smallint[31])` and deletes them; the trends endpoint reads both. `app` gets SELECT on the archive only. Score `-1` marks an insufficient (gray) day and NULL marks no prediction, because a bare NULL cannot tell them apart.
-- *Recommendation: (b).* Same storage outcome (3.37 GB → ~0.2 GB), cadence unchanged, owner rule and guards intact; MP route ids in a public table are allowed since amendment D5.
+**D18. Prediction compaction mechanics (P2-8).**
+- *Decision:*
+  - The nightly run keeps writing `historical_predictions`. A daily `ingest` job folds rows older than 7 days into `public.prediction_archive_v1(route_id, month_start, scores smallint[31])` and deletes them. The trends endpoint reads both; `app` gets SELECT on the archive only.
+  - Each score is stored as `round(score * 10)` so one decimal survives. The band recomputed from the archive therefore equals the band shown on the day (24.5 stays 245 → green; 0.05–0.49 stays estimable). `-1` marks an insufficient (gray) day, and NULL marks no prediction.
+  - Archive retention is 400 days (spec). The writer's 1-year purge (`safety_computation_optimized.py:905-908`) is aligned to it.
+  - The Phase 3 backtest reads the archive plus recent rows, or runs before the first fold.
+  - `VACUUM FULL` runs in a window that cannot overlap the nightly scorer (which can run to about 10:00 UTC).
 
 ## Global Constraints
 
@@ -121,25 +243,30 @@ Each item is a real choice the spec leaves open or that later owner decisions re
 - CI's single required check is `ci-ok` (jobs `backend`, `frontend`, `guards`, `ci-ok`); do not rename jobs. Every task leaves `uv run pytest`, `uv run ruff check . ../scripts/` and `uv run mypy` green (run from `backend/`).
 - Python via uv; ruff 0.8.4 (`E4,E7,E9,F`); every new core module is typed and added to a mypy strict allowlist block in `backend/pyproject.toml`.
 - Migrations: new Alembic revisions from `0004`, run as `migrator`, rehearsed on a Neon branch, applied as an explicit owner/agent step, **never at app startup**; forward-only unless the revision says otherwise; downgrades refuse when they would lose data (the `0002`/`0003` convention). No DDL anywhere under `backend/app/` (`tests/test_no_runtime_ddl.py`).
-- Roles: created only via owner-run SQL with client-side SCRAM-SHA-256 verifiers (`scripts.write_role_url --scram`), never neonctl/Console/API. `app` stays SELECT-only except `historical_predictions`. `app` has no privilege on schema `internal`. Least privilege for `ingest` and `trainer`.
+- Roles: created only via owner-run SQL with client-side SCRAM-SHA-256 verifiers (`scripts.write_role_url --scram`), never neonctl/Console/API. `app` stays SELECT-only except `historical_predictions`. `app` has no privilege on schema `internal`. Least privilege for `ingest`; `trainer` exists as NOLOGIN with no grants until Phase 3 `[assumes D13]`.
+- TLS: every connection to Neon verifies the server certificate and host name. Python uses `app.db.ssl.connect_args_for` (verify-full with certifi); owner/analyst `psql`, `pg_dump` and `pg_restore` URLs go through the `verify_full_url` helper (Task 8 Step 1), which forces `sslmode=verify-full&sslrootcert=system` (libpq 16+). `sslmode=require` is never used.
 - Secrets: agents never read `backend/.env*` and never print credentials; runbook commands load env files inside subshells and pass passwords via `PGPASSWORD`, never argv.
 - No scraper code in the repo, ever (`scripts/check_no_scrapers.py`). Loaders may read a private export file; they never fetch MP pages. The MP scrape runs only in `~/Developer/safeascent-private`.
 - Mountain Project: route facts and tick aggregates may be displayed; MP descriptions/prose never, anywhere (fixtures, docs, commits). No real MP ids, names or URLs in tests or fixtures; use synthetic ids ≥ 900000000. `DATA_LICENSE.md` is not edited (pending legal review).
 - OpenBeta is CC0; never OpenBeta photos/media.
 - Accuracy over everything: missing or thin data never reads as safe; missing numeric values are NULL, never 0; every loader validates types, ranges, dates and coordinates at the boundary and quarantines bad rows (never silently drops) and reports counts.
 - "Future" means after the current UTC day **at run time** (`today` is read per run and injected into pure functions; never a constant date). Tick loads also reject years after the current year.
-- Accidents link to routes via `accidents.mp_route_id`; legacy `routes`/`mountains` and `accidents.route_id`/`mountain_id` are untouched until plan 5's guarded R10 migration.
-- Cost: batch jobs over always-on services; Neon launch plan (~3.7 GB used); Railway us-east4.
+- Weather days are the crag's local calendar day (owner decision 2026-09-28); plan 3 owns `app/pipelines/localday.py`. US local days never run ahead of the UTC day, so the "future" rule above is unchanged.
+- Accidents link to routes via `accidents.mp_route_id`; legacy `routes`/`mountains` and `accidents.route_id`/`mountain_id` are untouched until plan 5's R10 relink and plan 6's guarded `0012` drop.
+- Cost: batch jobs over always-on services; Open-Meteo Professional only in the yearly January window (owner decision); Neon Launch plan (~3.7 GB used; no storage cap, storage billed at about $0.35/GB-month; the 4.5 GB figure in the spec is a self-imposed budget, not a limit); Railway us-east4.
 - Comments are load-bearing only. `CHANGELOG.md` gets one dated entry per PR (Keep a Changelog).
 - TDD: failing test, minimal code, green, commit.
 
 ## Review Focus
 
-1. **A tick month equal to the current month** at load time — expect quarantine `month_not_closed`, not acceptance and not silent loss (Task 6 test `test_current_month_is_quarantined_not_dropped`).
-2. **A stored tick dated after its own `created_at` day but before today** — expect `future` (Task 5 test `test_tick_after_capture_day_is_future_even_when_before_today`).
+1. **A tick month equal to the route's scrape month**, loaded after that month has ended — expect quarantine `partial_month`, not acceptance and not silent loss (Task 6 test `test_scrape_month_and_later_are_partial_not_dropped`).
+2. **A stored tick dated two days after its own `created_at` day but before today** — expect `future`; one day after stays clean because of the writer-timezone slack (Task 5 tests `test_tick_after_capture_day_is_future_even_when_before_today`, `test_tick_one_day_after_capture_is_allowed_for_writer_zone_slack`).
 3. **A coordinate on the antimeridian side of the Aleutians (lon +175)** — expect inside the US, not quarantined (Task 1 test `test_aleutians_east_of_180_are_inside_the_us`).
 4. **A second load of the identical tick export** — expect a logged no-op, zero rows upserted, not duplicate counts (Task 6 test `test_second_identical_load_is_a_noop`).
 5. **Running `0004` on prod where `migrator` cannot create schemas and the owner script has not run** — expect a clear refusal naming `create_roles_phase2.sql`, not a half-applied migration (Task 2 test `test_0004_refuses_without_internal_schema_when_unprivileged`).
+6. **A `.x5` coordinate at negative longitude, stored as `numeric`** — expect the SQL bucket to equal the Python bucket (Task 2 test `test_grid_bucket_key_matches_python_at_half_steps`).
+7. **A remote `INGEST_DATABASE_URL` carrying `sslmode=require`** — expect the job to refuse before connecting (Task 3 test `test_ingest_engine_refuses_weaker_tls_on_a_remote_host`).
+8. **Reloading the same export in a later month** — expect a no-op, not acceptance of a partial month (Task 6 test `test_reload_in_a_later_month_is_still_a_noop`).
 
 ## File Structure
 
@@ -147,26 +274,26 @@ Each item is a real choice the spec leaves open or that later owner decisions re
 |---|---|---|
 | `backend/app/pipelines/__init__.py` | Create | Package marker (docstring states the no-scraper rule). |
 | `backend/app/pipelines/validate.py` | Create | US bbox, date/range/coord problem checks, `ValidationReport`, batch gate. |
-| `backend/app/pipelines/grid.py` | Create | 0.1° grid key in Python and SQL `[assumes D4]`. |
-| `backend/app/pipelines/db.py` | Create | `ingest_engine()` from `settings.INGEST_DATABASE_URL`. |
+| `backend/app/pipelines/grid.py` | Create | 0.1° grid key in Python; `grid_bucket_sql` renders a call to the SQL function `grid_bucket_key` `[assumes D4]`. |
+| `backend/app/pipelines/db.py` | Create | `ingest_engine()` from `settings.INGEST_DATABASE_URL`; refuses weaker-than-verify-full TLS on a remote host `[assumes D14]`. |
 | `backend/app/pipelines/ingest_log.py` | Create | Run log, no-op detection, quarantine writer, content hashing. |
 | `backend/app/pipelines/mp_ticks_quarantine.py` | Create | R8 classifier + set-based SQL job + CLI. |
-| `backend/app/pipelines/mp_tick_aggregates.py` | Create | Private SQLite export reader, validation, upsert + CLI. |
+| `backend/app/pipelines/mp_tick_aggregates.py` | Create | Private SQLite export reader, ice/mixed-only validation, INSERT-only load + CLI. |
 | `backend/app/models/pipeline.py` | Create | Typed models: `SourceIngestLog`, `AccidentRevision`, `IngestQuarantine`, `MpTickAggregate`. |
 | `backend/app/models/accident.py` | Modify | Phase 2a columns. |
 | `backend/app/models/__init__.py` | Modify | Import `pipeline`. |
 | `backend/app/config.py` | Modify | `INGEST_DATABASE_URL`. |
 | `.env.example` | Modify | `INGEST_DATABASE_URL=`. |
 | `backend/alembic/env.py` | Modify | `include_schemas` limited to `public` and `internal`. |
-| `backend/alembic/versions/0004_phase2a_foundation.py` | Create | Schema guard, `internal.accidents_raw`, accident columns, run log, revisions, quarantine, tick aggregates, tick quarantine columns. |
-| `backend/db/roles/create_roles_phase2.sql` | Create | `ingest`, `trainer`, schema `internal` (owner-only: needs database CREATE). |
+| `backend/alembic/versions/0004_phase2a_foundation.py` | Create | Schema guard, `grid_bucket_key()` SQL function, `internal.accidents_raw`, accident columns, run log, revisions, quarantine, tick aggregates, tick quarantine columns. |
+| `backend/db/roles/create_roles_phase2.sql` | Create | `ingest` (LOGIN), `trainer` (NOLOGIN, no grants), schema `internal` (owner-only: needs database CREATE). |
 | `backend/db/roles/grants_phase2.sql` | Create | Idempotent Phase 2 grants (extended by later plans). |
 | `backend/db/roles/verify_roles_phase2.sql` | Create | Exact-privilege checks for `ingest`/`trainer` and `app` vs `internal`. |
-| `backend/scripts/write_role_url.py` | Modify | `ROLES` gains `ingest`, `trainer`. |
+| `backend/scripts/write_role_url.py` | Modify | `ROLES` gains `ingest` (`trainer` gets a URL only in Phase 3). |
 | `backend/tests/pgtest.py` | Create | Throwaway migrated DB helper for pipeline tests. |
 | `backend/tests/test_validate.py`, `test_grid.py`, `test_migration_0004.py`, `test_ingest_log.py`, `test_roles_phase2.py`, `test_mp_ticks_quarantine.py`, `test_mp_tick_aggregates.py` | Create | Tests. |
-| `backend/tests/verify/__init__.py`, `backend/tests/verify/test_phase2a_foundation.py` | Create | `-m db` acceptance checks against a Neon branch as `analyst`. |
-| `backend/tests/test_write_role_url.py` | Modify | New roles accepted. |
+| `backend/tests/verify/__init__.py`, `backend/tests/verify/_db.py`, `backend/tests/verify/test_phase2a_foundation.py` | Create | `-m db` acceptance checks against a Neon branch as `analyst`; `_db.fetch` connects with `connect_args_for` (verify-full). |
+| `backend/tests/test_write_role_url.py` | Modify | `ingest` accepted; `trainer` rejected until Phase 3. |
 | `backend/pyproject.toml` | Modify | mypy allowlist blocks; `db` marker; default deselection. |
 | `CLAUDE.md`, `DEPLOYMENT.md`, `data/DATABASE_STRUCTURE.md`, `CHANGELOG.md` | Modify | Roles, schema, jobs, commands. |
 
@@ -175,7 +302,7 @@ Each item is a real choice the spec leaves open or that later owner decisions re
 | Task A | Task B | Shared file / interface | Resolution |
 |---|---|---|---|
 | 1 | 3, 5, 6 | `validate.ValidationReport`, `today` injection | Task 1 first; signatures frozen in its Interfaces block. |
-| 1 | plans 3, 5, 7 | `grid.grid_bucket`, `grid_bucket_sql` | Frozen here; later plans import, never redefine. |
+| 1, 2 | plans 3, 5, 6, 7, 8 | `grid.grid_bucket`, `grid_bucket_sql`, SQL `grid_bucket_key()` | Frozen here; later plans import or call the function, never copy the expression. |
 | 2 | 3, 5, 6 | tables `source_ingest_log`, `internal.ingest_quarantine`, `internal.mp_tick_aggregates`, `mp_ticks.quarantine_reason` | Task 2 before any DB-backed task. |
 | 2 | 4 | `internal` schema creation (migration guard vs owner script) | Both use `CREATE SCHEMA IF NOT EXISTS internal`; owner script sets `AUTHORIZATION migrator`; test in Task 4 runs the prod order. |
 | 1, 3, 5, 6 | each other | `backend/pyproject.toml` mypy allowlist | Serial; each task appends its module names to the same block. |
@@ -184,7 +311,7 @@ Each item is a real choice the spec leaves open or that later owner decisions re
 | 2 | 7 | `backend/app/models/accident.py` docs | Task 7 documents only. |
 | 5 | plan 4 (MP split) | `mp_ticks` moves to `internal.mp_ticks` | Plan 4 Task 6 updates `mp_ticks_quarantine.QUARANTINE_SQL` and its test in the same commit as the move. |
 | 2 | plan 2 | `accidents` columns and `internal.accident_revisions (accident_id, field, rule_version)` unique key | Frozen here; plan 2 only writes rows. |
-| 2 | plan 5 (R10) | `app/models/legacy.py`, `accidents.route_id`/`mountain_id` | Untouched here. |
+| 2 | plans 5, 6 (R10) | `app/models/legacy.py`, `accidents.route_id`/`mountain_id` | Untouched here; plan 5 relinks, plan 6's `0012` drops. |
 | 7 | every later plan | `CHANGELOG.md`, `CLAUDE.md`, `DEPLOYMENT.md` | Each plan adds its own dated entry/lines; rebase before merge. |
 
 ## Cross-plan interface ledger (frozen names later plans rely on)
@@ -193,15 +320,22 @@ Each item is a real choice the spec leaves open or that later owner decisions re
 |---|---|---|
 | `validate.ValidationReport`, `in_us`, `date_problem`, `coord_problem`, `range_problem`, `batch_gate` | 1/T1 | 2, 3, 4, 5, 6, 7, 8 |
 | `grid.grid_bucket`, `grid.bucket_center`, `grid.grid_bucket_sql` | 1/T1 | 3, 5, 6, 7, 8 |
+| SQL function `grid_bucket_key(lat double precision, lon double precision) RETURNS integer` (IMMUTABLE) | 1/T2 (`0004`) | 3 (`0007` view), 5, 6, 7, 8 |
 | `ingest_log.start_run`, `finish_run`, `find_completed`, `write_quarantine`, `sha256_rows`, `last_ok_rows_in` | 1/T3 | 2–8 |
-| `db.ingest_engine` | 1/T3 | 2–8 |
+| `db.ingest_engine` (verify-full refusal) | 1/T3 | 2–8 |
+| `tests.verify._db.fetch(sql)` (analyst, verify-full) | 1/T5 | every later plan's `tests/verify` module |
 | `accidents` Phase 2a columns; `internal.accident_revisions` | 1/T2 | 2, 3, 5 |
 | `app/data/repair/framework.apply_changes` | 2/T1 | 2, 3, 5 |
-| `open_meteo.ArchiveClient` | 3/T1 | 5, 7 |
-| `cell_daily_conditions` | 3/T2 | 5, 7, 8 |
+| `open_meteo.ArchiveClient` | 3/T1 | 7 |
+| `localday.tz_for_point(lat, lon) -> str \| None`, `localday.local_date(ts_utc, tz) -> date`; `pipelines` dependency group (created with `timezonefinder`) | 3 | 4, 5, 6, 7 |
+| `grid_bucket_series(grid_bucket, tz, first_seen_at, last_era5_date)`, PK `(grid_bucket, tz)` | 3/`0007` | 5, 6, 7 |
+| `cell_daily_conditions` PK `(grid_bucket, tz, date)`, `record_kind IN ('era5','stopgap','forecast')`; `accidents.tz` | 3/`0007` | 5, 7, 8, Phase 3 |
+| `cell_climate_normals`, `cell_climatology`, `cell_normals_status(grid_bucket, status IN ('pending','complete','insufficient'), …)`; `normals.py` | 3 | 5, 6, 7, Phase 3 |
+| `era5_window run --window-start … --max-units …` (January batch; cumulative budget) | 3 | 5, 6, 7 (new series wait for it) |
 | `canonical_routes`, `canonical_areas`, `route_types.map_type_group`, `match.*` | 4 | 5, 6, 8 |
-| `feature_points`, `route_static_features`, `cell_climate_normals` | 5 | 6, 7, 8, Phase 3 |
-| `objectives`, `coverage.badge_for` | 6 | 7, 8, Phase 3 |
+| `feature_points` (with `tz`, stored `point_key`), `route_static_features`, scoring-unit features view | 5 | 6, 7, 8, Phase 3 |
+| `internal.r10_unresolved`, R10 job | 5/`0010` | 6 (`0012_drop_legacy_routes` guard) |
+| `objectives`, `coverage.badge_for`, `0012_drop_legacy_routes` | 6 | 7, 8, Phase 3 |
 
 ---
 
@@ -222,7 +356,7 @@ Each item is a real choice the spec leaves open or that later owner decisions re
   - `@dataclass ValidationReport(source: str)` with `rows_in: int`, `accepted: int`, `quarantined: Counter[str]`, `issues: list[Issue]`, methods `accept() -> None`, `quarantine(row_ref: str, reason: str, **detail: object) -> None`, `quarantined_total() -> int`, `summary() -> dict[str, object]` (counts only)
   - `@dataclass(frozen=True) Issue(row_ref: str, reason: str, detail: dict[str, object])`
   - `batch_gate(report: ValidationReport, *, previous_rows_in: int | None, count_tolerance: float, max_quarantine_share: float) -> list[str]` (empty list = pass)
-  - `grid.bucket_index(x: float) -> int`, `grid.grid_bucket(lat: float, lon: float) -> int`, `grid.bucket_center(bucket: int) -> tuple[float, float]`, `grid.grid_bucket_sql(lat_expr: str, lon_expr: str) -> str`
+  - `grid.bucket_index(x: float) -> int`, `grid.grid_bucket(lat: float, lon: float) -> int`, `grid.bucket_center(bucket: int) -> tuple[float, float]`, `grid.grid_bucket_sql(lat_expr: str, lon_expr: str) -> str` (renders a call to the SQL function `grid_bucket_key`, created by `0004` in Task 2)
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -266,6 +400,13 @@ def test_aleutians_east_of_180_are_inside_the_us():
 @pytest.mark.parametrize("lat,lon", [(51.0, -115.0), (-33.4, -70.6), (27.99, 86.93), (37.8, 122.0)])
 def test_foreign_or_sign_flipped_points_are_outside(lat, lon):
     assert not in_us(lat, lon)
+
+
+@pytest.mark.parametrize("lat,lon", [(49.25, -123.1), (49.1, -113.9), (32.5, -117.0)])
+def test_us_boxes_are_a_coarse_prefilter_that_admits_border_slivers(lat, lon):
+    # Southern BC/AB and Tijuana sit inside the boxes. in_us only rejects gross errors
+    # (sign flips, other continents); country is decided by plan 2's R3 geocode repair.
+    assert in_us(lat, lon)
 
 
 def test_date_problem_is_relative_to_the_injected_today():
@@ -327,6 +468,8 @@ def test_batch_gate_rejects_an_empty_batch():
 `backend/tests/test_grid.py`:
 
 ```python
+from decimal import Decimal
+
 import pytest
 
 from app.pipelines.grid import bucket_center, bucket_index, grid_bucket, grid_bucket_sql
@@ -354,10 +497,24 @@ def test_southern_latitudes_are_rejected():
         grid_bucket(-33.4, -70.6)
 
 
-def test_sql_expression_uses_the_same_math():
+def test_sql_expression_calls_the_one_function_with_float8_casts():
     assert grid_bucket_sql("l.latitude", "l.longitude") == (
-        "(floor(l.latitude * 10 + 0.5)::int * 10000 + floor(l.longitude * 10 + 0.5)::int + 5000)"
+        "grid_bucket_key((l.latitude)::float8, (l.longitude)::float8)"
     )
+
+
+@pytest.mark.parametrize(
+    "lat,lon,bucket",
+    [(40.05, -105.25, 4013948), (40.05, -105.35, 4013947), (64.15, -149.95, 6423501), (19.85, -155.45, 1993446)],
+)
+def test_half_steps_round_up_at_negative_longitudes(lat, lon, bucket):
+    assert grid_bucket(lat, lon) == bucket
+
+
+def test_a_numeric_just_below_a_half_step_buckets_as_its_double():
+    # asyncpg hands Python the float8 of a numeric; the SQL function sees the same double
+    # only because grid_bucket_sql casts. test_migration_0004 checks the DB side.
+    assert grid_bucket(float(Decimal("40.04999999999999999")), -105.3) == 4013947
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -388,6 +545,8 @@ from dataclasses import dataclass, field
 from datetime import date
 
 # (lat_lo, lat_hi, lon_lo, lon_hi). Alaska's Aleutians cross the antimeridian, hence two boxes.
+# Deliberately coarse: southern BC/AB and Tijuana fall inside. This rejects gross errors only;
+# plan 2's R3 decides the country.
 US_BOXES: tuple[tuple[float, float, float, float], ...] = (
     (24.3, 49.5, -125.0, -66.8),
     (51.0, 71.6, -180.0, -129.9),
@@ -496,8 +655,10 @@ def batch_gate(
 """The 0.1° grid key (P3: "lat/lon rounded to 0.1°"), packed into one integer.
 
 floor(x*10 + 0.5) rather than round(): Python rounds half to even and Postgres's
-double-precision round() is platform-dependent, while this expression is identical IEEE
-math on both sides, so a bucket computed in SQL always equals one computed here.
+double-precision round() is platform-dependent. SQL uses the immutable function
+grid_bucket_key() from migration 0004, always on float8 arguments: a `numeric` value with
+more digits than a double holds (40.04999999999999999) buckets as 400 in numeric math but
+as 401 once read into Python as a float. Casting first makes both sides the same IEEE math.
 """
 
 from __future__ import annotations
@@ -524,9 +685,7 @@ def bucket_center(bucket: int) -> tuple[float, float]:
 
 
 def grid_bucket_sql(lat_expr: str, lon_expr: str) -> str:
-    return (
-        f"(floor({lat_expr} * 10 + 0.5)::int * {LAT_STRIDE} + floor({lon_expr} * 10 + 0.5)::int + {LON_OFFSET})"
-    )
+    return f"grid_bucket_key(({lat_expr})::float8, ({lon_expr})::float8)"
 ```
 
 In `backend/pyproject.toml`, append to the first strict override's `module` list: `"app.pipelines", "app.pipelines.validate", "app.pipelines.grid"`.
@@ -556,6 +715,7 @@ git commit -m "feat(pipelines): boundary validation report and 0.1° grid key"
 - Consumes: `0003_hist_insufficient_data` (down revision).
 - Produces (DB):
   - Schema `internal` (owned by `migrator` in prod).
+  - Function `public.grid_bucket_key(lat double precision, lon double precision) RETURNS integer` (SQL, IMMUTABLE, STRICT, PARALLEL SAFE) — the one SQL form of the D4 key `[assumes D4]`.
   - `internal.accidents_raw` — frozen copy of `accidents` as of the migration (pre-2a shape).
   - `accidents` columns: `date_precision`, `year_source`, `year_lo`, `year_hi`, `geocode_precision`, `geocode_method`, `country`, `activity_class`, `activity_rule_version`, `inclusion_flag`, `incident_group_id`, `is_canonical` (NOT NULL default true), `severity_scale`, `excluded_reason`, `source_url`, `updated_at`, `exp_years_climbing`, `exp_stated_level` (NOT NULL default `'unknown'`), `exp_first_season`, `guided` (NOT NULL default `'unknown'`), `exp_rule_version`.
   - `internal.accident_revisions(id, accident_id, field, old_value, new_value, method, rule_version, run_id, created_at)`, unique `(accident_id, field, rule_version)`.
@@ -618,11 +778,13 @@ def migrated_db(revision: str = "head", seed_sql: str | None = None) -> Iterator
 
 ```python
 import asyncio
+from decimal import Decimal
 
 import asyncpg
 import pytest
 from alembic import command
 
+from app.pipelines.grid import grid_bucket, grid_bucket_sql
 from tests.pgtest import migrated_db, pg_url, requires_pg, run_sql
 from tests.test_migrations import _alembic_cfg
 
@@ -659,6 +821,28 @@ def test_0004_snapshots_accidents_before_adding_columns_and_checks_clean():
         ) == 0
         assert _val(name, "SELECT bool_and(is_canonical) FROM accidents") is True
         assert _val(name, "SELECT count(*) FROM accidents WHERE exp_stated_level = 'unknown' AND guided = 'unknown'") == 2
+
+
+HALF_STEPS = [
+    ("40.05", "-105.25"),
+    ("40.05", "-105.35"),
+    ("64.15", "-149.95"),
+    ("19.85", "-155.45"),
+    ("52.95", "175.05"),
+    ("40.04999999999999999", "-105.3"),
+    ("40.1", "-105.25000000000000001"),
+]
+
+
+def test_grid_bucket_key_matches_python_at_half_steps():
+    with migrated_db("head") as name:
+        for lat, lon in HALF_STEPS:
+            expr = grid_bucket_sql("'" + lat + "'::numeric", "'" + lon + "'::numeric")
+            assert _val(name, f"SELECT {expr}") == grid_bucket(float(Decimal(lat)), float(Decimal(lon))), (lat, lon)
+        assert _val(
+            name,
+            "SELECT provolatile = 'i' FROM pg_proc WHERE proname = 'grid_bucket_key'",
+        ) is True
 
 
 def test_0004_enum_checks_reject_unknown_values():
@@ -725,6 +909,7 @@ def test_0004_downgrade_is_clean_when_empty():
         command.downgrade(_alembic_cfg(name), "0003_hist_insufficient_data")
         assert _val(name, "SELECT to_regclass('internal.accidents_raw')") is None
         assert _val(name, "SELECT to_regclass('public.source_ingest_log')") is None
+        assert _val(name, "SELECT count(*) FROM pg_proc WHERE proname = 'grid_bucket_key'") == 0
 
 
 def test_0004_refuses_without_internal_schema_when_unprivileged():
@@ -759,8 +944,8 @@ Expected: FAIL with `Can't locate revision identified by 'head'`-style errors on
 `backend/alembic/versions/0004_phase2a_foundation.py`:
 
 ```python
-"""Phase 2a foundation: internal schema, frozen accidents_raw, accident repair columns,
-ingest run log, quarantine, MP tick aggregates, mp_ticks quarantine columns.
+"""Phase 2a foundation: internal schema, grid_bucket_key(), frozen accidents_raw, accident
+repair columns, ingest run log, quarantine, MP tick aggregates, mp_ticks quarantine columns.
 
 Schema `internal` is created by db/roles/create_roles_phase2.sql in prod (CREATE SCHEMA
 needs CREATE on the database, which migrator deliberately lacks). Here it is created only
@@ -775,6 +960,14 @@ revision = "0004_phase2a_foundation"
 down_revision = "0003_hist_insufficient_data"
 branch_labels = None
 depends_on = None
+
+# One SQL definition of the D4 grid key. Callers pass float8 (grid.grid_bucket_sql adds the
+# casts) so a numeric column buckets exactly as the double Python reads from it.
+GRID_BUCKET_KEY_SQL = """
+CREATE FUNCTION public.grid_bucket_key(lat double precision, lon double precision) RETURNS integer
+LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+AS $$ SELECT floor(lat * 10 + 0.5)::int * 10000 + floor(lon * 10 + 0.5)::int + 5000 $$
+"""
 
 ENUM_CHECKS = {
     "date_precision": ("day", "month", "year", "unknown"),
@@ -803,6 +996,7 @@ def _ensure_internal_schema() -> None:
 
 def upgrade() -> None:
     _ensure_internal_schema()
+    op.execute(GRID_BUCKET_KEY_SQL)
 
     # Snapshot before the new columns exist, so accidents_raw keeps the pre-2a shape.
     op.execute("CREATE TABLE internal.accidents_raw AS TABLE public.accidents")
@@ -943,6 +1137,7 @@ def downgrade() -> None:
     ):
         op.drop_column("accidents", column)
     op.drop_table("accidents_raw", schema="internal")
+    op.execute("DROP FUNCTION public.grid_bucket_key(double precision, double precision)")
 ```
 
 `gen_random_uuid()` in the tests is core Postgres 13+; no extension needed.
@@ -1114,7 +1309,7 @@ git commit -m "feat(db): 0004 phase 2a foundation schema (internal schema, accid
 ### Task 3: Ingest run log, quarantine writer and the ingest engine
 
 **Files:**
-- Create: `backend/app/pipelines/ingest_log.py`, `backend/app/pipelines/db.py`, `backend/tests/test_ingest_log.py`
+- Create: `backend/app/pipelines/ingest_log.py`, `backend/app/pipelines/db.py`, `backend/tests/test_ingest_log.py`, `backend/tests/test_pipelines_db.py`
 - Modify: `backend/app/config.py`, `.env.example`, `backend/pyproject.toml`
 
 **Interfaces:**
@@ -1128,6 +1323,7 @@ git commit -m "feat(db): 0004 phase 2a foundation schema (internal schema, accid
   - `async write_quarantine(conn, run_id: uuid.UUID, report: ValidationReport) -> int`
   - `sha256_rows(rows: Iterable[Sequence[object]]) -> str` (order-independent)
   - `db.ingest_engine() -> AsyncEngine` (raises `SystemExit` when `settings.INGEST_DATABASE_URL` is unset)
+  - `db.verified_connect_args(url: str) -> dict[str, object]` (raises `SystemExit`, without echoing the URL, when a non-local URL asks for a TLS mode other than `verify-full` or would connect without certificate and host-name verification) `[assumes D14]`
   - `Settings.INGEST_DATABASE_URL: str | None = None`
 
 - [ ] **Step 1: Write the failing tests**
@@ -1213,10 +1409,46 @@ def test_rejected_runs_are_not_noops_and_not_row_count_baselines():
         asyncio.run(scenario(sa_url(name)))
 ```
 
+`backend/tests/test_pipelines_db.py`:
+
+```python
+import ssl
+
+import pytest
+
+from app.pipelines.db import verified_connect_args
+
+REMOTE = "postgresql+asyncpg://ingest:secret-pw@ep-fixture-123.us-east-2.aws.neon.tech/neondb"
+
+
+def test_remote_url_gets_a_verifying_context():
+    args = verified_connect_args(REMOTE)
+    context = args["ssl"]
+    assert isinstance(context, ssl.SSLContext)
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname
+
+
+@pytest.mark.parametrize("query", ["?sslmode=require", "?ssl=require", "?sslmode=prefer", "?ssl=disable"])
+def test_ingest_engine_refuses_weaker_tls_on_a_remote_host(query):
+    with pytest.raises(SystemExit) as refused:
+        verified_connect_args(REMOTE + query)
+    assert "secret-pw" not in str(refused.value)
+    assert "verify-full" in str(refused.value)
+
+
+def test_explicit_verify_full_is_accepted():
+    assert isinstance(verified_connect_args(REMOTE + "?ssl=verify-full")["ssl"], ssl.SSLContext)
+
+
+def test_local_urls_need_no_tls():
+    assert verified_connect_args("postgresql+asyncpg://test_user:pw@localhost:5432/postgres") == {}
+```
+
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cd backend && uv run pytest tests/test_ingest_log.py -q`
-Expected: FAIL with `ModuleNotFoundError: No module named 'app.pipelines.ingest_log'`.
+Run: `cd backend && uv run pytest tests/test_ingest_log.py tests/test_pipelines_db.py -q`
+Expected: FAIL with `ModuleNotFoundError: No module named 'app.pipelines.ingest_log'` (and `app.pipelines.db`).
 
 - [ ] **Step 3: Implement**
 
@@ -1356,22 +1588,52 @@ async def write_quarantine(conn: AsyncConnection, run_id: uuid.UUID, report: Val
 `backend/app/pipelines/db.py`:
 
 ```python
-"""The ingest role's engine. Jobs never use DATABASE_URL (the app role cannot write)."""
+"""The ingest role's engine. Jobs never use DATABASE_URL (the app role cannot write).
+
+The ingest role writes data every model trains on, so a remote connection must verify the
+server certificate and host name (D14). connect_args_for already builds a verify-full
+context; this module additionally refuses a URL whose own query asks for a weaker mode, so a
+copied `sslmode=require` URL fails loudly instead of depending on which setting wins.
+"""
 
 from __future__ import annotations
 
+import ssl
+
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.config import settings
 from app.db.ssl import connect_args_for
 
+TLS_QUERY_KEYS = ("ssl", "sslmode")
+
+
+def verified_connect_args(url: str) -> dict[str, object]:
+    args = connect_args_for(url)
+    if not args:
+        return args
+    query = make_url(url).query
+    weaker = sorted(key for key in TLS_QUERY_KEYS if key in query and query[key] != "verify-full")
+    if weaker:
+        raise SystemExit(
+            f"INGEST_DATABASE_URL sets {', '.join(weaker)} to something other than verify-full on a "
+            "remote host; remove it (TLS is verified by app.db.ssl) or set verify-full"
+        )
+    context = args.get("ssl")
+    if not (
+        isinstance(context, ssl.SSLContext) and context.verify_mode == ssl.CERT_REQUIRED and context.check_hostname
+    ):
+        raise SystemExit("INGEST_DATABASE_URL would connect to a remote host without verify-full TLS")
+    return args
+
 
 def ingest_engine() -> AsyncEngine:
     url = settings.INGEST_DATABASE_URL
     if not url:
         raise SystemExit("INGEST_DATABASE_URL is not set (the ingest role's URL); see DEPLOYMENT.md")
-    return create_async_engine(url, poolclass=NullPool, connect_args=connect_args_for(url))
+    return create_async_engine(url, poolclass=NullPool, connect_args=verified_connect_args(url))
 ```
 
 `backend/app/config.py`, after `WORKER_HEARTBEAT_TTL_SECONDS`:
@@ -1386,7 +1648,8 @@ def ingest_engine() -> AsyncEngine:
 ```
 # --- Backend: data pipelines (Phase 2) -------------------------------------------
 # The ingest role's URL (written by scripts/write_role_url.py). Empty everywhere except
-# the data workflows and, from plan 7, the worker. Job CLIs refuse to run without it.
+# the data workflows and, from plan 7, the dedicated ingest service (never the general
+# worker). Job CLIs refuse to run without it, and refuse a remote URL below verify-full.
 INGEST_DATABASE_URL=
 ```
 
@@ -1394,15 +1657,15 @@ Append `"app.pipelines.ingest_log", "app.pipelines.db"` to the first strict mypy
 
 - [ ] **Step 4: Run**
 
-Run: `cd backend && uv run pytest tests/test_ingest_log.py tests/test_env_example_parity.py tests/test_settings.py -q && uv run mypy && uv run ruff check . ../scripts/`
+Run: `cd backend && uv run pytest tests/test_ingest_log.py tests/test_pipelines_db.py tests/test_env_example_parity.py tests/test_settings.py -q && uv run mypy && uv run ruff check . ../scripts/`
 Expected: PASS (DB tests run in CI; they skip locally without `MIGRATIONS_TEST_ADMIN_URL`).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add backend/app/pipelines/ingest_log.py backend/app/pipelines/db.py backend/app/config.py .env.example \
-  backend/tests/test_ingest_log.py backend/pyproject.toml
-git commit -m "feat(pipelines): ingest run log, quarantine writer, ingest engine"
+  backend/tests/test_ingest_log.py backend/tests/test_pipelines_db.py backend/pyproject.toml
+git commit -m "feat(pipelines): ingest run log, quarantine writer, verify-full ingest engine"
 ```
 
 ---
@@ -1415,18 +1678,23 @@ git commit -m "feat(pipelines): ingest run log, quarantine writer, ingest engine
 
 **Interfaces:**
 - Consumes: Phase 1 roles (`migrator`, `app`, `analyst`) already created by `create_roles.sql`; migration `0004`.
-- Produces: roles `ingest`, `trainer`; schema `internal AUTHORIZATION migrator`; env vars `INGEST_PASSWORD_SCRAM`, `TRAINER_PASSWORD_SCRAM`; `write_role_url --role ingest|trainer`. `grants_phase2.sql` and `verify_roles_phase2.sql` are **cumulative**: later plans append grants and expected rows.
+- Produces: role `ingest` (LOGIN); role `trainer` (NOLOGIN, no password, no grants — Phase 3 adds LOGIN and SELECT on training views) `[assumes D13]`; schema `internal AUTHORIZATION migrator`; env var `INGEST_PASSWORD_SCRAM`; `write_role_url --role ingest`. `grants_phase2.sql` and `verify_roles_phase2.sql` are **cumulative**: later plans append grants and expected rows.
 
 - [ ] **Step 1: Failing tests**
 
 In `backend/tests/test_write_role_url.py` add:
 
 ```python
-@pytest.mark.parametrize("role", ["ingest", "trainer"])
-def test_phase2_roles_are_accepted(role, monkeypatch, capsys):
-    monkeypatch.setenv(f"{role.upper()}_PASSWORD", "pw-for-test")
-    assert main(["--role", role, "--scram"]) == 0
+def test_ingest_role_is_accepted(monkeypatch, capsys):
+    monkeypatch.setenv("INGEST_PASSWORD", "pw-for-test")
+    assert main(["--role", "ingest", "--scram"]) == 0
     assert capsys.readouterr().out.startswith("SCRAM-SHA-256$4096:")
+
+
+def test_trainer_has_no_credential_until_phase_3(monkeypatch):
+    monkeypatch.setenv("TRAINER_PASSWORD", "pw-for-test")
+    with pytest.raises(SystemExit):
+        main(["--role", "trainer", "--scram"])
 ```
 
 `backend/tests/test_roles_phase2.py`:
@@ -1453,6 +1721,7 @@ from tests.test_migrations import (
     _alembic_cfg,
     _as,
     _denied,
+    _fetch_row,
     _psql,
     _require_psql,
     _role_url,
@@ -1461,7 +1730,7 @@ from tests.test_migrations import (
 )
 
 pytestmark = requires_pg
-PHASE2_PASSWORDS = {"ingest": "test-ingest-pw", "trainer": "test-trainer-pw"}
+PHASE2_PASSWORDS = {"ingest": "test-ingest-pw"}
 ALL_ROLES = ("ingest", "trainer", "migrator", "app", "analyst", OWNER_ROLE)
 
 
@@ -1506,9 +1775,8 @@ def test_phase2_roles_least_privilege(phase2_roles_cleanup, fresh_db):  # noqa: 
                {"MIGRATOR_PASSWORD_SCRAM": phase1["migrator"], "APP_PASSWORD_SCRAM": phase1["app"]})
     assert ok.returncode == 0, ok.stderr
 
-    phase2 = {r: scram_verifier(p) for r, p in PHASE2_PASSWORDS.items()}
     created = _psql(owner_url, ROLES_DIR / "create_roles_phase2.sql",
-                    {"INGEST_PASSWORD_SCRAM": phase2["ingest"], "TRAINER_PASSWORD_SCRAM": phase2["trainer"]},
+                    {"INGEST_PASSWORD_SCRAM": scram_verifier(PHASE2_PASSWORDS["ingest"])},
                     "--echo-queries")
     assert created.returncode == 0, created.stderr
     for plaintext in PHASE2_PASSWORDS.values():
@@ -1529,11 +1797,11 @@ def test_phase2_roles_least_privilege(phase2_roles_cleanup, fresh_db):  # noqa: 
         assert "PASSED" in verified.stdout
 
     ingest = _role_url(fresh_db, "ingest", PHASE2_PASSWORDS["ingest"])
-    trainer = _role_url(fresh_db, "trainer", PHASE2_PASSWORDS["trainer"])
     app = _role_url(fresh_db, "app", PASSWORDS["app"])
 
     _as(ingest, "INSERT INTO source_ingest_log (run_id, source, status) VALUES (gen_random_uuid(), 't', 'running')")
     _as(ingest, "INSERT INTO internal.mp_tick_aggregates (mp_route_id, period, style, tick_count) VALUES (900000001, 'total', 'all', 1)")
+    _denied(ingest, "UPDATE internal.mp_tick_aggregates SET tick_count = 2 WHERE false")
     _as(ingest, "UPDATE mp_ticks SET quarantine_reason = NULL WHERE false")
     _denied(ingest, "UPDATE mp_ticks SET climber_name = 'x' WHERE false")
     _denied(ingest, "DELETE FROM source_ingest_log")
@@ -1541,9 +1809,16 @@ def test_phase2_roles_least_privilege(phase2_roles_cleanup, fresh_db):  # noqa: 
     _denied(ingest, "CREATE TABLE internal.nope (x int)")
     _denied(ingest, "CREATE TABLE public.nope (x int)")
 
-    _as(trainer, "SELECT count(*) FROM accidents")
-    with pytest.raises(asyncpg.exceptions.ReadOnlySQLTransactionError):
-        _as(trainer, "INSERT INTO source_ingest_log (run_id, source, status) VALUES (gen_random_uuid(), 't', 'running')")
+    # trainer cannot log in and holds no table privilege anywhere until Phase 3 (D13).
+    trainer_state = _fetch_row(
+        fresh_db,
+        "SELECT r.rolcanlogin, "
+        "EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+        "        WHERE n.nspname IN ('public', 'internal') AND c.relkind IN ('r', 'p', 'v', 'm') "
+        "          AND has_table_privilege('trainer', c.oid, 'SELECT')) "
+        "FROM pg_roles r WHERE r.rolname = 'trainer'",
+    )
+    assert list(trainer_state) == [False, False]
 
     _denied(app, "SELECT count(*) FROM internal.mp_tick_aggregates")
     _denied(app, "SELECT count(*) FROM internal.accidents_raw")
@@ -1563,7 +1838,7 @@ Expected: FAIL (`invalid choice: 'ingest'`; missing SQL files).
 
 - [ ] **Step 3: Implement**
 
-`backend/scripts/write_role_url.py`: `ROLES = ("migrator", "app", "ingest", "trainer")`.
+`backend/scripts/write_role_url.py`: `ROLES = ("migrator", "app", "ingest")`. `trainer` is left out on purpose: it has no login until Phase 3, which adds it here with its grants (argparse `choices` rejects it with exit code 2, which `test_trainer_has_no_credential_until_phase_3` expects as `SystemExit`).
 
 `backend/db/roles/create_roles_phase2.sql`:
 
@@ -1575,22 +1850,16 @@ Expected: FAIL (`invalid choice: 'ingest'`; missing SQL files).
 \set SHOW_CONTEXT never
 
 \getenv ingest_scram INGEST_PASSWORD_SCRAM
-\getenv trainer_scram TRAINER_PASSWORD_SCRAM
 \if :{?ingest_scram}
 \else
   DO $$ BEGIN RAISE EXCEPTION 'INGEST_PASSWORD_SCRAM is not set'; END $$;
 \endif
-\if :{?trainer_scram}
-\else
-  DO $$ BEGIN RAISE EXCEPTION 'TRAINER_PASSWORD_SCRAM is not set'; END $$;
-\endif
 
 SELECT :'ingest_scram' ~ '^SCRAM-SHA-256\$[0-9]+:[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$'
-   AND :'trainer_scram' ~ '^SCRAM-SHA-256\$[0-9]+:[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$'
    AS verifiers_ok \gset
 \if :verifiers_ok
 \else
-  DO $$ BEGIN RAISE EXCEPTION 'INGEST_PASSWORD_SCRAM / TRAINER_PASSWORD_SCRAM must be SCRAM-SHA-256 verifiers'; END $$;
+  DO $$ BEGIN RAISE EXCEPTION 'INGEST_PASSWORD_SCRAM must be a SCRAM-SHA-256 verifier'; END $$;
 \endif
 
 SELECT to_regrole('migrator') IS NOT NULL AND to_regrole('app') IS NOT NULL AND to_regrole('analyst') IS NOT NULL
@@ -1603,15 +1872,16 @@ SELECT to_regrole('migrator') IS NOT NULL AND to_regrole('app') IS NOT NULL AND 
 BEGIN;
 
 CREATE ROLE ingest LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD :'ingest_scram';
-CREATE ROLE trainer LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD :'trainer_scram';
--- Read-only until Phase 3 grants its model-table writes.
-ALTER ROLE trainer SET default_transaction_read_only = on;
+-- D13: a placeholder with no login and no grants. default_transaction_read_only is a session
+-- default any client can override, so it is not a boundary; Phase 3 adds LOGIN and SELECT on
+-- training views only.
+CREATE ROLE trainer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
 
 -- migrator cannot create schemas (verify_roles.sql asserts it), so the owner does it here.
 CREATE SCHEMA IF NOT EXISTS internal AUTHORIZATION migrator;
 REVOKE ALL ON SCHEMA internal FROM PUBLIC;
 
-GRANT USAGE ON SCHEMA public TO ingest, trainer;
+GRANT USAGE ON SCHEMA public TO ingest;
 
 COMMIT;
 
@@ -1634,9 +1904,10 @@ GRANT SELECT ON ALL TABLES IN SCHEMA internal TO analyst;
 GRANT SELECT ON public.accidents, public.mp_routes, public.mp_locations, public.mp_ticks TO ingest;
 GRANT SELECT, INSERT, UPDATE ON public.source_ingest_log TO ingest;
 GRANT UPDATE (quarantine_reason, quarantine_rule_version) ON public.mp_ticks TO ingest;
-GRANT SELECT, INSERT, UPDATE ON internal.mp_tick_aggregates TO ingest;
+-- INSERT only (spec): accepted months are closed, so a reload never needs to change them.
+GRANT SELECT, INSERT ON internal.mp_tick_aggregates TO ingest;
 GRANT SELECT, INSERT ON internal.ingest_quarantine TO ingest;
-GRANT SELECT ON public.accidents TO trainer;
+-- trainer: nothing until Phase 3 (D13).
 
 RESET ROLE;
 COMMIT;
@@ -1668,9 +1939,8 @@ SELECT 'no role memberships: ' || r,
 FROM unnest(ARRAY['ingest', 'trainer']) AS r;
 
 INSERT INTO role_checks VALUES
-  ('trainer defaults to read-only transactions',
-     EXISTS (SELECT 1 FROM pg_db_role_setting s JOIN pg_roles r ON r.oid = s.setrole
-             WHERE r.rolname = 'trainer' AND 'default_transaction_read_only=on' = ANY (s.setconfig))),
+  ('trainer cannot log in until Phase 3', NOT (SELECT rolcanlogin FROM pg_roles WHERE rolname = 'trainer')),
+  ('ingest can log in', (SELECT rolcanlogin FROM pg_roles WHERE rolname = 'ingest')),
   ('schema internal is owned by migrator',
      (SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = 'internal') = 'migrator'),
   ('app has no USAGE on schema internal', NOT has_schema_privilege('app', 'internal', 'USAGE')),
@@ -1683,7 +1953,7 @@ INSERT INTO role_checks VALUES
 CREATE TEMP TABLE ingest_writes (tbl text, priv text);
 INSERT INTO ingest_writes VALUES
   ('public.source_ingest_log', 'INSERT'), ('public.source_ingest_log', 'UPDATE'),
-  ('internal.mp_tick_aggregates', 'INSERT'), ('internal.mp_tick_aggregates', 'UPDATE'),
+  ('internal.mp_tick_aggregates', 'INSERT'),
   ('internal.ingest_quarantine', 'INSERT');
 
 WITH tables AS (
@@ -1703,16 +1973,16 @@ FROM privs;
 WITH tables AS (
   SELECT c.oid, n.nspname || '.' || c.relname AS tbl
   FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-  WHERE n.nspname IN ('public', 'internal') AND c.relkind IN ('r', 'p')
+  WHERE n.nspname IN ('public', 'internal') AND c.relkind IN ('r', 'p', 'v', 'm')
 )
 INSERT INTO role_checks
-SELECT 'app/trainer hold nothing on internal table ' || tbl,
-       NOT (has_table_privilege('app', oid, 'SELECT') OR has_table_privilege('trainer', oid, 'SELECT'))
+SELECT 'app holds nothing on internal relation ' || tbl, NOT has_table_privilege('app', oid, 'SELECT')
 FROM tables WHERE tbl LIKE 'internal.%'
 UNION ALL
-SELECT 'trainer has no write privilege on ' || tbl,
-       NOT (has_table_privilege('trainer', oid, 'INSERT') OR has_table_privilege('trainer', oid, 'UPDATE')
-            OR has_table_privilege('trainer', oid, 'DELETE') OR has_table_privilege('trainer', oid, 'TRUNCATE'))
+SELECT 'trainer holds no privilege on ' || tbl,
+       NOT (has_table_privilege('trainer', oid, 'SELECT') OR has_table_privilege('trainer', oid, 'INSERT')
+            OR has_table_privilege('trainer', oid, 'UPDATE') OR has_table_privilege('trainer', oid, 'DELETE')
+            OR has_table_privilege('trainer', oid, 'TRUNCATE'))
 FROM tables;
 
 INSERT INTO role_checks VALUES
@@ -1745,7 +2015,7 @@ Expected: PASS.
 ```bash
 git add backend/db/roles/create_roles_phase2.sql backend/db/roles/grants_phase2.sql backend/db/roles/verify_roles_phase2.sql \
   backend/scripts/write_role_url.py backend/tests/test_write_role_url.py backend/tests/test_roles_phase2.py
-git commit -m "feat(db): ingest and trainer roles, internal schema, Phase 2 grants and checks"
+git commit -m "feat(db): ingest role, NOLOGIN trainer placeholder, internal schema, Phase 2 grants and checks"
 ```
 
 ---
@@ -1753,12 +2023,12 @@ git commit -m "feat(db): ingest and trainer roles, internal schema, Phase 2 gran
 ### Task 5: R8 — quarantine garbage `mp_ticks` rows
 
 **Files:**
-- Create: `backend/app/pipelines/mp_ticks_quarantine.py`, `backend/tests/test_mp_ticks_quarantine.py`, `backend/tests/verify/__init__.py`, `backend/tests/verify/test_phase2a_foundation.py`
+- Create: `backend/app/pipelines/mp_ticks_quarantine.py`, `backend/tests/test_mp_ticks_quarantine.py`, `backend/tests/verify/__init__.py`, `backend/tests/verify/_db.py`, `backend/tests/verify/test_phase2a_foundation.py`
 - Modify: `backend/pyproject.toml` (mypy allowlist; `db` marker; default deselection)
 
 **Interfaces:**
 - Consumes: `ingest_log.start_run/finish_run` (Task 3), `ValidationReport` (Task 1), `db.ingest_engine` (Task 3), `temporal_weighting.utc_today()` (existing, `app/services/temporal_weighting.py:25`).
-- Produces: `RULE_VERSION = "r8-v1"`, `classify_tick(tick_date: date | None, captured_on: date | None, route_known: bool, today: date) -> str | None`, `QUARANTINE_SQL: str`, `async run(conn: AsyncConnection, *, today: date) -> dict[str, int]` (counts by reason after the run), CLI `python -m app.pipelines.mp_ticks_quarantine`. `[assumes D3]`
+- Produces: `RULE_VERSION = "r8-v1"`, `CAPTURE_SLACK = timedelta(days=1)`, `classify_tick(tick_date: date | None, captured_on: date | None, route_known: bool, today: date) -> str | None`, `QUARANTINE_SQL: str`, `async run(conn: AsyncConnection, *, today: date) -> dict[str, int]` (counts by reason after the run), CLI `python -m app.pipelines.mp_ticks_quarantine`; `tests.verify._db.fetch(sql: str) -> list[asyncpg.Record]` (analyst, verify-full via `connect_args_for`; skips without `VERIFY_DATABASE_URL`). `[assumes D3]`
 
 - [ ] **Step 1: Failing tests**
 
@@ -1779,6 +2049,12 @@ TODAY = date(2026, 9, 28)
 
 def test_tick_after_capture_day_is_future_even_when_before_today():
     assert classify_tick(date(2026, 3, 1), date(2026, 2, 8), True, TODAY) == "future"
+    assert classify_tick(date(2026, 2, 10), date(2026, 2, 8), True, TODAY) == "future"
+
+
+def test_tick_one_day_after_capture_is_allowed_for_writer_zone_slack():
+    # created_at holds the writer session's local time, which may be up to 10 h behind UTC.
+    assert classify_tick(date(2026, 2, 9), date(2026, 2, 8), True, TODAY) is None
 
 
 def test_tick_after_today_is_future_when_capture_day_unknown():
@@ -1803,7 +2079,8 @@ INSERT INTO mp_ticks (tick_id, route_id, climber_name, tick_date, created_at) VA
   (4, '900000999', 'c', '2025-01-04', '2026-02-08 10:00'),
   (5, 'abc',       'c', '2025-01-04', '2026-02-08 10:00'),
   (6, '900000001', 'c', '1965-06-01', '2026-02-08 10:00'),
-  (7, '900000001', 'c', NULL,         '2026-02-08 10:00');
+  (7, '900000001', 'c', NULL,         '2026-02-08 10:00'),
+  (8, '900000001', 'c', '2026-02-09', '2026-02-08 23:00');
 """
 
 
@@ -1814,7 +2091,7 @@ def test_sql_matches_the_python_rule_and_is_idempotent():
         try:
             async with engine.begin() as conn:
                 counts = await run(conn, today=TODAY)
-            assert counts == {"future": 2, "orphan_route": 2, "pre_1970": 1, "clean": 2}
+            assert counts == {"future": 2, "orphan_route": 2, "pre_1970": 1, "clean": 3}
             async with engine.begin() as conn:
                 again = await run(conn, today=TODAY)
                 changed = (await conn.execute(text(
@@ -1824,7 +2101,9 @@ def test_sql_matches_the_python_rule_and_is_idempotent():
             assert changed == 0
             async with engine.connect() as conn:
                 rows = dict((await conn.execute(text("SELECT tick_id, quarantine_reason FROM mp_ticks"))).all())
-            assert rows == {1: None, 2: "future", 3: "future", 4: "orphan_route", 5: "orphan_route", 6: "pre_1970", 7: None}
+            assert rows == {
+                1: None, 2: "future", 3: "future", 4: "orphan_route", 5: "orphan_route", 6: "pre_1970", 7: None, 8: None,
+            }
         finally:
             await engine.dispose()
 
@@ -1846,14 +2125,19 @@ Expected: FAIL (`ModuleNotFoundError`).
 
 "future" is relative to the day the row was captured (created_at) and to today at run
 time, whichever is earlier: a tick dated after its own capture day cannot be real, and
-stays flagged even once the calendar passes it. created_at is written by a UTC server.
+stays flagged even once the calendar passes it.
+
+created_at is `timestamp without time zone DEFAULT CURRENT_TIMESTAMP`, so it holds the
+writer session's local time, which no later session can prove (SHOW TimeZone only shows the
+reader's). US zones are at most 10 h behind UTC, so one day of slack on the capture day keeps
+a real tick from being flagged whatever zone the writer used; "after today" stays strict.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-from datetime import date
+from datetime import date, timedelta
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -1863,10 +2147,11 @@ from app.pipelines.validate import ValidationReport
 
 RULE_VERSION = "r8-v1"
 EPOCH = date(1970, 1, 1)
+CAPTURE_SLACK = timedelta(days=1)
 
 
 def classify_tick(tick_date: date | None, captured_on: date | None, route_known: bool, today: date) -> str | None:
-    cutoff = min(today, captured_on) if captured_on is not None else today
+    cutoff = min(today, captured_on + CAPTURE_SLACK) if captured_on is not None else today
     if tick_date is not None and tick_date > cutoff:
         return "future"
     if not route_known:
@@ -1881,7 +2166,7 @@ QUARANTINE_SQL = """
 WITH classified AS (
   SELECT t.tick_id,
          CASE
-           WHEN t.tick_date > LEAST(CAST(:today AS date), t.created_at::date) THEN 'future'
+           WHEN t.tick_date > LEAST(CAST(:today AS date), t.created_at::date + 1) THEN 'future'
            -- Nested CASE, not OR: Postgres does not promise to short-circuit OR, and
            -- 'abc'::bigint would abort the whole statement.
            WHEN CASE WHEN t.route_id ~ '^[0-9]{1,18}$'
@@ -1938,54 +2223,80 @@ Append `"app.pipelines.mp_ticks_quarantine"` to the first strict mypy block. In 
 
 `backend/tests/verify/__init__.py`: empty.
 
-`backend/tests/verify/test_phase2a_foundation.py`:
+`backend/tests/verify/_db.py` (every later plan's `tests/verify` module uses `fetch` rather than its own connect, so every acceptance run verifies TLS the way the app does):
 
 ```python
-"""Acceptance checks for plan 1, run by the owner/agent against a Neon branch or prod as
-the read-only analyst role: VERIFY_DATABASE_URL=<analyst url> uv run pytest -m db tests/verify."""
+"""Read-only connection for -m db acceptance checks. VERIFY_DATABASE_URL is the analyst URL as
+write_role_url wrote it (any driver prefix or ssl query is fine): the DSN is rebuilt without its
+query and TLS comes from app.db.ssl.connect_args_for, i.e. verify-full against Neon."""
+
+from __future__ import annotations
 
 import asyncio
 import os
 
 import asyncpg
 import pytest
+from sqlalchemy.engine import make_url
 
-pytestmark = pytest.mark.db
+from app.db.ssl import connect_args_for
+
 URL = os.environ.get("VERIFY_DATABASE_URL")
 
 
-def _fetch(sql: str) -> list[asyncpg.Record]:
+def fetch(sql: str) -> list[asyncpg.Record]:
     if not URL:
         pytest.skip("VERIFY_DATABASE_URL not set")
+    dsn = make_url(URL).set(drivername="postgresql", query={}).render_as_string(hide_password=False)
+    connect_args = connect_args_for(URL)
 
     async def go() -> list[asyncpg.Record]:
-        conn = await asyncpg.connect(URL)
+        conn = await asyncpg.connect(dsn, **connect_args)
         try:
             return await conn.fetch(sql)
         finally:
             await conn.close()
 
     return asyncio.run(go())
+```
+
+`backend/tests/verify/test_phase2a_foundation.py`:
+
+```python
+"""Acceptance checks for plan 1, run by the owner/agent against a Neon branch or prod as
+the read-only analyst role: VERIFY_DATABASE_URL=<analyst url> uv run pytest -m db tests/verify."""
+
+import pytest
+
+from tests.verify._db import fetch
+
+pytestmark = pytest.mark.db
 
 
 def test_accidents_raw_matches_live_row_count():
-    [row] = _fetch("SELECT (SELECT count(*) FROM internal.accidents_raw) = (SELECT count(*) FROM accidents) AS same")
+    [row] = fetch("SELECT (SELECT count(*) FROM internal.accidents_raw) = (SELECT count(*) FROM accidents) AS same")
     assert row["same"]
 
 
 def test_no_future_tick_is_unflagged():
-    [row] = _fetch(
+    [row] = fetch(
         "SELECT count(*) AS n FROM mp_ticks WHERE quarantine_reason IS NULL "
-        "AND tick_date > LEAST((now() AT TIME ZONE 'UTC')::date, created_at::date)"
+        "AND tick_date > LEAST((now() AT TIME ZONE 'UTC')::date, created_at::date + 1)"
     )
     assert row["n"] == 0
 
 
-def test_r8_counts_are_reported():
-    rows = _fetch("SELECT coalesce(quarantine_reason, 'clean') AS r, count(*) AS n FROM mp_ticks GROUP BY 1 ORDER BY 1")
-    print({r["r"]: r["n"] for r in rows})
-    assert rows
+def test_r8_flags_are_known_reasons_under_the_current_rule_version():
+    rows = fetch(
+        "SELECT coalesce(quarantine_reason, 'clean') AS r, count(*) AS n, "
+        "bool_and(quarantine_rule_version = 'r8-v1') AS versioned FROM mp_ticks GROUP BY 1"
+    )
+    assert {r["r"] for r in rows} <= {"clean", "future", "orphan_route", "pre_1970"}
+    assert all(r["versioned"] for r in rows)
+    assert sum(r["n"] for r in rows if r["r"] != "clean") > 0
 ```
+
+Plan 4's `0009` moves `mp_ticks` to `internal.mp_ticks`; that plan updates these two queries in the same commit.
 
 - [ ] **Step 4: Run**
 
@@ -2009,8 +2320,29 @@ git commit -m "feat(pipelines): R8 mp_ticks quarantine relative to capture day a
 - Modify: `backend/pyproject.toml`
 
 **Interfaces:**
-- Consumes: Tasks 1, 3; `internal.mp_tick_aggregates` (Task 2); the private export's tables `route_tick_totals(mp_route_id, total_ticks, last_page, pages_fetched, complete, scraped_at)` and `route_tick_monthly(mp_route_id, year_month, style, n)` (read from `~/Developer/safeascent-private/mp_ticks/src/mp_ticks/db.py` on 2026-09-28; styles `lead|follow|tr|solo|unknown`).
-- Produces: `read_export(path: Path) -> tuple[list[RouteTotal], list[MonthlyRow]]`, `validate(totals, monthly, *, known_routes: set[int], today: date) -> tuple[list[AggregateRow], ValidationReport, dict[str, int]]`, `async load(conn, rows: list[AggregateRow], *, run_id: uuid.UUID, scrape_run_id: str) -> int`, `async main(path: Path, *, today: date, max_quarantine_share: float, dry_run: bool) -> dict[str, object]`, CLI `python -m app.pipelines.mp_tick_aggregates --sqlite PATH [--dry-run] [--max-quarantine-share 0.10]`. `[assumes D3]`
+- Consumes:
+  - Tasks 1 and 3; `internal.mp_tick_aggregates` (Task 2).
+  - The private export's table `route_tick_totals(mp_route_id, total_ticks, last_page, pages_fetched, complete, scraped_at)`, read from `~/Developer/safeascent-private/mp_ticks/src/mp_ticks/db.py` on 2026-09-28. `total_ticks` is the total MP reported for the route at scrape time.
+  - The private export's table `route_tick_monthly(mp_route_id, year_month, style, n)`, with styles `lead|follow|tr|solo|unknown`.
+- Produces:
+  - `is_ice_mixed(route_type: str | None) -> bool`
+  - `read_export(path: Path) -> tuple[list[RouteTotal], list[MonthlyRow]]`
+  - `validate(totals, monthly, *, route_types: dict[int, str | None], existing: dict[tuple[int, str, str], int], today: date) -> tuple[list[AggregateRow], ValidationReport, dict[str, int]]`
+  - `async existing_counts(conn, route_ids: set[int]) -> dict[tuple[int, str, str], int]`
+  - `async load(conn, rows: list[AggregateRow], *, run_id: uuid.UUID, scrape_run_id: str) -> int` (INSERT … ON CONFLICT DO NOTHING)
+  - `async main(path: Path, *, today: date, max_quarantine_share: float, dry_run: bool) -> dict[str, object]`
+  - CLI `python -m app.pipelines.mp_tick_aggregates --sqlite PATH [--dry-run] [--max-quarantine-share 0.10]`
+  - `[assumes D3]`
+
+Semantics:
+- **Row kinds.** `period = 'total', style = 'all'` is **MP's reported total** for the route at scrape time, not a sum of our accepted months. Monthly rows are stored only for closed, complete months.
+- **Month cut-off.** Each route's cut-off is `min(today, scraped_at)`.
+  - A month at or after the route's scrape month is `partial_month`. The scrape could not have seen the whole month, and a later reload of the same file never changes that.
+  - Months after the current UTC month are `future_month`.
+- **Scope.** Only routes whose `mp_routes.type` names ice or mixed are accepted; others are `not_ice_mixed` (P2-14's scope).
+- **INSERT-only.** `ingest` holds INSERT, not UPDATE (spec).
+  - A row already stored with the same count counts as `already_loaded`.
+  - A row already stored with a different count (a later scrape saw late-logged ticks, or MP's total grew) is quarantined `count_changed` with both values. The drift is measured and never silently applied.
 
 - [ ] **Step 1: Failing tests**
 
@@ -2027,15 +2359,23 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 import app.pipelines.mp_tick_aggregates as loader
-from app.pipelines.mp_tick_aggregates import main, read_export, validate
+from app.pipelines.mp_tick_aggregates import is_ice_mixed, main, read_export, validate
 from tests.pgtest import migrated_db, requires_pg, sa_url
 
 TODAY = date(2026, 9, 28)
-R1, R2, R3 = 900000001, 900000002, 900000003
+R1, R2, R3, R4 = 900000001, 900000002, 900000003, 900000004
+SCRAPED = "2026-09-20T00:00:00+00:00"
+ICE = {R1: "Ice", R2: "Ice, Mixed", R4: "Trad"}
 
 
-def _export(tmp_path: Path, monthly: list[tuple[int, str, str, int]], totals: list[tuple[int, int, int]]) -> Path:
-    path = tmp_path / "ticks.sqlite"
+def _export(
+    tmp_path: Path,
+    monthly: list[tuple[int, str, str, int]],
+    totals: list[tuple[int, int, int]],
+    scraped_at: str = SCRAPED,
+    name: str = "ticks.sqlite",
+) -> Path:
+    path = tmp_path / name
     db = sqlite3.connect(path)
     db.executescript(
         "CREATE TABLE route_tick_totals (mp_route_id INTEGER PRIMARY KEY, total_ticks INTEGER NOT NULL, "
@@ -2045,11 +2385,15 @@ def _export(tmp_path: Path, monthly: list[tuple[int, str, str, int]], totals: li
     )
     db.executemany("INSERT INTO route_tick_monthly VALUES (?, ?, ?, ?)", monthly)
     db.executemany(
-        "INSERT INTO route_tick_totals VALUES (?, ?, 1, 1, ?, '2026-09-20T00:00:00+00:00')", totals
+        "INSERT INTO route_tick_totals VALUES (?, ?, 1, 1, ?, ?)", [(r, t, c, scraped_at) for r, t, c in totals]
     )
     db.commit()
     db.close()
     return path
+
+
+def _keys(rows):
+    return {(r.mp_route_id, r.period, r.style, r.tick_count) for r in rows}
 
 
 def test_loader_imports_no_network_client():
@@ -2059,15 +2403,21 @@ def test_loader_imports_no_network_client():
     assert not imported & {"httpx", "requests", "urllib", "aiohttp", "http", "socket"}
 
 
-def test_current_month_is_quarantined_not_dropped(tmp_path):
+def test_ice_mixed_detection():
+    assert is_ice_mixed("Ice") and is_ice_mixed("Trad, Mixed, Alpine") and is_ice_mixed("ice")
+    assert not is_ice_mixed("Trad") and not is_ice_mixed(None) and not is_ice_mixed("Sport, Alpine")
+
+
+def test_scrape_month_and_later_are_partial_not_dropped(tmp_path):
     path = _export(tmp_path, [(R1, "2026-09", "lead", 2), (R1, "2026-01", "lead", 3)], [(R1, 5, 1)])
     totals, monthly = read_export(path)
-    rows, report, _ = validate(totals, monthly, known_routes={R1}, today=TODAY)
-    assert report.quarantined == {"month_not_closed": 1}
-    assert {(r.period, r.style, r.tick_count) for r in rows} == {("2026-01", "lead", 3), ("total", "all", 3)}
+    for today in (TODAY, date(2026, 10, 5), date(2027, 3, 1)):
+        rows, report, _ = validate(totals, monthly, route_types=ICE, existing={}, today=today)
+        assert report.quarantined == {"partial_month": 1}
+        assert _keys(rows) == {(R1, "2026-01", "lead", 3), (R1, "total", "all", 5)}
 
 
-def test_future_months_years_bad_values_and_incomplete_routes_are_quarantined(tmp_path):
+def test_future_months_bad_values_scope_and_incomplete_routes_are_quarantined(tmp_path):
     path = _export(
         tmp_path,
         [
@@ -2079,68 +2429,121 @@ def test_future_months_years_bad_values_and_incomplete_routes_are_quarantined(tm
             (R1, "2025-02", "bogus", 1),
             (R2, "2025-02", "lead", 4),
             (R3, "2025-02", "lead", 4),
+            (R4, "2025-02", "lead", 1),
         ],
-        [(R1, 9, 1), (R2, 4, 0), (R3, 4, 1)],
+        [(R1, 9, 1), (R2, 4, 0), (R3, 4, 1), (R4, 1, 1)],
     )
     totals, monthly = read_export(path)
-    rows, report, stats = validate(totals, monthly, known_routes={R1, R2}, today=TODAY)
+    rows, report, stats = validate(totals, monthly, route_types=ICE, existing={}, today=TODAY)
     assert report.quarantined == {
         "future_month": 2,
         "pre_1970": 1,
         "bad_year_month": 1,
         "nonpositive_count": 1,
         "bad_style": 1,
-        "route_incomplete": 1,
-        "unknown_route": 1,
+        "route_incomplete": 2,
+        "unknown_route": 2,
+        "not_ice_mixed": 2,
     }
+    assert _keys(rows) == {(R1, "total", "all", 9)}
+    assert stats == {
+        "routes": 4,
+        "mp_reported_total": 18,
+        "accepted_month_ticks": 0,
+        "already_loaded": 0,
+        "total_mismatch_routes": 1,
+    }
+
+
+def test_a_scrape_stamped_after_today_is_quarantined(tmp_path):
+    path = _export(tmp_path, [(R1, "2025-01", "lead", 3)], [(R1, 3, 1)], scraped_at="2026-10-02T00:00:00+00:00")
+    totals, monthly = read_export(path)
+    rows, report, _ = validate(totals, monthly, route_types=ICE, existing={}, today=TODAY)
     assert rows == []
-    assert stats == {"routes": 3, "mp_reported_total": 17, "accepted_ticks": 0}
+    assert report.quarantined == {"scrape_after_today": 2}
+
+
+def test_stored_rows_are_never_overwritten(tmp_path):
+    path = _export(tmp_path, [(R1, "2025-01", "lead", 4), (R1, "2025-03", "lead", 1)], [(R1, 7, 1)])
+    totals, monthly = read_export(path)
+    existing = {(R1, "2025-01", "lead"): 3, (R1, "total", "all"): 7}
+    rows, report, stats = validate(totals, monthly, route_types=ICE, existing=existing, today=TODAY)
+    assert _keys(rows) == {(R1, "2025-03", "lead", 1)}
+    assert report.quarantined == {"count_changed": 1}
+    assert stats["already_loaded"] == 1
+
+
+def _seed_ice_route() -> str:
+    return (
+        "INSERT INTO mp_locations (mp_id, name) VALUES (900000100, 'Fixture Area');"
+        f"INSERT INTO mp_routes (mp_route_id, name, location_id, type) VALUES ({R1}, 'Fixture Ice', 900000100, 'Ice');"
+    )
+
+
+async def _stored(url: str) -> list[tuple[str, str, int]]:
+    engine = create_async_engine(url)
+    try:
+        async with engine.connect() as conn:
+            result = await conn.execute(text(
+                "SELECT period, style, tick_count FROM internal.mp_tick_aggregates ORDER BY period, style"))
+            return [tuple(r) for r in result.all()]
+    finally:
+        await engine.dispose()
 
 
 @requires_pg
 def test_second_identical_load_is_a_noop(tmp_path, monkeypatch):
     path = _export(tmp_path, [(R1, "2025-01", "lead", 3), (R1, "2025-02", "follow", 2)], [(R1, 5, 1)])
-    seed = (
-        f"INSERT INTO mp_locations (mp_id, name) VALUES (900000100, 'Fixture Area');"
-        f"INSERT INTO mp_routes (mp_route_id, name, location_id, type) VALUES ({R1}, 'Fixture Ice', 900000100, 'Ice');"
-    )
-    with migrated_db(seed_sql=seed) as name:
+    with migrated_db(seed_sql=_seed_ice_route()) as name:
         url = sa_url(name)
-
-        def engine_factory():
-            return create_async_engine(url)
-
-        monkeypatch.setattr(loader, "ingest_engine", engine_factory)
+        monkeypatch.setattr(loader, "ingest_engine", lambda: create_async_engine(url))
         first = asyncio.run(main(path, today=TODAY, max_quarantine_share=0.1, dry_run=False))
         second = asyncio.run(main(path, today=TODAY, max_quarantine_share=0.1, dry_run=False))
         assert first["status"] == "ok" and first["rows_upserted"] == 3
         assert second["status"] == "noop"
+        assert asyncio.run(_stored(url)) == [("2025-01", "lead", 3), ("2025-02", "follow", 2), ("total", "all", 5)]
 
-        async def check() -> list[tuple[str, str, int]]:
-            engine = create_async_engine(url)
-            try:
-                async with engine.connect() as conn:
-                    result = await conn.execute(text(
-                        "SELECT period, style, tick_count FROM internal.mp_tick_aggregates ORDER BY period, style"))
-                    return [tuple(r) for r in result.all()]
-            finally:
-                await engine.dispose()
 
-        assert asyncio.run(check()) == [("2025-01", "lead", 3), ("2025-02", "follow", 2), ("total", "all", 5)]
+@requires_pg
+def test_reload_in_a_later_month_is_still_a_noop(tmp_path, monkeypatch):
+    path = _export(tmp_path, [(R1, "2025-01", "lead", 3), (R1, "2026-09", "lead", 1)], [(R1, 4, 1)])
+    with migrated_db(seed_sql=_seed_ice_route()) as name:
+        url = sa_url(name)
+        monkeypatch.setattr(loader, "ingest_engine", lambda: create_async_engine(url))
+        first = asyncio.run(main(path, today=TODAY, max_quarantine_share=0.5, dry_run=False))
+        later = asyncio.run(main(path, today=date(2026, 11, 2), max_quarantine_share=0.5, dry_run=False))
+        assert first["status"] == "ok"
+        assert later["status"] == "noop"
+        assert ("2026-09", "lead", 1) not in asyncio.run(_stored(url))
+
+
+@requires_pg
+def test_changed_counts_are_quarantined_never_overwritten(tmp_path, monkeypatch):
+    first_path = _export(tmp_path, [(R1, "2025-01", "lead", 3)], [(R1, 3, 1)], name="a.sqlite")
+    second_path = _export(
+        tmp_path, [(R1, "2025-01", "lead", 4), (R1, "2025-03", "lead", 1)], [(R1, 5, 1)],
+        scraped_at="2026-09-25T00:00:00+00:00", name="b.sqlite",
+    )
+    with migrated_db(seed_sql=_seed_ice_route()) as name:
+        url = sa_url(name)
+        monkeypatch.setattr(loader, "ingest_engine", lambda: create_async_engine(url))
+        asyncio.run(main(first_path, today=TODAY, max_quarantine_share=0.9, dry_run=False))
+        second = asyncio.run(main(second_path, today=TODAY, max_quarantine_share=0.9, dry_run=False))
+        assert second["status"] == "ok" and second["rows_upserted"] == 1
+        assert second["report"]["quarantined"] == {"count_changed": 2}
+        assert asyncio.run(_stored(url)) == [("2025-01", "lead", 3), ("2025-03", "lead", 1), ("total", "all", 3)]
 
 
 @requires_pg
 def test_heavy_quarantine_rejects_the_batch_and_writes_nothing(tmp_path, monkeypatch):
     path = _export(tmp_path, [(R1, "2026-10", "lead", 1), (R1, "2025-01", "lead", 1)], [(R1, 2, 1)])
-    seed = (
-        "INSERT INTO mp_locations (mp_id, name) VALUES (900000100, 'Fixture Area');"
-        f"INSERT INTO mp_routes (mp_route_id, name, location_id, type) VALUES ({R1}, 'Fixture Ice', 900000100, 'Ice');"
-    )
-    with migrated_db(seed_sql=seed) as name:
-        monkeypatch.setattr(loader, "ingest_engine", lambda: create_async_engine(sa_url(name)))
+    with migrated_db(seed_sql=_seed_ice_route()) as name:
+        url = sa_url(name)
+        monkeypatch.setattr(loader, "ingest_engine", lambda: create_async_engine(url))
         result = asyncio.run(main(path, today=TODAY, max_quarantine_share=0.1, dry_run=False))
         assert result["status"] == "rejected"
         assert result["rows_upserted"] == 0
+        assert asyncio.run(_stored(url)) == []
 ```
 
 - [ ] **Step 2: Run to verify failure**
@@ -2156,8 +2559,12 @@ Expected: FAIL (`ModuleNotFoundError`).
 """Load the privately scraped MP ice/mixed tick aggregates (P2-14) into
 internal.mp_tick_aggregates. Reads a local SQLite export only; it never fetches anything.
 
-Months are the finest grain in the export, so "after today" is enforced per month: later
-months are future, and the current month is held back until it closes (D3).
+Months are the finest grain in the export, so completeness is judged per month (D3): a month
+at or after the route's scrape month (cut-off min(today, scraped_at)) is partial for this
+export forever, and months after the current UTC month are future. The outcome depends only
+on the file, so reloading it in a later month is a no-op rather than a way to accept a
+partial month. The table is INSERT-only: a stored count is never overwritten, and a
+different count from a later scrape is quarantined with both values.
 """
 
 from __future__ import annotations
@@ -2169,10 +2576,10 @@ import re
 import sqlite3
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.pipelines.db import ingest_engine
@@ -2182,6 +2589,7 @@ from app.pipelines.validate import ValidationReport, batch_gate
 SOURCE = "mp_tick_aggregates"
 STYLES = frozenset({"lead", "follow", "tr", "solo", "unknown"})
 YEAR_MONTH = re.compile(r"^(\d{4})-(0[1-9]|1[0-2])$")
+ICE_MIXED = re.compile(r"\b(ice|mixed)\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -2209,6 +2617,10 @@ class AggregateRow:
     scraped_at: datetime
 
 
+def is_ice_mixed(route_type: str | None) -> bool:
+    return route_type is not None and ICE_MIXED.search(route_type) is not None
+
+
 def read_export(path: Path) -> tuple[list[RouteTotal], list[MonthlyRow]]:
     db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
@@ -2225,52 +2637,117 @@ def read_export(path: Path) -> tuple[list[RouteTotal], list[MonthlyRow]]:
     return totals, monthly
 
 
-def _month_problem(year_month: str, today: date) -> str | None:
+def _route_problem(route_id: int, total: RouteTotal | None, route_types: dict[int, str | None], today: date) -> str | None:
+    if route_id not in route_types:
+        return "unknown_route"
+    if not is_ice_mixed(route_types[route_id]):
+        return "not_ice_mixed"
+    if total is None or not total.complete:
+        return "route_incomplete"
+    if total.scraped_at.tzinfo is None:
+        return "scrape_time_unzoned"
+    if total.scraped_at.astimezone(UTC).date() > today:
+        return "scrape_after_today"
+    return None
+
+
+def _month_problem(year_month: str, *, today: date, cutoff: date) -> str | None:
     match = YEAR_MONTH.match(year_month)
     if match is None:
         return "bad_year_month"
     year, month = int(match.group(1)), int(match.group(2))
-    if year > today.year or (year, month) > (today.year, today.month):
+    if (year, month) > (today.year, today.month):
         return "future_month"
-    if (year, month) == (today.year, today.month):
-        return "month_not_closed"
+    if (year, month) >= (cutoff.year, cutoff.month):
+        return "partial_month"
     if year < 1970:
         return "pre_1970"
     return None
 
 
+def _accept_or_compare(
+    row: AggregateRow,
+    ref: str,
+    existing: dict[tuple[int, str, str], int],
+    report: ValidationReport,
+    accepted: list[AggregateRow],
+    stats: dict[str, int],
+) -> bool:
+    stored = existing.get((row.mp_route_id, row.period, row.style))
+    if stored is not None and stored != row.tick_count:
+        report.quarantine(ref, "count_changed", stored=stored, exported=row.tick_count)
+        return False
+    report.accept()
+    if stored is None:
+        accepted.append(row)
+    else:
+        stats["already_loaded"] += 1
+    return True
+
+
 def validate(
-    totals: list[RouteTotal], monthly: list[MonthlyRow], *, known_routes: set[int], today: date
+    totals: list[RouteTotal],
+    monthly: list[MonthlyRow],
+    *,
+    route_types: dict[int, str | None],
+    existing: dict[tuple[int, str, str], int],
+    today: date,
 ) -> tuple[list[AggregateRow], ValidationReport, dict[str, int]]:
     by_route = {t.mp_route_id: t for t in totals}
     report = ValidationReport(SOURCE)
     accepted: list[AggregateRow] = []
-    route_sums: dict[int, int] = {}
+    stats = {
+        "routes": len(by_route),
+        "mp_reported_total": sum(t.total_ticks for t in totals),
+        "accepted_month_ticks": 0,
+        "already_loaded": 0,
+        "total_mismatch_routes": 0,
+    }
+    raw_sums: dict[int, int] = {}
     for row in monthly:
+        raw_sums[row.mp_route_id] = raw_sums.get(row.mp_route_id, 0) + row.n
         ref = f"{row.mp_route_id}:{row.year_month}:{row.style}"
         total = by_route.get(row.mp_route_id)
-        if row.mp_route_id not in known_routes:
-            report.quarantine(ref, "unknown_route")
-        elif total is None or not total.complete:
-            report.quarantine(ref, "route_incomplete")
-        elif (problem := _month_problem(row.year_month, today)) is not None:
+        if (problem := _route_problem(row.mp_route_id, total, route_types, today)) is not None:
+            report.quarantine(ref, problem)
+            continue
+        assert total is not None
+        cutoff = min(today, total.scraped_at.astimezone(UTC).date())
+        if (problem := _month_problem(row.year_month, today=today, cutoff=cutoff)) is not None:
             report.quarantine(ref, problem, n=row.n)
         elif row.style not in STYLES:
             report.quarantine(ref, "bad_style", style=row.style)
         elif row.n <= 0:
             report.quarantine(ref, "nonpositive_count", n=row.n)
         else:
-            report.accept()
-            accepted.append(AggregateRow(row.mp_route_id, row.year_month, row.style, row.n, total.scraped_at))
-            route_sums[row.mp_route_id] = route_sums.get(row.mp_route_id, 0) + row.n
-    for route_id, n in sorted(route_sums.items()):
-        accepted.append(AggregateRow(route_id, "total", "all", n, by_route[route_id].scraped_at))
-    stats = {
-        "routes": len(by_route),
-        "mp_reported_total": sum(t.total_ticks for t in totals),
-        "accepted_ticks": sum(route_sums.values()),
-    }
+            candidate = AggregateRow(row.mp_route_id, row.year_month, row.style, row.n, total.scraped_at)
+            if _accept_or_compare(candidate, ref, existing, report, accepted, stats):
+                stats["accepted_month_ticks"] += row.n
+    for total in totals:
+        ref = f"{total.mp_route_id}:total"
+        if (problem := _route_problem(total.mp_route_id, total, route_types, today)) is not None:
+            report.quarantine(ref, problem)
+        elif total.total_ticks < 0:
+            report.quarantine(ref, "bad_total", total=total.total_ticks)
+        else:
+            candidate = AggregateRow(total.mp_route_id, "total", "all", total.total_ticks, total.scraped_at)
+            _accept_or_compare(candidate, ref, existing, report, accepted, stats)
+            if raw_sums.get(total.mp_route_id, 0) != total.total_ticks:
+                stats["total_mismatch_routes"] += 1
     return accepted, report, stats
+
+
+async def existing_counts(conn: AsyncConnection, route_ids: set[int]) -> dict[tuple[int, str, str], int]:
+    if not route_ids:
+        return {}
+    result = await conn.execute(
+        text(
+            "SELECT mp_route_id, period, style, tick_count FROM internal.mp_tick_aggregates "
+            "WHERE mp_route_id IN :ids"
+        ).bindparams(bindparam("ids", expanding=True)),
+        {"ids": sorted(route_ids)},
+    )
+    return {(int(r), str(p), str(s)): int(n) for r, p, s, n in result.all()}
 
 
 async def load(conn: AsyncConnection, rows: list[AggregateRow], *, run_id: uuid.UUID, scrape_run_id: str) -> int:
@@ -2281,8 +2758,7 @@ async def load(conn: AsyncConnection, rows: list[AggregateRow], *, run_id: uuid.
             "INSERT INTO internal.mp_tick_aggregates "
             "(mp_route_id, period, style, tick_count, scrape_run_id, scraped_at, loaded_run_id) "
             "VALUES (:mp_route_id, :period, :style, :tick_count, :scrape_run_id, :scraped_at, :run_id) "
-            "ON CONFLICT (mp_route_id, period, style) DO UPDATE SET tick_count = EXCLUDED.tick_count, "
-            "scrape_run_id = EXCLUDED.scrape_run_id, scraped_at = EXCLUDED.scraped_at, loaded_run_id = EXCLUDED.loaded_run_id"
+            "ON CONFLICT (mp_route_id, period, style) DO NOTHING"
         ),
         [
             {
@@ -2303,17 +2779,20 @@ async def load(conn: AsyncConnection, rows: list[AggregateRow], *, run_id: uuid.
 async def main(path: Path, *, today: date, max_quarantine_share: float, dry_run: bool) -> dict[str, object]:
     totals, monthly = read_export(path)
     sha = sha256_rows(
-        [(t.mp_route_id, t.total_ticks, t.complete) for t in totals]
+        [(t.mp_route_id, t.total_ticks, t.complete, t.scraped_at.isoformat()) for t in totals]
         + [(m.mp_route_id, m.year_month, m.style, m.n) for m in monthly]
-        + [("today-month", today.year, today.month)]
     )
     engine = ingest_engine()
     try:
         async with engine.begin() as conn:
             if await find_completed(conn, source=SOURCE, window_start=None, window_end=None, content_sha256=sha):
                 return {"status": "noop", "rows_upserted": 0}
-            known = {int(r) for (r,) in (await conn.execute(text("SELECT mp_route_id FROM mp_routes"))).all()}
-            rows, report, stats = validate(totals, monthly, known_routes=known, today=today)
+            route_types = {
+                int(r): (str(t) if t is not None else None)
+                for r, t in (await conn.execute(text("SELECT mp_route_id, type FROM mp_routes"))).all()
+            }
+            existing = await existing_counts(conn, {t.mp_route_id for t in totals})
+            rows, report, stats = validate(totals, monthly, route_types=route_types, existing=existing, today=today)
             problems = batch_gate(report, previous_rows_in=None, count_tolerance=1.0, max_quarantine_share=max_quarantine_share)
             if dry_run:
                 return {"status": "dry_run", "report": report.summary(), "stats": stats, "problems": problems}
@@ -2322,9 +2801,9 @@ async def main(path: Path, *, today: date, max_quarantine_share: float, dry_run:
             if problems:
                 await finish_run(conn, run_id, status="rejected", report=report, rows_upserted=0, problems=problems)
                 return {"status": "rejected", "rows_upserted": 0, "problems": problems, "report": report.summary()}
-            upserted = await load(conn, rows, run_id=run_id, scrape_run_id=f"sqlite:{sha[:12]}")
-            await finish_run(conn, run_id, status="ok", report=report, rows_upserted=upserted)
-            return {"status": "ok", "rows_upserted": upserted, "report": report.summary(), "stats": stats}
+            inserted = await load(conn, rows, run_id=run_id, scrape_run_id=f"sqlite:{sha[:12]}")
+            await finish_run(conn, run_id, status="ok", report=report, rows_upserted=inserted)
+            return {"status": "ok", "rows_upserted": inserted, "report": report.summary(), "stats": stats}
     finally:
         await engine.dispose()
 
@@ -2347,7 +2826,17 @@ if __name__ == "__main__":
     cli()
 ```
 
-The quarantined current-month rows are written to `internal.ingest_quarantine` in the same transaction as a rejected run's log row, so a rejection still leaves its evidence; the `ON CONFLICT` upsert is why `ingest` holds UPDATE on this table (a reload after a month closes replaces counts).
+A rejected run's quarantine rows are written in the same transaction as its log row, so a rejection still leaves its evidence. `ingest` needs only SELECT and INSERT on this table: accepted months are closed, so nothing is ever updated.
+
+In `test_heavy_quarantine_rejects_the_batch_and_writes_nothing`:
+- `2026-10` is `future_month`.
+- `2025-01` and the total are accepted.
+- That makes one quarantined row in three, over the 0.1 gate, so the batch is rejected.
+
+`test_changed_counts_are_quarantined_never_overwritten`:
+- The second export changes `2025-01` (3 → 4) and the total (3 → 5), so both are `count_changed`.
+- Only the new `2025-03` row is inserted.
+- The quarantine share is 2 of 3, under that test's 0.9 gate.
 
 Append `"app.pipelines.mp_tick_aggregates"` to the first strict mypy block.
 
@@ -2360,7 +2849,7 @@ Expected: PASS; the guard prints no violations.
 
 ```bash
 git add backend/app/pipelines/mp_tick_aggregates.py backend/tests/test_mp_tick_aggregates.py backend/pyproject.toml
-git commit -m "feat(pipelines): load private MP ice/mixed tick aggregates with month-level future checks"
+git commit -m "feat(pipelines): load private MP ice/mixed tick aggregates, partial months held, INSERT-only"
 ```
 
 ---
@@ -2375,12 +2864,12 @@ git commit -m "feat(pipelines): load private MP ice/mixed tick aggregates with m
 `CLAUDE.md`, "Database and migrations": replace "`ingest`/`trainer`/`triage_worker` land later." with:
 
 ```
-`ingest` (Phase 2 data jobs: writes only the tables listed in `backend/db/roles/verify_roles_phase2.sql`) and `trainer` (read-only until Phase 3) are created by `create_roles_phase2.sql`, which also creates schema `internal` (owned by `migrator`; `app` has no access). After every Phase 2 migration the owner runs `grants_phase2.sql` then `verify_roles_phase2.sql`. `triage_worker` lands in Phase 4.
+`ingest` (Phase 2 data jobs: writes only the tables listed in `backend/db/roles/verify_roles_phase2.sql`; its URL must verify TLS — `app.pipelines.db` refuses anything weaker than verify-full on a remote host) and `trainer` (NOLOGIN, no grants until Phase 3) are created by `create_roles_phase2.sql`, which also creates schema `internal` (owned by `migrator`; `app` has no access). After every Phase 2 migration the owner runs `grants_phase2.sql` then `verify_roles_phase2.sql`. `triage_worker` lands in Phase 4.
 ```
 
 Add to "Commands": `` - `uv run python -m app.pipelines.<job>`: Phase 2 data jobs; connect as `ingest` via `INGEST_DATABASE_URL` and refuse without it. `VERIFY_DATABASE_URL=<analyst url> uv run pytest -m db tests/verify`: read-only acceptance checks. ``
 
-`DEPLOYMENT.md`, "Database, roles, and migrations": add a bullet: "Phase 2 roles and schema: `create_roles_phase2.sql` (owner, once), migrations as `migrator`, then `grants_phase2.sql` and `verify_roles_phase2.sql` after each Phase 2 migration. Runbook: `docs/superpowers/plans/2026-09-28-phase2a-foundations.md` Tasks 8–10." Revisions list gains `0004_phase2a_foundation`.
+`DEPLOYMENT.md`, "Database, roles, and migrations": add a bullet: "Phase 2 roles and schema: `create_roles_phase2.sql` (owner, once), migrations as `migrator`, then `grants_phase2.sql` and `verify_roles_phase2.sql` after each Phase 2 migration. Runbook: `docs/superpowers/plans/2026-09-28-phase2a-foundations.md` Tasks 8–10. Owner/analyst `psql` URLs always use `sslmode=verify-full&sslrootcert=system`." Revisions list gains `0004_phase2a_foundation`.
 
 `data/DATABASE_STRUCTURE.md`: add sections for `source_ingest_log` (public), and a short "Schema `internal`" section listing `accidents_raw`, `accident_revisions`, `ingest_quarantine`, `mp_tick_aggregates` with one-line purposes; add `quarantine_reason`/`quarantine_rule_version` to a new `mp_ticks` subsection; note `mp_locations` has no `elevation_ft` column (the table above is stale) — correct that row.
 
@@ -2389,11 +2878,11 @@ Add to "Commands": `` - `uv run python -m app.pipelines.<job>`: Phase 2 data job
 ```
 ### Phase 2a foundations (PR 2a-0) — 2026-09-28
 
-- New `app/pipelines/` package: boundary validation with row quarantine and batch gates (`validate.py`), the packed 0.1° grid key (`grid.py`), the ingest run log (`ingest_log.py`), and an `ingest`-role engine (`INGEST_DATABASE_URL`).
-- Migration `0004_phase2a_foundation`: schema `internal`; frozen `internal.accidents_raw`; Phase 2a accident columns with enum checks; `internal.accident_revisions`; `source_ingest_log`; `internal.ingest_quarantine`; `internal.mp_tick_aggregates`; `mp_ticks.quarantine_reason`. Downgrade refuses while revisions, aggregates or run logs exist.
-- Roles `ingest` and `trainer` (SQL + SCRAM verifiers only), cumulative `grants_phase2.sql`, exact-privilege `verify_roles_phase2.sql`.
-- R8: `mp_ticks` rows flagged `future` (after the day they were captured or after today, whichever is earlier), `orphan_route`, or `pre_1970`; nothing deleted.
-- Loader for the privately produced MP ice/mixed tick aggregates: reads a local SQLite export, quarantines future and not-yet-closed months, and is a logged no-op on a repeat load.
+- New `app/pipelines/` package: boundary validation with row quarantine and batch gates (`validate.py`), the packed 0.1° grid key (`grid.py`), the ingest run log (`ingest_log.py`), and an `ingest`-role engine (`INGEST_DATABASE_URL`) that refuses weaker-than-verify-full TLS on a remote host.
+- Migration `0004_phase2a_foundation`: immutable SQL function `grid_bucket_key()` (the one SQL form of the grid key); schema `internal`; frozen `internal.accidents_raw`; Phase 2a accident columns with enum checks; `internal.accident_revisions`; `source_ingest_log`; `internal.ingest_quarantine`; `internal.mp_tick_aggregates`; `mp_ticks.quarantine_reason`. Downgrade refuses while revisions, aggregates or run logs exist.
+- Role `ingest` (SQL + SCRAM verifier only) and a NOLOGIN, grant-less `trainer` placeholder; cumulative `grants_phase2.sql`, exact-privilege `verify_roles_phase2.sql`.
+- R8: `mp_ticks` rows flagged `future` (after the day after they were captured, or after today, whichever is earlier), `orphan_route`, or `pre_1970`; nothing deleted.
+- Loader for the privately produced MP ice/mixed tick aggregates: reads a local SQLite export, accepts ice/mixed routes only, holds back the scrape month and later as `partial_month`, stores MP's reported total, never overwrites a stored count (`count_changed` is quarantined), and is a logged no-op on a repeat load.
 ```
 
 - [ ] **Step 2: Full verification**
@@ -2416,9 +2905,26 @@ Runs from `/Users/sebastianfrazier/Developer/SafeAscent/backend` on `main` after
 
 **Files (gitignored or outside the repo, never committed):** `backend/.env.owner`, `backend/.env.analyst`, `~/Developer/safeascent-private/backups/pre-2a/*.dump`.
 
-- [ ] **Step 1 (owner/agent): Tools and the `split_pg_url` helper**
+- [ ] **Step 1 (owner/agent): Tools, `split_pg_url`, and the `verify_full_url` helper**
 
-Use Phase 1 Plan B Task 8 Step 1 verbatim (`psql` 16+ from `libpq`, and the `split_pg_url` shell function). Also `pg_dump --version` must report 16+.
+Use Phase 1 Plan B Task 8 Step 1 verbatim (`psql` 16+ from `libpq`, and the `split_pg_url` shell function). Also `pg_dump --version` and `pg_restore --version` must report 16+ (`sslrootcert=system` needs libpq 16).
+
+`split_pg_url` keeps whatever TLS query the URL carries, and Neon's Console URLs say `sslmode=require` (encrypts without checking the certificate). Define this helper in the same shell and call it right after every `split_pg_url` in Phase 2 runbooks. It rewrites `PG_URL_NOPASS` to plain `postgresql://` with `sslmode=verify-full&sslrootcert=system` (the OS trust store), dropping any `ssl`/`sslmode`/`sslrootcert` it had:
+
+```bash
+verify_full_url() {
+  PG_URL_NOPASS="$(uv run python3 -c '
+import sys
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+u = urlsplit(sys.argv[1])
+query = [(k, v) for k, v in parse_qsl(u.query) if k not in ("ssl", "sslmode", "sslrootcert")]
+query += [("sslmode", "verify-full"), ("sslrootcert", "system")]
+print(urlunsplit(("postgresql", u.netloc, u.path, urlencode(query), u.fragment)))
+' "$PG_URL_NOPASS")"
+}
+```
+
+Check once: `split_pg_url "$OWNER_DATABASE_URL"; verify_full_url; psql "$PG_URL_NOPASS" -XAt -c "SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()"` (inside the usual `set -a; . ./.env.owner` subshell) prints `t`. A certificate error here means the OS trust store is missing the issuer; stop and fix that. Never fall back to `require`.
 
 - [ ] **Step 2 (owner): Create Neon branch `pre-2a` from `main`** (Console → Branches → New branch, name `pre-2a`, current data). It is the point-in-time fallback; do not delete it until plan 3 lands.
 
@@ -2428,7 +2934,7 @@ Use Phase 1 Plan B Task 8 Step 1 verbatim (`psql` 16+ from `libpq`, and the `spl
 cd /Users/sebastianfrazier/Developer/SafeAscent/backend
 mkdir -p ~/Developer/safeascent-private/backups/pre-2a && chmod 700 ~/Developer/safeascent-private/backups/pre-2a
 ( set -a; . ./.env.owner; set +a
-  split_pg_url "$OWNER_DATABASE_URL"
+  split_pg_url "$OWNER_DATABASE_URL"; verify_full_url
   for t in accidents weather mp_ticks; do
     pg_dump "$PG_URL_NOPASS" -Fc --no-owner --no-privileges -t "public.$t" \
       -f ~/Developer/safeascent-private/backups/pre-2a/$t.dump
@@ -2440,48 +2946,57 @@ Expected: three non-empty `.dump` files. They contain accident narratives and cl
 
 - [ ] **Step 4 (owner/agent): Restore rehearsal** (spec 2a-0 acceptance)
 
-In the Console create a throwaway branch `restore-drill` from `main`. Then:
+The dumps are restored unmodified into a scratch database, `restore_drill`, on a throwaway branch.
+
+Why not rewrite the schema name on the fly: a `sed s/public\./drill./` rewrite would also rewrite type references such as `public.geography`, which breaks the restore. It would silently alter any narrative text containing "public.". A separate database needs no rewriting at all.
+
+In the Console, create a throwaway branch `restore-drill` from `main`. Then:
 
 ```bash
+cd /Users/sebastianfrazier/Developer/SafeAscent/backend
 BRANCH_HOST='<restore-drill direct host>'
 ( set -a; . ./.env.owner; set +a
   URL="$(printf '%s' "$OWNER_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")"
-  split_pg_url "$URL"
-  psql "$PG_URL_NOPASS" -X -q -c "CREATE SCHEMA drill"
+  split_pg_url "$URL"; verify_full_url
+  SRC="$PG_URL_NOPASS"
+  DRILL="$(printf '%s' "$SRC" | sed -E 's#^(postgresql://[^/]+)/[^?]*#\1/restore_drill#')"
+  psql "$SRC" -X -q -v ON_ERROR_STOP=1 -c "CREATE DATABASE restore_drill"
+  psql "$DRILL" -X -q -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS postgis"
   for t in accidents weather mp_ticks; do
-    pg_restore --no-owner --no-privileges -d "$PG_URL_NOPASS" --schema-only -t "$t" \
-      ~/Developer/safeascent-private/backups/pre-2a/$t.dump -f - \
-      | sed "s/public\./drill./g" | psql "$PG_URL_NOPASS" -X -q
-    pg_restore --no-owner --no-privileges --data-only -t "$t" \
-      ~/Developer/safeascent-private/backups/pre-2a/$t.dump -f - \
-      | sed "s/public\./drill./g" | psql "$PG_URL_NOPASS" -X -q
+    pg_restore --no-owner --no-privileges --exit-on-error -d "$DRILL" \
+      ~/Developer/safeascent-private/backups/pre-2a/$t.dump
   done
-  psql "$PG_URL_NOPASS" -XAt -c "SELECT (SELECT count(*) FROM drill.accidents) = (SELECT count(*) FROM public.accidents),
-                                         (SELECT count(*) FROM drill.weather) = (SELECT count(*) FROM public.weather),
-                                         (SELECT count(*) FROM drill.mp_ticks) = (SELECT count(*) FROM public.mp_ticks)" )
+  for t in accidents weather mp_ticks; do
+    a="$(psql "$SRC" -XAt -c "SELECT count(*) FROM public.$t")"
+    b="$(psql "$DRILL" -XAt -c "SELECT count(*) FROM public.$t")"
+    [ "$a" = "$b" ] && echo "$t restored: match" || echo "$t restored: MISMATCH"
+  done
+  psql "$SRC" -X -q -c "DROP DATABASE restore_drill" )
 ```
 
-Expected: `t|t|t`. Delete the `restore-drill` branch. Record "restore rehearsed <date>" in the PR thread (no counts of personal data needed).
+Expected: `accidents restored: match`, `weather restored: match`, `mp_ticks restored: match`. Only match/mismatch is printed, never counts of personal data.
+
+A dump taken with `-t` carries the table and its own indexes, but not foreign-key targets. `pg_restore` must therefore not create the FK from `accidents` to the legacy tables. If it stops on such a constraint, re-run that table with `--section=pre-data --section=data` and record which constraint was skipped.
+
+Delete the `restore-drill` branch. Record "restore rehearsed 2026-MM-DD" (the actual date) in the PR thread.
 
 ---
 
 ### Task 9: OWNER/AGENT RUNBOOK — create Phase 2 roles, rehearse `0004` on a Neon branch, apply to prod
 
-**Files (gitignored, never committed):** `backend/.env.ingest`, `backend/.env.trainer`, plus the Phase 1 `backend/.env.owner`, `backend/.env.migrator`.
+**Files (gitignored, never committed):** `backend/.env.ingest`, plus the Phase 1 `backend/.env.owner`, `backend/.env.migrator`, `backend/.env.analyst`. `trainer` has no credential until Phase 3 (D13).
 
-- [ ] **Step 1 (owner): Generate passwords straight into files and write role URLs**
+- [ ] **Step 1 (owner): Generate the ingest password straight into a file and write its role URL**
 
 ```bash
 cd /Users/sebastianfrazier/Developer/SafeAscent/backend
 umask 077
 printf 'INGEST_PASSWORD=%s\n' "$(openssl rand -hex 32)" > .env.ingest
-printf 'TRAINER_PASSWORD=%s\n' "$(openssl rand -hex 32)" > .env.trainer
 ( set -a; . ./.env.owner; . ./.env.ingest; set +a; uv run python -m scripts.write_role_url --role ingest --env-file .env.ingest )
-( set -a; . ./.env.owner; . ./.env.trainer; set +a; uv run python -m scripts.write_role_url --role trainer --env-file .env.trainer )
-git check-ignore -v .env.ingest .env.trainer
+git check-ignore -v .env.ingest
 ```
 
-Expected: `wrote INGEST_DATABASE_URL to .env.ingest`, `wrote TRAINER_DATABASE_URL to .env.trainer`, and both files matched by `.env.*`.
+Expected: `wrote INGEST_DATABASE_URL to .env.ingest`, and the file matched by `.env.*`.
 
 - [ ] **Step 2 (owner/agent): Rehearse on a Neon branch** (Console: new branch `p2a-0-rehearsal` from `main`, current data; copy its direct host)
 
@@ -2490,16 +3005,15 @@ cd /Users/sebastianfrazier/Developer/SafeAscent/backend
 BRANCH_HOST='<p2a-0-rehearsal direct host>'
 ( set -a; . ./.env.owner; set +a
   BRANCH_URL="$(printf '%s' "$OWNER_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")"
-  split_pg_url "$BRANCH_URL"
+  split_pg_url "$BRANCH_URL"; verify_full_url
   export INGEST_PASSWORD_SCRAM="$( set -a; . ./.env.ingest; uv run python -m scripts.write_role_url --role ingest --scram )"
-  export TRAINER_PASSWORD_SCRAM="$( set -a; . ./.env.trainer; uv run python -m scripts.write_role_url --role trainer --scram )"
   psql "$PG_URL_NOPASS" -X -q -f db/roles/create_roles_phase2.sql )
 ( set -a; . ./.env.migrator; set +a
   export MIGRATOR_DATABASE_URL="$(printf '%s' "$MIGRATOR_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")"
   uv run alembic upgrade head && uv run alembic current && uv run alembic check )
 ( set -a; . ./.env.owner; set +a
   BRANCH_URL="$(printf '%s' "$OWNER_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")"
-  split_pg_url "$BRANCH_URL"
+  split_pg_url "$BRANCH_URL"; verify_full_url
   psql "$PG_URL_NOPASS" -X -q -f db/roles/grants_phase2.sql
   psql "$PG_URL_NOPASS" -X -q -f db/roles/verify_roles.sql
   psql "$PG_URL_NOPASS" -X -q -f db/roles/verify_roles_phase2.sql )
@@ -2511,30 +3025,44 @@ Expected: `roles ingest and trainer created; schema internal owned by migrator`;
 
 ```bash
 ( set -a; . ./.env.analyst; set +a
-  VERIFY_DATABASE_URL="$(printf '%s' "$ANALYST_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#; s#postgresql\+asyncpg:#postgresql:#; s#ssl=#sslmode=#")" \
+  VERIFY_DATABASE_URL="$(printf '%s' "$ANALYST_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")" \
     uv run pytest -m db tests/verify/test_phase2a_foundation.py -q -k accidents_raw )
 ```
 
+Only the host is swapped. `tests/verify/_db.py` strips the driver prefix and query and connects with `connect_args_for`, i.e. verify-full, so no `ssl=`→`sslmode=` rewrite is needed.
+
 Expected: `1 passed`. (The R8 checks run after Task 10.) Keep the branch for Task 10's rehearsal.
 
-- [ ] **Step 4 (owner): Apply to prod** — repeat Step 2 without the `sed` host substitution (use `OWNER_DATABASE_URL` and `MIGRATOR_DATABASE_URL` as they are), then Step 3 against prod. Expected outputs are identical.
+- [ ] **Step 4 (owner): Apply to prod** — repeat Step 2 without the `sed` host substitution (use `OWNER_DATABASE_URL` and `MIGRATOR_DATABASE_URL` as they are, still through `split_pg_url; verify_full_url`), then Step 3 against prod. Expected outputs are identical.
 
-- [ ] **Step 5 (owner): Store the ingest credential for data workflows** — GitHub → Settings → Secrets and variables → Actions → New repository secret `INGEST_DATABASE_URL`, pasted from `.env.ingest` via an editor (never `cat` in a shared terminal). Do not add it to Railway yet (plan 7).
+- [ ] **Step 5 (owner): Store the ingest credential for data workflows** — GitHub → Settings → Secrets and variables → Actions → New repository secret `INGEST_DATABASE_URL`, pasted from `.env.ingest` via an editor (never `cat` in a shared terminal). The URL must not carry `sslmode=require` (the job refuses it). Do not add it to Railway yet: plan 7 puts it on a dedicated ingest service, never on the general `worker` (D14).
 
 ---
 
 ### Task 10: OWNER/AGENT RUNBOOK — run R8 and load the private tick aggregates
 
-- [ ] **Step 1 (owner/agent): Confirm `created_at` is UTC** (D3 assumption)
+- [ ] **Step 1 (owner/agent): Record the provenance of `mp_ticks.created_at`** (D3)
+
+`SHOW TimeZone` in this session proves nothing about the session that wrote the rows. The rule already carries one day of slack, so this step records evidence rather than gating the run. Check three things:
 
 ```bash
 ( set -a; . ./.env.analyst; set +a
-  U="${ANALYST_DATABASE_URL/postgresql+asyncpg:/postgresql:}"; U="${U/ssl=/sslmode=}"
-  split_pg_url "$U"
-  psql "$PG_URL_NOPASS" -XAt -c "SHOW TimeZone" -c "SELECT min(created_at), max(created_at) FROM mp_ticks" )
+  split_pg_url "$ANALYST_DATABASE_URL"; verify_full_url
+  psql "$PG_URL_NOPASS" -XAt \
+    -c "SELECT coalesce(r.rolname, '(all roles)') || ' / ' || coalesce(d.datname, '(all dbs)') || ': ' || array_to_string(s.setconfig, ',')
+          FROM pg_db_role_setting s LEFT JOIN pg_roles r ON r.oid = s.setrole LEFT JOIN pg_database d ON d.oid = s.setdatabase
+         WHERE array_to_string(s.setconfig, ',') ILIKE '%timezone%'" \
+    -c "SELECT setting FROM pg_settings WHERE name = 'TimeZone'" \
+    -c "SELECT date_trunc('hour', max(created_at)) FROM mp_ticks" )
+grep -rniE 'time ?zone|PGTZ|SET TIME' ~/Developer/safeascent-private/mp_ticks/src || echo 'loader sets no time zone'
 ```
 
-Expected: `UTC` (or `GMT`/`Etc/UTC`). If not UTC, stop and tell the agent: `QUARANTINE_SQL` must convert with `AT TIME ZONE`.
+Expected:
+- No per-role or per-database `TimeZone` override (empty first query), and a server default of `GMT`/`UTC`.
+- The loader sets no time zone.
+- The latest `created_at` hour matches the UTC time the private load log says the load ran.
+
+Record the three facts in the PR. If any of them disagrees, the one-day slack in `QUARANTINE_SQL` still covers zones down to UTC−14; tell the agent only if the load evidently ran **ahead** of UTC, which would need a different rule.
 
 - [ ] **Step 2 (owner/agent): Run R8 on the rehearsal branch, then prod**
 
@@ -2544,7 +3072,11 @@ Expected: `UTC` (or `GMT`/`Etc/UTC`). If not UTC, stop and tell the agent: `QUAR
   DATABASE_URL="$INGEST_DATABASE_URL" uv run python -m app.pipelines.mp_ticks_quarantine )
 ```
 
-Expected: one JSON line, e.g. `{"counts": {"clean": …, "future": …, "orphan_route": …, "pre_1970": …}, "rule_version": "r8-v1"}`. Compare to the audit (1,322 future at the 2026-02-08 cutoff; 3,602 orphan route ids): `future` should be ≥ 57 (the rows dated after 2026-09-28). Record the counts in the PR. Re-run: identical counts. Then run without the `sed` for prod, and `VERIFY_DATABASE_URL=… uv run pytest -m db tests/verify/test_phase2a_foundation.py -q` → `3 passed`.
+Expected: one JSON line, e.g. `{"counts": {"clean": …, "future": …, "orphan_route": …, "pre_1970": …}, "rule_version": "r8-v1"}`.
+- Compare with the audit: 1,322 future at the 2026-02-08 cutoff, and 3,602 orphan route ids. The one-day capture slack may lower `future` slightly below 1,322. `future` must still be ≥ 57, the rows dated after 2026-09-28.
+- Record the counts in the PR.
+- Re-run: the counts are identical.
+- Then run on prod (no `sed`), and run `VERIFY_DATABASE_URL="$ANALYST_DATABASE_URL" uv run pytest -m db tests/verify/test_phase2a_foundation.py -q` inside the analyst subshell → `3 passed`.
 
 - [ ] **Step 3 (owner): Load the tick aggregates, only after the private scrape reports complete**
 
@@ -2560,13 +3092,37 @@ cd /Users/sebastianfrazier/Developer/SafeAscent/backend
 
 Expected: `"status": "dry_run"` with a report of counts only. If `problems` is non-empty, stop and review the quarantine reasons with the agent (counts only). Then run without `--dry-run` (branch, then prod without `sed`): `"status": "ok"`; a second run prints `"status": "noop"`. Delete the `p2a-0-rehearsal` branch.
 
-- [ ] **Step 4 (owner): Schedule the reload** — after each month closes (D3), re-run Step 3 on prod so `month_not_closed` rows land. Removal (legal Q1): `DROP TABLE internal.mp_tick_aggregates` via a new migration, then plan 8's removal drill.
+- [ ] **Step 4 (owner): Later scrapes**
+- Reloading the same export never accepts its `partial_month` rows (D3). Months at or after the scrape month land only from a **newer** private scrape that finished after those months closed.
+- After each new scrape, run Step 3 on it. New closed months are inserted.
+- `count_changed` rows (late-logged ticks, or MP's total grew) are quarantined, never applied. Review their count in the run's report. If the drift matters for exposure, rebuilding the table is a new migration plus a full reload, decided by the owner.
+- Removal (legal Q1): `DROP TABLE internal.mp_tick_aggregates` via a new migration, then plan 8's removal drill.
 
 ---
 
-## Self-review (done while writing)
+## Self-review (done while writing; redone 2026-09-28 after the plan review)
 
-- Spec coverage for this plan's scope: 2a-0 (backup, `accidents_raw`, revisions table, new columns; restore rehearsed — Tasks 2, 8), R8 (Task 5, with the frozen date replaced per owner rule), P2-14 load (Task 6), `ingest` role via SQL (Task 4), `source_ingest_log` (Task 2/3), validation (Task 1). Everything else is mapped to plans 2–8 in the split table.
-- Placeholders: none; runbook angle-bracket values are hosts the owner copies from the Console, as in Phase 1 Plan B.
-- Type consistency: `ValidationReport.summary()` is the only report serializer; `finish_run(..., report=...)` everywhere; `grid_bucket_sql` spelled identically in the ledger.
-- Review Focus items each map to a named test in Tasks 1, 2, 5, 6.
+- **Spec coverage for this plan's scope:**
+  - 2a-0: backup, `accidents_raw`, revisions table, new columns; restore rehearsed into a scratch database (Tasks 2 and 8).
+  - R8 (Task 5): the frozen date is replaced per the owner rule, with one day of writer-zone slack.
+  - P2-14 load (Task 6): ice/mixed only, INSERT-only, partial months held.
+  - `ingest` role via SQL (Task 4), `source_ingest_log` (Tasks 2 and 3), validation (Task 1), the `grid_bucket_key` SQL function (Task 2).
+  - Everything else is mapped to plans 2–8 in the split table.
+- **Review items for this file:**
+  - A3/D3: partial months and the provenance check (Tasks 5, 6, 10).
+  - A12/D4: one SQL function plus parity tests (Tasks 1, 2).
+  - SEC1: `verify_full_url`, `tests/verify/_db.py` and the `db.verified_connect_args` refusal (Tasks 3, 5, 8–10).
+  - SEC2: `pg_restore` into a scratch database (Task 8).
+  - SEC3/D13: trainer is NOLOGIN with no grants (Task 4).
+  - P4: INSERT-only, ice/mixed scope, and `total` = MP's reported total (Tasks 4, 6).
+  - P1: Needs table and merge order.
+  - D8: one cadence table.
+  - D2, D5–D7, D9–D11, D14–D18: decision text.
+  - Minors: the heavy-quarantine test now checks the table is empty; the `in_us` box caveat is documented and tested; the report-only R8 verify test now asserts reason and version sets.
+- **Placeholders:** none. Runbook angle-bracket values are hosts the owner copies from the Console, as in Phase 1 Plan B; `2026-MM-DD` in Task 8 is the date the drill actually ran.
+- **Type and name consistency:**
+  - `ValidationReport.summary()` is the only report serializer, and `finish_run(..., report=...)` is used everywhere.
+  - `grid_bucket_sql` renders `grid_bucket_key((…)::float8, (…)::float8)`, and the function name matches the ledger and `0004`.
+  - `verified_connect_args`/`ingest_engine`, `tests.verify._db.fetch` and `validate(..., route_types=, existing=, today=)` are spelled the same in Interfaces, tests and code.
+  - Contract names (`grid_bucket_series`, `cell_normals_status`, `era5_window`, `internal.r10_unresolved`, `0011_objectives`, `0012_drop_legacy_routes`) match the revision contract.
+- **Review Focus:** each item maps to a named test in Tasks 1, 2, 3, 5 and 6.

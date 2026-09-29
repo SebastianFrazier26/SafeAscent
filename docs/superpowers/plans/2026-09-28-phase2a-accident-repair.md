@@ -20,7 +20,9 @@ Everything in the foundations plan's Global Constraints applies. In particular:
 - No DDL under `backend/app/`; schema changes only in revisions `0005`, `0006`; forward-only with refusing downgrades.
 - Every repair is idempotent per `(accident_id, field, rule_version)`; a rerun with the same rule version changes nothing. Rows are never deleted; excluded rows stay with `excluded_reason`.
 - Accident narratives (`description`) are read internally by R4/R12 only; they never go into logs, run reports, fixtures, docs, commits, or review CSVs. Golden-set files hold `accident_id` + labels only.
-- Nulling coordinates must also null `coordinates` (the `accidents_coords_trigger` only fills it when both are non-null).
+- Nulling coordinates must also null `coordinates` (the `accidents_coords_trigger` only fills it when both are non-null). Coordinates are nulled only for foreign rows (`foreign_place`, `outside_us`) and spec-mandated ambiguous GNIS names; every other doubtful point keeps its coordinates and is labelled by `geocode_precision` (the D10 principle applied to space). Consumers use a point only when `geocode_precision` is in `geocode.TRUSTED_POINT_PRECISIONS` (`exact`, `crag`, `area`, `park_centroid`), exposed as `accidents_clean.point_trusted`.
+- R1 and R2 touch only rows present in `internal.accidents_raw` (the frozen pre-2a copy). Rows loaded later (plan 3's R11 facts CSV, e.g. `ANAC-2025-001`) carry their own date precision and are never re-dated by the `source_id` neighbour rule, even when `r2r1` is re-run on a refresh.
+- Runbook database access goes only through `backend/scripts/runbook_helpers.sh` (Task 4), built on plan 1's `split_pg_url` + `verify_full_url`: TLS is `sslmode=verify-full&sslrootcert=system` for psql and `app.db.ssl.connect_args_for` for Python (verify cells use plan 1's `tests/verify/_db.fetch`); `TARGET_HOST` selects a Neon branch and is unset for prod, so no step can silently hit the wrong host.
 - `accidents.date` changes only where a rule dates a row confidently (D10); unverified years keep their date and get `excluded_reason = 'year_unverified'`.
 - No LLM anywhere in the pipeline. Owner review is only for the bands the spec names.
 - Review CSVs go to `data/review/` (gitignored by Task 1); nothing under it is committed.
@@ -30,20 +32,28 @@ Everything in the foundations plan's Global Constraints applies. In particular:
 1. **R1 edge rows.** A suspect row needs ≥5 trusted neighbours on *each* side by `source_id`; otherwise it is `year_unverified`. Without this, a genuine 2019+ record at the top of the id range would be pulled back to the last trusted year.
 2. **R1 median** is `statistics.median_low` (an actual neighbour year, never a .5).
 3. **R3a ambiguous names** null coordinates only when the row's current point is >50 km from *every* candidate summit; a row already near one of them is left alone.
+3a. **R3a state filter fallback.** A row's `state` can come from the same bad geocode (a "Mount McKinley" row marked CA). When the state-filtered GNIS lookup finds nothing, a *unique* nationwide match is still used (`geocode_method = 'gnis_summit_state_mismatch'`, so the hand check sees it); a non-unique nationwide match is not.
 4. **R3 default precision** for rows no rule touches: avalanche-source rows `exact` (reported incident coordinates), AAC rows with US coordinates `area` (geocoded from place text), NPS `park_centroid`, route-linked `crag`.
-5. **R3 `region_fallback` and `unknown` rows get their coordinates nulled** (the point is a known-bad fallback); the verified state stays in `state`. Spec leaves coordinates for `region_fallback` unstated.
+5. **R3 `region_fallback` and fallback `unknown` rows keep their coordinates**, labelled by `geocode_precision` (spec leaves coordinates for `region_fallback` unstated; review A7 applies the D10 principle: keep, label, let consumers exclude). The verified state stays in `state`, so state/region pooling still sees the row. R4's terrain test and R5's distance never use an untrusted point, which keeps both rules' behaviour identical to the nulled-coordinate version.
 6. **R4 unmapped activity values stop the run.** The classifier returns `None` for any activity string outside its vocabularies, and `--apply` refuses while any row is unmapped; the fix is a reviewed code change to the vocabulary, not a default.
-7. **R5 score weights:** date 0.30, distance 0.25, accident type 0.15, severity 0.15, place-name Jaro-Winkler 0.15; an unknown component scores 0.5. R5's rule version embeds a hash of the decision set, so new owner decisions produce new revision rows instead of being skipped as "already recorded".
+7. **R5 score weights:** date 0.30, distance 0.25, accident type 0.15, severity 0.15, place-name Jaro-Winkler 0.15; an unknown component scores 0.5. R5's rule version embeds a hash of the decision set, so new owner decisions produce new revision rows instead of being skipped as "already recorded". Every run emits group fields for **every** row, so a row that leaves a group (a merge flipped to distinct) is reset to `incident_group_id = NULL`, `is_canonical = true`.
+7a. **R5 date window is precision-aware.** A row's date is an interval: `day` → that day, `month` → the whole month, `year` → the whole year. Two rows are candidates when the intervals are ≤2 days apart, so an AAC month-precision row can pair with the NPS/CAIC day-precision record of the same incident. The date component is scaled by the weaker precision (`day` 1.0, `month` 0.6, `year` 0.3), so imprecise pairs land in the owner-review band rather than auto-merging.
 8. **R12 conflicting mentions** (two stated levels, two different year counts) resolve to `unknown`/NULL: precision over recall.
-9. **`accidents_clean` omits narrative columns** (`description`, `tags`, `age_range`) and adds a `accidents_clean_daily` view (`date_precision = 'day'`) as the CM training input the spec's R2 CI check targets.
+9. **`accidents_clean` omits narrative columns** (`description`, `tags`, `age_range`), adds `point_trusted` (see Global Constraints) and a `accidents_clean_daily` view (`date_precision = 'day'`) as the CM training input the spec's R2 CI check targets.
+10. **R4 and objectives.** The spec's ski-approach radius counts alpine/ice/mixed routes *or objectives*; objectives land in plan 6. Until then R4 uses MP alpine/ice/mixed terrain only (`r4-v1`); when `public.objectives` exists the same code adds objective points and writes `r4-v2`. Plan 6's runbook re-runs `r4 --apply` then `r5 --apply` (Task 13 Step 8 records the step).
+11. **Golden sets and hand checks are stratified toward rows where a rule fires** (`review.export_stratified`), so the ≥95% bars are not met on easy all-`unknown` or all-`climbing` rows. The R12 cell also fails when no golden value is filled and reports recall.
+12. **R12 counts climbing years only.** "N years of experience" with no climbing word is left NULL (precision over recall); relative forms ("less/more experienced") set no level; "self-guided" is `unguided`.
 
 ## Review Focus
 
 1. **A suspect AAC row at the very end of the `source_id` range** (no trusted rows after it) — expect `year_unverified`, date untouched (Task 3 `test_row_past_last_trusted_id_is_unverified`).
 2. **An R3 run that nulls a location** — expect `coordinates` NULL too, not a stale geography point (Task 1 `test_nulling_location_also_nulls_coordinates`).
-3. **Re-importing the duplicate review CSV with one decision flipped** — expect new revision rows and a changed group, not a silent skip (Task 9 `test_new_owner_decision_produces_a_new_rule_version`).
+3. **Re-importing the duplicate review CSV with one decision flipped** — expect new revision rows and a changed group, not a silent skip (Task 9 `test_new_owner_decision_produces_a_new_rule_version`), and the rows that left the group reset to `is_canonical = true`, `incident_group_id = NULL` in the database (Task 9 `test_flip_to_distinct_restores_canonical_rows`).
 4. **"inexperienced" and "unguided" in a narrative** — expect `novice` and `unguided`, never `experienced`/`guided` (Task 10 `test_negated_forms_do_not_match_the_positive_class`).
 5. **An activity value no rule knows** (e.g. `paragliding`) — expect the apply to refuse and name the value (Task 8 `test_unmapped_activity_blocks_apply`).
+6. **An R11 row (`ANAC-2025-001`, not in `internal.accidents_raw`) present when `r2r1 --apply` re-runs** — expect no revision rows and its date and precision untouched (Task 3 `test_r2r1_never_touches_rows_loaded_after_the_raw_snapshot`).
+7. **A "Mount McKinley" row whose `state` is CA from the bad geocode** — expect it moved to Denali with `gnis_summit_state_mismatch`, not left in the Bay Area (Task 7 `test_state_from_a_bad_geocode_falls_back_to_a_unique_national_match`).
+8. **An AAC month-precision row and the NPS day-precision record of the same incident** — expect a candidate pair in the review band, not two canonical incidents (Task 9 `test_month_precision_row_pairs_with_a_day_record_in_the_same_month`).
 
 ## File Structure
 
@@ -52,9 +62,10 @@ Everything in the foundations plan's Global Constraints applies. In particular:
 | `backend/app/data/__init__.py`, `backend/app/data/repair/__init__.py` | Create | Packages. |
 | `backend/app/data/repair/framework.py` | Create | `Change`, `apply_changes`, `fetch_accidents`, `run_step`. |
 | `backend/app/data/repair/sources.py` | Create | `source_family()`; refuses unknown sources. |
-| `backend/app/data/repair/review.py` | Create | Seeded sample export, decision import (CSV). |
+| `backend/app/data/repair/review.py` | Create | Seeded sample export, stratified export, decision import (CSV). |
 | `backend/app/data/repair/dates.py` | Create | R1 year repair, R2 date precision. |
-| `backend/app/data/repair/severity.py` | Create | R9 severity scale + hand-check agreement. |
+| `backend/app/data/repair/severity.py` | Create | R9 severity scale + hand-check agreement (R1, R9, R3a, R3 plot). |
+| `backend/scripts/runbook_helpers.sh` | Create | Runbook shell helpers (`TARGET_HOST`, `ING`, `INGMOD`, `OWNER_PSQL`, `ANALYST_PSQL`, `VERIFY`), verify-full TLS; reused by plans 3–8. |
 | `backend/app/pipelines/textsim.py` | Create | In-house Jaro-Winkler, `place_key` (reused by plan 4's matcher). |
 | `backend/app/pipelines/geo.py` | Create | `haversine_km`, `haversine_km_many`. |
 | `backend/app/pipelines/gnis.py` | Create | GNIS DomesticNames summit parser + loader. |
@@ -69,7 +80,7 @@ Everything in the foundations plan's Global Constraints applies. In particular:
 | `backend/db/roles/grants_phase2.sql`, `verify_roles_phase2.sql` | Modify | Repair grants and expected writes. |
 | `data/golden/README.md`, `data/golden/activity_v1.csv`, `data/golden/experience_v1.csv` | Create (runbook fills rows) | Golden labels, ids only. |
 | `.gitignore` | Modify | `data/review/`. |
-| `backend/tests/test_repair_*.py`, `test_textsim.py`, `test_geo.py`, `test_gnis.py`, `test_migration_0005_0006.py`, `test_migration_0006.py` | Create | Tests. |
+| `backend/tests/test_repair_*.py`, `test_textsim.py`, `test_geo.py`, `test_gnis.py`, `test_migration_0005_0006.py`, `test_migration_0006.py`, `test_experience_not_required.py` | Create | Tests. |
 | `backend/tests/verify/test_phase2a_repair.py` | Create | `-m db` acceptance cells. |
 | `backend/pyproject.toml`, `CHANGELOG.md`, `data/DATABASE_STRUCTURE.md` | Modify | mypy allowlist, docs. |
 
@@ -87,7 +98,10 @@ Everything in the foundations plan's Global Constraints applies. In particular:
 | 4, 6, 9, 11 | each other and plan 1 | `grants_phase2.sql`, `verify_roles_phase2.sql` | Append-only; serial commits. |
 | 7 | 9 | R5 must run after R3 | `dedupe` CLI refuses unless `r3-v1` revisions exist. |
 | 1–11 | each other | `backend/pyproject.toml` mypy list | Serial appends. |
-| 11 | plan 3 (R11) | `accidents_clean` definition | Plan 3's loaded rows set the same columns so they flow into the view. |
+| 11 | plan 3 (R11) | `accidents_clean` definition | Plan 3's loaded rows set the same columns so they flow into the view; plan 3's `accident_conditions` joins only `point_trusted` rows. |
+| 3 | plan 3 (R11) | `internal.accidents_raw` membership | R1/R2 skip ids not in the raw snapshot, so R11 rows are never re-dated. |
+| 4 | plans 3–8 runbooks | `backend/scripts/runbook_helpers.sh` | Created in Task 4; later runbooks source it and never redefine `ING`. |
+| 8 | plan 6 | `public.objectives` | R4 adds objective points when the table exists (`r4-v2`); plan 6's runbook re-runs R4 and R5. |
 
 ---
 
@@ -109,7 +123,8 @@ Everything in the foundations plan's Global Constraints applies. In particular:
   - `async fetch_accidents(conn, columns: Sequence[str]) -> list[dict[str, object]]` (always includes `accident_id`; columns from `READABLE_COLUMNS`)
   - `async run_step(conn, *, step: str, rule_version: str, changes: Sequence[Change], report: ValidationReport, apply: bool) -> dict[str, object]`
   - `sources.SourceFamily = Literal["aac", "avalanche", "nps"]`; `source_family(source: str | None) -> SourceFamily` (raises `ValueError` on anything else)
-  - `review.export_sample(rows, *, n: int, seed: int, path: Path, columns: Sequence[str], decision_column: str) -> int`; `review.read_decisions(path: Path, *, key: str, decision_column: str, allowed: frozenset[str]) -> dict[int, str]`
+  - `review.export_sample(rows, *, n: int, seed: int, path: Path, columns: Sequence[str], decision_column: str) -> int`; `review.export_stratified(rows, *, stratum: Callable[[Mapping[str, object]], str], quotas: Mapping[str, int], seed: int, path: Path, columns: Sequence[str], decision_column: str) -> dict[str, int]`; `review.read_decisions(path: Path, *, key: str, decision_column: str, allowed: frozenset[str]) -> dict[int, str]`
+  - `run_step(...)` returns `run_id` (string) in apply mode so a step can annotate its own log row.
 
 - [ ] **Step 1: Failing tests**
 
@@ -213,7 +228,7 @@ def test_nulling_location_also_nulls_coordinates():
 ```python
 import pytest
 
-from app.data.repair.review import export_sample, read_decisions
+from app.data.repair.review import export_sample, export_stratified, read_decisions
 
 
 def test_export_is_seeded_and_adds_a_blank_decision_column(tmp_path):
@@ -223,6 +238,30 @@ def test_export_is_seeded_and_adds_a_blank_decision_column(tmp_path):
     export_sample(rows, n=10, seed=7, path=b, columns=["accident_id", "year"], decision_column="agree")
     assert a.read_text() == b.read_text()
     assert a.read_text().splitlines()[0] == "accident_id,year,agree"
+
+
+def test_stratified_export_fills_rare_strata_and_hides_the_stratum(tmp_path):
+    rows = [{"accident_id": i, "kind": "rare" if i % 10 == 0 else "common"} for i in range(200)]
+    path = tmp_path / "s.csv"
+    taken = export_stratified(
+        rows, stratum=lambda r: str(r["kind"]), quotas={"rare": 15, "common": 5}, seed=3, path=path,
+        columns=["accident_id"], decision_column="label",
+    )
+    assert taken == {"common": 5, "rare": 15}
+    lines = path.read_text().splitlines()
+    assert lines[0] == "accident_id,label" and len(lines) == 21
+    ids = {int(line.split(",")[0]) for line in lines[1:]}
+    assert sum(1 for i in ids if i % 10 == 0) == 15
+
+
+def test_stratified_export_tops_up_a_short_stratum_from_the_rest(tmp_path):
+    rows = [{"accident_id": i, "kind": "rare" if i < 3 else "common"} for i in range(50)]
+    taken = export_stratified(
+        rows, stratum=lambda r: str(r["kind"]), quotas={"rare": 10, "common": 10}, seed=3, path=tmp_path / "t.csv",
+        columns=["accident_id"], decision_column="label",
+    )
+    assert taken == {"common": 10, "rare": 3, "_topup": 7}
+    assert len((tmp_path / "t.csv").read_text().splitlines()) == 21
 
 
 def test_read_decisions_rejects_blank_and_unknown_values(tmp_path):
@@ -432,6 +471,7 @@ async def run_step(
     await finish_run(conn, run_id, status="ok", report=report, rows_upserted=applied.applied)
     return summary | {
         "mode": "apply",
+        "run_id": str(run_id),
         "applied": applied.applied,
         "unchanged": applied.unchanged,
         "already_recorded": applied.already_recorded,
@@ -448,8 +488,18 @@ from __future__ import annotations
 
 import csv
 import random
-from collections.abc import Mapping, Sequence
+from collections import defaultdict
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+
+
+def _write(path: Path, rows: Sequence[Mapping[str, object]], columns: Sequence[str], decision_column: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh)
+        writer.writerow([*columns, decision_column])
+        for row in rows:
+            writer.writerow([row.get(c) for c in columns] + [""])
 
 
 def export_sample(
@@ -462,13 +512,44 @@ def export_sample(
     decision_column: str,
 ) -> int:
     chosen = random.Random(seed).sample(list(rows), min(n, len(rows)))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.writer(fh)
-        writer.writerow([*columns, decision_column])
-        for row in chosen:
-            writer.writerow([row.get(c) for c in columns] + [""])
+    _write(path, chosen, columns, decision_column)
     return len(chosen)
+
+
+def export_stratified(
+    rows: Sequence[Mapping[str, object]],
+    *,
+    stratum: Callable[[Mapping[str, object]], str],
+    quotas: Mapping[str, int],
+    seed: int,
+    path: Path,
+    columns: Sequence[str],
+    decision_column: str,
+) -> dict[str, int]:
+    """A uniform sample is mostly easy rows, so a >=95% bar would pass without testing
+    the rule; quotas pull in the rows where the rule actually fires. A short stratum is
+    topped up from the rest so the set keeps its size. The stratum is never written:
+    the labeller must not see what the rule decided."""
+    rng = random.Random(seed)
+    pools: dict[str, list[Mapping[str, object]]] = defaultdict(list)
+    for row in rows:
+        pools[stratum(row)].append(row)
+    chosen: list[Mapping[str, object]] = []
+    taken: dict[str, int] = {}
+    for name in sorted(quotas):
+        pick = rng.sample(pools.get(name, []), min(quotas[name], len(pools.get(name, []))))
+        taken[name] = len(pick)
+        chosen += pick
+    shortfall = sum(quotas.values()) - len(chosen)
+    if shortfall > 0:
+        picked = {id(r) for r in chosen}
+        rest = [r for r in rows if id(r) not in picked]
+        extra = rng.sample(rest, min(shortfall, len(rest)))
+        taken["_topup"] = len(extra)
+        chosen += extra
+    rng.shuffle(chosen)
+    _write(path, chosen, columns, decision_column)
+    return taken
 
 
 def read_decisions(path: Path, *, key: str, decision_column: str, allowed: frozenset[str]) -> dict[int, str]:
@@ -498,6 +579,7 @@ GRANT UPDATE (date, year, latitude, longitude, coordinates, country, date_precis
               exp_years_climbing, exp_stated_level, exp_first_season, guided, exp_rule_version)
   ON public.accidents TO ingest;
 GRANT SELECT, INSERT ON internal.accident_revisions TO ingest;
+GRANT SELECT (accident_id) ON internal.accidents_raw TO ingest;
 ```
 
 `backend/db/roles/verify_roles_phase2.sql`: add `('internal.accident_revisions', 'INSERT')` to `ingest_writes`, and after the `mp_ticks` column check add:
@@ -508,7 +590,10 @@ INSERT INTO role_checks VALUES
      NOT has_column_privilege('ingest', 'public.accidents', 'description', 'UPDATE')
      AND NOT has_column_privilege('ingest', 'public.accidents', 'source', 'UPDATE')
      AND NOT has_column_privilege('ingest', 'public.accidents', 'source_id', 'UPDATE')
-     AND has_column_privilege('ingest', 'public.accidents', 'date_precision', 'UPDATE'));
+     AND has_column_privilege('ingest', 'public.accidents', 'date_precision', 'UPDATE')),
+  ('ingest reads only accident ids from the raw snapshot',
+     has_column_privilege('ingest', 'internal.accidents_raw', 'accident_id', 'SELECT')
+     AND NOT has_column_privilege('ingest', 'internal.accidents_raw', 'description', 'SELECT'));
 ```
 
 In `backend/tests/test_roles_phase2.py` add after the existing ingest assertions:
@@ -682,13 +767,33 @@ git commit -m "feat(repair): R2 date precision rules and repair CLI"
 
 **Interfaces:**
 - Consumes: Tasks 1–2.
-- Produces: `R1_VERSION = "r1-v1"`, `SUSPECT_FROM_YEAR = 2019`, `NEIGHBOURS = 10`, `MIN_SIDE = 5`, `MAX_SPREAD = 2`, `source_sort_key(source_id: str | None) -> int | None`, `@dataclass(frozen=True) AacRow(accident_id: int, sort_key: int | None, date: date | None, year: int | None)`, `@dataclass(frozen=True) YearFix(accident_id: int, year: int | None, year_lo: int | None, year_hi: int | None, date_precision: str, new_date: date | None, excluded_reason: str | None)`, `r1_year_fixes(rows: Sequence[AacRow]) -> list[YearFix]`, `changes_for(fix: YearFix, *, old_date: date | None) -> list[Change]`, `async run_r2r1(conn, args) -> dict[str, object]` (final form). `[assumes D10]`
+- Produces: `R1_VERSION = "r1-v1"`, `SUSPECT_FROM_YEAR = 2019`, `NEIGHBOURS = 10`, `MIN_SIDE = 5`, `MAX_SPREAD = 2`, `source_sort_key(source_id: str | None) -> int | None`, `@dataclass(frozen=True) AacRow(accident_id: int, sort_key: int | None, date: date | None, year: int | None)`, `@dataclass(frozen=True) YearFix(accident_id: int, year: int | None, year_lo: int | None, year_hi: int | None, date_precision: str, new_date: date | None, excluded_reason: str | None)`, `r1_year_fixes(rows: Sequence[AacRow]) -> list[YearFix]`, `changes_for(fix: YearFix, *, old_date: date | None) -> list[Change]`, `restrict_to_raw(rows: Sequence[dict[str, object]], raw_ids: frozenset[int]) -> list[dict[str, object]]`, `async raw_ids(conn) -> frozenset[int]`, `async run_r2r1(conn, args) -> dict[str, object]` (final form; only rows in `internal.accidents_raw`). `[assumes D10]`
 
-- [ ] **Step 1: Failing tests** — append to `backend/tests/test_repair_dates.py`:
+- [ ] **Step 1: Failing tests** — in `backend/tests/test_repair_dates.py`, replace the import block at the top (ruff E402 forbids imports below code) with:
 
 ```python
-from app.data.repair.dates import AacRow, changes_for, r1_year_fixes, source_sort_key
+import argparse
+import asyncio
+from datetime import date
 
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+
+from app.data.repair.dates import (
+    AacRow,
+    changes_for,
+    r1_year_fixes,
+    r2_precision,
+    restrict_to_raw,
+    run_r2r1,
+    source_sort_key,
+)
+from tests.pgtest import migrated_db, requires_pg, sa_url
+```
+
+then append:
+
+```python
 
 def _trusted(start_key: int, years: list[int]) -> list[AacRow]:
     return [AacRow(1000 + i, start_key + i, date(y, 5, 2), y) for i, y in enumerate(years)]
@@ -747,6 +852,47 @@ def test_confident_fix_changes_date_and_year():
     [fix] = r1_year_fixes(rows)
     fields = {c.field: c.new_value for c in changes_for(fix, old_date=date(2023, 5, 2))}
     assert fields["date"] == date(2003, 5, 2) and fields["year"] == 2003
+
+
+def test_restrict_to_raw_drops_rows_loaded_after_the_snapshot():
+    rows = [{"accident_id": 1, "source_id": "ANAC-2003-0001"}, {"accident_id": 900000001, "source_id": "ANAC-2025-001"}]
+    assert restrict_to_raw(rows, frozenset({1})) == [rows[0]]
+
+
+# The R11 case: ANAC-2025-001 has sort key 1, so the neighbour rule would pull it into the oldest years.
+RAW_SEED = "\n".join(
+    [
+        "INSERT INTO accidents (accident_id, source, source_id, date) VALUES "
+        + ", ".join(f"({i}, 'AAC', 'ANAC-2003-{i:04d}', '2003-05-02')" for i in range(1, 13))
+        + ";",
+        "INSERT INTO internal.accidents_raw (accident_id, source, source_id, date) "
+        "SELECT accident_id, source, source_id, date FROM accidents;",
+        "INSERT INTO accidents (accident_id, source, source_id, date, date_precision) VALUES "
+        "(900000001, 'AAC', 'ANAC-2025-001', '2025-06-10', 'month');",
+    ]
+)
+
+
+@requires_pg
+def test_r2r1_never_touches_rows_loaded_after_the_raw_snapshot():
+    async def scenario(url: str) -> None:
+        engine = create_async_engine(url)
+        try:
+            async with engine.begin() as conn:
+                out = await run_r2r1(conn, argparse.Namespace(apply=True))
+            assert out["r2"]["applied"] > 0
+            async with engine.connect() as conn:
+                revisions = (await conn.execute(text(
+                    "SELECT count(*) FROM internal.accident_revisions WHERE accident_id = 900000001"))).scalar_one()
+                row = (await conn.execute(text(
+                    "SELECT date, date_precision, excluded_reason FROM accidents WHERE accident_id = 900000001"))).one()
+            assert revisions == 0
+            assert tuple(row) == (date(2025, 6, 10), "month", None)
+        finally:
+            await engine.dispose()
+
+    with migrated_db(seed_sql=RAW_SEED) as name:
+        asyncio.run(scenario(sa_url(name)))
 ```
 
 - [ ] **Step 2: Run to verify failure** — `cd backend && uv run pytest tests/test_repair_dates.py -q` → FAIL (`ImportError: cannot import name 'AacRow'`).
@@ -772,6 +918,7 @@ from dataclasses import dataclass
 from datetime import date
 from statistics import median_low
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.data.repair.framework import Change, fetch_accidents, run_step
@@ -880,8 +1027,22 @@ def changes_for(fix: YearFix, *, old_date: date | None) -> list[Change]:
     return changes
 
 
+def restrict_to_raw(rows: Sequence[dict[str, object]], raw_ids: frozenset[int]) -> list[dict[str, object]]:
+    return [r for r in rows if int(str(r["accident_id"])) in raw_ids]
+
+
+async def raw_ids(conn: AsyncConnection) -> frozenset[int]:
+    ids = frozenset(int(i) for i in (await conn.execute(text("SELECT accident_id FROM internal.accidents_raw"))).scalars())
+    if not ids:
+        raise SystemExit("internal.accidents_raw is empty: 0004 snapshots accidents before any repair")
+    return ids
+
+
 async def run_r2r1(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
-    rows = await fetch_accidents(conn, ["source", "source_id", "date", "year"])
+    # R1's neighbour rule and R2's day-15/Jul-1 rule describe the pre-2a AAC export only.
+    # Rows loaded later (plan 3's R11 facts CSV) set their own precision; re-dating them
+    # from source_id neighbours would move a 2025 record into the oldest years.
+    rows = restrict_to_raw(await fetch_accidents(conn, ["source", "source_id", "date", "year"]), await raw_ids(conn))
     families = {int(str(r["accident_id"])): source_family(r["source"] if isinstance(r["source"], str) else None) for r in rows}
     aac = [
         AacRow(
@@ -927,7 +1088,7 @@ async def run_r2r1(conn: AsyncConnection, args: argparse.Namespace) -> dict[str,
 
 ```bash
 git add backend/app/data/repair/dates.py backend/tests/test_repair_dates.py
-git commit -m "feat(repair): R1 AAC year repair from source_id neighbours (unverified rows keep their date)"
+git commit -m "feat(repair): R1 AAC year repair from source_id neighbours (raw-snapshot rows only; unverified rows keep their date)"
 ```
 
 ---
@@ -935,12 +1096,13 @@ git commit -m "feat(repair): R1 AAC year repair from source_id neighbours (unver
 ### Task 4: R9 severity scale, hand-check exports (R1 years, R9 severity), verification cells
 
 **Files:**
-- Create: `backend/app/data/repair/severity.py`, `backend/tests/test_repair_severity.py`, `backend/tests/verify/test_phase2a_repair.py`
+- Create: `backend/app/data/repair/severity.py`, `backend/tests/test_repair_severity.py`, `backend/tests/verify/test_phase2a_repair.py`, `backend/scripts/runbook_helpers.sh`
 - Modify: `backend/app/data/repair/__main__.py`, `backend/pyproject.toml`, `CHANGELOG.md`
 
 **Interfaces:**
 - Consumes: Tasks 1–3.
-- Produces: `R9_VERSION = "r9-v1"`, `severity_scale(family: SourceFamily, injury_severity: str | None) -> str`, `agreement(decisions: dict[int, str]) -> float`, CLI steps `r9`, `r9-export`, `r9-import`, `r1-export`, `r1-import`. Hand-check results are logged as `source_ingest_log` rows with `source = 'repair:r9-check'` / `'repair:r1-check'` and the agreement in `validation_report`.
+- Produces: `R9_VERSION = "r9-v1"`, `LOCATOR_COLUMNS = ("accident_id", "source_id", "date", "location", "mountain")`, `severity_scale(family: SourceFamily, injury_severity: str | None) -> str`, `agreement(decisions: dict[int, str]) -> float`, `async record_check(conn, source: str, decisions: dict[int, str]) -> dict[str, object]` (reused by Task 7), `r1_check_rows(rows) -> list[dict[str, object]]`, CLI steps `r9`, `r9-export`, `r9-import`, `r1-export`, `r1-import`. Hand-check results are logged as `source_ingest_log` rows with `source = 'repair:r9-check'` / `'repair:r1-check'` and the agreement in `validation_report`. Hand-check CSVs carry a locator (`source_id`, `location`, `mountain`) so the owner can find the AAC report.
+- Produces (shell): `backend/scripts/runbook_helpers.sh` — `TARGET_HOST` (set = that Neon branch host; unset = the host in the env file, i.e. prod), `ING <repair step> [args]`, `INGMOD <python module> [args]`, `OWNER_PSQL <psql args>`, `ANALYST_PSQL <psql args>`, `VERIFY <pytest args>`. Plans 3–8 source it; none redefines these names.
 
 - [ ] **Step 1: Failing tests**
 
@@ -949,7 +1111,9 @@ git commit -m "feat(repair): R1 AAC year repair from source_id neighbours (unver
 ```python
 import pytest
 
-from app.data.repair.severity import agreement, severity_scale
+from datetime import date
+
+from app.data.repair.severity import agreement, r1_check_rows, severity_scale
 
 
 def test_nps_is_a_mortality_source():
@@ -967,35 +1131,33 @@ def test_agreement_rate():
     assert agreement({1: "yes", 2: "yes", 3: "no", 4: "yes"}) == 0.75
     with pytest.raises(ValueError):
         agreement({})
+
+
+def test_r1_check_excludes_unverified_rows_and_keeps_the_locator():
+    base = {"source": "AAC", "date": date(2003, 5, 2), "year_lo": 2003, "year_hi": 2003,
+            "year_source": "aac_source_id_neighbours", "source_url": None,
+            "source_id": "ANAC-2003-0001", "location": "Fixture Canyon", "mountain": "Fixture Peak"}
+    rows = [
+        base | {"accident_id": 1, "excluded_reason": None},
+        base | {"accident_id": 2, "excluded_reason": "year_unverified"},
+        base | {"accident_id": 3, "excluded_reason": None, "year_source": None},
+    ]
+    out = r1_check_rows(rows)
+    assert [r["accident_id"] for r in out] == [1]
+    assert {"source_id", "location", "mountain"} <= set(out[0])
 ```
 
 `backend/tests/verify/test_phase2a_repair.py` (PR 2a-1 cells; PR 2a-2 appends):
 
 ```python
-"""Phase 2a acceptance cells (spec R-table "Verification" column), as analyst."""
+"""Phase 2a acceptance cells (spec R-table "Verification" column), as analyst. Connections go
+through plan 1's tests/verify/_db.fetch (connect_args_for, verify-full), never a local connect."""
 
-import asyncio
-import os
-
-import asyncpg
 import pytest
 
+from tests.verify._db import fetch
+
 pytestmark = pytest.mark.db
-URL = os.environ.get("VERIFY_DATABASE_URL")
-
-
-def fetch(sql: str) -> list[asyncpg.Record]:
-    if not URL:
-        pytest.skip("VERIFY_DATABASE_URL not set")
-
-    async def go() -> list[asyncpg.Record]:
-        conn = await asyncpg.connect(URL)
-        try:
-            return await conn.fetch(sql)
-        finally:
-            await conn.close()
-
-    return asyncio.run(go())
 
 
 def test_r1_2023_aac_count_is_at_most_twice_the_2015_2018_mean():
@@ -1073,6 +1235,7 @@ from app.pipelines.validate import ValidationReport
 
 R9_VERSION = "r9-v1"
 YES_NO = frozenset({"yes", "no"})
+LOCATOR_COLUMNS = ("accident_id", "source_id", "date", "location", "mountain")
 
 
 def severity_scale(family: SourceFamily, injury_severity: str | None) -> str:
@@ -1101,7 +1264,7 @@ async def run_r9(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, o
     return await run_step(conn, step="r9", rule_version=R9_VERSION, changes=changes, report=report, apply=args.apply)
 
 
-async def _record_check(conn: AsyncConnection, source: str, decisions: dict[int, str]) -> dict[str, object]:
+async def record_check(conn: AsyncConnection, source: str, decisions: dict[int, str]) -> dict[str, object]:
     rate = agreement(decisions)
     report = ValidationReport(source)
     for accident_id, value in decisions.items():
@@ -1122,26 +1285,38 @@ async def _record_check(conn: AsyncConnection, source: str, decisions: dict[int,
 
 
 async def run_r9_export(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
-    rows = [r for r in await fetch_accidents(conn, ["source", "injury_severity", "date"]) if str(r["source"]).lower().startswith("aac")]
+    rows = [
+        r for r in await fetch_accidents(conn, ["source", "source_id", "location", "mountain", "injury_severity", "date"])
+        if str(r["source"]).lower().startswith("aac")
+    ]
     out = Path(args.out or "../data/review/severity_check.csv")
-    n = export_sample(rows, n=50, seed=9, path=out, columns=["accident_id", "date", "injury_severity"], decision_column="agree")
+    n = export_sample(rows, n=50, seed=9, path=out, columns=[*LOCATOR_COLUMNS, "injury_severity"], decision_column="agree")
     return {"exported": n, "path": str(out), "instructions": "set agree=yes|no after reading each AAC report"}
 
 
 async def run_r9_import(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
     decisions = read_decisions(Path(args.review_file), key="accident_id", decision_column="agree", allowed=YES_NO)
-    return await _record_check(conn, "repair:r9-check", decisions)
+    return await record_check(conn, "repair:r9-check", decisions)
+
+
+def r1_check_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    # Only rows R1 actually re-dated can be checked "within one year"; a year_unverified
+    # row kept its (corrupt) date on purpose and would fail the check by construction.
+    return [
+        r for r in rows
+        if r["year_source"] == "aac_source_id_neighbours" and isinstance(r["date"], date) and r["excluded_reason"] is None
+    ]
 
 
 async def run_r1_export(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
-    rows = [
-        r for r in await fetch_accidents(conn, ["source", "date", "year_lo", "year_hi", "year_source", "source_url"])
-        if r["year_source"] == "aac_source_id_neighbours" and isinstance(r["date"], date)
-    ]
+    rows = r1_check_rows(await fetch_accidents(conn, [
+        "source", "source_id", "location", "mountain", "date", "year_lo", "year_hi", "year_source", "source_url",
+        "excluded_reason",
+    ]))
     out = Path(args.out or "../data/review/r1_year_check.csv")
     n = export_sample(
         rows, n=40, seed=1, path=out,
-        columns=["accident_id", "date", "year_lo", "year_hi", "source_url"], decision_column="within_one_year",
+        columns=[*LOCATOR_COLUMNS, "year_lo", "year_hi", "source_url"], decision_column="within_one_year",
     )
     return {
         "exported": n,
@@ -1152,21 +1327,65 @@ async def run_r1_export(conn: AsyncConnection, args: argparse.Namespace) -> dict
 
 async def run_r1_import(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
     decisions = read_decisions(Path(args.review_file), key="accident_id", decision_column="within_one_year", allowed=YES_NO)
-    return await _record_check(conn, "repair:r1-check", decisions)
+    return await record_check(conn, "repair:r1-check", decisions)
 ```
 
 In `backend/app/data/repair/__main__.py`: `from app.data.repair import dates, severity` and extend `STEPS` with `"r9": severity.run_r9, "r9-export": severity.run_r9_export, "r9-import": severity.run_r9_import, "r1-export": severity.run_r1_export, "r1-import": severity.run_r1_import`.
 
 Append `"app.data.repair.severity"` to the strict mypy block.
 
-`CHANGELOG.md` under `## [Unreleased]`:
+`backend/scripts/runbook_helpers.sh` (committed; no secrets, it only reads the gitignored env files inside subshells):
+
+```bash
+# Phase 2 runbook helpers. From backend/:  . scripts/runbook_helpers.sh
+# TARGET_HOST set   -> every helper talks to that Neon branch host.
+# TARGET_HOST unset -> the host already in the env file (prod). Run `unset TARGET_HOST` before any prod step.
+# Passwords never reach argv: split_pg_url (Phase 1 Plan B Task 8 Step 1) moves them into PGPASSWORD.
+# verify_full_url (foundations Task 8 Step 1) rewrites PG_URL_NOPASS to sslmode=verify-full&sslrootcert=system.
+command -v split_pg_url >/dev/null 2>&1 && command -v verify_full_url >/dev/null 2>&1 \
+  || { echo "define split_pg_url and verify_full_url first (foundations Task 8 Step 1)" >&2; return 1; }
+
+_retarget() {
+  if [ -n "${TARGET_HOST:-}" ]; then printf '%s' "$1" | sed -E "s#@[^/?]+([/?])#@${TARGET_HOST}\1#"
+  else printf '%s' "$1"; fi
+}
+
+ING() { ( set -a; . ./.env.ingest; set +a
+  export INGEST_DATABASE_URL="$(_retarget "$INGEST_DATABASE_URL")"
+  DATABASE_URL="$INGEST_DATABASE_URL" uv run python -m app.data.repair "$@" ); }
+
+INGMOD() { ( set -a; . ./.env.ingest; set +a
+  export INGEST_DATABASE_URL="$(_retarget "$INGEST_DATABASE_URL")"
+  DATABASE_URL="$INGEST_DATABASE_URL" uv run python -m "$@" ); }
+
+OWNER_PSQL() { ( set -a; . ./.env.owner; set +a
+  split_pg_url "$(_retarget "$OWNER_DATABASE_URL")"; verify_full_url
+  psql "$PG_URL_NOPASS" -X "$@" ); }
+
+ANALYST_PSQL() { ( set -a; . ./.env.analyst; set +a
+  split_pg_url "$(_retarget "$ANALYST_DATABASE_URL")"; verify_full_url
+  psql "$PG_URL_NOPASS" -X "$@" ); }
+
+VERIFY() { ( set -a; . ./.env.analyst; set +a
+  VERIFY_DATABASE_URL="$(_retarget "$ANALYST_DATABASE_URL")" uv run pytest -m db "$@" ); }
+```
+
+Sanity check (fake URL, no env file): `. scripts/runbook_helpers.sh && TARGET_HOST=b.example _retarget 'postgresql+asyncpg://u:p@h.example/db?ssl=verify-full'` prints `postgresql+asyncpg://u:p@b.example/db?ssl=verify-full`; `OWNER_PSQL -XAt -c "SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()"` prints `t`.
+
+`CHANGELOG.md` under `## [Unreleased]`: first the heading line this command prints (UTC date of the day the entry is written; re-run it and replace the line if the PR merges on a later day):
+
+```bash
+printf '### Phase 2a accident repair, part 1 (PR 2a-1) — %s\n' "$(date -u +%F)"
+```
+
+then these bullets:
 
 ```
-### Phase 2a accident repair, part 1 (PR 2a-1) — <merge date>
-
 - `app/data/repair/`: one audited, idempotent writer for accident repairs (`internal.accident_revisions` per changed field, keyed by rule version), a dry-run-first CLI (`python -m app.data.repair`), and seeded owner review CSVs in gitignored `data/review/`.
 - R2 date precision (AAC day-15 → month, Jul-1 → year), R1 AAC year repair from `source_id` neighbours (rows with too few or disagreeing neighbours keep their date and are excluded as `year_unverified`), R9 severity scale (NPS is fatal-only), with 40-row (R1) and 50-row (R9) hand checks recorded in `source_ingest_log`.
-- `ingest` gains column-level UPDATE on the repair columns of `accidents` (never `description`, `source`, `source_id`).
+- `ingest` gains column-level UPDATE on the repair columns of `accidents` (never `description`, `source`, `source_id`) and SELECT on `internal.accidents_raw.accident_id` only.
+- R1/R2 only touch rows in the frozen pre-2a snapshot, so later refresh rows are never re-dated.
+- `backend/scripts/runbook_helpers.sh`: verify-full runbook helpers with an explicit `TARGET_HOST` for Neon branches.
 ```
 
 - [ ] **Step 4: Run** — `cd backend && uv run pytest -q && uv run mypy && uv run ruff check . ../scripts/` → PASS; `uv run pytest -m db --co -q tests/verify | tail -1` shows the new cells collected.
@@ -1175,8 +1394,8 @@ Append `"app.data.repair.severity"` to the strict mypy block.
 
 ```bash
 git add backend/app/data/repair/severity.py backend/app/data/repair/__main__.py backend/tests/test_repair_severity.py \
-  backend/tests/verify/test_phase2a_repair.py backend/pyproject.toml CHANGELOG.md
-git commit -m "feat(repair): R9 severity scale, R1/R9 hand-check round trips, 2a-1 acceptance cells"
+  backend/tests/verify/test_phase2a_repair.py backend/scripts/runbook_helpers.sh backend/pyproject.toml CHANGELOG.md
+git commit -m "feat(repair): R9 severity scale, R1/R9 hand-check round trips, 2a-1 acceptance cells, runbook helpers"
 ```
 
 ---
@@ -1409,14 +1628,38 @@ from tests.test_migrations import _alembic_cfg
 pytestmark = requires_pg
 
 
-def test_0005_tables_and_checks():
+REV_0005 = "0005_gnis_and_duplicate_decisions"
+DECISION = ("INSERT INTO internal.duplicate_decisions (low_id, high_id, score, decision, decided_by, rule_version) "
+            "VALUES ({lo}, {hi}, 0.95, '{d}', '{by}', 'r5-v1')")
+
+
+def test_head_matches_the_models():
     with migrated_db("head") as name:
         command.check(_alembic_cfg(name))
-        run_sql(name, "INSERT INTO gnis_summits (gnis_id, name, name_key, state_code, lat, lon) "
-                      "VALUES (1, 'Fixture Peak', 'fixture', 'CO', 40.25, -105.6)")
+
+
+def test_0005_rejects_unordered_duplicate_and_unknown_decisions():
+    with migrated_db(REV_0005) as name:
+        run_sql(name, DECISION.format(lo=4, hi=5, d="merge", by="auto"))
         with pytest.raises(asyncpg.CheckViolationError):
-            run_sql(name, "INSERT INTO internal.duplicate_decisions (low_id, high_id, score, decision, decided_by, rule_version) "
-                          "VALUES (5, 4, 0.95, 'merge', 'auto', 'r5-v1')")
+            run_sql(name, DECISION.format(lo=7, hi=6, d="merge", by="auto"))
+        with pytest.raises(asyncpg.UniqueViolationError):
+            run_sql(name, DECISION.format(lo=4, hi=5, d="distinct", by="auto"))
+        with pytest.raises(asyncpg.CheckViolationError):
+            run_sql(name, DECISION.format(lo=8, hi=9, d="maybe", by="auto"))
+        with pytest.raises(asyncpg.CheckViolationError):
+            run_sql(name, DECISION.format(lo=8, hi=9, d="merge", by="model"))
+
+
+def test_0005_downgrade_refuses_to_lose_owner_decisions():
+    with migrated_db(REV_0005) as name:
+        run_sql(name, DECISION.format(lo=4, hi=5, d="distinct", by="owner"))
+        with pytest.raises(RuntimeError, match="owner duplicate decisions"):
+            command.downgrade(_alembic_cfg(name), "0004_phase2a_foundation")
+        run_sql(name, "DELETE FROM internal.duplicate_decisions")
+        command.downgrade(_alembic_cfg(name), "0004_phase2a_foundation")
+        with pytest.raises(asyncpg.UndefinedTableError):
+            run_sql(name, "SELECT 1 FROM gnis_summits")
 ```
 
 (Task 11 puts the `0006` view tests in their own file.)
@@ -1702,7 +1945,7 @@ git commit -m "feat(pipelines): 0005 GNIS summits + duplicate decisions; GNIS Do
 
 **Interfaces:**
 - Consumes: `gnis.Summit`, `gnis.state_code` (Task 6), `textsim.place_key`, `geo.haversine_km` (Task 5), `validate.in_us`, `framework` (Task 1).
-- Produces: `R3_VERSION = "r3-v1"`, `MOVE_KM = 50.0`, `FOREIGN_TERMS: dict[str, str]`, `@dataclass(frozen=True) GeoRow(accident_id: int, family: SourceFamily, mountain: str | None, state: str | None, lat: float | None, lon: float | None, mp_route_id: int | None)`, `KEEP` sentinel, `@dataclass(frozen=True) GeoFix(accident_id: int, location: tuple[float, float] | None | KeepType, precision: str, method: str, country: str | None)`, `SummitIndex(summits)` with `.lookup(key: str, state: str | None) -> list[Summit]`, `foreign_country(*texts: str | None) -> str | None`, `find_fallback_points(rows: Sequence[GeoRow], *, min_rows: int = 5, min_names: int = 3) -> set[tuple[float, float]]`, `geocode_fix(row: GeoRow, index: SummitIndex, fallback: set[tuple[float, float]]) -> GeoFix`, `changes_for(fix: GeoFix) -> list[Change]`, CLI steps `r3`, `r3-clusters`.
+- Produces: `R3_VERSION = "r3-v1"`, `MOVE_KM = 50.0`, `TRUSTED_POINT_PRECISIONS = frozenset({"exact", "crag", "area", "park_centroid"})`, `FOREIGN_TERMS: dict[str, str]`, `@dataclass(frozen=True) GeoRow(accident_id: int, family: SourceFamily, mountain: str | None, state: str | None, lat: float | None, lon: float | None, mp_route_id: int | None)`, `KEEP` sentinel, `@dataclass(frozen=True) GeoFix(accident_id: int, location: tuple[float, float] | None | KeepType, precision: str, method: str, country: str | None)`, `SummitIndex(summits)` with `.lookup(key: str, state: str | None) -> list[Summit]`, `foreign_country(*texts: str | None) -> str | None`, `find_fallback_points(rows: Sequence[GeoRow], *, min_rows: int = 5, min_names: int = 3) -> set[tuple[float, float]]`, `geocode_fix(row: GeoRow, index: SummitIndex, fallback: set[tuple[float, float]]) -> GeoFix`, `changes_for(fix: GeoFix) -> list[Change]`, `plot_stratum(row: Mapping[str, object]) -> str`, CLI steps `r3`, `r3-clusters`, `r3a-export`/`r3a-import` (every `gnis_summit*` move, hand-checked; `source = 'repair:r3a-check'`), `r3-plot-export`/`r3-plot-import` (50-row plotted spot check as GeoJSON + CSV; `source = 'repair:r3-plot-check'`).
 
 - [ ] **Step 1: Failing tests**
 
@@ -1711,12 +1954,14 @@ git commit -m "feat(pipelines): 0005 GNIS summits + duplicate decisions; GNIS Do
 ```python
 from app.data.repair.geocode import (
     KEEP,
+    TRUSTED_POINT_PRECISIONS,
     GeoRow,
     SummitIndex,
     changes_for,
     find_fallback_points,
     foreign_country,
     geocode_fix,
+    plot_stratum,
 )
 from app.pipelines.gnis import Summit
 
@@ -1747,8 +1992,19 @@ def test_r3a_leaves_a_close_row_to_r3():
 
 
 def test_ambiguous_name_far_from_all_candidates_is_nulled():
+    # Spec R3a nulls this case explicitly; it is the one non-foreign null.
     fix = geocode_fix(row(mountain="Bald Mountain", lat=34.0, lon=-118.2), INDEX, set())
     assert (fix.location, fix.precision, fix.method) == (None, "unknown", "gnis_ambiguous")
+
+
+def test_state_from_a_bad_geocode_falls_back_to_a_unique_national_match():
+    fix = geocode_fix(row(mountain="Mount McKinley", state="CA", lat=37.8, lon=-122.0), INDEX, set())
+    assert (fix.location, fix.precision, fix.method) == ((63.069, -151.007), "area", "gnis_summit_state_mismatch")
+
+
+def test_state_fallback_never_uses_a_non_unique_national_match():
+    fix = geocode_fix(row(mountain="Bald Mountain", state="WA", lat=47.0, lon=-120.0), INDEX, set())
+    assert (fix.location, fix.method) == (KEEP, "source_geocode")
 
 
 def test_ambiguous_name_near_one_candidate_is_kept():
@@ -1772,12 +2028,29 @@ def test_fallback_cluster_rows_become_region_fallback_with_state():
     points = find_fallback_points(rows)
     assert points == {(39.739, -104.99)}
     fix = geocode_fix(rows[0], INDEX, points)
-    assert (fix.location, fix.precision, fix.method, fix.country) == (None, "region_fallback", "fallback_state", "US")
+    assert (fix.location, fix.precision, fix.method, fix.country) == (KEEP, "region_fallback", "fallback_state", "US")
+    assert "region_fallback" not in TRUSTED_POINT_PRECISIONS
 
 
-def test_alaska_text_below_55n_is_fallback():
+def test_fallback_without_a_state_keeps_coordinates_and_is_unknown():
+    rows = [row(i, mountain=f"Place {i}", lat=39.739, lon=-104.990) for i in range(6)]
+    fix = geocode_fix(rows[0], INDEX, find_fallback_points(rows))
+    assert (fix.location, fix.precision, fix.method, fix.country) == (KEEP, "unknown", "fallback_no_state", None)
+
+
+def test_alaska_text_below_55n_is_fallback_and_keeps_its_point():
     fix = geocode_fix(row(mountain="Some Glacier", state="AK", lat=47.6, lon=-122.3), INDEX, set())
-    assert (fix.precision, fix.location) == ("region_fallback", None)
+    assert (fix.precision, fix.location) == ("region_fallback", KEEP)
+
+
+def test_only_foreign_rows_lose_coordinates():
+    fix = geocode_fix(row(mountain="Fixture Crag", lat=55.0, lon=-100.0), INDEX, set())
+    assert (fix.location, fix.method) == (None, "outside_us")
+
+
+def test_plot_strata_follow_the_precision_label():
+    assert plot_stratum({"geocode_precision": "region_fallback", "geocode_method": "fallback_state"}) == "region_fallback"
+    assert plot_stratum({"geocode_precision": "area", "geocode_method": "gnis_summit_state_mismatch"}) == "gnis_move"
 
 
 def test_source_defaults():
@@ -1803,15 +2076,20 @@ foreign places, Alaska text below 55°N, per-source precision labels)."""
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.data.repair.framework import LOCATION, Change, fetch_accidents, run_step
+from app.data.repair.review import export_stratified, read_decisions
+from app.data.repair.severity import YES_NO, record_check
 from app.data.repair.sources import SourceFamily, source_family
 from app.pipelines.geo import haversine_km
 from app.pipelines.gnis import Summit, state_code
@@ -1821,6 +2099,9 @@ from app.pipelines.validate import ValidationReport, in_us
 R3_VERSION = "r3-v1"
 MOVE_KM = 50.0
 ALASKA_MIN_LAT = 55.0
+# Points a spatial rule may use. region_fallback/unknown rows keep their coordinates
+# (labelled, never deleted) but those points are known-bad centroids.
+TRUSTED_POINT_PRECISIONS = frozenset({"exact", "crag", "area", "park_centroid"})
 ALIASES: dict[str, tuple[str, ...]] = {"mckinley": ("denali",), "denali": ("mckinley",)}
 # Terms that are also US place names are left out on purpose ("Ontario Peak" CA,
 # "Patagonia" AZ, "Norway" ME, "China Peak" CA); "new mexico" is stripped before matching.
@@ -1898,15 +2179,25 @@ def find_fallback_points(rows: Sequence[GeoRow], *, min_rows: int = 5, min_names
     return {p for p, n in counts.items() if n >= min_rows and len(names[p]) >= min_names}
 
 
+def _unique_summit(key: str, state: str | None, index: SummitIndex) -> tuple[list[Summit], str]:
+    hits = index.lookup(key, state)
+    if hits or state is None:
+        return hits, "gnis_summit"
+    # The state can come from the same bad geocode ("Mount McKinley" rows marked CA), so
+    # an empty state-filtered lookup falls back to a nationwide match, but only a unique one.
+    national = index.lookup(key, None)
+    return (national, "gnis_summit_state_mismatch") if len(national) == 1 else ([], "gnis_summit")
+
+
 def _r3a(row: GeoRow, index: SummitIndex, state: str | None) -> GeoFix | None:
     key = place_key(row.mountain)
     if not key or row.lat is None or row.lon is None:
         return None
-    hits = index.lookup(key, state)
+    hits, method = _unique_summit(key, state, index)
     if len(hits) == 1:
         s = hits[0]
         if haversine_km(row.lat, row.lon, s.lat, s.lon) > MOVE_KM:
-            return GeoFix(row.accident_id, (s.lat, s.lon), "area", "gnis_summit", "US")
+            return GeoFix(row.accident_id, (s.lat, s.lon), "area", method, "US")
         return None
     if len(hits) > 1 and state is None:
         if all(haversine_km(row.lat, row.lon, s.lat, s.lon) > MOVE_KM for s in hits):
@@ -1926,12 +2217,13 @@ def geocode_fix(row: GeoRow, index: SummitIndex, fallback: set[tuple[float, floa
     if lat is None or lon is None:
         return GeoFix(row.accident_id, KEEP, "unknown", "no_coords", "US" if state else None)
     if _point(lat, lon) in fallback or (state == "AK" and lat < ALASKA_MIN_LAT):
-        hits = index.lookup(place_key(row.mountain), state) if state else []
+        hits, method = _unique_summit(place_key(row.mountain), state, index) if state else ([], "gnis_summit")
         if len(hits) == 1:
-            return GeoFix(row.accident_id, (hits[0].lat, hits[0].lon), "area", "gnis_summit", "US")
+            return GeoFix(row.accident_id, (hits[0].lat, hits[0].lon), "area", method, "US")
+        # Coordinates stay (D10 principle); the label keeps every spatial rule off them.
         if state is not None:
-            return GeoFix(row.accident_id, None, "region_fallback", "fallback_state", "US")
-        return GeoFix(row.accident_id, None, "unknown", "fallback_no_state", None)
+            return GeoFix(row.accident_id, KEEP, "region_fallback", "fallback_state", "US")
+        return GeoFix(row.accident_id, KEEP, "unknown", "fallback_no_state", None)
     if not in_us(lat, lon):
         return GeoFix(row.accident_id, None, "unknown", "outside_us", None)
     if row.family == "nps":
@@ -1985,6 +2277,65 @@ async def run_r3_clusters(conn: AsyncConnection, args: argparse.Namespace) -> di
     return {"fallback_points": len(points), "rows_at_fallback_points": sum(sizes.values()), "points": sizes}
 
 
+def plot_stratum(row: Mapping[str, object]) -> str:
+    method = str(row.get("geocode_method") or "")
+    if method.startswith("gnis_summit"):
+        return "gnis_move"
+    return str(row.get("geocode_precision") or "unknown")
+
+
+PLOT_QUOTAS = {"gnis_move": 10, "region_fallback": 10, "unknown": 5, "area": 10, "crag": 5, "exact": 5, "park_centroid": 5}
+CHECK_COLUMNS = ["accident_id", "source_id", "location", "mountain", "state", "latitude", "longitude", "geocode_precision", "geocode_method"]
+
+
+async def _checked_rows(conn: AsyncConnection) -> list[dict[str, object]]:
+    return await fetch_accidents(conn, [
+        "source_id", "location", "mountain", "state", "latitude", "longitude", "geocode_precision", "geocode_method",
+    ])
+
+
+async def run_r3a_export(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
+    moved = [r for r in await _checked_rows(conn) if str(r["geocode_method"] or "").startswith("gnis_summit")]
+    out = Path(args.out or "../data/review/r3a_moves.csv")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh)
+        writer.writerow([*CHECK_COLUMNS, "correct"])
+        for r in moved:
+            writer.writerow([r[c] for c in CHECK_COLUMNS] + [""])
+    return {"exported": len(moved), "path": str(out), "instructions": "every row: is the new point the summit the record names? correct=yes|no"}
+
+
+async def run_r3a_import(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
+    decisions = read_decisions(Path(args.review_file), key="accident_id", decision_column="correct", allowed=YES_NO)
+    return await record_check(conn, "repair:r3a-check", decisions)
+
+
+async def run_r3_plot_export(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
+    rows = [r for r in await _checked_rows(conn) if r["latitude"] is not None and r["longitude"] is not None]
+    out = Path(args.out or "../data/review/r3_spot_check.csv")
+    taken = export_stratified(
+        rows, stratum=plot_stratum, quotas=PLOT_QUOTAS, seed=3, path=out, columns=CHECK_COLUMNS, decision_column="plausible",
+    )
+    with out.open(newline="", encoding="utf-8") as fh:
+        chosen = list(csv.DictReader(fh))
+    features = [
+        {"type": "Feature",
+         "geometry": {"type": "Point", "coordinates": [float(r["longitude"]), float(r["latitude"])]},
+         "properties": {k: r[k] for k in ("accident_id", "source_id", "mountain", "state", "geocode_precision")}}
+        for r in chosen
+    ]
+    geojson = out.with_suffix(".geojson")
+    geojson.write_text(json.dumps({"type": "FeatureCollection", "features": features}))
+    return {"strata": taken, "csv": str(out), "geojson": str(geojson),
+            "instructions": "open the GeoJSON in a local GIS (QGIS), never an online viewer; plausible=yes|no per row"}
+
+
+async def run_r3_plot_import(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
+    decisions = read_decisions(Path(args.review_file), key="accident_id", decision_column="plausible", allowed=YES_NO)
+    return await record_check(conn, "repair:r3-plot-check", decisions)
+
+
 async def run_r3(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
     rows, index = await _load(conn)
     fallback = find_fallback_points(rows)
@@ -2000,31 +2351,44 @@ async def run_r3(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, o
     return await run_step(conn, step="r3", rule_version=R3_VERSION, changes=changes, report=report, apply=args.apply)
 ```
 
-`run_r3_clusters` prints coordinates of fallback points only (no names or text), for the owner's cluster review before `r3 --apply`.
+`run_r3_clusters` prints coordinates of fallback points only (no names or text), for the owner's cluster review before `r3 --apply`. The R3a and R3 check CSVs/GeoJSON carry place names and coordinates, never narratives, and live only in gitignored `data/review/` (D12).
 
-In `__main__.py`: `from app.data.repair import dates, geocode, severity` and register `"r3": geocode.run_r3, "r3-clusters": geocode.run_r3_clusters`. Append `"app.data.repair.geocode"` to mypy strict.
+In `__main__.py`: `from app.data.repair import dates, geocode, severity` and register `"r3": geocode.run_r3, "r3-clusters": geocode.run_r3_clusters, "r3a-export": geocode.run_r3a_export, "r3a-import": geocode.run_r3a_import, "r3-plot-export": geocode.run_r3_plot_export, "r3-plot-import": geocode.run_r3_plot_import`. Append `"app.data.repair.geocode"` to mypy strict.
 
 Append to `backend/tests/verify/test_phase2a_repair.py`:
 
 ```python
-NAMED = {"denali": "AK", "mckinley": "AK", "rainier": "WA", "hood": "OR", "shasta": "CA", "grand teton": "WY", "washington": "NH"}
+# place_key -> the GNIS summit the spec names. "Washington" is a common summit name (WA,
+# OR, NH ...), so only rows whose own state is NH are checked against Mount Washington NH;
+# a bare "washington" elsewhere is not the spec's peak.
+NAMED = {"denali": ("denali", "AK"), "mckinley": ("denali", "AK"), "rainier": ("rainier", "WA"),
+         "hood": ("hood", "OR"), "shasta": ("shasta", "CA"), "grand teton": ("grand teton", "WY")}
 
 
 def test_r3a_named_peaks_are_near_their_summit():
     from app.pipelines.geo import haversine_km
+    from app.pipelines.gnis import state_code
     from app.pipelines.textsim import place_key
 
     summits = {(r["name_key"], r["state_code"]): (r["lat"], r["lon"]) for r in fetch(
-        "SELECT name_key, state_code, lat, lon FROM gnis_summits WHERE name_key IN "
-        "('denali','mckinley','rainier','hood','shasta','grand teton','washington')")}
-    far = []
-    for r in fetch("SELECT accident_id, mountain, latitude, longitude FROM accidents WHERE latitude IS NOT NULL"):
+        "SELECT name_key, state_code, lat, lon FROM gnis_summits WHERE (name_key, state_code) IN "
+        "(('denali','AK'),('rainier','WA'),('hood','OR'),('shasta','CA'),('grand teton','WY'),('washington','NH'))")}
+    assert len(summits) == 6, f"GNIS lookup incomplete: {sorted(summits)}"
+    far, checked = [], 0
+    rows = fetch(
+        "SELECT accident_id, mountain, state, latitude, longitude FROM accidents "
+        "WHERE latitude IS NOT NULL AND geocode_precision IN ('exact','crag','area','park_centroid')"
+    )
+    for r in rows:
         key = place_key(r["mountain"])
-        if key in NAMED:
-            target = summits.get((key, NAMED[key])) or summits.get(("denali", "AK"))
-            if target and haversine_km(r["latitude"], r["longitude"], *target) > 50:
-                far.append(r["accident_id"])
-    assert far == []
+        target_key = NAMED.get(key) or (("washington", "NH") if key == "washington" and state_code(r["state"]) == "NH" else None)
+        if target_key is None:
+            continue
+        checked += 1
+        if haversine_km(r["latitude"], r["longitude"], *summits[target_key]) > 50:
+            far.append(r["accident_id"])
+    print({"named_rows_checked": checked})
+    assert checked > 0 and far == []
 
 
 def test_r3_no_precise_rows_at_fallback_points_and_no_alaska_text_below_55n():
@@ -2033,9 +2397,22 @@ def test_r3_no_precise_rows_at_fallback_points_and_no_alaska_text_below_55n():
         "WHERE latitude IS NOT NULL GROUP BY 1, 2 HAVING count(*) >= 5 AND count(DISTINCT lower(mountain)) >= 3) "
         "SELECT (SELECT count(*) FROM accidents a JOIN pts ON round(a.latitude::numeric, 3) = pts.la "
         " AND round(a.longitude::numeric, 3) = pts.lo WHERE a.geocode_precision IN ('exact','crag','area')) AS precise_at_fallback, "
-        "(SELECT count(*) FROM accidents WHERE state IN ('AK','Alaska') AND latitude < 55) AS ak_below_55"
+        "(SELECT count(*) FROM accidents WHERE state IN ('AK','Alaska') AND latitude < 55 "
+        " AND geocode_precision IN ('exact','crag','area','park_centroid')) AS ak_below_55"
     )
+    # Fallback points keep their coordinates (A7/D10), so the spec's "no rows remain" reads
+    # as "no row there is labelled usable as a point".
     assert (row["precise_at_fallback"], row["ak_below_55"]) == (0, 0)
+
+
+def test_r3a_hand_check_and_r3_plot_check_recorded():
+    rows = {r["source"]: r["a"] for r in fetch(
+        "SELECT DISTINCT ON (source) source, (validation_report->>'agreement')::float AS a FROM source_ingest_log "
+        "WHERE source IN ('repair:r3a-check', 'repair:r3-plot-check') AND status = 'ok' ORDER BY source, finished_at DESC"
+    )}
+    print(rows)
+    assert rows.get("repair:r3a-check", 0) >= 0.95
+    assert rows.get("repair:r3-plot-check", 0) >= 0.95
 ```
 
 - [ ] **Step 4: Run** — `cd backend && uv run pytest tests/test_repair_geocode.py -q && uv run mypy && uv run ruff check . ../scripts/` → PASS.
@@ -2050,7 +2427,7 @@ def test_r3_no_precise_rows_at_fallback_points_and_no_alaska_text_below_55n():
 - Modify: `backend/app/data/repair/__main__.py`, `backend/pyproject.toml`, `backend/tests/verify/test_phase2a_repair.py`
 
 **Interfaces:**
-- Produces: `R4_VERSION = "r4-v1"`, `SKI_APPROACH_RADIUS_M = 1000`, `classify_activity(family: SourceFamily, activity: str | None, text: str, near_climb_terrain: bool) -> tuple[str, str | None] | None` (class, inclusion flag; `None` = unmapped), CLI steps `r4`, `r4-golden-export`.
+- Produces: `R4_VERSION = "r4-v1"` (MP alpine/ice/mixed terrain), `R4_OBJECTIVES_VERSION = "r4-v2"` (same rule plus objective points, used automatically once plan 6's `public.objectives` exists), `SKI_APPROACH_RADIUS_M = 1000`, `classify_activity(family: SourceFamily, activity: str | None, text: str, near_climb_terrain: bool) -> tuple[str, str | None] | None` (class, inclusion flag; `None` = unmapped), `golden_stratum(row: Mapping[str, object]) -> str`, `GOLDEN_QUOTAS`, CLI steps `r4`, `r4-golden-export` (stratified toward rows where the ski-approach and NPS rules fire).
 
 - [ ] **Step 1: Failing tests** — `backend/tests/test_repair_activity.py`:
 
@@ -2093,11 +2470,36 @@ def test_unmapped_activity_returns_none():
 
 def test_unmapped_activity_blocks_apply(monkeypatch):
     async def fake_rows(conn):
-        return [(1, "aac", "paragliding", "", False)]
+        return [(1, "aac", "paragliding", "", False)], activity.R4_VERSION
 
     monkeypatch.setattr(activity, "_rows", fake_rows)
     with pytest.raises(SystemExit, match="paragliding"):
         asyncio.run(activity.run_r4(None, argparse.Namespace(apply=True)))  # type: ignore[arg-type]
+
+
+def test_rule_version_follows_the_terrain_set(monkeypatch):
+    seen = {}
+
+    async def fake_rows(conn):
+        return [(1, "aac", "rock climbing", "", False)], activity.R4_OBJECTIVES_VERSION
+
+    async def fake_run_step(conn, *, step, rule_version, changes, report, apply):
+        seen["v"] = rule_version
+        seen["fields"] = {c.field: c.new_value for c in changes}
+        return {}
+
+    monkeypatch.setattr(activity, "_rows", fake_rows)
+    monkeypatch.setattr(activity, "run_step", fake_run_step)
+    asyncio.run(activity.run_r4(None, argparse.Namespace(apply=False)))  # type: ignore[arg-type]
+    assert seen["v"] == "r4-v2" and seen["fields"]["activity_rule_version"] == "r4-v2"
+
+
+def test_golden_strata_separate_the_rows_where_rules_fire():
+    assert activity.golden_stratum({"family": "avalanche", "activity": "backcountry skiing", "outcome": "climbing_approach"}) == "ski_approach"
+    assert activity.golden_stratum({"family": "avalanche", "activity": "snowmobiling", "outcome": "non_climbing"}) == "ski_other"
+    assert activity.golden_stratum({"family": "nps", "activity": "hiking", "outcome": "non_climbing"}) == "nps"
+    assert activity.golden_stratum({"family": "aac", "activity": "ice climbing", "outcome": "climbing"}) == "climbing"
+    assert activity.golden_stratum({"family": "aac", "activity": "hiking", "outcome": "non_climbing"}) == "non_climbing"
 ```
 
 - [ ] **Step 2: Run to verify failure** — FAIL.
@@ -2113,21 +2515,26 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
+from numpy.typing import NDArray
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.data.repair.framework import Change, fetch_accidents, run_step
-from app.data.repair.review import export_sample
+from app.data.repair.geocode import TRUSTED_POINT_PRECISIONS
+from app.data.repair.review import export_stratified
 from app.data.repair.sources import SourceFamily, source_family
 from app.pipelines.geo import haversine_km_many
 from app.pipelines.textsim import normalize_text
 from app.pipelines.validate import ValidationReport
 
 R4_VERSION = "r4-v1"
+R4_OBJECTIVES_VERSION = "r4-v2"
 SKI_APPROACH_RADIUS_M = 1000
+GOLDEN_QUOTAS = {"ski_approach": 15, "ski_other": 15, "nps": 10, "climbing": 10, "non_climbing": 10}
 CLIMBING = frozenset({
     "climbing", "rock climbing", "ice climbing", "mixed climbing", "alpine climbing", "mountaineering",
     "trad climbing", "sport climbing", "bouldering", "top rope", "aid climbing", "ice", "rock", "alpine",
@@ -2164,28 +2571,50 @@ def classify_activity(
     return None
 
 
-async def _rows(conn: AsyncConnection) -> list[tuple[int, SourceFamily, str | None, str, bool]]:
-    accidents = await fetch_accidents(conn, ["source", "activity", "description", "tags", "latitude", "longitude"])
-    terrain = np.array(
-        (await conn.execute(text(
-            "SELECT DISTINCT l.latitude, l.longitude FROM mp_routes r JOIN mp_locations l ON l.mp_id = r.location_id "
-            "WHERE l.latitude IS NOT NULL AND (r.type ILIKE '%alpine%' OR r.type ILIKE '%ice%' OR r.type ILIKE '%mixed%')"
-        ))).all(),
-        dtype=np.float64,
-    ).reshape(-1, 2)
+def golden_stratum(row: Mapping[str, object]) -> str:
+    family, outcome = row["family"], row["outcome"]
+    if family == "nps":
+        return "nps"
+    if outcome == "climbing_approach":
+        return "ski_approach"
+    if normalize_text(str(row["activity"] or "")) in SKI_LIKE:
+        return "ski_other"
+    return "climbing" if outcome == "climbing" else "non_climbing"
+
+
+async def _terrain(conn: AsyncConnection) -> tuple[NDArray[np.float64], str]:
+    points = list((await conn.execute(text(
+        "SELECT DISTINCT l.latitude, l.longitude FROM mp_routes r JOIN mp_locations l ON l.mp_id = r.location_id "
+        "WHERE l.latitude IS NOT NULL AND (r.type ILIKE '%alpine%' OR r.type ILIKE '%ice%' OR r.type ILIKE '%mixed%')"
+    ))).all())
+    version = R4_VERSION
+    # Spec R4 counts objectives too; they arrive in plan 6. The rule version records which
+    # terrain set decided the row, so the plan-6 re-run writes new revisions.
+    if (await conn.execute(text("SELECT to_regclass('public.objectives') IS NOT NULL"))).scalar_one():
+        points += list((await conn.execute(text("SELECT lat, lon FROM objectives WHERE lat IS NOT NULL AND lon IS NOT NULL"))).all())
+        version = R4_OBJECTIVES_VERSION
+    return np.array(points, dtype=np.float64).reshape(-1, 2), version
+
+
+async def _rows(conn: AsyncConnection) -> tuple[list[tuple[int, SourceFamily, str | None, str, bool]], str]:
+    accidents = await fetch_accidents(
+        conn, ["source", "activity", "description", "tags", "latitude", "longitude", "geocode_precision"]
+    )
+    terrain, version = await _terrain(conn)
     out = []
     for r in accidents:
         near = False
-        if r["latitude"] is not None and r["longitude"] is not None and len(terrain):
+        trusted = r["geocode_precision"] in TRUSTED_POINT_PRECISIONS
+        if trusted and r["latitude"] is not None and r["longitude"] is not None and len(terrain):
             d = haversine_km_many(float(str(r["latitude"])), float(str(r["longitude"])), terrain[:, 0], terrain[:, 1])
             near = bool((d * 1000 <= SKI_APPROACH_RADIUS_M).any())
         narrative = f"{r['description'] or ''} {r['tags'] or ''}"
         out.append((int(str(r["accident_id"])), source_family(str(r["source"])), r["activity"] if isinstance(r["activity"], str) else None, narrative, near))
-    return out
+    return out, version
 
 
 async def run_r4(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
-    rows = await _rows(conn)
+    rows, version = await _rows(conn)
     report = ValidationReport("repair:r4")
     changes: list[Change] = []
     unmapped: Counter[str] = Counter()
@@ -2199,20 +2628,27 @@ async def run_r4(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, o
         cls, flag = result
         changes += [
             Change(accident_id, "activity_class", cls, "r4"),
-            Change(accident_id, "activity_rule_version", R4_VERSION, "r4"),
+            Change(accident_id, "activity_rule_version", version, "r4"),
             Change(accident_id, "inclusion_flag", flag, "r4"),
         ]
     if unmapped and args.apply:
         raise SystemExit(f"unmapped activity values, extend activity.py first: {dict(unmapped)}")
-    summary = await run_step(conn, step="r4", rule_version=R4_VERSION, changes=changes, report=report, apply=args.apply)
-    return summary | {"unmapped": dict(unmapped)}
+    summary = await run_step(conn, step="r4", rule_version=version, changes=changes, report=report, apply=args.apply)
+    return summary | {"unmapped": dict(unmapped), "terrain_version": version}
 
 
 async def run_r4_golden_export(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
-    rows = [{"accident_id": a, "family": f, "activity": act} for a, f, act, _, _ in await _rows(conn)]
+    rows, _ = await _rows(conn)
+    candidates = []
+    for a, f, act, narrative, near in rows:
+        result = classify_activity(f, act, narrative, near)
+        candidates.append({"accident_id": a, "family": f, "activity": act, "outcome": result[0] if result else "unmapped"})
     out = Path(args.out or "../data/review/activity_golden_candidates.csv")
-    n = export_sample(rows, n=60, seed=4, path=out, columns=["accident_id", "family", "activity"], decision_column="label")
-    return {"exported": n, "path": str(out), "labels": "climbing|climbing_approach|non_climbing"}
+    taken = export_stratified(
+        candidates, stratum=golden_stratum, quotas=GOLDEN_QUOTAS, seed=4, path=out,
+        columns=["accident_id", "family", "activity"], decision_column="label",
+    )
+    return {"strata": taken, "path": str(out), "labels": "climbing|climbing_approach|non_climbing"}
 ```
 
 `data/golden/README.md`:
@@ -2222,8 +2658,9 @@ async def run_r4_golden_export(conn: AsyncConnection, args: argparse.Namespace) 
 
 Hand labels used by the `-m db` acceptance tests. Each file holds `accident_id` plus labels only: no narrative text, place names, or MP data. Labels are made by the owner reading the source record, never by a model.
 
-- `activity_v1.csv` — `accident_id,label` (`climbing|climbing_approach|non_climbing`), 60 rows, R4 must score ≥95%.
-- `experience_v1.csv` — `accident_id,exp_years_climbing,exp_stated_level,exp_first_season,guided`, 80 rows, R12 precision ≥95% on filled values.
+- `activity_v1.csv` — `accident_id,label` (`climbing|climbing_approach|non_climbing`), 60 rows drawn by `r4-golden-export` with quotas toward ski-approach, other ski/snowmobile, NPS, climbing and non-climbing rows (the rule's hard cases, not a uniform sample); R4 must score ≥95%.
+- `experience_v1.csv` — `accident_id,exp_years_climbing,exp_stated_level,exp_first_season,guided`, 80 rows drawn by `r12-golden-export`: 60 where R12 fills at least one value, 20 where it fills none (to measure recall); R12 precision ≥95% on filled values, recall reported.
+- The exports never show the rule's decision to the labeller.
 ```
 
 `data/golden/activity_v1.csv`: the single line `accident_id,label`.
@@ -2264,7 +2701,7 @@ def test_r4_golden_set_at_least_95_percent():
 
 **Interfaces:**
 - Consumes: Tasks 1, 5, 6 (`internal.duplicate_decisions`), 7 (R3 must have run).
-- Produces: `R5_BASE = "r5-v1"`, `MERGE_AT = 0.90`, `DISTINCT_AT = 0.40`, `@dataclass(frozen=True) DupRow(accident_id: int, family: SourceFamily, date: date | None, lat: float | None, lon: float | None, accident_type: str | None, severity: str | None, place: str, date_precision: str | None, geocode_precision: str | None, exact_key: tuple[object, ...])`, `pair_score(a: DupRow, b: DupRow) -> float`, `candidate_pairs(rows) -> list[tuple[int, int, float]]` (low id first, fuzzy only), `exact_groups(rows) -> list[list[int]]`, `band(score: float) -> Literal["merge", "distinct", "review"]`, `groups(ids: Iterable[int], merges: Iterable[tuple[int, int]]) -> list[list[int]]`, `canonical(members: Sequence[DupRow]) -> int`, `rule_version(decisions: Mapping[tuple[int, int], str]) -> str`, CLI steps `r5` (auto decisions + export review CSV + apply groups), `r5-import`.
+- Produces: `R5_BASE = "r5-v1"`, `MERGE_AT = 0.90`, `DISTINCT_AT = 0.40`, `@dataclass(frozen=True) DupRow(accident_id: int, family: SourceFamily, date: date | None, lat: float | None, lon: float | None, accident_type: str | None, severity: str | None, place: str, date_precision: str | None, geocode_precision: str | None, exact_key: tuple[object, ...])`, `PRECISION_WEIGHT = {"day": 1.0, "month": 0.6, "year": 0.3}`, `date_interval(d: date | None, precision: str | None) -> tuple[date, date] | None`, `interval_gap_days(a, b) -> int`, `pair_score(a: DupRow, b: DupRow) -> float`, `candidate_pairs(rows) -> list[tuple[int, int, float]]` (low id first, fuzzy only, precision-aware window, untrusted points excluded), `exact_groups(rows) -> list[list[int]]`, `band(score: float) -> Literal["merge", "distinct", "review"]`, `groups(ids: Iterable[int], merges: Iterable[tuple[int, int]]) -> list[list[int]]`, `canonical(members: Sequence[DupRow]) -> int`, `group_changes(rows_by_id: Mapping[int, DupRow], merges: Iterable[tuple[int, int]]) -> list[Change]` (every row: group members get the head, everyone else is reset), `rule_version(decisions: Mapping[tuple[int, int], str]) -> str`, CLI steps `r5` (auto decisions + export review CSV + apply groups; logs `review_pending` on its run row), `r5-import`.
 
 - [ ] **Step 1: Failing tests** — `backend/tests/test_repair_dedupe.py`:
 
@@ -2273,16 +2710,26 @@ from datetime import date
 
 import pytest
 
+import asyncio
+import uuid
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+
 from app.data.repair.dedupe import (
     DupRow,
     band,
     candidate_pairs,
     canonical,
+    date_interval,
     exact_groups,
+    group_changes,
     groups,
     pair_score,
     rule_version,
 )
+from app.data.repair.framework import apply_changes
+from tests.pgtest import migrated_db, requires_pg, sa_url
 
 
 def r(i, d=date(2010, 7, 1), lat=40.0, lon=-105.0, typ="fall", sev="serious", place="Fixture Peak",
@@ -2324,6 +2771,66 @@ def test_new_owner_decision_produces_a_new_rule_version():
     a = rule_version({(1, 2): "merge"})
     b = rule_version({(1, 2): "distinct"})
     assert a != b and a.startswith("r5-v1+") and rule_version({(1, 2): "merge"}) == a
+
+
+def test_date_intervals_follow_precision():
+    assert date_interval(date(2010, 7, 15), "month") == (date(2010, 7, 1), date(2010, 7, 31))
+    assert date_interval(date(2010, 7, 1), "year") == (date(2010, 1, 1), date(2010, 12, 31))
+    assert date_interval(date(2010, 7, 3), "day") == (date(2010, 7, 3), date(2010, 7, 3))
+    assert date_interval(date(2010, 7, 3), "unknown") is None
+
+
+def test_month_precision_row_pairs_with_a_day_record_in_the_same_month():
+    aac = r(1, d=date(2010, 7, 15), dp="month")
+    nps = r(2, d=date(2010, 7, 3), fam="nps", dp="day", gp="park_centroid")
+    [(lo, hi, score)] = candidate_pairs([aac, nps])
+    assert (lo, hi) == (1, 2)
+    assert score < pair_score(r(3), r(4)) and band(score) == "review"
+
+
+def test_untrusted_points_never_make_a_pair():
+    a = r(1, gp="region_fallback")
+    b = r(2, gp="region_fallback")
+    assert candidate_pairs([a, b]) == []
+
+
+def test_group_changes_reset_rows_that_left_a_group():
+    by_id = {i: r(i) for i in (1, 2, 3)}
+    merged = {(c.accident_id, c.field): c.new_value for c in group_changes(by_id, [(1, 2)])}
+    assert merged[(1, "incident_group_id")] == 1 and merged[(2, "is_canonical")] is False
+    assert merged[(3, "incident_group_id")] is None and merged[(3, "is_canonical")] is True
+    split = {(c.accident_id, c.field): c.new_value for c in group_changes(by_id, [])}
+    assert all(split[(i, "incident_group_id")] is None and split[(i, "is_canonical")] is True for i in (1, 2, 3))
+
+
+SEED = """
+INSERT INTO accidents (accident_id, source, date, latitude, longitude) VALUES
+  (1, 'AAC', '2010-07-02', 40.0, -105.0),
+  (2, 'AAC', '2010-07-02', 40.0, -105.0);
+"""
+
+
+@requires_pg
+def test_flip_to_distinct_restores_canonical_rows():
+    async def scenario(url: str) -> None:
+        engine = create_async_engine(url)
+        by_id = {1: r(1), 2: r(2)}
+        try:
+            async with engine.begin() as conn:
+                await apply_changes(conn, group_changes(by_id, [(1, 2)]),
+                                    rule_version=rule_version({(1, 2): "merge"}), run_id=uuid.uuid4())
+            async with engine.begin() as conn:
+                await apply_changes(conn, group_changes(by_id, []),
+                                    rule_version=rule_version({(1, 2): "distinct"}), run_id=uuid.uuid4())
+            async with engine.connect() as conn:
+                rows = (await conn.execute(text(
+                    "SELECT accident_id, incident_group_id, is_canonical FROM accidents ORDER BY 1"))).all()
+            assert [tuple(x) for x in rows] == [(1, None, True), (2, None, True)]
+        finally:
+            await engine.dispose()
+
+    with migrated_db(seed_sql=SEED) as name:
+        asyncio.run(scenario(sa_url(name)))
 ```
 
 - [ ] **Step 2: Run to verify failure** — FAIL.
@@ -2341,6 +2848,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+from calendar import monthrange
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -2352,6 +2860,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.data.repair.framework import Change, fetch_accidents, run_step
+from app.data.repair.geocode import TRUSTED_POINT_PRECISIONS
 from app.data.repair.sources import SourceFamily, source_family
 from app.pipelines.geo import haversine_km
 from app.pipelines.textsim import jaro_winkler, normalize_text, place_key
@@ -2360,6 +2869,9 @@ from app.pipelines.validate import ValidationReport
 R5_BASE = "r5-v1"
 MERGE_AT, DISTINCT_AT = 0.90, 0.40
 MAX_DAYS, MAX_KM = 2, 5.0
+# An interval overlap is weaker evidence than the same day; scaling the date component
+# keeps imprecise pairs out of the auto-merge band so the owner decides them.
+PRECISION_WEIGHT = {"day": 1.0, "month": 0.6, "year": 0.3}
 WEIGHTS = {"date": 0.30, "distance": 0.25, "type": 0.15, "severity": 0.15, "name": 0.15}
 GEO_RANK = {"exact": 0, "crag": 1, "area": 2, "park_centroid": 3, "region_fallback": 4, "unknown": 5}
 SOURCE_RANK = {"aac": 0, "avalanche": 1, "nps": 2}
@@ -2387,16 +2899,38 @@ def _same(a: str | None, b: str | None) -> float:
 
 
 def _coords(r: DupRow) -> tuple[float, float] | None:
-    return (r.lat, r.lon) if r.lat is not None and r.lon is not None else None
+    # region_fallback/unknown points are kept on the row but are city/state centroids;
+    # two unrelated accidents at the same centroid must not look co-located.
+    if r.lat is None or r.lon is None or (r.geocode_precision or "unknown") not in TRUSTED_POINT_PRECISIONS:
+        return None
+    return (r.lat, r.lon)
+
+
+def date_interval(d: date | None, precision: str | None) -> tuple[date, date] | None:
+    if d is None:
+        return None
+    if precision == "day":
+        return (d, d)
+    if precision == "month":
+        return (d.replace(day=1), d.replace(day=monthrange(d.year, d.month)[1]))
+    if precision == "year":
+        return (date(d.year, 1, 1), date(d.year, 12, 31))
+    return None
+
+
+def interval_gap_days(a: tuple[date, date], b: tuple[date, date]) -> int:
+    return max(0, (b[0] - a[1]).days, (a[0] - b[1]).days)
 
 
 def pair_score(a: DupRow, b: DupRow) -> float:
-    gap = abs((a.date - b.date).days) if a.date is not None and b.date is not None else MAX_DAYS + 1
+    ia, ib = date_interval(a.date, a.date_precision), date_interval(b.date, b.date_precision)
+    gap = interval_gap_days(ia, ib) if ia is not None and ib is not None else MAX_DAYS + 1
+    weight = min(PRECISION_WEIGHT.get(a.date_precision or "", 0.0), PRECISION_WEIGHT.get(b.date_precision or "", 0.0))
     ca, cb = _coords(a), _coords(b)
     dist = haversine_km(ca[0], ca[1], cb[0], cb[1]) if ca is not None and cb is not None else MAX_KM
     name = jaro_winkler(a.place, b.place) if a.place and b.place else 0.5
     score = (
-        WEIGHTS["date"] * max(0.0, 1 - gap / (MAX_DAYS + 1))
+        WEIGHTS["date"] * weight * max(0.0, 1 - gap / (MAX_DAYS + 1))
         + WEIGHTS["distance"] * max(0.0, 1 - dist / MAX_KM)
         + WEIGHTS["type"] * _same(a.accident_type, b.accident_type)
         + WEIGHTS["severity"] * _same(a.severity, b.severity)
@@ -2421,17 +2955,19 @@ def exact_groups(rows: Sequence[DupRow]) -> list[list[int]]:
 
 
 def candidate_pairs(rows: Sequence[DupRow]) -> list[tuple[int, int, float]]:
-    usable: list[tuple[date, tuple[float, float], DupRow]] = []
+    usable: list[tuple[tuple[date, date], tuple[float, float], DupRow]] = []
     for r in rows:
-        c = _coords(r)
-        if r.date is not None and c is not None:
-            usable.append((r.date, c, r))
-    usable.sort(key=lambda t: t[0])
+        c, span = _coords(r), date_interval(r.date, r.date_precision)
+        if span is not None and c is not None:
+            usable.append((span, c, r))
+    usable.sort(key=lambda t: (t[0][0], t[2].accident_id))
     exact = [frozenset(g) for g in exact_groups(rows)]
     pairs = []
-    for i, (da, ca, a) in enumerate(usable):
-        for db, cb, b in usable[i + 1 :]:
-            if (db - da).days > MAX_DAYS:
+    for i, (sa, ca, a) in enumerate(usable):
+        for sb, cb, b in usable[i + 1 :]:
+            # Sorted by interval start, so once b starts more than MAX_DAYS after a ends,
+            # every later row does too.
+            if (sb[0] - sa[1]).days > MAX_DAYS:
                 break
             if haversine_km(ca[0], ca[1], cb[0], cb[1]) > MAX_KM:
                 continue
@@ -2470,6 +3006,25 @@ def canonical(members: Sequence[DupRow]) -> int:
         ),
     )
     return best.accident_id
+
+
+def group_changes(rows_by_id: Mapping[int, DupRow], merges: Iterable[tuple[int, int]]) -> list[Change]:
+    # Emitted for every row, not only current members: a pair flipped to distinct (owner
+    # decision, R11 row, R3 score drift) must reset the rows that left the group, or they
+    # would stay non-canonical and silently drop out of accidents_clean.
+    head_of: dict[int, int] = {}
+    for group in groups(rows_by_id, merges):
+        head = canonical([rows_by_id[i] for i in group])
+        for member in group:
+            head_of[member] = head
+    changes: list[Change] = []
+    for accident_id in sorted(rows_by_id):
+        head = head_of.get(accident_id)
+        changes += [
+            Change(accident_id, "incident_group_id", head, "r5"),
+            Change(accident_id, "is_canonical", head is None or head == accident_id, "r5"),
+        ]
+    return changes
 
 
 def rule_version(decisions: Mapping[tuple[int, int], str]) -> str:
@@ -2550,18 +3105,20 @@ async def run_r5(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, o
                 a, b = by_id[lo], by_id[hi]
                 w.writerow([lo, hi, score, a.date, b.date, a.accident_type, b.accident_type, a.severity, b.severity, a.place, b.place, ""])
     merges = [pair for pair, d in decisions.items() if d == "merge"]
-    changes: list[Change] = []
+    changes = group_changes(by_id, merges)
     report = ValidationReport("repair:r5")
-    for group in groups(by_id, merges):
-        head = canonical([by_id[i] for i in group])
-        for member in group:
-            changes += [
-                Change(member, "incident_group_id", head, "r5"),
-                Change(member, "is_canonical", member == head, "r5"),
-            ]
-            report.accept()
+    for _ in by_id:
+        report.accept()
     version = rule_version(decisions)
     summary = await run_step(conn, step="r5", rule_version=version, changes=changes, report=report, apply=args.apply)
+    if args.apply:
+        # Undecided review pairs are left unmerged (double counted) until the owner decides;
+        # the acceptance cell reads this number from the latest applied run.
+        await conn.execute(
+            text("UPDATE source_ingest_log SET validation_report = validation_report || "
+                 "jsonb_build_object('review_pending', CAST(:n AS integer)) WHERE run_id = CAST(:run AS uuid)"),
+            {"n": len(review), "run": summary["run_id"]},
+        )
     return summary | {"auto_decisions": len(decisions), "review_pairs": len(review), "groups": len(groups(by_id, merges))}
 
 
@@ -2600,9 +3157,21 @@ def test_r5_no_exact_duplicates_among_canonical_rows():
     assert row["n"] == 0
 
 
-def test_r5_owner_review_band_fully_decided():
-    [row] = fetch("SELECT count(*) AS n FROM internal.duplicate_decisions WHERE decision NOT IN ('merge','distinct')")
-    assert row["n"] == 0
+def test_r5_latest_applied_run_left_no_pair_undecided():
+    [row] = fetch(
+        "SELECT (validation_report->>'review_pending')::int AS pending FROM source_ingest_log "
+        "WHERE source = 'repair:r5' AND status = 'ok' ORDER BY finished_at DESC LIMIT 1"
+    )
+    assert row["pending"] == 0
+
+
+def test_r5_every_group_has_exactly_one_canonical_head():
+    [row] = fetch(
+        "SELECT count(*) AS bad FROM (SELECT incident_group_id FROM accidents WHERE incident_group_id IS NOT NULL "
+        "GROUP BY 1 HAVING count(*) FILTER (WHERE is_canonical) <> 1 "
+        "OR bool_and(accident_id <> incident_group_id)) g"
+    )
+    assert row["bad"] == 0
 ```
 
 - [ ] **Step 4: Run** — `cd backend && uv run pytest tests/test_repair_dedupe.py -q && uv run mypy && uv run ruff check . ../scripts/` → PASS.
@@ -2617,18 +3186,32 @@ def test_r5_owner_review_band_fully_decided():
 - Modify: `backend/app/data/repair/__main__.py`, `backend/pyproject.toml`, `backend/tests/verify/test_phase2a_repair.py`
 
 **Interfaces:**
-- Produces: `R12_VERSION = "r12-v1"`, `@dataclass(frozen=True) Experience(years: int | None, level: str, first_season: bool | None, guided: str)`, `extract_experience(text: str | None) -> Experience`, CLI steps `r12`, `r12-golden-export`.
+- Create also: `backend/tests/test_experience_not_required.py`
+- Produces: `R12_VERSION = "r12-v1"`, `@dataclass(frozen=True) Experience(years: int | None, level: str, first_season: bool | None, guided: str)`, `NOTHING = Experience(None, "unknown", None, "unknown")`, `parse_number(word: str) -> int | None` (digits and English words to ninety-nine, hyphenated or spaced), `extract_experience(text: str | None) -> Experience`, `GOLDEN_QUOTAS = {"fired": 60, "silent": 20}`, CLI steps `r12`, `r12-golden-export` (stratified: rows where a rule fires vs rows where none does).
 
 - [ ] **Step 1: Failing tests** — `backend/tests/test_repair_experience.py`:
 
 ```python
-from app.data.repair.experience import Experience, extract_experience
+from app.data.repair.experience import Experience, extract_experience, parse_number
 
 
 def test_years_of_climbing():
     assert extract_experience("She had 12 years of climbing experience.").years == 12
     assert extract_experience("with five years climbing").years == 5
     assert extract_experience("the 12 year old route").years is None
+
+
+def test_word_numbers_and_boundaries():
+    assert parse_number("twenty-five") == 25 and parse_number("twenty five") == 25 and parse_number("7") == 7
+    assert extract_experience("He had twenty-five years of climbing behind him.").years == 25
+    assert extract_experience("the club logged 112 years of climbing").years is None
+    assert extract_experience("She had been climbing for 8 years.").years == 8
+
+
+def test_only_climbing_years_count():
+    assert extract_experience("He had 20 years of experience as a nurse.").years is None
+    assert extract_experience("30 years of ski patrol work").years is None
+    assert extract_experience("10 years of ice climbing").years == 10
 
 
 def test_levels_and_conflicts():
@@ -2645,6 +3228,14 @@ def test_first_season_and_guided():
 def test_negated_forms_do_not_match_the_positive_class():
     e = extract_experience("The inexperienced pair were unguided and went without a guide.")
     assert (e.level, e.guided) == ("novice", "unguided")
+
+
+def test_relative_and_compound_forms_set_nothing_positive():
+    assert extract_experience("the less experienced partner").level == "unknown"
+    assert extract_experience("a more experienced climber led").level == "unknown"
+    assert extract_experience("a non-expert on ice").level == "unknown"
+    assert extract_experience("It was a self-guided trip.").guided == "unguided"
+    assert extract_experience("They hired a guided party's rope.").guided == "guided"
 
 
 def test_nothing_stated_is_unknown_not_a_guess():
@@ -2671,23 +3262,35 @@ from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.data.repair.framework import Change, fetch_accidents, run_step
-from app.data.repair.review import export_sample
+from app.data.repair.review import export_stratified
 from app.pipelines.validate import ValidationReport
 
 R12_VERSION = "r12-v1"
-_WORDS = {w: i for i, w in enumerate(
+_UNITS = {w: i for i, w in enumerate(
     "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen "
-    "sixteen seventeen eighteen nineteen twenty".split())}
-_NUM = r"(\d{1,2}|" + "|".join(_WORDS) + r")"
-YEARS = re.compile(_NUM + r"\+?\s+years?\s+(?:of\s+)?(?:\w+\s+)?(?:climbing|mountaineering|experience)", re.I)
+    "sixteen seventeen eighteen nineteen".split())}
+_TENS = {"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90}
+# Tens-compounds first so "twenty-five" is one number, not "five"; \b on both sides so
+# "112 years" is not read as 12.
+_NUM = (
+    r"\b(\d{1,2}|(?:" + "|".join(_TENS) + r")(?:[-\s](?:" + "|".join(list(_UNITS)[1:10]) + r"))?|"
+    + "|".join(sorted(_UNITS, key=len, reverse=True)) + r")\b"
+)
+_DISCIPLINE = r"(?:(?:rock|ice|alpine|trad|sport|mixed|big\s+wall)\s+)?"
+YEARS = re.compile(
+    _NUM + r"\+?\s+years?\s+(?:of\s+)?" + _DISCIPLINE + r"(?:climbing|mountaineering)\b"
+    + r"|\bclimbing\s+for\s+" + _NUM + r"\+?\s+years?\b",
+    re.I,
+)
 LEVELS = {
     "novice": re.compile(r"\b(?:novice|beginner|inexperienced)\b", re.I),
-    "expert": re.compile(r"\bexpert\b", re.I),
-    "experienced": re.compile(r"(?<!in)\bexperienced\b", re.I),
+    "expert": re.compile(r"(?<!non-)(?<!non )\bexpert\b", re.I),
+    # "less/more experienced" compares two people; it states no level for either.
+    "experienced": re.compile(r"(?<!less )(?<!more )(?<!most )(?<!least )(?<!not )\bexperienced\b", re.I),
 }
 FIRST = re.compile(r"\bfirst\s+(?:season|year)\b", re.I)
-UNGUIDED = re.compile(r"\b(?:unguided|independent(?:ly)?|without\s+a\s+guide)\b", re.I)
-GUIDED = re.compile(r"\b(?:guided|client|clients)\b|\bthe\s+guide\b", re.I)
+UNGUIDED = re.compile(r"\b(?:unguided|independent(?:ly)?|without\s+a\s+guide|self[-\s]guided)\b", re.I)
+GUIDED = re.compile(r"(?<![\w-])guided\b|\b(?:client|clients)\b|\bthe\s+guide\b", re.I)
 
 
 @dataclass(frozen=True)
@@ -2698,10 +3301,27 @@ class Experience:
     guided: str
 
 
+NOTHING = Experience(None, "unknown", None, "unknown")
+GOLDEN_QUOTAS = {"fired": 60, "silent": 20}
+
+
+def parse_number(word: str) -> int | None:
+    w = word.strip().lower()
+    if w.isdigit():
+        return int(w)
+    if w in _UNITS:
+        return _UNITS[w]
+    parts = re.split(r"[-\s]+", w)
+    if parts[0] in _TENS and (len(parts) == 1 or (len(parts) == 2 and parts[1] in _UNITS and 0 < _UNITS[parts[1]] < 10)):
+        return _TENS[parts[0]] + (_UNITS[parts[1]] if len(parts) == 2 else 0)
+    return None
+
+
 def extract_experience(text: str | None) -> Experience:
     if not text:
-        return Experience(None, "unknown", None, "unknown")
-    numbers = {int(m) if m.isdigit() else _WORDS[m.lower()] for m in (g.group(1) for g in YEARS.finditer(text))}
+        return NOTHING
+    found = [m.group(1) or m.group(2) for m in YEARS.finditer(text)]
+    numbers = {n for n in (parse_number(f) for f in found if f) if n is not None}
     years = numbers.pop() if len(numbers) == 1 else None
     if years is not None and not 0 <= years <= 80:
         years = None
@@ -2724,7 +3344,7 @@ async def run_r12(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, 
     for r in rows:
         a = int(str(r["accident_id"]))
         e = extract_experience(r["description"] if isinstance(r["description"], str) else None)
-        if e == Experience(None, "unknown", None, "unknown"):
+        if e == NOTHING:
             report.quarantine(str(a), "nothing_stated")
         else:
             report.accept()
@@ -2739,39 +3359,80 @@ async def run_r12(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, 
 
 
 async def run_r12_golden_export(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
-    rows = await fetch_accidents(conn, ["source"])
+    rows = [
+        {"accident_id": r["accident_id"],
+         "fired": extract_experience(r["description"] if isinstance(r["description"], str) else None) != NOTHING}
+        for r in await fetch_accidents(conn, ["description"])
+    ]
     out = Path(args.out or "../data/review/experience_golden_candidates.csv")
-    n = export_sample(rows, n=80, seed=12, path=out, columns=["accident_id"], decision_column="exp_years_climbing")
-    return {"exported": n, "path": str(out), "columns_to_fill": "exp_years_climbing,exp_stated_level,exp_first_season,guided"}
+    taken = export_stratified(
+        rows, stratum=lambda r: "fired" if r["fired"] else "silent", quotas=GOLDEN_QUOTAS, seed=12, path=out,
+        columns=["accident_id"], decision_column="exp_years_climbing",
+    )
+    return {"strata": taken, "path": str(out), "columns_to_fill": "exp_years_climbing,exp_stated_level,exp_first_season,guided"}
 ```
 
 The "nothing_stated" quarantine entries are counts for the report; R12 still writes the explicit `unknown`s.
 
 `data/golden/experience_v1.csv`: the single line `accident_id,exp_years_climbing,exp_stated_level,exp_first_season,guided`.
 
+`backend/tests/test_experience_not_required.py` (spec R12 "scoring never requires them"; Phase 3 adds its own scorer-level test against this same rule):
+
+```python
+"""No scoring or API path may depend on the R12 experience columns: they are NULL or
+'unknown' for most rows and must never gate a score. Only the repair rules, the model
+declaration and the clean-view migration may name them."""
+
+import re
+from pathlib import Path
+
+APP = Path(__file__).resolve().parents[1] / "app"
+ALLOWED = {APP / "data" / "repair" / "experience.py", APP / "data" / "repair" / "framework.py", APP / "models" / "accident.py"}
+COLUMNS = re.compile(r"\b(?:exp_years_climbing|exp_stated_level|exp_first_season|exp_rule_version)\b")
+
+
+def test_scoring_path_never_reads_experience_columns():
+    offenders = [
+        str(p.relative_to(APP)) for p in APP.rglob("*.py")
+        if p not in ALLOWED and COLUMNS.search(p.read_text(encoding="utf-8"))
+    ]
+    assert offenders == []
+```
+
+Add a row to the `0006` seed in Task 11 with every experience column at its NULL/`unknown` default and assert it is in `accidents_clean` (the view never filters on them).
+
 Register `"r12": experience.run_r12, "r12-golden-export": experience.run_r12_golden_export`. Append `"app.data.repair.experience"` to strict mypy.
 
 Append to the verify file:
 
 ```python
-def test_r12_golden_precision_on_filled_values():
+def test_r12_golden_precision_on_filled_values_and_recall_reported():
     gold = {int(r["accident_id"]): r for r in golden("experience_v1.csv")}
     assert len(gold) >= 80, "label the golden set first (runbook Task 13)"
     ids = ",".join(str(i) for i in gold)
     rows = fetch(f"SELECT accident_id, exp_years_climbing, exp_stated_level, exp_first_season, guided FROM accidents WHERE accident_id IN ({ids})")
-    filled = correct = 0
+    filled = correct = stated = found = 0
+    blank = {"", "none", "null", "unknown"}
     for r in rows:
         g = gold[r["accident_id"]]
         for col, missing in (("exp_years_climbing", None), ("exp_stated_level", "unknown"), ("exp_first_season", None), ("guided", "unknown")):
+            truth = g[col].strip().lower()
+            got_right = r[col] != missing and str(r[col]).lower() == truth
             if r[col] != missing:
                 filled += 1
-                correct += str(r[col]).lower() == g[col].strip().lower()
-    print({"filled": filled, "correct": correct})
-    assert filled == 0 or correct / filled >= 0.95
+                correct += got_right
+            if truth not in blank:
+                stated += 1
+                found += got_right
+    print({"filled": filled, "correct": correct, "recall": round(found / stated, 3) if stated else None})
+    # A rule that fills nothing would pass a precision-only bar; the golden set is
+    # stratified toward rows where R12 fires, so zero filled values is a failure.
+    assert filled > 0, "R12 filled no golden value"
+    assert correct / filled >= 0.95
 ```
 
 - [ ] **Step 4: Run** — PASS on `uv run pytest tests/test_repair_experience.py -q`, mypy, ruff.
-- [ ] **Step 5: Commit** — `git add backend/app/data/repair/experience.py backend/app/data/repair/__main__.py backend/tests/test_repair_experience.py backend/tests/verify/test_phase2a_repair.py data/golden/experience_v1.csv backend/pyproject.toml && git commit -m "feat(repair): R12 stated experience facts by versioned rules"`
+- [ ] **Step 5: Commit** — `git add backend/app/data/repair/experience.py backend/app/data/repair/__main__.py backend/tests/test_repair_experience.py backend/tests/test_experience_not_required.py backend/tests/verify/test_phase2a_repair.py data/golden/experience_v1.csv backend/pyproject.toml && git commit -m "feat(repair): R12 stated experience facts by versioned rules"`
 
 ---
 
@@ -2782,7 +3443,7 @@ def test_r12_golden_precision_on_filled_values():
 - Modify: `backend/db/roles/grants_phase2.sql`, `backend/tests/verify/test_phase2a_repair.py`, `CHANGELOG.md`, `data/DATABASE_STRUCTURE.md`, `CLAUDE.md`
 
 **Interfaces:**
-- Produces: views `public.accidents_clean` (columns: `accident_id, source, source_id, date, year, date_precision, year_lo, year_hi, state, country, mountain, route, latitude, longitude, coordinates, elevation_meters, geocode_precision, accident_type, activity, activity_class, inclusion_flag, injury_severity, severity_scale, incident_group_id, mp_route_id, exp_years_climbing, exp_stated_level, exp_first_season, guided, source_url`) and `public.accidents_clean_daily` (same, `date_precision = 'day'`). Phase 3 reads these; later plans' loaders (plan 3 R11) fill the same columns.
+- Produces: views `public.accidents_clean` (columns: `accident_id, source, source_id, date, year, date_precision, year_lo, year_hi, state, country, mountain, route, latitude, longitude, coordinates, elevation_meters, geocode_precision, accident_type, activity, activity_class, inclusion_flag, injury_severity, severity_scale, incident_group_id, mp_route_id, exp_years_climbing, exp_stated_level, exp_first_season, guided, source_url, point_trusted`) and `public.accidents_clean_daily` (same, `date_precision = 'day'`). `point_trusted = geocode_precision IN ('exact','crag','area','park_centroid')`: `region_fallback`/`unknown` rows keep coordinates for state/region pooling but no point-level join (plan 3's `accident_conditions`, Phase 3 spatial features) may use them. Phase 3 reads these; later plans' loaders (plan 3 R11) fill the same columns.
 
 - [ ] **Step 1: Failing test** — `backend/tests/test_migration_0006.py`:
 
@@ -2796,13 +3457,13 @@ from tests.pgtest import migrated_db, pg_url, requires_pg
 pytestmark = requires_pg
 
 SEED = """
-INSERT INTO accidents (accident_id, source, date, is_canonical, activity_class, country, excluded_reason, date_precision) VALUES
-  (1, 'AAC', '2010-07-02', true,  'climbing',          'US', NULL,              'day'),
-  (2, 'AAC', '2010-07-15', true,  'climbing_approach', 'US', NULL,              'month'),
-  (3, 'AAC', '2010-07-02', false, 'climbing',          'US', NULL,              'day'),
-  (4, 'AAC', '2010-07-02', true,  'non_climbing',      'US', NULL,              'day'),
-  (5, 'AAC', '2010-07-02', true,  'climbing',          'CA', NULL,              'day'),
-  (6, 'AAC', '2023-07-02', true,  'climbing',          'US', 'year_unverified', 'unknown');
+INSERT INTO accidents (accident_id, source, date, is_canonical, activity_class, country, excluded_reason, date_precision, geocode_precision) VALUES
+  (1, 'AAC', '2010-07-02', true,  'climbing',          'US', NULL,              'day',     'area'),
+  (2, 'AAC', '2010-07-15', true,  'climbing_approach', 'US', NULL,              'month',   'region_fallback'),
+  (3, 'AAC', '2010-07-02', false, 'climbing',          'US', NULL,              'day',     'area'),
+  (4, 'AAC', '2010-07-02', true,  'non_climbing',      'US', NULL,              'day',     'area'),
+  (5, 'AAC', '2010-07-02', true,  'climbing',          'CA', NULL,              'day',     'area'),
+  (6, 'AAC', '2023-07-02', true,  'climbing',          'US', 'year_unverified', 'unknown', 'area');
 """
 
 
@@ -2824,6 +3485,15 @@ def test_0006_clean_views_apply_every_rule_and_hide_narratives():
         cols = _ids(name, "SELECT count(*) FROM information_schema.columns WHERE table_name = 'accidents_clean' "
                           "AND column_name IN ('description', 'tags', 'age_range')")
         assert cols == [0]
+
+
+def test_0006_point_trusted_labels_fallback_points_and_ignores_experience():
+    with migrated_db("head", SEED) as name:
+        assert _ids(name, "SELECT accident_id FROM accidents_clean WHERE point_trusted ORDER BY 1") == [1]
+        # Row 1 has every experience column at its NULL/'unknown' default and is still clean:
+        # the view never filters on R12 facts (spec R12, scoring never requires them).
+        assert _ids(name, "SELECT accident_id FROM accidents_clean WHERE exp_years_climbing IS NULL "
+                          "AND exp_stated_level = 'unknown' AND exp_first_season IS NULL AND guided = 'unknown' ORDER BY 1") == [1, 2]
 ```
 
 - [ ] **Step 2: Run to verify failure** — FAIL (`relation "accidents_clean" does not exist`).
@@ -2845,7 +3515,9 @@ COLUMNS = (
     "accident_id, source, source_id, date, year, date_precision, year_lo, year_hi, state, country, mountain, "
     "route, latitude, longitude, coordinates, elevation_meters, geocode_precision, accident_type, activity, "
     "activity_class, inclusion_flag, injury_severity, severity_scale, incident_group_id, mp_route_id, "
-    "exp_years_climbing, exp_stated_level, exp_first_season, guided, source_url"
+    "exp_years_climbing, exp_stated_level, exp_first_season, guided, source_url, "
+    # Must equal geocode.TRUSTED_POINT_PRECISIONS; test_migration_0006 pins the pair.
+    "coalesce(geocode_precision IN ('exact', 'crag', 'area', 'park_centroid'), false) AS point_trusted"
 )
 
 
@@ -2876,12 +3548,43 @@ def test_clean_set_has_no_unverified_or_non_us_rows():
     assert (row["unknown"], row["foreign"]) == (0, 0)
 
 
-def test_clean_daily_is_day_only():
-    [row] = fetch("SELECT count(*) FILTER (WHERE date_precision <> 'day') AS n FROM accidents_clean_daily")
+def test_cm_training_set_has_no_aac_placeholder_dates():
+    # The data check behind spec R2's CI rule: AAC day-15 (month) and Jul-1 (year)
+    # placeholders never reach the day-precision training set, whatever the precision
+    # labels say. A labelling bug in R1/R2 fails this; restating the view's WHERE would not.
+    [row] = fetch(
+        "SELECT count(*) AS n FROM accidents_clean_daily WHERE source ILIKE 'aac%' "
+        "AND (extract(day FROM date) = 15 OR (extract(month FROM date) = 7 AND extract(day FROM date) = 1))"
+    )
     assert row["n"] == 0
+
+
+def test_clean_set_points_trusted_only_where_precision_allows():
+    [row] = fetch(
+        "SELECT count(*) FILTER (WHERE point_trusted AND geocode_precision IN ('region_fallback', 'unknown')) AS bad, "
+        "count(*) FILTER (WHERE geocode_precision = 'region_fallback' AND latitude IS NULL) AS nulled_fallback "
+        "FROM accidents_clean"
+    )
+    assert (row["bad"], row["nulled_fallback"]) == (0, 0)
 ```
 
-Docs: `CHANGELOG.md` entry "Phase 2a accident repair, part 2 (PR 2a-2)" listing GNIS summits, R3a/R3, R4, R5 (auto bands + owner review), R12, `accidents_clean`/`accidents_clean_daily`, migrations `0005`/`0006`. `data/DATABASE_STRUCTURE.md`: `gnis_summits`, `internal.duplicate_decisions`, the two views and their rule. `CLAUDE.md` "Database and migrations": revisions list gains `0004`–`0006`; add "Repairs: `uv run python -m app.data.repair <step>` (dry run; `--apply` writes, as `ingest`)."
+Add to `backend/tests/test_repair_geocode.py` (pins the view to the Python constant):
+
+```python
+def test_view_point_trusted_matches_the_python_set():
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "alembic" / "versions" / "0006_accidents_clean.py"
+    spec = importlib.util.spec_from_file_location("m0006", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    listed = {t.strip(" '") for t in module.COLUMNS.split("IN (")[1].split(")")[0].split(",")}
+    assert listed == set(TRUSTED_POINT_PRECISIONS)
+```
+
+Docs: `CHANGELOG.md` entry (heading from `printf '### Phase 2a accident repair, part 2 (PR 2a-2) — %s\n' "$(date -u +%F)"`) listing GNIS summits, R3a/R3, R4, R5 (auto bands + owner review), R12, `accidents_clean`/`accidents_clean_daily`, migrations `0005`/`0006`. `data/DATABASE_STRUCTURE.md`: `gnis_summits`, `internal.duplicate_decisions`, the two views and their rule, and `point_trusted` (fallback rows keep coordinates; only trusted points join spatially). `CLAUDE.md` "Database and migrations": revisions list gains `0004`–`0006`; add "Repairs: `uv run python -m app.data.repair <step>` (dry run; `--apply` writes, as `ingest`)."
 
 - [ ] **Step 4: Run** — `cd backend && uv run pytest -q && uv run mypy && uv run ruff check . ../scripts/ && cd .. && python scripts/check_no_scrapers.py` → green.
 - [ ] **Step 5: Commit** — `git add backend/alembic/versions/0006_accidents_clean.py backend/tests/ backend/db/roles/grants_phase2.sql CHANGELOG.md data/DATABASE_STRUCTURE.md CLAUDE.md && git commit -m "feat(db): 0006 accidents_clean and accidents_clean_daily views"`
@@ -2890,38 +3593,31 @@ Docs: `CHANGELOG.md` entry "Phase 2a accident repair, part 2 (PR 2a-2)" listing 
 
 ### Task 12: OWNER/AGENT RUNBOOK — apply PR 2a-1 (R2/R1, R9) on a branch, hand checks, prod
 
-From `/Users/sebastianfrazier/Developer/SafeAscent/backend`, `split_pg_url` defined (foundations Task 8 Step 1). Every repair runs as `ingest` and prints counts only.
+From `/Users/sebastianfrazier/Developer/SafeAscent/backend`, with `split_pg_url` and `verify_full_url` defined (foundations Task 8 Step 1) and the helpers loaded: `. scripts/runbook_helpers.sh`. Every connection is TLS verify-full (`verify_full_url` for psql, `connect_args_for` via `tests/verify/_db.fetch` and `db.ingest_engine` for Python). Every repair runs as `ingest` and prints counts only.
 
 - [ ] **Step 1 (owner/agent): New Neon branch `p2a-1-rehearsal` from `main`; apply grants**
 
 ```bash
-BRANCH_HOST='<p2a-1-rehearsal direct host>'
-( set -a; . ./.env.owner; set +a
-  split_pg_url "$(printf '%s' "$OWNER_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")"
-  psql "$PG_URL_NOPASS" -X -q -f db/roles/grants_phase2.sql
-  psql "$PG_URL_NOPASS" -X -q -f db/roles/verify_roles_phase2.sql )
+export TARGET_HOST='<p2a-1-rehearsal direct host, copied from the Console>'
+OWNER_PSQL -q -f db/roles/grants_phase2.sql
+OWNER_PSQL -q -f db/roles/verify_roles_phase2.sql
 ```
 
 Expected: `phase 2 grants applied`, `ALL PHASE 2 ROLE CHECKS PASSED`.
 
-- [ ] **Step 2 (owner/agent): Confirm the source vocabulary** (source_family refuses unknown values)
+- [ ] **Step 2 (owner/agent): Confirm the source vocabulary and the raw snapshot** (source_family refuses unknown values; R1/R2 only touch raw-snapshot rows)
 
 ```bash
-( set -a; . ./.env.analyst; set +a
-  U="${ANALYST_DATABASE_URL/postgresql+asyncpg:/postgresql:}"; U="${U/ssl=/sslmode=}"
-  split_pg_url "$(printf '%s' "$U" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")"
-  psql "$PG_URL_NOPASS" -XAt -c "SELECT source, count(*) FROM accidents GROUP BY 1 ORDER BY 1" \
-    -c "SELECT count(*) FILTER (WHERE source_id ~ '[0-9]+\s*$') AS parseable, count(*) FROM accidents WHERE source ILIKE 'aac%'" )
+ANALYST_PSQL -At -c "SELECT source, count(*) FROM accidents GROUP BY 1 ORDER BY 1" \
+  -c "SELECT count(*) FILTER (WHERE source_id ~ '[0-9]+\s*$') AS parseable, count(*) FROM accidents WHERE source ILIKE 'aac%'" \
+  -c "SELECT (SELECT count(*) FROM accidents) AS live, (SELECT count(*) FROM internal.accidents_raw) AS raw"
 ```
 
-Expected: every source maps to `aac|avalanche|nps` per `sources.py`; nearly all AAC `source_id`s parseable. If not, stop: the agent extends `source_family` / `source_sort_key` in a reviewed commit.
+Expected: every source maps to `aac|avalanche|nps` per `sources.py`; nearly all AAC `source_id`s parseable; `raw` equals `live` before plan 3's R11 load (afterwards `live − raw` is the number of refresh rows R1/R2 will skip). If not, stop: the agent extends `source_family` / `source_sort_key` in a reviewed commit. (`analyst` reads `internal.accidents_raw` only if plan 1 granted it; if the third query is denied, run it with `OWNER_PSQL`.)
 
 - [ ] **Step 3 (owner/agent): Dry run, then apply on the branch**
 
 ```bash
-ING() { ( set -a; . ./.env.ingest; set +a
-  export INGEST_DATABASE_URL="$(printf '%s' "$INGEST_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")"
-  DATABASE_URL="$INGEST_DATABASE_URL" uv run python -m app.data.repair "$@" ); }
 ING r2r1
 ING r2r1 --apply
 ING r2r1 --apply
@@ -2937,7 +3633,7 @@ ING r1-export --out ../data/review/r1_year_check.csv
 ING r9-export --out ../data/review/severity_check.csv
 ```
 
-Open both CSVs in a spreadsheet. R1: for each row look up the report in the AAC Publications archive (year and title only) and set `within_one_year` to `yes`/`no`. R9: read the AAC report and set `agree` to `yes`/`no` for the stored severity. Save, then:
+Open both CSVs in a spreadsheet. Each row carries `source_id`, `location` and `mountain` to find the report. R1 (only rows R1 re-dated; `year_unverified` rows are excluded because they kept their date on purpose): look up each report in the AAC Publications archive (year and title only) and set `within_one_year` to `yes`/`no`. R9: read the AAC report and set `agree` to `yes`/`no` for the stored severity. Save, then:
 
 ```bash
 ING r1-import --review-file ../data/review/r1_year_check.csv
@@ -2949,20 +3645,26 @@ Expected: `{"agreement": …}` for each. R1 must be ≥0.90; if not, stop (rule 
 - [ ] **Step 5 (owner/agent): Acceptance cells on the branch**
 
 ```bash
-( set -a; . ./.env.analyst; set +a
-  VERIFY_DATABASE_URL="$(printf '%s' "$ANALYST_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#; s#postgresql\+asyncpg:#postgresql:#; s#ssl=#sslmode=#")" \
-    uv run pytest -m db tests/verify/test_phase2a_repair.py -q -k "r1 or r2 or r9 or every_row" -s )
+VERIFY tests/verify/test_phase2a_repair.py -q -k "r1 or r2 or r9 or every_row" -s
 ```
 
 Expected: all pass; printed counts recorded in the PR.
 
-- [ ] **Step 6 (owner): Prod** — repeat Steps 1, 3, 5 with the prod hosts (no `sed`). The hand-check imports are re-run against prod with the same CSVs (the sampled accident ids are identical because seeds and data match). Delete the branch.
+- [ ] **Step 6 (owner): Prod**
+
+```bash
+unset TARGET_HOST
+```
+
+Then repeat Steps 1–5 exactly as written (the helpers now use the env-file hosts, i.e. prod). The hand-check imports are re-run against prod with the same CSVs (the sampled accident ids are identical because seeds and data match; if `r1-export` on prod lists different ids, stop and re-check on prod). Delete the `p2a-1-rehearsal` branch.
 
 ---
 
 ### Task 13: OWNER/AGENT RUNBOOK — apply PR 2a-2 (GNIS, R3a/R3, R4, R5, R12, views)
 
-- [ ] **Step 1 (owner/agent): Branch `p2a-2-rehearsal`, migrate, grants** — as foundations Task 9 Step 2 (migrator `alembic upgrade head` → `0006_accidents_clean (head)`, `alembic check` clean), then `grants_phase2.sql` and both verify scripts.
+Same shell setup as Task 12 (`. scripts/runbook_helpers.sh`).
+
+- [ ] **Step 1 (owner/agent): Branch `p2a-2-rehearsal`, migrate, grants** — `export TARGET_HOST='<p2a-2-rehearsal direct host>'`; then as foundations Task 9 Step 2 (migrator `alembic upgrade head` → `0006_accidents_clean (head)`, `alembic check` clean), then `OWNER_PSQL -q -f db/roles/grants_phase2.sql` and both verify scripts.
 
 - [ ] **Step 2 (owner/agent): Download and load GNIS** (open public-domain file; not scraping)
 
@@ -2970,39 +3672,72 @@ Expected: all pass; printed counts recorded in the PR.
 curl -fL -o /tmp/gnis_national.zip \
   https://prd-tnm.s3.amazonaws.com/StagedProducts/GeographicNames/DomesticNames/DomesticNames_National_Text.zip
 unzip -l /tmp/gnis_national.zip | grep -i DomesticNames_National
-( set -a; . ./.env.ingest; set +a
-  export INGEST_DATABASE_URL="$(printf '%s' "$INGEST_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")"
-  DATABASE_URL="$INGEST_DATABASE_URL" uv run python -m app.pipelines.gnis --file /tmp/gnis_national.zip )
+INGMOD app.pipelines.gnis --file /tmp/gnis_national.zip
 ```
 
 If `curl` returns 404, take the current "National … Text" link from https://www.usgs.gov/us-board-on-geographic-names/download-gnis-data. Expected: `"status": "ok"` with roughly 60–80K summits accepted. A header error means the file format changed: stop and update `REQUIRED`.
 
-- [ ] **Step 3 (owner): Review fallback clusters, then R3**
+- [ ] **Step 3 (owner): Review fallback clusters, then R3a/R3**
 
 ```bash
 ING r3-clusters
 ING r3
 ```
 
-Look at the cluster list (coordinates and row counts only): each point should be a city/park centroid, not a real crag. If a real crag appears (e.g. a popular cliff with many distinct route names), tell the agent; `min_names` or an explicit exclusion list changes in a reviewed commit. Then `ING r3 --apply` twice (second: `applied: 0`). Run the verify cells `-k r3`.
+Look at the cluster list (coordinates and row counts only): each point should be a city/park centroid, not a real crag. If a real crag appears (e.g. a popular cliff with many distinct route names), tell the agent; `min_names` or an explicit exclusion list changes in a reviewed commit. Then `ING r3 --apply` twice (second: `applied: 0`).
 
-- [ ] **Step 4 (owner): R4 vocabulary and golden set**
+- [ ] **Step 4 (owner): R3a hand check (spec: the ~60-row list) and R3 50-row plotted spot check**
 
-`ING r4` — if `unmapped` is non-empty, the agent extends the vocabularies in `activity.py` (reviewed commit, new test rows), and you repeat. Then `ING r4-golden-export --out ../data/review/activity_golden_candidates.csv`; label each row `climbing|climbing_approach|non_climbing` by reading the source record; copy **only** `accident_id,label` into `data/golden/activity_v1.csv` (commit it on the PR branch). `ING r4 --apply`, then verify `-k r4`.
+```bash
+ING r3a-export --out ../data/review/r3a_moves.csv
+ING r3-plot-export --out ../data/review/r3_spot_check.csv
+```
 
-- [ ] **Step 5 (owner): R5 with review**
+R3a: every row R3a moved (`gnis_summit` and `gnis_summit_state_mismatch`), expected ~60. For each, set `correct=yes` when the new point is the summit the record names, else `no`. R3: open `../data/review/r3_spot_check.geojson` in QGIS (local; never paste accident places into an online map) beside the CSV; for each of the 50 points (stratified: GNIS moves, `region_fallback`, `unknown`, `area`, `crag`, `exact`, `park_centroid`) set `plausible=yes` when the point matches its label (a fallback label on a city centroid is plausible; an `area` label on a city centroid is not). Then:
 
-`ING r5 --apply --out ../data/review/duplicates.csv` → writes auto decisions and exports the uncertain band. Fill `decision` (`merge|distinct`) for every row, then `ING r5-import --review-file ../data/review/duplicates.csv` and `ING r5 --apply` again (new rule version because the decision set changed). Spot-check 30 auto-merged pairs: `SELECT low_id, high_id, score FROM internal.duplicate_decisions WHERE decided_by='auto' AND decision='merge' ORDER BY random() LIMIT 30` as analyst, compare the two source records; all 30 must be real duplicates (spec: 100%). Verify `-k r5`.
+```bash
+ING r3a-import --review-file ../data/review/r3a_moves.csv
+ING r3-plot-import --review-file ../data/review/r3_spot_check.csv
+VERIFY tests/verify/test_phase2a_repair.py -q -k r3 -s
+```
 
-- [ ] **Step 6 (owner): R12 golden set and apply** — `ING r12-golden-export …`, fill the four columns by reading each record, copy ids + labels into `data/golden/experience_v1.csv`, commit; `ING r12 --apply`; verify `-k r12`.
+Expected: both agreements ≥0.95 and the R3 cells pass. Give every `no` row's `accident_id` to the agent: a wrong move is a rule fix (reviewed commit, new rule version, re-run from Step 3), never a hand edit.
 
-- [ ] **Step 7 (owner/agent): Full acceptance, then prod** — `uv run pytest -m db tests/verify -q -s` on the branch: all pass. Repeat Steps 1–6 on prod (the review CSV imports and golden files are reused, no relabelling). Delete the branch. Record in the PR: counts per step, R4/R12 golden scores, R5 review size, and that the 2023 AAC check passes.
+- [ ] **Step 5 (owner): R4 vocabulary and golden set**
+
+`ING r4` — if `unmapped` is non-empty, the agent extends the vocabularies in `activity.py` (reviewed commit, new test rows), and you repeat. Then `ING r4-golden-export --out ../data/review/activity_golden_candidates.csv` (stratified: `strata` in the output shows how many ski-approach, other ski, NPS, climbing and non-climbing rows were drawn); label each row `climbing|climbing_approach|non_climbing` by reading the source record; copy **only** `accident_id,label` into `data/golden/activity_v1.csv` (commit it on the PR branch). `ING r4 --apply` (output `terrain_version: r4-v1`), then `VERIFY tests/verify/test_phase2a_repair.py -q -k r4`.
+
+- [ ] **Step 6 (owner): R5 with review**
+
+`ING r5 --apply --out ../data/review/duplicates.csv` → writes auto decisions and exports the uncertain band (it now includes AAC month/year-precision rows paired with NPS/CAIC day records). Fill `decision` (`merge|distinct`) for every row, then `ING r5-import --review-file ../data/review/duplicates.csv` and `ING r5 --apply` again (new rule version because the decision set changed; rows that left a group are reset). Spot-check 30 auto-merged pairs:
+
+```bash
+ANALYST_PSQL -At -c "SELECT low_id, high_id, score FROM internal.duplicate_decisions WHERE decided_by='auto' AND decision='merge' ORDER BY random() LIMIT 30"
+```
+
+Compare the two source records; all 30 must be real duplicates (spec: 100%). Then `VERIFY tests/verify/test_phase2a_repair.py -q -k r5 -s` (includes `review_pending == 0` on the latest applied run).
+
+- [ ] **Step 7 (owner): R12 golden set and apply** — `ING r12-golden-export --out ../data/review/experience_golden_candidates.csv` (60 rows where R12 fires, 20 where it does not); fill the four columns by reading each record (blank or `unknown` where the record states nothing); copy ids + labels into `data/golden/experience_v1.csv`, commit; `ING r12 --apply`; `VERIFY tests/verify/test_phase2a_repair.py -q -k r12 -s` (precision ≥0.95, `filled > 0`, recall printed — record it in the PR). `uv run pytest tests/test_experience_not_required.py -q` is the spec's "scoring never requires them" check.
+
+- [ ] **Step 8 (owner/agent): Full acceptance and the 2a-2 audit re-run, then prod**
+
+```bash
+VERIFY tests/verify -q -s
+VERIFY tests/verify/test_phase2a_repair.py -q -s -k "r1_2023 or r3a_named or r3_no_precise or r5_no_exact or clean_set or cm_training"
+```
+
+The second command is the spec 2a-2 "re-running the audit clears red flags 1–4" gate as this plan reads the audit's accident flags: (1) AAC year corruption, (2) misgeocoded named peaks / Alaska text below 55°N, (3) exact duplicates among canonical rows, (4) non-climbing, foreign or unverified rows in the clean set. The owner also re-runs the original 2026-09-27 audit queries from the private notes and confirms flags 1–4 clear; if the audit's flag list differs from this reading, the agent adds the missing cell before prod.
+
+Then `unset TARGET_HOST` and repeat Steps 1–7 on prod (the review CSV imports and golden files are reused, no relabelling; re-export and compare ids first, stop on any difference). Delete the branch. Record in the PR: counts per step, R3a/R3 check agreements, R4/R12 golden scores and R12 recall, R5 review size, and that the 2023 AAC check passes.
+
+- [ ] **Step 9 (deferred to plan 6's runbook): R4/R5 re-run with objectives** — once `0011_objectives` is applied and objectives are loaded (plan 6), run `ING r4` (expect `terrain_version: r4-v2`), `ING r4 --apply`, `ING r5 --apply`, then `VERIFY tests/verify/test_phase2a_repair.py -q -k "r4 or r5"`. Spec R4 counts objectives in the ski-approach radius; until this step runs, ski rows near an objective with no MP alpine/ice/mixed route stay `non_climbing` (a known under-count, recorded in the PR). Plan 6 grants `ingest` SELECT on `objectives`.
 
 ---
 
 ## Self-review
 
-- Spec coverage: R1 (T3, T12), R2 (T2–T3), R9 (T4), R3a/R3 (T6–T7), R4 (T8), R5 (T9), R12 (T10), `accidents_clean` (T11), every verification cell as `-m db` (T4, T7–T11), milestones 2a-1/2a-2 (runbooks T12–T13). R6–R8, R10, R11 are in plans 1, 3, 5.
-- Placeholders: the runbook's angle-bracket hosts come from the Console. Golden CSVs are created header-only on purpose; filling them is an owner step whose output is committed.
-- Type consistency: `Change`/`apply_changes`/`run_step`/`fetch_accidents` used identically everywhere; CLI steps all have the `Step` signature.
-- The R9 hand-check agreement is stored in `validation_report.agreement`, which the verify cells read.
+- Spec coverage: R1 (T3, T12), R2 (T2–T3), R9 (T4), R3a/R3 (T6–T7, hand check and 50-row plot in T13 Step 4), R4 (T8, objectives re-run T13 Step 9), R5 (T9), R12 (T10, NULL-scoring test `test_experience_not_required.py`), `accidents_clean` (T11), every verification cell as `-m db` (T4, T7–T11), milestones 2a-1/2a-2 (runbooks T12–T13, 2a-2 audit re-run T13 Step 8). R6–R8, R10, R11 are in plans 1, 3, 5.
+- Review fixes carried here: A1 (T9 `group_changes`, DB flip test), A2 (T3 raw-snapshot restriction, DB test), A6 (T7 state fallback), A7/D10 (T7 fallback rows keep coordinates; `point_trusted` in T11), A8 (T4 locators, unverified rows excluded), A9 (T1 `export_stratified`, T8/T10 quotas, R12 `filled > 0` + recall), A10 (T10 regex), A11 (T9 precision-aware window), P3 (T13 Steps 4, 7, 8), P5 (T4 `runbook_helpers.sh`, `TARGET_HOST`), P6/R4 objectives (T8 `r4-v2`, T13 Step 9), SEC1 (verify-full helpers; verify cells use `connect_args_for`), minors (dated CHANGELOG headings, Washington→NH cell, stronger 0005 tests, day-only cell replaced by a data check, review-band cell replaced by `review_pending`).
+- Placeholders: the runbook's angle-bracket hosts come from the Console. Golden CSVs are created header-only on purpose; filling them is an owner step whose output is committed. CHANGELOG headings are dated by `date -u +%F` at write time.
+- Type consistency: `Change`/`apply_changes`/`run_step`/`fetch_accidents` used identically everywhere; `run_step` returns `run_id` in apply mode (R5 uses it); CLI steps all have the `Step` signature; `activity._rows` returns `(rows, version)` everywhere it is called; `TRUSTED_POINT_PRECISIONS` (geocode, imported by `dedupe` and `activity`) and the `0006` `point_trusted` list are the same four values (pinned by `test_view_point_trusted_matches_the_python_set`).
+- The R9 hand-check agreement is stored in `validation_report.agreement`, which the verify cells read; R3a and R3-plot checks use the same mechanism.
