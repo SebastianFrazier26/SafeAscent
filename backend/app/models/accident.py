@@ -61,7 +61,9 @@ class Accident(Base):
     route_id = Column(Integer, ForeignKey("routes.route_id"), nullable=True)
     mp_route_id = Column(BigInteger, ForeignKey("mp_routes.mp_route_id"), nullable=True)
 
-    # Phase 2a repair columns (migration 0004). NULL means "not yet classified", never a default guess.
+    # Phase 2a repair columns (migration 0004). NULL means "not yet classified", never a
+    # default guess -- except exp_stated_level and guided, NOT NULL default 'unknown': a
+    # report with no stated experience/guiding info still needs a groupable value, not NULL.
     date_precision = Column(Text, nullable=True)
     year_source = Column(Text, nullable=True)
     year_lo = Column(SmallInteger, nullable=True)

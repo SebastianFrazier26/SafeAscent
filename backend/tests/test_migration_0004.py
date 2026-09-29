@@ -62,8 +62,21 @@ def test_grid_bucket_key_matches_python_at_half_steps():
             assert _val(name, f"SELECT {expr}") == grid_bucket(float(Decimal(lat)), float(Decimal(lon))), (lat, lon)
         assert _val(
             name,
-            "SELECT provolatile = 'i' FROM pg_proc WHERE proname = 'grid_bucket_key'",
+            "SELECT provolatile = 'i' AND proisstrict AND proparallel = 's' FROM pg_proc "
+            "WHERE proname = 'grid_bucket_key' AND pronamespace = 'public'::regnamespace",
         ) is True
+
+
+OUT_OF_RANGE = [(-0.1, -105.0), (90.1, -105.0), (40.0, -180.1), (40.0, 180.1)]
+
+
+def test_grid_bucket_key_returns_null_where_python_grid_bucket_raises():
+    with migrated_db("head") as name:
+        for lat, lon in OUT_OF_RANGE:
+            with pytest.raises(ValueError):
+                grid_bucket(lat, lon)
+            expr = grid_bucket_sql(str(lat), str(lon))
+            assert _val(name, f"SELECT {expr}") is None, (lat, lon)
 
 
 def test_0004_enum_checks_reject_unknown_values():
@@ -80,12 +93,23 @@ def test_0004_enum_checks_reject_unknown_values():
 
 def test_0004_tick_quarantine_reason_check():
     with migrated_db("head") as name:
+        # NOT VALID (never scanned the all-NULL column at creation) still enforces on new rows.
+        assert _val(
+            name,
+            "SELECT convalidated FROM pg_constraint WHERE conname = 'mp_ticks_quarantine_reason_check'",
+        ) is False
         with pytest.raises(asyncpg.CheckViolationError):
             run_sql(
                 name,
                 "INSERT INTO mp_ticks (tick_id, route_id, climber_name, quarantine_reason) "
                 "VALUES (1, '900000001', 'x', 'bad')",
             )
+        run_sql(
+            name,
+            "INSERT INTO mp_ticks (tick_id, route_id, climber_name) VALUES (2, '900000001', 'y')",
+        )
+        with pytest.raises(asyncpg.CheckViolationError):
+            run_sql(name, "UPDATE mp_ticks SET quarantine_reason = 'bad' WHERE tick_id = 2")
 
 
 def test_0004_revision_key_is_unique_per_rule_version():
@@ -120,6 +144,39 @@ def test_0004_downgrade_refuses_while_revisions_exist():
             name,
             "INSERT INTO internal.accident_revisions (accident_id, field, old_value, new_value, method, rule_version, run_id) "
             "VALUES (1, 'country', NULL, 'US', 'r3', 'r3-v1', gen_random_uuid())",
+        )
+        with pytest.raises(RuntimeError, match="refusing to downgrade 0004"):
+            command.downgrade(_alembic_cfg(name), "0003_hist_insufficient_data")
+
+
+def test_0004_downgrade_refuses_while_accidents_repair_columns_are_set():
+    with migrated_db("head", SEED) as name:
+        run_sql(name, "UPDATE accidents SET country = 'US' WHERE accident_id = 1")
+        with pytest.raises(RuntimeError, match="refusing to downgrade 0004"):
+            command.downgrade(_alembic_cfg(name), "0003_hist_insufficient_data")
+
+
+def test_0004_downgrade_refuses_while_ticks_are_quarantined():
+    with migrated_db("head") as name:
+        run_sql(
+            name,
+            "INSERT INTO mp_ticks (tick_id, route_id, climber_name, quarantine_reason) "
+            "VALUES (1, '900000001', 'x', 'future')",
+        )
+        with pytest.raises(RuntimeError, match="refusing to downgrade 0004"):
+            command.downgrade(_alembic_cfg(name), "0003_hist_insufficient_data")
+
+
+def test_0004_downgrade_refuses_while_quarantine_rows_exist():
+    with migrated_db("head") as name:
+        run_sql(
+            name,
+            "INSERT INTO source_ingest_log (run_id, source, status) VALUES (gen_random_uuid(), 'AAC', 'ok')",
+        )
+        run_sql(
+            name,
+            "INSERT INTO internal.ingest_quarantine (run_id, source, row_ref, reason) "
+            "SELECT run_id, 'AAC', 'row-1', 'bad_row' FROM source_ingest_log LIMIT 1",
         )
         with pytest.raises(RuntimeError, match="refusing to downgrade 0004"):
             command.downgrade(_alembic_cfg(name), "0003_hist_insufficient_data")

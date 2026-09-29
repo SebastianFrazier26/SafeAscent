@@ -17,10 +17,17 @@ depends_on = None
 
 # One SQL definition of the D4 grid key. Callers pass float8 (grid.grid_bucket_sql adds the
 # casts) so a numeric column buckets exactly as the double Python reads from it.
+# Bounds mirror app.pipelines.grid.grid_bucket exactly (0<=lat<=90, -180<=lon<=180: the
+# northern-hemisphere-US assumption); SQL returns NULL for out-of-range input rather than
+# raising, since a CHECK constraint has no Python-style exception to throw.
 GRID_BUCKET_KEY_SQL = """
 CREATE FUNCTION public.grid_bucket_key(lat double precision, lon double precision) RETURNS integer
 LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
-AS $$ SELECT floor(lat * 10 + 0.5)::int * 10000 + floor(lon * 10 + 0.5)::int + 5000 $$
+AS $$
+  SELECT CASE WHEN lat BETWEEN 0.0 AND 90.0 AND lon BETWEEN -180.0 AND 180.0
+    THEN floor(lat * 10 + 0.5)::int * 10000 + floor(lon * 10 + 0.5)::int + 5000
+  END
+$$
 """
 
 ENUM_CHECKS = {
@@ -31,6 +38,19 @@ ENUM_CHECKS = {
     "exp_stated_level": ("novice", "intermediate", "experienced", "expert", "unknown"),
     "guided": ("guided", "unguided", "unknown"),
 }
+
+# Defaults the upgrade() columns are born with (NULL, except is_canonical=true and the two
+# NOT NULL 'unknown' text columns). downgrade() refuses if any row has drifted from this, since
+# dropping the columns would silently discard real repair work.
+DIRTY_ACCIDENTS_WHERE = (
+    "date_precision IS NOT NULL OR year_source IS NOT NULL OR year_lo IS NOT NULL OR "
+    "year_hi IS NOT NULL OR geocode_precision IS NOT NULL OR geocode_method IS NOT NULL OR "
+    "country IS NOT NULL OR activity_class IS NOT NULL OR activity_rule_version IS NOT NULL OR "
+    "inclusion_flag IS NOT NULL OR incident_group_id IS NOT NULL OR NOT is_canonical OR "
+    "severity_scale IS NOT NULL OR excluded_reason IS NOT NULL OR source_url IS NOT NULL OR "
+    "updated_at IS NOT NULL OR exp_years_climbing IS NOT NULL OR exp_stated_level <> 'unknown' OR "
+    "exp_first_season IS NOT NULL OR guided <> 'unknown' OR exp_rule_version IS NOT NULL"
+)
 
 
 def _ensure_internal_schema() -> None:
@@ -49,6 +69,9 @@ def _ensure_internal_schema() -> None:
 
 
 def upgrade() -> None:
+    # This migration touches live tables (accidents, mp_ticks); fail fast under lock
+    # contention rather than blocking prod traffic for the run's duration.
+    op.execute("SET LOCAL lock_timeout = '5s'")
     _ensure_internal_schema()
     op.execute(GRID_BUCKET_KEY_SQL)
 
@@ -160,19 +183,33 @@ def upgrade() -> None:
 
     op.add_column("mp_ticks", sa.Column("quarantine_reason", sa.Text(), nullable=True))
     op.add_column("mp_ticks", sa.Column("quarantine_rule_version", sa.Text(), nullable=True))
+    # NOT VALID: the column is brand new and already all-NULL, so there is nothing to
+    # validate; skipping the scan avoids holding a lock on live mp_ticks rows to prove it.
     op.create_check_constraint(
         "mp_ticks_quarantine_reason_check",
         "mp_ticks",
         "quarantine_reason IS NULL OR quarantine_reason IN ('future', 'orphan_route', 'pre_1970')",
+        postgresql_not_valid=True,
     )
 
 
 def downgrade() -> None:
     bind = op.get_bind()
-    for table in ("internal.accident_revisions", "internal.mp_tick_aggregates", "public.source_ingest_log"):
+    for table in (
+        "internal.accident_revisions",
+        "internal.mp_tick_aggregates",
+        "internal.ingest_quarantine",
+        "public.source_ingest_log",
+    ):
         rows = bind.exec_driver_sql(f"SELECT count(*) FROM {table}").scalar_one()
         if rows:
             raise RuntimeError(f"refusing to downgrade 0004: {table} has {rows} rows")
+    dirty_accidents = bind.exec_driver_sql(f"SELECT count(*) FROM accidents WHERE {DIRTY_ACCIDENTS_WHERE}").scalar_one()
+    if dirty_accidents:
+        raise RuntimeError(f"refusing to downgrade 0004: accidents has {dirty_accidents} rows with non-default repair columns")
+    marked_ticks = bind.exec_driver_sql("SELECT count(*) FROM mp_ticks WHERE quarantine_reason IS NOT NULL").scalar_one()
+    if marked_ticks:
+        raise RuntimeError(f"refusing to downgrade 0004: mp_ticks has {marked_ticks} quarantined rows")
     op.drop_constraint("mp_ticks_quarantine_reason_check", "mp_ticks", type_="check")
     op.drop_column("mp_ticks", "quarantine_rule_version")
     op.drop_column("mp_ticks", "quarantine_reason")
