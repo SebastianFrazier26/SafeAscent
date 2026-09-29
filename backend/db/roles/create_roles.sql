@@ -1,30 +1,37 @@
--- Run as the database owner. The environment carries SCRAM-SHA-256 verifiers
--- (python -m scripts.write_role_url --role <r> --scram), never plaintext passwords, so no
--- password reaches the server, its logs, or pg_stat_statements. Values come via \getenv, never argv.
+-- Run as the database owner. MIGRATOR_PASSWORD / APP_PASSWORD come via \getenv, never argv,
+-- and reach the server as plaintext over verify-full TLS; the server stores SCRAM-SHA-256.
 -- Create roles only through this file: neonctl / Console / API roles join neon_superuser.
 \set ON_ERROR_STOP on
 \set VERBOSITY terse
 \set SHOW_CONTEXT never
 
-\getenv migrator_scram MIGRATOR_PASSWORD_SCRAM
-\getenv app_scram APP_PASSWORD_SCRAM
-\if :{?migrator_scram}
+-- Secret-free, so a rerun stops here instead of sending a CREATE ROLE ... PASSWORD that
+-- fails and lands in the server log via log_min_error_statement.
+SELECT NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname IN ('migrator', 'app')) AS roles_absent \gset
+\if :roles_absent
 \else
-  DO $$ BEGIN RAISE EXCEPTION 'MIGRATOR_PASSWORD_SCRAM is not set'; END $$;
-\endif
-\if :{?app_scram}
-\else
-  DO $$ BEGIN RAISE EXCEPTION 'APP_PASSWORD_SCRAM is not set'; END $$;
+  DO $$ BEGIN RAISE EXCEPTION 'migrator/app already exist; do not rerun create_roles.sql'; END $$;
 \endif
 
--- Postgres hashes anything that is not a verifier as a plaintext password, so a
--- password pasted into these variables would be sent (and stored) as one.
-SELECT :'migrator_scram' ~ '^SCRAM-SHA-256\$[0-9]+:[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$'
-   AND :'app_scram' ~ '^SCRAM-SHA-256\$[0-9]+:[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$'
-   AS verifiers_ok \gset
-\if :verifiers_ok
+\getenv migrator_password MIGRATOR_PASSWORD
+\getenv app_password APP_PASSWORD
+\if :{?migrator_password}
 \else
-  DO $$ BEGIN RAISE EXCEPTION 'MIGRATOR_PASSWORD_SCRAM / APP_PASSWORD_SCRAM must be SCRAM-SHA-256 verifiers'; END $$;
+  DO $$ BEGIN RAISE EXCEPTION 'MIGRATOR_PASSWORD is not set'; END $$;
+\endif
+\if :{?app_password}
+\else
+  DO $$ BEGIN RAISE EXCEPTION 'APP_PASSWORD is not set'; END $$;
+\endif
+
+-- Postgres stores a value shaped like a SCRAM or md5 hash as that hash rather than hashing
+-- it, so a leftover verifier would become a password nobody knows (plain Postgres) or be
+-- rejected at COMMIT (Neon). write_role_url --generate-password makes 64 hex chars.
+SELECT bool_and(length(pw) >= 32 AND pw !~ '^SCRAM-SHA-256\$' AND pw !~ '^md5[0-9a-f]{32}$') AS passwords_ok
+  FROM (VALUES (:'migrator_password'), (:'app_password')) AS v(pw) \gset
+\if :passwords_ok
+\else
+  DO $$ BEGIN RAISE EXCEPTION 'MIGRATOR_PASSWORD / APP_PASSWORD must be plaintext passwords of at least 32 characters, not SCRAM or md5 verifiers'; END $$;
 \endif
 
 SELECT current_setting('server_version_num')::int >= 160000 AS pg16_or_newer \gset
@@ -35,8 +42,8 @@ SELECT current_setting('server_version_num')::int >= 160000 AS pg16_or_newer \gs
 
 BEGIN;
 
-CREATE ROLE migrator LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD :'migrator_scram';
-CREATE ROLE app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD :'app_scram';
+CREATE ROLE migrator LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD :'migrator_password';
+CREATE ROLE app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD :'app_password';
 
 -- ALTER ... OWNER TO migrator needs SET on migrator. INHERIT keeps services that still
 -- connect as the owner working until the relaunch gate revokes this membership.
@@ -44,6 +51,11 @@ GRANT migrator TO CURRENT_USER WITH SET TRUE, INHERIT TRUE;
 
 GRANT USAGE, CREATE ON SCHEMA public TO migrator;
 GRANT USAGE ON SCHEMA public TO app;
+
+-- Prod's owner carries an older default SELECT grant to analyst (seen 2026-09-28), which
+-- verify_roles.sql rejects: migrator's default grant below replaces it. CURRENT_USER, not
+-- neondb_owner, so this is a no-op wherever no such grant exists (local, CI).
+ALTER DEFAULT PRIVILEGES FOR ROLE CURRENT_USER IN SCHEMA public REVOKE ALL ON TABLES FROM analyst;
 
 DO $$
 DECLARE

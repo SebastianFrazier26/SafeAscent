@@ -1,9 +1,7 @@
-import base64
 import fnmatch
-import hashlib
-import hmac
 import io
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -12,20 +10,9 @@ from pathlib import Path
 import pytest
 
 import scripts.write_role_url as write_role_url
-from scripts.write_role_url import build_role_url, main, scram_verifier, upsert_env_line
+from scripts.write_role_url import build_role_url, main, upsert_env_line
 
 OWNER = "postgresql://neondb_owner:ownerpw@ep-x-123.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
-
-# RFC 7677 section 3 example exchange (user "user", password "pencil").
-RFC_SALT = base64.b64decode("W22ZaJ0SNY7soEsUEjb6gQ==")
-RFC_AUTH_MESSAGE = (
-    b"n=user,r=rOprNGfwEbeRWgbNEkqO,"
-    b"r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096,"
-    b"c=biws,r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0"
-)
-RFC_CLIENT_PROOF = base64.b64decode("dHzbZapWIk4jUhN+Ute9ytag9zjfMHgsqmmiz7AndVQ=")
-RFC_SERVER_SIGNATURE = base64.b64decode("6rriTRBi23WpRR/wtup+mMhUZUn/dB5nLTJRsjl95G4=")
-
 
 def test_build_role_url_swaps_credentials_and_uses_asyncpg_ssl():
     url = build_role_url(OWNER, "app", "abc123")
@@ -110,57 +97,82 @@ def test_main_rejects_unknown_role(tmp_path):
         main(["--role", "analyst", "--env-file", str(tmp_path / ".env.analyst")])
 
 
-def _verifier_parts(verifier: str) -> tuple[int, bytes, bytes, bytes]:
-    mechanism, rest = verifier.split("$", 1)
-    assert mechanism == "SCRAM-SHA-256"
-    iter_salt, keys = rest.split("$")
-    iterations, salt = iter_salt.split(":")
-    stored_key, server_key = keys.split(":")
-    return int(iterations), base64.b64decode(salt), base64.b64decode(stored_key), base64.b64decode(server_key)
-
-
-def test_scram_verifier_matches_rfc7677_exchange():
-    verifier = scram_verifier("pencil", salt=RFC_SALT, iterations=4096)
-    iterations, salt, stored_key, server_key = _verifier_parts(verifier)
-    assert (iterations, salt) == (4096, RFC_SALT)
-    assert hmac.new(server_key, RFC_AUTH_MESSAGE, "sha256").digest() == RFC_SERVER_SIGNATURE
-    client_signature = hmac.new(stored_key, RFC_AUTH_MESSAGE, "sha256").digest()
-    client_key = bytes(a ^ b for a, b in zip(RFC_CLIENT_PROOF, client_signature))
-    assert hashlib.sha256(client_key).digest() == stored_key
-
-
-def test_scram_verifier_uses_a_fresh_16_byte_salt():
-    a, b = scram_verifier("pw"), scram_verifier("pw")
-    assert a != b
-    assert len(_verifier_parts(a)[1]) == 16
-
-
-def test_scram_verifier_rejects_non_ascii():
-    with pytest.raises(ValueError):
-        scram_verifier("pässword")
-
-
-def test_main_scram_reads_env_and_prints_only_the_verifier(monkeypatch, capsys):
-    monkeypatch.setenv("APP_PASSWORD", "s3cret-plain")
-    assert main(["--role", "app", "--scram"]) == 0
-    out = capsys.readouterr()
-    assert "s3cret-plain" not in out.out + out.err
-    verifier = out.out.strip()
-    assert verifier.startswith("SCRAM-SHA-256$4096:")
-    assert len(out.out.splitlines()) == 1
-
-
-def test_main_scram_reads_stdin(monkeypatch, capsys):
+def test_main_reads_password_from_stdin(tmp_path, monkeypatch, capsys):
+    env = tmp_path / ".env.migrator"
+    monkeypatch.setenv("OWNER_DATABASE_URL", OWNER)
     monkeypatch.delenv("MIGRATOR_PASSWORD", raising=False)
     monkeypatch.setattr("sys.stdin", io.StringIO("from-stdin\n"))
-    assert main(["--role", "migrator", "--scram", "--password-stdin"]) == 0
+    assert main(["--role", "migrator", "--env-file", str(env), "--password-stdin"]) == 0
+    assert "MIGRATOR_DATABASE_URL=postgresql+asyncpg://migrator:from-stdin@" in env.read_text()
     out = capsys.readouterr()
     assert "from-stdin" not in out.out + out.err
-    assert out.out.startswith("SCRAM-SHA-256$")
 
 
-def test_main_requires_exactly_one_action(tmp_path):
+def test_main_generates_password_into_a_0600_file_without_printing_it(tmp_path, monkeypatch, capsys):
+    env = tmp_path / ".env.app"
+    monkeypatch.setenv("OWNER_DATABASE_URL", OWNER)
+    monkeypatch.delenv("APP_PASSWORD", raising=False)
+    assert main(["--role", "app", "--env-file", str(env), "--generate-password"]) == 0
+    lines = dict(line.split("=", 1) for line in env.read_text().splitlines())
+    password = lines["APP_PASSWORD"]
+    assert re.fullmatch(r"[0-9a-f]{64}", password)
+    assert lines["APP_DATABASE_URL"] == build_role_url(OWNER, "app", password)
+    assert stat.S_IMODE(env.stat().st_mode) == 0o600
+    out = capsys.readouterr()
+    assert out.out == f"wrote APP_PASSWORD and APP_DATABASE_URL to {env}\n"
+    assert password not in out.out + out.err
+    assert "ownerpw" not in out.out + out.err
+
+
+def test_main_generates_a_fresh_password_per_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("OWNER_DATABASE_URL", OWNER)
+    a, b = tmp_path / ".env.a", tmp_path / ".env.b"
+    main(["--role", "app", "--env-file", str(a), "--generate-password"])
+    main(["--role", "app", "--env-file", str(b), "--generate-password"])
+    assert a.read_text().splitlines()[0] != b.read_text().splitlines()[0]
+
+
+def test_main_generate_refuses_to_replace_an_existing_password(tmp_path, monkeypatch):
+    env = tmp_path / ".env.migrator"
+    env.write_text("MIGRATOR_PASSWORD=already-live\n")
+    monkeypatch.setenv("OWNER_DATABASE_URL", OWNER)
+    with pytest.raises(SystemExit, match="already has MIGRATOR_PASSWORD"):
+        main(["--role", "migrator", "--env-file", str(env), "--generate-password"])
+    assert env.read_text() == "MIGRATOR_PASSWORD=already-live\n"
+
+
+def test_main_argument_shape(tmp_path):
     with pytest.raises(SystemExit):
         main(["--role", "app"])
     with pytest.raises(SystemExit):
-        main(["--role", "app", "--scram", "--env-file", str(tmp_path / "x")])
+        main(["--role", "app", "--scram"])
+    with pytest.raises(SystemExit):
+        main(["--role", "app", "--env-file", str(tmp_path / "x"), "--generate-password", "--password-stdin"])
+
+
+def test_main_generate_writes_nothing_when_the_url_cannot_be_built(tmp_path, monkeypatch):
+    env = tmp_path / ".env.app"
+    monkeypatch.setenv("OWNER_DATABASE_URL", "postgresql:///neondb")
+    with pytest.raises(ValueError):
+        main(["--role", "app", "--env-file", str(env), "--generate-password"])
+    assert not env.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("from_stdin", [False, True])
+def test_main_refuses_a_stale_password_line_that_differs(tmp_path, monkeypatch, capsys, from_stdin):
+    env = tmp_path / ".env.app"
+    env.write_text("APP_PASSWORD=stale-old-password\n")
+    monkeypatch.setenv("OWNER_DATABASE_URL", OWNER)
+    args = ["--role", "app", "--env-file", str(env)]
+    if from_stdin:
+        monkeypatch.setattr("sys.stdin", io.StringIO("new-password\n"))
+        args.append("--password-stdin")
+    else:
+        monkeypatch.setenv("APP_PASSWORD", "new-password")
+    with pytest.raises(SystemExit, match="has a different APP_PASSWORD") as exc:
+        main(args)
+    assert "stale-old-password" not in str(exc.value) and "new-password" not in str(exc.value)
+    assert env.read_text() == "APP_PASSWORD=stale-old-password\n"
+    out = capsys.readouterr()
+    assert "new-password" not in out.out + out.err
