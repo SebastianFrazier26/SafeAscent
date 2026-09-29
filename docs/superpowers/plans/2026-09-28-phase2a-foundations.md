@@ -3110,17 +3110,20 @@ Expected: one JSON line, e.g. `{"counts": {"clean": …, "future": …, "orphan_
 
 - [ ] **Step 3 (owner): Load the tick aggregates, only after the private scrape reports complete**
 
-In `~/Developer/safeascent-private/mp_ticks`: `./status.sh` must show all routes done; stop the scraper (`pkill -TERM -f mp_ticks.run`) so the WAL checkpoints. Then from the repo:
+In `~/Developer/safeascent-private/mp_ticks`: `./status.sh` must show all routes done; stop the scraper (`pkill -TERM -f mp_ticks.run`) so the WAL checkpoints. The loader opens its export `mode=ro`, which can still need to (re)create the export's `-wal` file even for a read (e.g. right after a checkpoint); that fails loudly if this process can't write to the private repo's directory (I1, Task 6 review). Take a consistent snapshot into a writable temp directory first and load from that, not the live file, so the load never depends on that directory's permissions:
 
 ```bash
+SNAPSHOT="$(mktemp -d)/mp_ice_ticks.snapshot.sqlite"
+sqlite3 ~/Developer/safeascent-private/mp_ticks/mp_ice_ticks.sqlite ".backup '$SNAPSHOT'"
+
 cd /Users/sebastianfrazier/Developer/SafeAscent/backend
 ( set -a; . ./.env.ingest; set +a
   export INGEST_DATABASE_URL="$(printf '%s' "$INGEST_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")"
   DATABASE_URL="$INGEST_DATABASE_URL" uv run python -m app.pipelines.mp_tick_aggregates \
-    --sqlite ~/Developer/safeascent-private/mp_ticks/mp_ice_ticks.sqlite --dry-run )
+    --sqlite "$SNAPSHOT" --dry-run )
 ```
 
-Expected: `"status": "dry_run"` with a report of counts only. If `problems` is non-empty, stop and review the quarantine reasons with the agent (counts only). Then run without `--dry-run` (branch, then prod without `sed`): `"status": "ok"`; a second run prints `"status": "noop"`. Delete the `p2a-0-rehearsal` branch.
+Expected: `"status": "dry_run"` with a report of counts only. If `problems` is non-empty, stop and review the quarantine reasons with the agent (counts only). Then run without `--dry-run` against the same `$SNAPSHOT` (branch, then prod without `sed`): `"status": "ok"`; a second run prints `"status": "noop"`. Delete the `p2a-0-rehearsal` branch and remove `$SNAPSHOT`'s temp directory.
 
 - [ ] **Step 4 (owner): Later scrapes**
 - Reloading the same export never accepts its `partial_month` rows (D3). Months at or after the scrape month land only from a **newer** private scrape that finished after those months closed.

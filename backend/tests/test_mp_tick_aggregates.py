@@ -1,14 +1,17 @@
 import ast
 import asyncio
+import os
 import sqlite3
-from datetime import date
+import uuid
+from datetime import date, datetime
 from pathlib import Path
 
+import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 import app.pipelines.mp_tick_aggregates as loader
-from app.pipelines.mp_tick_aggregates import is_ice_mixed, main, read_export, validate
+from app.pipelines.mp_tick_aggregates import AggregateRow, is_ice_mixed, load, main, read_export, validate
 from tests.pgtest import migrated_db, requires_pg, sa_url
 
 TODAY = date(2026, 9, 28)
@@ -122,6 +125,39 @@ def test_stored_rows_are_never_overwritten(tmp_path):
     assert stats["already_loaded"] == 1
 
 
+def test_read_export_works_against_a_wal_mode_export_with_a_live_writer(tmp_path):
+    path = _export(tmp_path, [(R1, "2025-01", "lead", 3)], [(R1, 3, 1)])
+    writer = sqlite3.connect(path)
+    writer.execute("PRAGMA journal_mode=WAL")
+    writer.execute("BEGIN IMMEDIATE")
+    writer.execute("INSERT INTO route_tick_totals VALUES (?, ?, 1, 1, 1, ?)", (R2, 9, SCRAPED))
+    try:
+        totals, monthly = read_export(path)  # must not raise, and must not see the uncommitted row
+        assert {t.mp_route_id for t in totals} == {R1}
+        assert {m.mp_route_id for m in monthly} == {R1}
+    finally:
+        writer.rollback()
+        writer.close()
+
+
+def test_read_export_gives_a_clear_error_not_a_traceback_when_the_directory_is_read_only(tmp_path):
+    path = _export(tmp_path, [(R1, "2025-01", "lead", 3)], [(R1, 3, 1)])
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.close()  # last connection closing checkpoints and removes the -wal/-shm files
+    assert sorted(p.name for p in tmp_path.iterdir()) == [path.name]
+
+    os.chmod(tmp_path, 0o500)
+    try:
+        with pytest.raises(SystemExit) as excinfo:
+            read_export(path)
+    finally:
+        os.chmod(tmp_path, 0o700)
+    message = str(excinfo.value)
+    assert ".backup" in message and "snapshot" in message
+    assert "Traceback" not in message
+
+
 def _seed_ice_route() -> str:
     return (
         "INSERT INTO mp_locations (mp_id, name) VALUES (900000100, 'Fixture Area');"
@@ -181,6 +217,42 @@ def test_changed_counts_are_quarantined_never_overwritten(tmp_path, monkeypatch)
         assert second["status"] == "ok" and second["rows_upserted"] == 1
         assert second["report"]["quarantined"] == {"count_changed": 2}
         assert asyncio.run(_stored(url)) == [("2025-01", "lead", 3), ("2025-03", "lead", 1), ("total", "all", 3)]
+
+
+@requires_pg
+def test_load_does_not_count_a_row_already_present(tmp_path, monkeypatch):
+    with migrated_db(seed_sql=_seed_ice_route()) as name:
+        url = sa_url(name)
+        engine = create_async_engine(url)
+        scraped_at = datetime.fromisoformat(SCRAPED)
+
+        async def _run() -> tuple[int, int]:
+            async with engine.begin() as conn:
+                first = await load(
+                    conn,
+                    [AggregateRow(R1, "2025-01", "lead", 3, scraped_at)],
+                    run_id=uuid.uuid4(),
+                    scrape_run_id="run-1",
+                )
+            async with engine.begin() as conn:
+                # Same key as above (a repeat load) plus one genuinely new key.
+                second = await load(
+                    conn,
+                    [
+                        AggregateRow(R1, "2025-01", "lead", 3, scraped_at),
+                        AggregateRow(R1, "2025-02", "lead", 1, scraped_at),
+                    ],
+                    run_id=uuid.uuid4(),
+                    scrape_run_id="run-2",
+                )
+            return first, second
+
+        try:
+            first, second = asyncio.run(_run())
+        finally:
+            asyncio.run(engine.dispose())
+        assert first == 1
+        assert second == 1  # the repeated key isn't counted, only the new one
 
 
 @requires_pg

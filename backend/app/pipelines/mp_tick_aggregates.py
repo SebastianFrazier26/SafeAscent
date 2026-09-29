@@ -69,18 +69,31 @@ def is_ice_mixed(route_type: str | None) -> bool:
 
 
 def read_export(path: Path) -> tuple[list[RouteTotal], list[MonthlyRow]]:
-    db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
-        totals = [
-            RouteTotal(int(r), int(t), bool(c), datetime.fromisoformat(s))
-            for r, t, c, s in db.execute("SELECT mp_route_id, total_ticks, complete, scraped_at FROM route_tick_totals")
-        ]
-        monthly = [
-            MonthlyRow(int(r), str(ym), str(st), int(n))
-            for r, ym, st, n in db.execute("SELECT mp_route_id, year_month, style, n FROM route_tick_monthly")
-        ]
-    finally:
-        db.close()
+        db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            totals = [
+                RouteTotal(int(r), int(t), bool(c), datetime.fromisoformat(s))
+                for r, t, c, s in db.execute(
+                    "SELECT mp_route_id, total_ticks, complete, scraped_at FROM route_tick_totals"
+                )
+            ]
+            monthly = [
+                MonthlyRow(int(r), str(ym), str(st), int(n))
+                for r, ym, st, n in db.execute("SELECT mp_route_id, year_month, style, n FROM route_tick_monthly")
+            ]
+        finally:
+            db.close()
+    except sqlite3.OperationalError as exc:
+        # I1: the private scraper leaves the export in WAL mode. A mode=ro open can still need
+        # to (re)create the -wal file (e.g. right after a checkpoint clears it) even for a read,
+        # which fails right here if this process can't write to the export's directory — a live
+        # writer alone is fine (SQLite's WAL readers don't need it). A `.backup` copy is a
+        # consistent snapshot that opens read-only anywhere.
+        raise SystemExit(
+            f"cannot read {path} read-only ({exc}). This export is WAL-mode; make a consistent "
+            f'snapshot first and load that instead: sqlite3 {path} ".backup <snapshot-path>"'
+        ) from exc
     return totals, monthly
 
 
@@ -198,29 +211,35 @@ async def existing_counts(conn: AsyncConnection, route_ids: set[int]) -> dict[tu
 
 
 async def load(conn: AsyncConnection, rows: list[AggregateRow], *, run_id: uuid.UUID, scrape_run_id: str) -> int:
+    """INSERT ... ON CONFLICT DO NOTHING RETURNING, counted from what came back rather than
+    len(rows) (M3, Task 6 review): a stored row from an earlier run is a silent no-op here, not
+    an upsert, so rows_upserted must reflect only what this call actually inserted. One
+    multi-row VALUES statement, not executemany — text()/asyncpg's implicit executemany doesn't
+    return per-row results, only the last statement's."""
     if not rows:
         return 0
-    await conn.execute(
+    values_sql = []
+    params: dict[str, object] = {"scrape_run_id": scrape_run_id, "run_id": run_id}
+    for i, r in enumerate(rows):
+        values_sql.append(
+            f"(:mp_route_id_{i}, :period_{i}, :style_{i}, :tick_count_{i}, :scrape_run_id, :scraped_at_{i}, :run_id)"
+        )
+        params[f"mp_route_id_{i}"] = r.mp_route_id
+        params[f"period_{i}"] = r.period
+        params[f"style_{i}"] = r.style
+        params[f"tick_count_{i}"] = r.tick_count
+        params[f"scraped_at_{i}"] = r.scraped_at
+    result = await conn.execute(
         text(
             "INSERT INTO internal.mp_tick_aggregates "
             "(mp_route_id, period, style, tick_count, scrape_run_id, scraped_at, loaded_run_id) "
-            "VALUES (:mp_route_id, :period, :style, :tick_count, :scrape_run_id, :scraped_at, :run_id) "
-            "ON CONFLICT (mp_route_id, period, style) DO NOTHING"
+            f"VALUES {', '.join(values_sql)} "
+            "ON CONFLICT (mp_route_id, period, style) DO NOTHING "
+            "RETURNING mp_route_id"
         ),
-        [
-            {
-                "mp_route_id": r.mp_route_id,
-                "period": r.period,
-                "style": r.style,
-                "tick_count": r.tick_count,
-                "scrape_run_id": scrape_run_id,
-                "scraped_at": r.scraped_at,
-                "run_id": run_id,
-            }
-            for r in rows
-        ],
+        params,
     )
-    return len(rows)
+    return len(result.all())
 
 
 async def main(path: Path, *, today: date, max_quarantine_share: float, dry_run: bool) -> dict[str, object]:
@@ -240,7 +259,12 @@ async def main(path: Path, *, today: date, max_quarantine_share: float, dry_run:
             }
             existing = await existing_counts(conn, {t.mp_route_id for t in totals})
             rows, report, stats = validate(totals, monthly, route_types=route_types, existing=existing, today=today)
-            problems = batch_gate(report, previous_rows_in=None, count_tolerance=1.0, max_quarantine_share=max_quarantine_share)
+            # previous_rows_in=None (F10, Task 6 review): this source is a one-time or occasional
+            # load of a scrape that only grows between runs, so there is no "last run" row count a
+            # swing check could reasonably compare against; only the quarantine-share gate applies.
+            problems = batch_gate(
+                report, previous_rows_in=None, count_tolerance=1.0, max_quarantine_share=max_quarantine_share
+            )
             if dry_run:
                 return {"status": "dry_run", "report": report.summary(), "stats": stats, "problems": problems}
             run_id = await start_run(conn, source=SOURCE, window_start=None, window_end=None, content_sha256=sha)
