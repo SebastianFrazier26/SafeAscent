@@ -57,6 +57,10 @@ async def start_run(
     window_end: date | None,
     content_sha256: str | None,
 ) -> uuid.UUID:
+    """Insert the 'running' row. Must run on the same connection, inside the same
+    transaction, as the write_quarantine/finish_run calls for this run_id — the caller
+    commits once, so the log row, its quarantine rows and its final counts land together
+    or not at all."""
     run_id = uuid.uuid4()
     await conn.execute(
         text(
@@ -78,12 +82,19 @@ async def finish_run(
     problems: list[str] | None = None,
     cost_units: float | None = None,
 ) -> None:
+    """Close out the run. Must run on the same connection, inside the same transaction, as
+    the start_run/write_quarantine calls for this run_id — rows_quarantined here and the
+    quarantine rows written separately must commit together, not as two independent writes
+    a partial failure could split.
+
+    Raises ValueError if run_id has no 'running' row to close on this connection (unknown
+    run_id, or a repeat finish_run on an already-finished run)."""
     summary = _validated_summary(report, problems)
-    await conn.execute(
+    result = await conn.execute(
         text(
             "UPDATE source_ingest_log SET finished_at = now(), status = :status, rows_in = :rows_in, "
             "rows_upserted = :up, rows_quarantined = :q, validation_report = CAST(:report AS jsonb), "
-            "cost_units = :cost WHERE run_id = :run_id"
+            "cost_units = :cost WHERE run_id = :run_id AND status = 'running'"
         ),
         {
             "status": status,
@@ -95,6 +106,8 @@ async def finish_run(
             "run_id": run_id,
         },
     )
+    if result.rowcount == 0:
+        raise ValueError(f"finish_run: no 'running' source_ingest_log row for run_id {run_id}")
 
 
 async def find_completed(
@@ -130,6 +143,9 @@ async def last_ok_rows_in(conn: AsyncConnection, source: str) -> int | None:
 
 
 async def write_quarantine(conn: AsyncConnection, run_id: uuid.UUID, report: ValidationReport) -> int:
+    """Insert one row per issue. Must run on the same connection, inside the same
+    transaction, as start_run/finish_run for this run_id, so these rows and finish_run's
+    rows_quarantined count commit together."""
     if not report.issues:
         return 0
     await conn.execute(

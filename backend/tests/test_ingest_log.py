@@ -89,6 +89,28 @@ def test_run_lifecycle_quarantine_and_noop_lookup():
 
 
 @requires_pg
+def test_finish_run_raises_for_unknown_or_already_finished_run():
+    async def scenario(url: str) -> None:
+        engine = create_async_engine(url)
+        try:
+            async with engine.begin() as conn:
+                report = ValidationReport("fixture")
+                report.accept()
+                with pytest.raises(ValueError, match="no 'running'"):
+                    await finish_run(conn, uuid.uuid4(), status="ok", report=report, rows_upserted=1)
+
+                run_id = await start_run(conn, source="fixture", window_start=None, window_end=None, content_sha256="abc")
+                await finish_run(conn, run_id, status="ok", report=report, rows_upserted=1)
+                with pytest.raises(ValueError, match="no 'running'"):
+                    await finish_run(conn, run_id, status="ok", report=report, rows_upserted=1)
+        finally:
+            await engine.dispose()
+
+    with migrated_db() as name:
+        asyncio.run(scenario(sa_url(name)))
+
+
+@requires_pg
 def test_rejected_runs_are_not_noops_and_not_row_count_baselines():
     async def scenario(url: str) -> None:
         engine = create_async_engine(url)
