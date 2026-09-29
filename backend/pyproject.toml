@@ -90,6 +90,7 @@ module = [
     "app.pipelines.ingest_log",
     "app.pipelines.db",
     "app.pipelines.mp_ticks_quarantine",
+    "app.pipelines.mp_tick_aggregates",
 ]
 ignore_errors = false
 disallow_any_generics = true
