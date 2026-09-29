@@ -116,3 +116,18 @@ warn_unused_ignores = true
 warn_return_any = true
 no_implicit_reexport = true
 strict_equality = true
+
+# SQLAlchemy models: declarative_base() is typed Any, so subclassing Base always trips
+# disallow_subclassing_any; everything else strict still applies.
+[[tool.mypy.overrides]]
+module = ["app.models.pipeline"]
+ignore_errors = false
+disallow_any_generics = true
+disallow_untyped_calls = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_return_any = true
+no_implicit_reexport = true
+strict_equality = true

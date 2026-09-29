@@ -46,10 +46,22 @@ def include_object(obj: Any, name: str | None, type_: str, reflected: bool, comp
     return bool(alembic_helpers.include_object(obj, name, type_, reflected, compare_to))
 
 
+MANAGED_SCHEMAS = frozenset({"public", "internal"})
+
+
+def include_name(name: str | None, type_: str, parent_names: Any) -> bool:
+    # include_schemas reflects every schema; PostGIS's tiger/topology must never be diffed.
+    if type_ == "schema":
+        return name is None or name in MANAGED_SCHEMAS
+    return True
+
+
 def _configure(**kwargs: Any) -> None:
     context.configure(
         target_metadata=target_metadata,
         include_object=include_object,
+        include_schemas=True,
+        include_name=include_name,
         render_item=alembic_helpers.render_item,
         process_revision_directives=alembic_helpers.writer,
         compare_type=True,
