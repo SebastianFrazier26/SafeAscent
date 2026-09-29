@@ -256,6 +256,33 @@ def test_load_does_not_count_a_row_already_present(tmp_path, monkeypatch):
 
 
 @requires_pg
+def test_load_chunks_batches_past_the_asyncpg_param_limit(tmp_path, monkeypatch):
+    # 6,554+ rows blew the old unchunked statement's param count past asyncpg's 32767 limit
+    # (5 params/row + 2 shared); this count also leaves an uneven last chunk under
+    # loader.LOAD_CHUNK_ROWS to exercise the remainder.
+    n = 7001
+    scraped_at = datetime.fromisoformat(SCRAPED)
+    rows = [AggregateRow(900100000 + i, "2025-01", "lead", 1, scraped_at) for i in range(n)]
+    with migrated_db() as name:
+        url = sa_url(name)
+        engine = create_async_engine(url)
+
+        async def _run() -> tuple[int, int]:
+            async with engine.begin() as conn:
+                first = await load(conn, rows, run_id=uuid.uuid4(), scrape_run_id="run-1")
+            async with engine.begin() as conn:
+                second = await load(conn, rows, run_id=uuid.uuid4(), scrape_run_id="run-2")
+            return first, second
+
+        try:
+            first, second = asyncio.run(_run())
+        finally:
+            asyncio.run(engine.dispose())
+        assert first == n
+        assert second == 0  # a rerun of the same rows inserts nothing new
+
+
+@requires_pg
 def test_heavy_quarantine_rejects_the_batch_and_writes_nothing(tmp_path, monkeypatch):
     path = _export(tmp_path, [(R1, "2026-10", "lead", 1), (R1, "2025-01", "lead", 1)], [(R1, 2, 1)])
     with migrated_db(seed_sql=_seed_ice_route()) as name:

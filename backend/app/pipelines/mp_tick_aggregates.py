@@ -210,36 +210,46 @@ async def existing_counts(conn: AsyncConnection, route_ids: set[int]) -> dict[tu
     return {(int(r), str(p), str(s)): int(n) for r, p, s, n in result.all()}
 
 
+# One multi-row VALUES statement per chunk of this many rows (M3 follow-up, Task 6 review): each
+# row costs 5 bind params (plus 2 shared), and a real export runs to ~35k rows, so an unchunked
+# statement blew past asyncpg's ~32767-argument limit at 6,554 rows. 1000 keeps every statement
+# far under that regardless of future param growth.
+LOAD_CHUNK_ROWS = 1000
+
+
 async def load(conn: AsyncConnection, rows: list[AggregateRow], *, run_id: uuid.UUID, scrape_run_id: str) -> int:
     """INSERT ... ON CONFLICT DO NOTHING RETURNING, counted from what came back rather than
     len(rows) (M3, Task 6 review): a stored row from an earlier run is a silent no-op here, not
-    an upsert, so rows_upserted must reflect only what this call actually inserted. One
-    multi-row VALUES statement, not executemany — text()/asyncpg's implicit executemany doesn't
-    return per-row results, only the last statement's."""
-    if not rows:
-        return 0
-    values_sql = []
-    params: dict[str, object] = {"scrape_run_id": scrape_run_id, "run_id": run_id}
-    for i, r in enumerate(rows):
-        values_sql.append(
-            f"(:mp_route_id_{i}, :period_{i}, :style_{i}, :tick_count_{i}, :scrape_run_id, :scraped_at_{i}, :run_id)"
+    an upsert, so rows_upserted must reflect only what this call actually inserted. Chunked
+    multi-row VALUES statements, not executemany — text()/asyncpg's implicit executemany doesn't
+    return per-row results, only the last statement's. All chunks run on the caller's connection,
+    inside the caller's transaction, so a batch either lands whole or not at all."""
+    inserted = 0
+    for start in range(0, len(rows), LOAD_CHUNK_ROWS):
+        chunk = rows[start : start + LOAD_CHUNK_ROWS]
+        values_sql = []
+        params: dict[str, object] = {"scrape_run_id": scrape_run_id, "run_id": run_id}
+        for i, r in enumerate(chunk):
+            values_sql.append(
+                f"(:mp_route_id_{i}, :period_{i}, :style_{i}, :tick_count_{i}, :scrape_run_id, :scraped_at_{i}, :run_id)"
+            )
+            params[f"mp_route_id_{i}"] = r.mp_route_id
+            params[f"period_{i}"] = r.period
+            params[f"style_{i}"] = r.style
+            params[f"tick_count_{i}"] = r.tick_count
+            params[f"scraped_at_{i}"] = r.scraped_at
+        result = await conn.execute(
+            text(
+                "INSERT INTO internal.mp_tick_aggregates "
+                "(mp_route_id, period, style, tick_count, scrape_run_id, scraped_at, loaded_run_id) "
+                f"VALUES {', '.join(values_sql)} "
+                "ON CONFLICT (mp_route_id, period, style) DO NOTHING "
+                "RETURNING mp_route_id"
+            ),
+            params,
         )
-        params[f"mp_route_id_{i}"] = r.mp_route_id
-        params[f"period_{i}"] = r.period
-        params[f"style_{i}"] = r.style
-        params[f"tick_count_{i}"] = r.tick_count
-        params[f"scraped_at_{i}"] = r.scraped_at
-    result = await conn.execute(
-        text(
-            "INSERT INTO internal.mp_tick_aggregates "
-            "(mp_route_id, period, style, tick_count, scrape_run_id, scraped_at, loaded_run_id) "
-            f"VALUES {', '.join(values_sql)} "
-            "ON CONFLICT (mp_route_id, period, style) DO NOTHING "
-            "RETURNING mp_route_id"
-        ),
-        params,
-    )
-    return len(result.all())
+        inserted += len(result.all())
+    return inserted
 
 
 async def main(path: Path, *, today: date, max_quarantine_share: float, dry_run: bool) -> dict[str, object]:
