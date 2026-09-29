@@ -42,13 +42,14 @@ package = false
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-addopts = "--verbose --cov=app --cov-report=term-missing --cov-report=html -m 'not needs_data'"
+addopts = "--verbose --cov=app --cov-report=term-missing --cov-report=html -m 'not needs_data and not db'"
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 markers = [
     "performance: marks tests as performance benchmarks (deselect with '-m \"not performance\"')",
     "needs_data: needs a populated database or live services; run with -m needs_data",
+    "db: read-only acceptance checks against a Neon branch as analyst; needs VERIFY_DATABASE_URL; run with -m db",
 ]
 
 [tool.ruff]
@@ -88,6 +89,7 @@ module = [
     "app.pipelines.grid",
     "app.pipelines.ingest_log",
     "app.pipelines.db",
+    "app.pipelines.mp_ticks_quarantine",
 ]
 ignore_errors = false
 disallow_any_generics = true
