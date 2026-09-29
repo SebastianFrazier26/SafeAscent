@@ -176,3 +176,23 @@ def test_main_refuses_a_stale_password_line_that_differs(tmp_path, monkeypatch, 
     assert env.read_text() == "APP_PASSWORD=stale-old-password\n"
     out = capsys.readouterr()
     assert "new-password" not in out.out + out.err
+
+
+def test_ingest_role_generates_password_and_url(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("OWNER_DATABASE_URL", "postgresql://owner:ownerpw@db.example.test/neondb?sslmode=require")
+    env_file = tmp_path / ".env.ingest"
+    assert main(["--role", "ingest", "--env-file", str(env_file), "--generate-password"]) == 0
+    lines = dict(line.split("=", 1) for line in env_file.read_text().splitlines())
+    assert len(lines["INGEST_PASSWORD"]) == 64
+    assert lines["INGEST_DATABASE_URL"].startswith("postgresql+asyncpg://ingest:")
+    assert lines["INGEST_DATABASE_URL"].endswith("?ssl=verify-full")
+    assert lines["INGEST_PASSWORD"] not in capsys.readouterr().out
+
+
+def test_trainer_has_no_credential_until_phase_3(tmp_path, monkeypatch):
+    monkeypatch.setenv("OWNER_DATABASE_URL", "postgresql://owner:ownerpw@db.example.test/neondb")
+    env_file = tmp_path / ".env.trainer"
+    with pytest.raises(SystemExit) as exc:
+        main(["--role", "trainer", "--env-file", str(env_file), "--generate-password"])
+    assert exc.value.code == 2
+    assert not env_file.exists()
