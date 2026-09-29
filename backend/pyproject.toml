@@ -79,7 +79,14 @@ ignore_errors = true
 # mypy 2.3.1 while adding the celery-adjacent block below.
 # warn_redundant_casts is left out: mypy accepts it only globally, not per-module.
 [[tool.mypy.overrides]]
-module = ["app.config", "app.services.risk_bands", "app.healthchecks"]
+module = [
+    "app.config",
+    "app.services.risk_bands",
+    "app.healthchecks",
+    "app.pipelines",
+    "app.pipelines.validate",
+    "app.pipelines.grid",
+]
 ignore_errors = false
 disallow_any_generics = true
 disallow_subclassing_any = true
