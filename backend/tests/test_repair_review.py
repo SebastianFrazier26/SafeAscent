@@ -84,11 +84,11 @@ def test_writer_refuses_the_description_column(tmp_path, columns, decision):
 
 def test_formula_like_cells_are_escaped(tmp_path):
     path = tmp_path / "f.csv"
-    rows = [{"accident_id": 1, "mountain": "=HYPERLINK(1)", "route": "+1", "state": "@x", "longitude": -105.5,
-             "location": "a-b"}]
-    export_sample(rows, n=1, seed=1, path=path, columns=["accident_id", "mountain", "route", "state", "longitude", "location"],
-                  decision_column="agree")
-    assert path.read_text().splitlines()[1] == "1,'=HYPERLINK(1),'+1,'@x,'-105.5,a-b,"
+    columns = ["accident_id", "mountain", "route", "state", "tags", "longitude", "latitude", "elevation", "location"]
+    rows = [{"accident_id": 1, "mountain": "=HYPERLINK(1)", "route": "+cmd", "state": "@x", "tags": "-2+3",
+             "longitude": -105.5, "latitude": "+3", "elevation": "-12", "location": "a-b"}]
+    export_sample(rows, n=1, seed=1, path=path, columns=columns, decision_column="agree")
+    assert path.read_text().splitlines()[1] == "1,'=HYPERLINK(1),'+cmd,'@x,'-2+3,-105.5,+3,-12,a-b,"
 
 
 def test_read_decisions_rejects_duplicate_and_non_numeric_keys(tmp_path):

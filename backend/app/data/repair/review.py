@@ -15,9 +15,18 @@ REVIEW_DIR = Path(__file__).resolve().parents[4] / "data" / "review"
 _FORMULA_PREFIXES = ("=", "+", "-", "@")
 
 
+def _is_number(value: str) -> bool:
+    try:
+        float(value)
+    except ValueError:
+        return False
+    return True
+
+
 def _cell(value: object) -> object:
-    if isinstance(value, str | int | float) and not isinstance(value, bool) and str(value).startswith(_FORMULA_PREFIXES):
-        return "'" + str(value)
+    # Plain numbers (a longitude of -105.5) stay readable and are not formulas.
+    if isinstance(value, str) and value.startswith(_FORMULA_PREFIXES) and not _is_number(value):
+        return "'" + value
     return value
 
 
