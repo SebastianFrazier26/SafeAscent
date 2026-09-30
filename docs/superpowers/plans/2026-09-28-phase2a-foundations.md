@@ -1680,6 +1680,8 @@ git commit -m "feat(pipelines): ingest run log, quarantine writer, verify-full i
 - Consumes: Phase 1 roles (`migrator`, `app`, `analyst`) already created by `create_roles.sql`; migration `0004`.
 - Produces: role `ingest` (LOGIN); role `trainer` (NOLOGIN, no password, no grants — Phase 3 adds LOGIN and SELECT on training views) `[assumes D13]`; schema `internal AUTHORIZATION migrator`; env var `INGEST_PASSWORD` (plaintext, from `.env.ingest`); `write_role_url --role ingest [--generate-password]`. `grants_phase2.sql` and `verify_roles_phase2.sql` are **cumulative**: later plans append grants and expected rows.
 
+Superseded by commits f73bad1/488c1b8 — `backend/db/roles/*` is authoritative (ingest has column-level SELECT on `mp_ticks` without `climber_name`); the code blocks below are the task as dispatched, not what shipped.
+
 - [ ] **Step 1: Failing tests**
 
 In `backend/tests/test_write_role_url.py` add:
@@ -3025,6 +3027,8 @@ Expected: `wrote INGEST_PASSWORD and INGEST_DATABASE_URL to .env.ingest` (0600, 
 
 - [ ] **Step 2 (owner/agent): Rehearse on a Neon branch** (Console: new branch `p2a-0-rehearsal` from `main`, current data; copy its direct host)
 
+**Neon role memberships are per branch**, not per project: a `GRANT migrator TO CURRENT_USER WITH SET TRUE, INHERIT FALSE` run on `p2a-0-rehearsal` has no effect on `production`. If Step 2's rehearsal needed that re-grant (i.e. the relaunch's `REVOKE` has already run), Step 4's prod apply needs the same `GRANT … WITH SET TRUE, INHERIT FALSE` run against prod first — check membership on each branch independently, don't assume the rehearsal result carries over.
+
 **Owner membership in `migrator` (ordering vs the Phase 1 relaunch).** `create_roles_phase2.sql` needs the owner to hold SET on `migrator` (`CREATE SCHEMA internal AUTHORIZATION migrator`). Phase 1's `create_roles.sql` granted it `WITH SET TRUE, INHERIT TRUE`, and the Phase 1 relaunch gate (plan 2026-09-27-phase1b Task 26 Step 3, `REVOKE migrator FROM CURRENT_USER`) removes it:
 - **Before that REVOKE has run** (current state): run the steps below as written.
 - **After it has run:** `create_roles_phase2.sql` refuses up front, before any password is sent (`owner needs SET on migrator: …`). As the owner, run `GRANT migrator TO CURRENT_USER WITH SET TRUE, INHERIT FALSE` first. SET without INHERIT lets the owner act as `migrator` explicitly but does not give it `migrator`'s table access back, and `verify_roles.sql` still passes. Optionally `REVOKE migrator FROM CURRENT_USER` again once Step 2 is done.
@@ -3065,7 +3069,17 @@ Expected: `1 passed`. (The R8 checks run after Task 10.) Keep the branch for Tas
 
 - [ ] **Step 4 (owner): Apply to prod** — repeat Step 2 without the `sed` host substitution (use `OWNER_DATABASE_URL` and `MIGRATOR_DATABASE_URL` as they are, still through `split_pg_url; verify_full_url`), then Step 3 against prod. Expected outputs are identical.
 
-- [ ] **Step 5 (owner): Store the ingest credential for data workflows** — GitHub → Settings → Secrets and variables → Actions → New repository secret `INGEST_DATABASE_URL`, pasted from `.env.ingest` via an editor (never `cat` in a shared terminal). The URL must not carry `sslmode=require` (the job refuses it). Do not add it to Railway yet: plan 7 puts it on a dedicated ingest service, never on the general `worker` (D14).
+- [ ] **Step 5 (owner): Validate the `NOT VALID` constraint** — 0004 added `mp_ticks_quarantine_reason_check` as `NOT VALID` (I2) so the migration itself never scans the full table; validate it now, as `migrator`, against prod:
+
+```bash
+( set -a; . ./.env.migrator; set +a
+  split_pg_url "$MIGRATOR_DATABASE_URL"; verify_full_url
+  psql "$PG_URL_NOPASS" -X -q -c "ALTER TABLE mp_ticks VALIDATE CONSTRAINT mp_ticks_quarantine_reason_check;" )
+```
+
+Expected: `ALTER TABLE` (no error; the constraint was already true for every existing row, since `quarantine_reason` is NULL until Task 10's R8 run). A failure here means some row already violates the check — stop and diagnose before Task 10 writes any quarantine values.
+
+- [ ] **Step 6 (owner): Store the ingest credential for data workflows** — GitHub → Settings → Secrets and variables → Actions → New repository secret `INGEST_DATABASE_URL`, pasted from `.env.ingest` via an editor (never `cat` in a shared terminal). The URL must not carry `sslmode=require` (the job refuses it). Do not add it to Railway yet: plan 7 puts it on a dedicated ingest service, never on the general `worker` (D14).
 
 ---
 
