@@ -1,9 +1,13 @@
 """R1 (AAC year repair from source_id neighbours) and R2 (date precision).
 
-AAC source_id rises monotonically with publication year (audit 2026-09-27), so the years
-of the trusted rows around a suspect row bound its real year. No LLM, no guessing: a row
-whose neighbours disagree by more than two years, or that has too few neighbours on
-either side, is left dated as it is and excluded as year_unverified (D10).
+AAC source_ids form one running sequence (1-2683 on prod, read 2026-09-30; some ids carry
+a/b/t suffix variants of one base) whose order follows accident year, so the trusted
+(pre-2019) rows on either side of a suspect row bound its real year: no earlier than the
+latest year on its left, no later than the earliest on its right. A separate 8-digit
+scheme (20190001...) is not a year-ordered sequence and is never a neighbour. No LLM, no
+guessing: a row with a contradictory or wider-than-two-year bound, too few neighbours on
+either side, or no place in the sequence keeps its snapshot date and is excluded as
+year_unverified (D10). Inputs come from the frozen internal.accidents_raw snapshot.
 """
 
 from __future__ import annotations
@@ -11,10 +15,11 @@ from __future__ import annotations
 import argparse
 import re
 from bisect import bisect_left
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
-from statistics import median_low
+from typing import Literal
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -30,7 +35,12 @@ NEIGHBOURS = 10
 MIN_SIDE = 5
 MAX_SPREAD = 2
 YEAR_SOURCE = "aac_source_id_neighbours"
-_TRAILING_INT = re.compile(r"(\d+)\s*$")
+YEAR_UNVERIFIED = "year_unverified"
+_EIGHT_DIGIT = re.compile(r"^\d{8}$")
+_TRAILING_ID = re.compile(r"(\d+)([a-z]*)$")
+
+Scheme = Literal["sequence", "eight_digit", "unparseable"]
+SortKey = tuple[int, str]
 
 
 def r2_precision(family: SourceFamily, d: date | None, year: float | None) -> str:
@@ -43,15 +53,24 @@ def r2_precision(family: SourceFamily, d: date | None, year: float | None) -> st
     return "day"
 
 
-def source_sort_key(source_id: str | None) -> int | None:
-    match = _TRAILING_INT.search(source_id or "")
-    return int(match.group(1)) if match else None
+def source_scheme(source_id: str | None) -> Scheme:
+    key = (source_id or "").strip().lower()
+    if _EIGHT_DIGIT.match(key):
+        return "eight_digit"
+    return "sequence" if _TRAILING_ID.search(key) else "unparseable"
+
+
+def source_sort_key(source_id: str | None) -> SortKey | None:
+    """(base, suffix), so "88a" sorts right after "88". None off the running sequence."""
+    key = (source_id or "").strip().lower()
+    match = None if _EIGHT_DIGIT.match(key) else _TRAILING_ID.search(key)
+    return (int(match.group(1)), match.group(2)) if match else None
 
 
 @dataclass(frozen=True)
 class AacRow:
     accident_id: int
-    sort_key: int | None
+    sort_key: SortKey | None
     date: date | None
     year: int | None
 
@@ -68,7 +87,7 @@ class YearFix:
 
 
 def _unverified(row: AacRow, lo: int | None = None, hi: int | None = None) -> YearFix:
-    return YearFix(row.accident_id, None, lo, hi, "unknown", None, "year_unverified")
+    return YearFix(row.accident_id, None, lo, hi, "unknown", None, YEAR_UNVERIFIED)
 
 
 def _same_day_in(year: int, d: date) -> tuple[date, str]:
@@ -99,27 +118,33 @@ def r1_year_fixes(rows: Sequence[AacRow]) -> list[YearFix]:
         if len(left) < MIN_SIDE or len(right) < MIN_SIDE:
             fixes.append(_unverified(row))
             continue
-        years = left + right
-        lo, hi, year = min(years), max(years), median_low(years)
-        if hi - lo > MAX_SPREAD:
+        lo, hi = max(left), min(right)
+        if lo > hi:
+            # The neighbours themselves are out of order here, so they bound nothing (and a
+            # year_lo above year_hi would break the year_bounds check).
+            fixes.append(_unverified(row))
+        elif hi - lo > MAX_SPREAD:
             fixes.append(_unverified(row, lo, hi))
         elif lo == hi and row.date is not None:
-            new_date, precision = _same_day_in(year, row.date)
-            fixes.append(YearFix(row.accident_id, year, lo, hi, precision, new_date, None))
+            new_date, precision = _same_day_in(lo, row.date)
+            fixes.append(YearFix(row.accident_id, lo, lo, hi, precision, new_date, None))
         else:
+            year = (lo + hi) // 2
             fixes.append(YearFix(row.accident_id, year, lo, hi, "year", date(year, 7, 1), None))
     return fixes
 
 
-def changes_for(fix: YearFix, *, old_date: date | None) -> list[Change]:
+def changes_for(fix: YearFix, *, old_date: date | None, old_excluded: str | None = None) -> list[Change]:
     a = fix.accident_id
     changes = [
         Change(a, "year_lo", fix.year_lo, "r1"),
         Change(a, "year_hi", fix.year_hi, "r1"),
         Change(a, "year_source", YEAR_SOURCE, "r1"),
         Change(a, "date_precision", fix.date_precision, "r1"),
-        Change(a, "excluded_reason", fix.excluded_reason, "r1"),
     ]
+    # A verified year lifts only R1's own exclusion; any other step's exclusion stands.
+    if fix.excluded_reason is not None or old_excluded == YEAR_UNVERIFIED:
+        changes.append(Change(a, "excluded_reason", fix.excluded_reason, "r1"))
     if fix.new_date is not None and fix.new_date != old_date:
         changes += [Change(a, "date", fix.new_date, "r1"), Change(a, "year", fix.year, "r1")]
     return changes
@@ -127,13 +152,6 @@ def changes_for(fix: YearFix, *, old_date: date | None) -> list[Change]:
 
 def restrict_to_raw(rows: Sequence[dict[str, object]], raw_ids: frozenset[int]) -> list[dict[str, object]]:
     return [r for r in rows if int(str(r["accident_id"])) in raw_ids]
-
-
-async def raw_ids(conn: AsyncConnection) -> frozenset[int]:
-    ids = frozenset(int(i) for i in (await conn.execute(text("SELECT accident_id FROM internal.accidents_raw"))).scalars())
-    if not ids:
-        raise SystemExit("internal.accidents_raw is empty: 0004 snapshots accidents before any repair")
-    return ids
 
 
 async def raw_rows(conn: AsyncConnection) -> list[dict[str, object]]:
@@ -154,26 +172,29 @@ def _as_year(value: object) -> float | None:
     return float(str(value)) if value is not None else None
 
 
+def _as_str(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
 async def run_r2r1(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
     # R1's neighbour rule and R2's day-15/Jul-1 rule describe the pre-2a AAC export only, so
     # both read the frozen snapshot (G17): a row R1 re-dated, or a hand edit to accidents,
     # can never become a trusted neighbour. Rows loaded after 0004 (plan 3's R11 facts CSV)
     # are absent from it: never trusted, never touched, only counted.
-    live = await fetch_accidents(conn, ["date", "year"])
+    live = await fetch_accidents(conn, ["date", "year", "excluded_reason"])
     rows = restrict_to_raw(await raw_rows(conn), frozenset(int(str(r["accident_id"])) for r in live))
     raw_id_set = frozenset(int(str(r["accident_id"])) for r in rows)
     current = {int(str(r["accident_id"])): r for r in restrict_to_raw(live, raw_id_set)}
-    families = {int(str(r["accident_id"])): source_family(r["source"] if isinstance(r["source"], str) else None) for r in rows}
-    aac = [
-        AacRow(
-            int(str(r["accident_id"])),
-            source_sort_key(r["source_id"] if isinstance(r["source_id"], str) else None),
-            _as_date(r["date"]),
-            r["date"].year if isinstance(r["date"], date) else (int(float(str(r["year"]))) if r["year"] is not None else None),
-        )
-        for r in rows
-        if families[int(str(r["accident_id"]))] == "aac"
-    ]
+    families = {int(str(r["accident_id"])): source_family(_as_str(r["source"])) for r in rows}
+    schemes: dict[int, Scheme] = {}
+    aac: list[AacRow] = []
+    for r in rows:
+        a = int(str(r["accident_id"]))
+        if families[a] != "aac":
+            continue
+        schemes[a] = source_scheme(_as_str(r["source_id"]))
+        d, year = _as_date(r["date"]), _as_year(r["year"])
+        aac.append(AacRow(a, source_sort_key(_as_str(r["source_id"])), d, d.year if d else (int(year) if year is not None else None)))
     fixes = {f.accident_id: f for f in r1_year_fixes(aac)}
     r1_changes: list[Change] = []
     r2_changes: list[Change] = []
@@ -185,27 +206,45 @@ async def run_r2r1(conn: AsyncConnection, args: argparse.Namespace) -> dict[str,
         if a in fixes:
             fix = fixes[a]
             live_date = _as_date(current[a]["date"])
-            r1_changes += changes_for(fix, old_date=live_date)
+            live_year = _as_year(current[a]["year"])
+            r1_changes += changes_for(fix, old_date=live_date, old_excluded=_as_str(current[a]["excluded_reason"]))
             if fix.excluded_reason:
                 # D10: an unverified row keeps its original date, so one an earlier rule
                 # version or a hand edit moved is put back, with a revision showing the undo.
-                if (live_date, _as_year(current[a]["year"])) != (d, year):
+                if (live_date, live_year) != (d, year):
                     r1_changes += [Change(a, "date", d, "r1"), Change(a, "year", year, "r1")]
-                r1_report.quarantine(str(a), fix.excluded_reason)
+                r1_report.quarantine(str(a), fix.excluded_reason, scheme=schemes[a])
             else:
-                if fix.new_date == live_date and _as_year(current[a]["year"]) != fix.year:
+                if fix.new_date == live_date and live_year != fix.year:
                     r1_changes.append(Change(a, "year", fix.year, "r1"))
                 r1_report.accept()
             continue
         precision = r2_precision(families[a], d, year)
         r2_changes.append(Change(a, "date_precision", precision, "r2"))
         if precision == "unknown":
-            r2_changes.append(Change(a, "excluded_reason", "year_unverified", "r2"))
+            r2_changes.append(Change(a, "excluded_reason", YEAR_UNVERIFIED, "r2"))
             r2_report.quarantine(str(a), "no_date")
         else:
             r2_report.accept()
     r1 = await run_step(conn, step="r1", rule_version=R1_VERSION, changes=r1_changes, report=r1_report, apply=args.apply)
     r2 = await run_step(conn, step="r2", rule_version=R2_VERSION, changes=r2_changes, report=r2_report, apply=args.apply)
-    # D10: excluded, never deleted; the runbook reports this count as a Phase 3 recency-bias note.
-    unverified = r1_report.quarantined["year_unverified"] + r2_report.quarantined["no_date"]
-    return {"r1": r1, "r2": r2, "year_unverified": unverified, "not_in_raw": len(live) - len(rows)}
+    unverified_by_scheme = Counter(schemes[f.accident_id] for f in fixes.values() if f.excluded_reason)
+    # D10: excluded, never deleted; the runbook reports these as a Phase 3 recency-bias note.
+    r1_unverified = r1_report.quarantined[YEAR_UNVERIFIED]
+    r2_no_date = r2_report.quarantined["no_date"]
+    return {
+        "r1": r1,
+        "r2": r2,
+        "r1_year_unverified": r1_unverified,
+        "r2_no_date_unverified": r2_no_date,
+        "year_unverified": r1_unverified + r2_no_date,
+        "aac_schemes": {
+            s: {
+                "rows": n,
+                "suspects": sum(1 for a in fixes if schemes[a] == s),
+                "unverified": unverified_by_scheme[s],
+            }
+            for s, n in sorted(Counter(schemes.values()).items())
+        },
+        "not_in_raw": len(live) - len(rows),
+    }
