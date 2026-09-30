@@ -63,6 +63,11 @@ def test_eight_digit_ids_are_their_own_scheme_with_no_sort_key():
     assert source_sort_key("20190001") is None
 
 
+def test_non_ascii_digits_are_unparseable():
+    for sid in ("\u0661\u0662", "\u0661\u0662\u0663\u0664\u0665\u0666\u0667\u0668"):
+        assert (source_scheme(sid), source_sort_key(sid)) == ("unparseable", None)
+
+
 def test_suffix_variants_are_adjacent_neighbours():
     ids = [(str(n), 2003) for n in range(1, 6)] + [("5a", 2003), ("5b", 2003)]
     ids += [(f"{n}t", 2003) for n in range(7, 12)]
@@ -89,10 +94,36 @@ def test_confident_neighbours_keep_day_and_month():
     assert fix.excluded_reason is None
 
 
-def test_tightest_bound_is_last_left_year_to_first_right_year():
+def test_tight_bound_applies_when_all_neighbours_span_at_most_two_years():
     rows = _trusted(0, [2002] * 5 + [2003] * 5) + [_suspect(10)] + _trusted(11, [2003] * 5 + [2004] * 5)
     [fix] = r1_year_fixes(rows)
     assert (fix.year, fix.year_lo, fix.year_hi, fix.date_precision, fix.new_date) == (2003, 2003, 2003, "day", date(2003, 5, 2))
+
+
+def test_a_noisy_neighbourhood_is_unverified_even_when_the_tight_bound_agrees():
+    rows = _trusted(0, [2001, 2002] + [2003] * 8) + [_suspect(10)] + _trusted(11, [2003] * 9 + [2008])
+    [fix] = r1_year_fixes(rows)
+    assert (fix.excluded_reason, fix.year_lo, fix.year_hi, fix.new_date) == ("year_unverified", 2003, 2003, None)
+
+
+def test_width_one_point_year_follows_the_median_not_the_low_end():
+    rows = _trusted(0, [2003] * 5) + [_suspect(5)] + _trusted(6, [2004] * 10)
+    [fix] = r1_year_fixes(rows)
+    assert (fix.year, fix.year_lo, fix.year_hi, fix.date_precision, fix.new_date) == (2004, 2003, 2004, "year", date(2004, 7, 1))
+    fewer_right = _trusted(0, [2003] * 10) + [_suspect(10)] + _trusted(11, [2004] * 5)
+    assert r1_year_fixes(fewer_right)[0].year == 2003
+
+
+def test_width_one_median_outside_the_bound_is_clamped():
+    rows = _trusted(0, [2001] * 8 + [2002] * 2) + [_suspect(10)] + _trusted(11, [2003] * 5)
+    [fix] = r1_year_fixes(rows)
+    assert (fix.year, fix.year_lo, fix.year_hi, fix.new_date) == (2002, 2002, 2003, date(2002, 7, 1))
+
+
+def test_width_two_point_year_is_the_median_of_all_neighbours():
+    rows = _trusted(0, [2002] * 10) + [_suspect(10)] + _trusted(11, [2004] * 5)
+    [fix] = r1_year_fixes(rows)
+    assert (fix.year, fix.year_lo, fix.year_hi, fix.date_precision) == (2002, 2002, 2004, "year")
 
 
 def test_spread_at_the_limit_becomes_year_precision_on_july_1():

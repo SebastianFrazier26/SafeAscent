@@ -3,17 +3,21 @@
 AAC source_ids form one running sequence (1-2683 on prod, read 2026-09-30; some ids carry
 a/b/t suffix variants of one base) whose order follows accident year, so the trusted
 (pre-2019) rows on either side of a suspect row bound its real year: no earlier than the
-latest year on its left, no later than the earliest on its right. A separate 8-digit
-scheme (20190001...) is not a year-ordered sequence and is never a neighbour. No LLM, no
-guessing: a row with a contradictory or wider-than-two-year bound, too few neighbours on
-either side, or no place in the sequence keeps its snapshot date and is excluded as
-year_unverified (D10). Inputs come from the frozen internal.accidents_raw snapshot.
+latest year on its left, no later than the earliest on its right. The point year is the
+median of all neighbour years clamped into that bound; consumers must read a
+year-precision row as the range [year_lo, year_hi]. A separate 8-digit scheme
+(20190001...) is not a year-ordered sequence and is never a neighbour. No LLM, no
+guessing: a row with a contradictory bound, neighbours spanning more than two years, too
+few neighbours on either side, or no place in the sequence keeps its snapshot date and is
+excluded as year_unverified (D10). Inputs come from the frozen internal.accidents_raw
+snapshot.
 """
 
 from __future__ import annotations
 
 import argparse
 import re
+import statistics
 from bisect import bisect_left
 from collections import Counter
 from collections.abc import Sequence
@@ -36,8 +40,9 @@ MIN_SIDE = 5
 MAX_SPREAD = 2
 YEAR_SOURCE = "aac_source_id_neighbours"
 YEAR_UNVERIFIED = "year_unverified"
-_EIGHT_DIGIT = re.compile(r"^\d{8}$")
-_TRAILING_ID = re.compile(r"(\d+)([a-z]*)$")
+# re.ASCII: without it \d matches e.g. Arabic-Indic digits, which int() then accepts.
+_EIGHT_DIGIT = re.compile(r"^\d{8}$", re.ASCII)
+_TRAILING_ID = re.compile(r"(\d+)([a-z]*)$", re.ASCII)
 
 Scheme = Literal["sequence", "eight_digit", "unparseable"]
 SortKey = tuple[int, str]
@@ -123,13 +128,17 @@ def r1_year_fixes(rows: Sequence[AacRow]) -> list[YearFix]:
             # The neighbours themselves are out of order here, so they bound nothing (and a
             # year_lo above year_hi would break the year_bounds check).
             fixes.append(_unverified(row))
-        elif hi - lo > MAX_SPREAD:
+        elif max(left + right) - min(left + right) > MAX_SPREAD:
+            # The spec's spread gate on the whole neighbourhood, on top of the tight bound: one
+            # stray year on either side means the order is too noisy to trust here.
             fixes.append(_unverified(row, lo, hi))
         elif lo == hi and row.date is not None:
             new_date, precision = _same_day_in(lo, row.date)
             fixes.append(YearFix(row.accident_id, lo, lo, hi, precision, new_date, None))
         else:
-            year = (lo + hi) // 2
+            # Median of all neighbours rather than lo or the midpoint, so a width-1 range leans
+            # where the data does; an even-count tie on x.5 floors.
+            year = max(lo, min(hi, int(statistics.median(left + right))))
             fixes.append(YearFix(row.accident_id, year, lo, hi, "year", date(year, 7, 1), None))
     return fixes
 

@@ -1192,13 +1192,14 @@ def test_r2_counts_are_near_the_audit():
     assert 100 <= counts.get("year", 0) <= 200
 
 
-def test_every_row_has_a_precision_and_unknown_pairs_with_year_unverified():
+def test_every_row_has_a_precision_and_every_unknown_row_is_excluded():
+    # Any exclusion counts: R1/R2 leave another step's excluded_reason in place (Task 3 fix round 3).
     [row] = fetch(
         "SELECT count(*) FILTER (WHERE date_precision IS NULL) AS missing, "
-        "count(*) FILTER (WHERE date_precision = 'unknown' AND excluded_reason IS DISTINCT FROM 'year_unverified') AS unpaired "
+        "count(*) FILTER (WHERE date_precision = 'unknown' AND excluded_reason IS NULL) AS unexcluded "
         "FROM accidents"
     )
-    assert (row["missing"], row["unpaired"]) == (0, 0)
+    assert (row["missing"], row["unexcluded"]) == (0, 0)
 
 
 def test_r9_severity_scale_set_and_agreement_recorded():
@@ -2704,6 +2705,7 @@ def test_r4_golden_set_at_least_95_percent():
 
 **Interfaces:**
 - Consumes: Tasks 1, 5, 6 (`internal.duplicate_decisions`), 7 (R3 must have run).
+- Constraint (owner decision 2026-09-30, from Task 3): a row with `year_source = 'aac_source_id_neighbours'` is a range, not a point: its year interval is `[year_lo, year_hi]` (1 Jan `year_lo` to 31 Dec `year_hi`), never the calendar year of its point `date`. `DupRow` carries `year_lo`/`year_hi`/`year_source` and `date_interval` uses them for such rows. At day/month precision R1 always has `year_lo == year_hi`, so the finer interval already sits inside the range. Add a test: a `year` row with `year_lo=2002, year_hi=2004` and point date 2003-07-01 is 0 days from a 2004-11-02 day row.
 - Produces: `R5_BASE = "r5-v1"`, `MERGE_AT = 0.90`, `DISTINCT_AT = 0.40`, `@dataclass(frozen=True) DupRow(accident_id: int, family: SourceFamily, date: date | None, lat: float | None, lon: float | None, accident_type: str | None, severity: str | None, place: str, date_precision: str | None, geocode_precision: str | None, exact_key: tuple[object, ...])`, `PRECISION_WEIGHT = {"day": 1.0, "month": 0.6, "year": 0.3}`, `date_interval(d: date | None, precision: str | None) -> tuple[date, date] | None`, `interval_gap_days(a, b) -> int`, `pair_score(a: DupRow, b: DupRow) -> float`, `candidate_pairs(rows) -> list[tuple[int, int, float]]` (low id first, fuzzy only, precision-aware window, untrusted points excluded), `exact_groups(rows) -> list[list[int]]`, `band(score: float) -> Literal["merge", "distinct", "review"]`, `groups(ids: Iterable[int], merges: Iterable[tuple[int, int]]) -> list[list[int]]`, `canonical(members: Sequence[DupRow]) -> int`, `group_changes(rows_by_id: Mapping[int, DupRow], merges: Iterable[tuple[int, int]]) -> list[Change]` (every row: group members get the head, everyone else is reset), `rule_version(decisions: Mapping[tuple[int, int], str]) -> str`, CLI steps `r5` (auto decisions + export review CSV + apply groups; logs `review_pending` on its run row), `r5-import`.
 
 - [ ] **Step 1: Failing tests** — `backend/tests/test_repair_dedupe.py`:
@@ -3613,10 +3615,11 @@ Expected: `phase 2 grants applied`, `ALL PHASE 2 ROLE CHECKS PASSED`.
 ```bash
 ANALYST_PSQL -At -c "SELECT source, count(*) FROM accidents GROUP BY 1 ORDER BY 1" \
   -c "SELECT count(*) FILTER (WHERE source_id ~ '[0-9]+\s*$') AS parseable, count(*) FROM accidents WHERE source ILIKE 'aac%'" \
-  -c "SELECT (SELECT count(*) FROM accidents) AS live, (SELECT count(*) FROM internal.accidents_raw) AS raw"
+  -c "SELECT (SELECT count(*) FROM accidents) AS live, (SELECT count(*) FROM internal.accidents_raw) AS raw" \
+  -c "SELECT CASE WHEN source_id ~ '^\s*[0-9]{8}\s*$' THEN 'eight_digit' WHEN lower(source_id) ~ '[0-9]+[a-z]*\s*$' THEN 'sequence' ELSE 'unparseable' END AS scheme, count(*) AS n, count(*) FILTER (WHERE source_id !~ '^\s*[0-9]{8}\s*$' AND substring(lower(source_id) from '([0-9]+)[a-z]*\s*$')::numeric > 2683) AS base_over_2683 FROM internal.accidents_raw WHERE source ILIKE 'aac%' GROUP BY 1 ORDER BY 1"
 ```
 
-Expected: every source maps to `aac|avalanche|nps` per `sources.py`; nearly all AAC `source_id`s parseable; `raw` equals `live` before plan 3's R11 load (afterwards `live − raw` is the number of refresh rows R1/R2 will skip). If not, stop: the agent extends `source_family` / `source_sort_key` in a reviewed commit. (`analyst` reads `internal.accidents_raw` only if plan 1 granted it; if the third query is denied, run it with `OWNER_PSQL`.)
+Expected: every source maps to `aac|avalanche|nps` per `sources.py`; nearly all AAC `source_id`s parseable; `raw` equals `live` before plan 3's R11 load (afterwards `live − raw` is the number of refresh rows R1/R2 will skip); per-scheme counts near `sequence` 2,763 / `eight_digit` 68 / `unparseable` ~0 (read 2026-09-30; mirrors `dates.source_scheme`, record them in the PR), and `base_over_2683` = 0 on the `sequence` row. A sequence base above 2683 means ids outside the known 1–2683 run: stop and have the agent inspect them before R1 treats them as neighbours. If not, stop: the agent extends `source_family` / `source_sort_key` in a reviewed commit. (`analyst` reads `internal.accidents_raw` only if plan 1 granted it; if the third query is denied, run it with `OWNER_PSQL`.)
 
 - [ ] **Step 3 (owner/agent): Dry run, then apply on the branch**
 
