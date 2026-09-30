@@ -214,6 +214,29 @@ def test_after_relaunch_revoke_owner_regrants_set_and_migrator_runs_grants(role_
     assert "run as migrator, or as an owner with SET on migrator" in no_set.stderr
 
 
+def test_grants_phase2_narrows_a_preexisting_table_level_grant(role_cleanup, fresh_db):  # noqa: F811
+    _require_psql()
+    owner_url = _owner_db(fresh_db)
+    command.upgrade(_alembic_cfg_as(fresh_db, owner_url), "0003_hist_insufficient_data")
+    _as(owner_url, ANALYST_FIXTURE_SQL)
+    assert _psql(owner_url, ROLES_DIR / "create_roles.sql", ROLE_PASSWORD_ENV).returncode == 0
+    assert _psql(owner_url, CREATE_PHASE2, PHASE2_PASSWORD_ENV).returncode == 0
+    migrator_url = _role_url(fresh_db, "migrator", PASSWORDS["migrator"])
+    command.upgrade(_alembic_cfg_as(fresh_db, migrator_url), "head")
+
+    # Simulates an older grants script, or a by-hand grant, that gave ingest the whole table
+    # (climber_name included) before this script's REVOKE-then-column-GRANT existed.
+    _as(migrator_url, "GRANT SELECT ON public.mp_ticks TO ingest")
+    ingest = _role_url(fresh_db, "ingest", PHASE2_PASSWORDS["ingest"])
+    _as(ingest, "SELECT climber_name FROM mp_ticks")
+
+    assert _psql(owner_url, GRANTS_PHASE2, {}).returncode == 0
+    _denied(ingest, "SELECT climber_name FROM mp_ticks")
+    _as(ingest, "SELECT tick_id FROM mp_ticks")
+    verified = _psql(owner_url, VERIFY_PHASE2, {})
+    assert verified.returncode == 0, verified.stdout + verified.stderr
+
+
 def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F811
     _require_psql()
     owner_url = _owner_db(fresh_db)

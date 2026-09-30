@@ -20,6 +20,10 @@ GRANT SELECT ON ALL TABLES IN SCHEMA internal TO analyst;
 
 -- Plan 1 (0004)
 GRANT SELECT ON public.accidents, public.mp_routes, public.mp_locations TO ingest;
+-- Narrows a stray table-level SELECT (e.g. granted by hand, or by an older version of this
+-- script) back down to the column set below on every rerun; REVOKE on a column grant alone is
+-- a no-op, so this must run first.
+REVOKE SELECT ON public.mp_ticks FROM ingest;
 -- Exactly the columns R8 (mp_ticks_quarantine) reads: never climber_name.
 GRANT SELECT (tick_id, route_id, tick_date, created_at, quarantine_reason, quarantine_rule_version)
   ON public.mp_ticks TO ingest;
