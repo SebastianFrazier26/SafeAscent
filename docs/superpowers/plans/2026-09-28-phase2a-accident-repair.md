@@ -3598,7 +3598,7 @@ Docs: `CHANGELOG.md` entry (heading from `printf '### Phase 2a accident repair, 
 
 ### Task 12: OWNER/AGENT RUNBOOK — apply PR 2a-1 (R2/R1, R9) on a branch, hand checks, prod
 
-From `/Users/sebastianfrazier/Developer/SafeAscent/backend`, with `split_pg_url` and `verify_full_url` defined (foundations Task 8 Step 1) and the helpers loaded: `. scripts/runbook_helpers.sh`. Every connection is TLS verify-full (`verify_full_url` for psql, `connect_args_for` via `tests/verify/_db.fetch` and `db.ingest_engine` for Python). Every repair runs as `ingest` and prints counts only.
+From `/Users/sebastianfrazier/Developer/SafeAscent/backend`, with the helpers loaded: `. scripts/runbook_helpers.sh` (it defines `split_pg_url` and `verify_full_url` itself, and every helper refuses until `TARGET_HOST` is set: a Neon branch host, or the literal `production`). Every connection is TLS verify-full (`verify_full_url` for psql, `connect_args_for` via `tests/verify/_db.fetch` and `db.ingest_engine` for Python). Every repair runs as `ingest` and prints counts only.
 
 - [ ] **Step 1 (owner/agent): New Neon branch `p2a-1-rehearsal` from `main`; apply grants**
 
@@ -3619,18 +3619,27 @@ ANALYST_PSQL -At -c "SELECT source, count(*) FROM accidents GROUP BY 1 ORDER BY 
   -c "SELECT CASE WHEN source_id ~ '^\s*[0-9]{8}\s*$' THEN 'eight_digit' WHEN lower(source_id) ~ '[0-9]+[a-z]*\s*$' THEN 'sequence' ELSE 'unparseable' END AS scheme, count(*) AS n, count(*) FILTER (WHERE source_id !~ '^\s*[0-9]{8}\s*$' AND substring(lower(source_id) from '([0-9]+)[a-z]*\s*$')::numeric > 2683) AS base_over_2683 FROM internal.accidents_raw WHERE source ILIKE 'aac%' GROUP BY 1 ORDER BY 1"
 ```
 
-Expected: every source maps to `aac|avalanche|nps` per `sources.py`; nearly all AAC `source_id`s parseable; `raw` equals `live` before plan 3's R11 load (afterwards `live − raw` is the number of refresh rows R1/R2 will skip); per-scheme counts near `sequence` 2,763 / `eight_digit` 68 / `unparseable` ~0 (read 2026-09-30; mirrors `dates.source_scheme`, record them in the PR), and `base_over_2683` = 0 on the `sequence` row. A sequence base above 2683 means ids outside the known 1–2683 run: stop and have the agent inspect them before R1 treats them as neighbours. If not, stop: the agent extends `source_family` / `source_sort_key` in a reviewed commit. (`analyst` reads `internal.accidents_raw` only if plan 1 granted it; if the third query is denied, run it with `OWNER_PSQL`.)
+Then the severity vocabulary (R9 refuses any value it does not map):
+
+```bash
+ANALYST_PSQL -At -c "SELECT source, lower(trim(injury_severity)), count(*) FROM accidents GROUP BY 1, 2 ORDER BY 1, 2"
+```
+
+Expected: only `fatal`, `serious`, `minor`, `near_miss`, blank/NULL, `unknown`, `n/a` or `none` (read 2026-09-30: aac serious/minor/fatal plus 2 blanks; avalanche minor/fatal/serious/near_miss; nps fatal). Any other value: stop, and the agent maps it in `severity.py` in a reviewed commit.
+
+Expected for the Step 2 queries above: every source maps to `aac|avalanche|nps` per `sources.py`; nearly all AAC `source_id`s parseable; `raw` equals `live` before plan 3's R11 load (afterwards `live − raw` is the number of refresh rows R1/R2 will skip); per-scheme counts near `sequence` 2,763 / `eight_digit` 68 / `unparseable` ~0 (read 2026-09-30; mirrors `dates.source_scheme`, record them in the PR), and `base_over_2683` = 0 on the `sequence` row. A sequence base above 2683 means ids outside the known 1–2683 run: stop and have the agent inspect them before R1 treats them as neighbours. If not, stop: the agent extends `source_family` / `source_sort_key` in a reviewed commit. (`analyst` reads `internal.accidents_raw` only if plan 1 granted it; if the third query is denied, run it with `OWNER_PSQL`.)
 
 - [ ] **Step 3 (owner/agent): Dry run, then apply on the branch**
 
 ```bash
+ING r9
 ING r2r1
 ING r2r1 --apply
 ING r2r1 --apply
 ING r9 --apply
 ```
 
-Expected: dry run shows `proposed` counts (e.g. `date_precision=month` near 1,567 for AAC, `date_precision=year` near 123) and `mode: dry_run`; first apply `applied > 0`; the second apply `applied: 0` with everything `already_recorded` (idempotent).
+Expected: the first line (`ING r9`, a dry run) prints its JSON summary, which confirms `Settings` accepts the extra variables `.env.ingest` exports (an `Extra inputs are not permitted` error means stop and fix the env handling before any apply); its `crosstab` shows only mapped severities. The r2r1 dry run shows `proposed` counts (e.g. `date_precision=month` near 1,567 for AAC, `date_precision=year` near 123) and `mode: dry_run`; first apply `applied > 0`; the second apply `applied: 0` with everything `already_recorded` (idempotent).
 
 - [ ] **Step 4 (owner): Hand checks**
 
@@ -3659,10 +3668,10 @@ Expected: all pass; printed counts recorded in the PR.
 - [ ] **Step 6 (owner): Prod**
 
 ```bash
-unset TARGET_HOST
+export TARGET_HOST=production
 ```
 
-Then repeat Steps 1–5 exactly as written (the helpers now use the env-file hosts, i.e. prod). The hand-check imports are re-run against prod with the same CSVs (the sampled accident ids are identical because seeds and data match; if `r1-export` on prod lists different ids, stop and re-check on prod). Delete the `p2a-1-rehearsal` branch.
+Then repeat Steps 1–5 exactly as written (the helpers now use the env-file hosts, i.e. prod; an unset `TARGET_HOST` refuses, it never defaults to prod). The hand-check imports are re-run against prod with the same CSVs (the sampled accident ids are identical because seeds and data match; if `r1-export` on prod lists different ids, stop and re-check on prod). Delete the `p2a-1-rehearsal` branch.
 
 ---
 

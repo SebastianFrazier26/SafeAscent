@@ -36,6 +36,21 @@ def test_other_sources_are_full_scale_when_severity_is_present():
     assert severity_scale("avalanche", None) == "unknown"
 
 
+@pytest.mark.parametrize(
+    "value, scale",
+    [("Unknown", "unknown"), ("unknown ", "unknown"), ("N/A", "unknown"), ("none", "unknown"), ("", "unknown"),
+     ("near_miss", "full"), ("Near_Miss", "full"), (" FATAL", "full"), ("minor", "full")],
+)
+def test_severity_vocabulary_is_normalised(value, scale):
+    assert severity_scale("avalanche", value) == scale
+
+
+@pytest.mark.parametrize("family", ["aac", "avalanche", "nps"])
+def test_an_unmapped_severity_refuses_rather_than_guessing(family):
+    with pytest.raises(ValueError, match="unmapped injury_severity"):
+        severity_scale(family, "critical")
+
+
 def test_agreement_rate():
     assert agreement({1: "yes", 2: "yes", 3: "no", 4: "yes"}) == 0.75
     with pytest.raises(ValueError):
@@ -103,6 +118,10 @@ def test_r9_labels_every_row_and_a_rerun_changes_nothing():
             # The label never rewrites the recorded severity itself.
             assert severities == ["Serious", "  ", None, "Fatal", None]
             assert first["applied"] == 5
+            assert first["crosstab"] == {
+                "aac|full|serious": 1, "aac|unknown|": 1, "avalanche|unknown|": 1,
+                "nps|fatal_only|": 1, "nps|fatal_only|fatal": 1,
+            }
             assert (again["applied"], again["already_recorded"]) == (0, 5)
         finally:
             await engine.dispose()
@@ -138,6 +157,11 @@ def test_r9_hand_check_round_trip_carries_the_locator_and_logs_the_agreement(tmp
             assert header == [*LOCATOR_COLUMNS, "injury_severity", "agree"]
             assert "narrative" not in path.read_text(encoding="utf-8")
             _fill(path, "agree", {"1": "yes", "2": "no"})
+            stray = tmp_path / "stray.csv"
+            stray.write_text(path.read_text(encoding="utf-8") + "3,,,,,,yes\n", encoding="utf-8")
+            async with engine.begin() as conn:
+                with pytest.raises(ValueError, match="outside the hand-check pool"):
+                    await run_r9_import(conn, argparse.Namespace(review_file=str(stray)))
             async with engine.begin() as conn:
                 out = await run_r9_import(conn, argparse.Namespace(review_file=str(path)))
             assert out == {"source": "repair:r9-check", "n": 2, "agreement": 0.5}
@@ -172,6 +196,11 @@ def test_r1_hand_check_exports_only_re_dated_rows(tmp_path, monkeypatch):
             assert exported["exported"] == 1
             assert [(r["accident_id"], r["source_id"], r["year_lo"]) for r in rows] == [("11", "11", "2003")]
             _fill(path, "within_one_year", {"11": "yes"})
+            stray = tmp_path / "stray.csv"
+            stray.write_text(path.read_text(encoding="utf-8") + "22,,,,,,,,yes\n", encoding="utf-8")
+            async with engine.begin() as conn:
+                with pytest.raises(ValueError, match="outside the hand-check pool"):
+                    await run_r1_import(conn, argparse.Namespace(review_file=str(stray)))
             async with engine.begin() as conn:
                 out = await run_r1_import(conn, argparse.Namespace(review_file=str(path)))
             assert out["agreement"] == 1.0

@@ -17,6 +17,14 @@ def agreement(decisions: dict[int, str]) -> float:
     return sum(1 for v in decisions.values() if v == "yes") / len(decisions)
 
 
+def refuse_ineligible(decisions: dict[int, str], eligible: set[int]) -> None:
+    # A row outside the pool the export sampled from (edited CSV, stale file, other
+    # branch) would count toward a rate that is meant to describe that pool alone.
+    stray = sorted(set(decisions) - eligible)
+    if stray:
+        raise ValueError(f"{len(stray)} decision id(s) outside the hand-check pool, e.g. {stray[:5]}")
+
+
 async def record_check(conn: AsyncConnection, source: str, decisions: dict[int, str]) -> dict[str, object]:
     rate = agreement(decisions)
     report = ValidationReport(source)

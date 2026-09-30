@@ -5,13 +5,14 @@ scale; injury_severity itself is never rewritten. Also the R1/R9 hand-check roun
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from datetime import date
 from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.data.repair import review
-from app.data.repair.checks import YES_NO, record_check
+from app.data.repair.checks import YES_NO, record_check, refuse_ineligible
 from app.data.repair.dates import YEAR_SOURCE
 from app.data.repair.framework import Change, fetch_accidents, run_step
 from app.data.repair.sources import SourceFamily, source_family
@@ -20,27 +21,49 @@ from app.pipelines.validate import ValidationReport
 R9_VERSION = "r9-v1"
 # The owner finds the AAC report from these; description never leaves the database.
 LOCATOR_COLUMNS = ("accident_id", "source_id", "date", "location", "mountain")
+# Prod vocabulary read 2026-09-30 (aac, avalanche: fatal/serious/minor, avalanche also
+# near_miss; nps: fatal). Anything else refuses, like source_family, so a new value gets a
+# reviewed mapping instead of a silent "unknown" or "full".
+FULL_SCALE_SEVERITIES = frozenset({"fatal", "serious", "minor", "near_miss"})
+UNKNOWN_SEVERITIES = frozenset({"", "unknown", "n/a", "none"})
+
+
+def normalized_severity(injury_severity: str | None) -> str:
+    return (injury_severity or "").strip().lower()
 
 
 def severity_scale(family: SourceFamily, injury_severity: str | None) -> str:
+    key = normalized_severity(injury_severity)
+    if key not in FULL_SCALE_SEVERITIES | UNKNOWN_SEVERITIES:
+        raise ValueError(f"unmapped injury_severity {injury_severity!r}: extend severity.py in a reviewed change")
     if family == "nps":
         return "fatal_only"
-    return "full" if injury_severity and injury_severity.strip() else "unknown"
+    return "full" if key in FULL_SCALE_SEVERITIES else "unknown"
 
 
 def _str_or_none(value: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _id(row: dict[str, object]) -> int:
+    return int(str(row["accident_id"]))
+
+
 async def run_r9(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
     rows = await fetch_accidents(conn, ["source", "injury_severity"])
     report = ValidationReport("repair:r9")
     changes = []
+    crosstab: Counter[str] = Counter()
     for r in rows:
-        scale = severity_scale(source_family(_str_or_none(r["source"])), _str_or_none(r["injury_severity"]))
+        family = source_family(_str_or_none(r["source"]))
+        severity = _str_or_none(r["injury_severity"])
+        scale = severity_scale(family, severity)
+        crosstab[f"{family}|{scale}|{normalized_severity(severity)}"] += 1
         report.accept()
-        changes.append(Change(int(str(r["accident_id"])), "severity_scale", scale, "r9"))
-    return await run_step(conn, step="r9", rule_version=R9_VERSION, changes=changes, report=report, apply=args.apply)
+        changes.append(Change(_id(r), "severity_scale", scale, "r9"))
+    summary = await run_step(conn, step="r9", rule_version=R9_VERSION, changes=changes, report=report, apply=args.apply)
+    # CLI output only: mapped vocabulary counts, never written to validation_report.
+    return summary | {"crosstab": dict(sorted(crosstab.items()))}
 
 
 def _out(args: argparse.Namespace, name: str) -> Path:
@@ -48,21 +71,33 @@ def _out(args: argparse.Namespace, name: str) -> Path:
     return Path(args.out) if args.out else review.REVIEW_DIR / name
 
 
-async def run_r9_export(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
-    rows = [
+async def r9_check_pool(conn: AsyncConnection) -> list[dict[str, object]]:
+    return [
         r
         for r in await fetch_accidents(conn, ["source", "source_id", "location", "mountain", "injury_severity", "date"])
-        if str(r["source"]).lower().startswith("aac")
+        if source_family(_str_or_none(r["source"])) == "aac"
     ]
+
+
+async def run_r9_export(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
+    rows = await r9_check_pool(conn)
     out = _out(args, "severity_check.csv")
     n = review.export_sample(
         rows, n=50, seed=9, path=out, columns=[*LOCATOR_COLUMNS, "injury_severity"], decision_column="agree"
     )
-    return {"exported": n, "path": str(out), "instructions": "set agree=yes|no after reading each AAC report"}
+    return {
+        "exported": n,
+        "path": str(out),
+        "instructions": (
+            "read each AAC report; agree=yes if the stored injury_severity matches it, or if it is blank "
+            "and the report states no injury outcome; otherwise agree=no"
+        ),
+    }
 
 
 async def run_r9_import(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
     decisions = review.read_decisions(Path(args.review_file), key="accident_id", decision_column="agree", allowed=YES_NO)
+    refuse_ineligible(decisions, {_id(r) for r in await r9_check_pool(conn)})
     return await record_check(conn, "repair:r9-check", decisions)
 
 
@@ -76,8 +111,8 @@ def r1_check_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
     ]
 
 
-async def run_r1_export(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
-    rows = r1_check_rows(
+async def r1_check_pool(conn: AsyncConnection) -> list[dict[str, object]]:
+    return r1_check_rows(
         await fetch_accidents(
             conn,
             [
@@ -86,6 +121,10 @@ async def run_r1_export(conn: AsyncConnection, args: argparse.Namespace) -> dict
             ],
         )
     )
+
+
+async def run_r1_export(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
+    rows = await r1_check_pool(conn)
     out = _out(args, "r1_year_check.csv")
     n = review.export_sample(
         rows,
@@ -106,4 +145,5 @@ async def run_r1_import(conn: AsyncConnection, args: argparse.Namespace) -> dict
     decisions = review.read_decisions(
         Path(args.review_file), key="accident_id", decision_column="within_one_year", allowed=YES_NO
     )
+    refuse_ineligible(decisions, {_id(r) for r in await r1_check_pool(conn)})
     return await record_check(conn, "repair:r1-check", decisions)

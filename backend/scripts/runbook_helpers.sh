@@ -47,7 +47,8 @@ _need_target() {
 
 # Prints $1 with its host replaced by TARGET_HOST (unchanged for production). Refuses an
 # empty URL, or one with no host/path boundary to rewrite, rather than falling through to
-# the env file's (prod) host.
+# the env file's (prod) host. Any :port goes with the old host: Neon branches listen on
+# the default 5432.
 _retarget() {
   _need_target || return 1
   [ -n "$1" ] || { echo "_retarget: empty URL" >&2; return 1; }
@@ -61,6 +62,17 @@ _retarget() {
 }
 
 # Call only inside a helper's subshell: the env file's variables must not outlive it.
+# A malformed URL makes split_pg_url print an empty or user-less line; psql given that would
+# fall back to local defaults instead of failing.
+_split_verified() {
+  split_pg_url "$1"
+  case "$PG_URL_NOPASS" in
+    *://*@*) ;;
+    *) echo "split_pg_url: no user@host in the URL" >&2; return 1 ;;
+  esac
+  verify_full_url
+}
+
 _load() {
   [ -f "$1" ] || { echo "missing $1 (run from backend/)" >&2; return 1; }
   set -a; . "$1"; set +a
@@ -80,14 +92,12 @@ MIG() { ( _need_target && _load ./.env.migrator || exit 1
 
 OWNER_PSQL() { ( _need_target && _load ./.env.owner || exit 1
   url="$(_retarget "${OWNER_DATABASE_URL:-}")" || exit 1
-  split_pg_url "$url"; verify_full_url
-  [ -n "$PG_URL_NOPASS" ] || { echo "OWNER_PSQL: empty URL after split" >&2; exit 1; }
+  _split_verified "$url" || exit 1
   psql "$PG_URL_NOPASS" -X "$@" ); }
 
 ANALYST_PSQL() { ( _need_target && _load ./.env.analyst || exit 1
   url="$(_retarget "${ANALYST_DATABASE_URL:-}")" || exit 1
-  split_pg_url "$url"; verify_full_url
-  [ -n "$PG_URL_NOPASS" ] || { echo "ANALYST_PSQL: empty URL after split" >&2; exit 1; }
+  _split_verified "$url" || exit 1
   psql "$PG_URL_NOPASS" -X "$@" ); }
 
 VERIFY() { ( _need_target && _load ./.env.analyst || exit 1

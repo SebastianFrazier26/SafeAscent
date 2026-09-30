@@ -19,12 +19,28 @@ def test_r1_2023_aac_count_is_at_most_twice_the_2015_2018_mean():
     assert row["y2023"] <= 2 * row["base"]
 
 
-def test_r1_hand_check_at_least_90_percent_within_one_year():
+# The sampled pools mirror severity.r1_check_rows / r9_check_pool; the import refuses ids
+# outside them, so rows_in counts real checks of the pool the rate describes.
+R1_POOL = (
+    "SELECT count(*) FROM accidents WHERE year_source = 'aac_source_id_neighbours' "
+    "AND excluded_reason IS NULL AND date IS NOT NULL"
+)
+R9_POOL = "SELECT count(*) FROM accidents WHERE lower(trim(source)) LIKE 'aac%'"
+
+
+def _latest_check(source: str, pool_sql: str, sample: int) -> float:
     [row] = fetch(
-        "SELECT (validation_report->>'agreement')::float AS a FROM source_ingest_log "
-        "WHERE source = 'repair:r1-check' AND status = 'ok' ORDER BY finished_at DESC LIMIT 1"
+        f"SELECT rows_in, (validation_report->>'agreement')::float AS a, ({pool_sql}) AS eligible "
+        f"FROM source_ingest_log WHERE source = '{source}' AND status = 'ok' ORDER BY finished_at DESC LIMIT 1"
     )
-    assert row["a"] >= 0.90
+    print({"source": source, "rows_in": row["rows_in"], "eligible": row["eligible"], "agreement": row["a"]})
+    assert row["rows_in"] >= min(sample, row["eligible"]) > 0
+    assert row["a"] is not None and 0.0 <= row["a"] <= 1.0
+    return float(row["a"])
+
+
+def test_r1_hand_check_at_least_90_percent_within_one_year():
+    assert _latest_check("repair:r1-check", R1_POOL, 40) >= 0.90
 
 
 def test_r1_unverified_year_count_is_reported():
@@ -47,7 +63,7 @@ def test_r2_counts_are_near_the_audit():
     # are counted separately, not against the R2 bounds.
     rows = fetch(
         "SELECT year_source IS NOT NULL AS r1, date_precision AS p, count(*) AS n FROM accidents "
-        "WHERE source ILIKE 'aac%' GROUP BY 1, 2"
+        "WHERE source ILIKE 'aac%' AND accident_id IN (SELECT accident_id FROM internal.accidents_raw) GROUP BY 1, 2"
     )
     counts = {r["p"]: r["n"] for r in rows if not r["r1"]}
     print({"r2": counts, "r1": {r["p"]: r["n"] for r in rows if r["r1"]}})
@@ -68,8 +84,4 @@ def test_every_row_has_a_precision_and_every_unknown_row_is_excluded():
 def test_r9_severity_scale_set_and_agreement_recorded():
     [row] = fetch("SELECT count(*) FILTER (WHERE severity_scale IS NULL) AS missing FROM accidents")
     assert row["missing"] == 0
-    [check] = fetch(
-        "SELECT (validation_report->>'agreement')::float AS a FROM source_ingest_log "
-        "WHERE source = 'repair:r9-check' AND status = 'ok' ORDER BY finished_at DESC LIMIT 1"
-    )
-    print({"r9_agreement": check["a"]})
+    _latest_check("repair:r9-check", R9_POOL, 50)

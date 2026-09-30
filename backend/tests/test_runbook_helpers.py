@@ -79,3 +79,10 @@ def test_split_and_verify_full_keep_the_password_out_of_the_url(shell, tmp_path)
     url, password = out.stdout.splitlines()
     assert url == "postgresql://u@h.example/db?application_name=a%20b&sslmode=verify-full&sslrootcert=system"
     assert password == "p@ss"
+
+
+@pytest.mark.parametrize("url", ["", "not a url", "postgresql:///db"])
+def test_split_verified_refuses_a_url_without_user_and_host(shell, tmp_path, url):
+    out = _run(shell, f"_split_verified '{url}'; echo rc=$?", tmp_path)
+    assert "no user@host" in out.stderr
+    assert out.stdout.strip() == "rc=1"
