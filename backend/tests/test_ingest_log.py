@@ -1,4 +1,5 @@
 import asyncio
+import json
 import uuid
 from datetime import date
 
@@ -45,6 +46,38 @@ def test_finish_run_refuses_a_report_whose_summary_carries_raw_row_data():
 
     asyncio.run(scenario())
 
+
+
+class _RecordingConn:
+    def __init__(self) -> None:
+        self.params: dict[str, object] = {}
+
+    async def execute(self, _stmt: object, params: dict[str, object]) -> object:
+        self.params = params
+        return type("Result", (), {"rowcount": 1})()
+
+
+def test_finish_run_records_the_rule_version_once_in_the_summary():
+    report = ValidationReport("mp_ticks_quarantine")
+    report.accept()
+    conn = _RecordingConn()
+    asyncio.run(finish_run(conn, uuid.uuid4(), status="ok", report=report, rows_upserted=0, rule_version="r8-v1"))  # type: ignore[arg-type]
+    assert json.loads(str(conn.params["report"]))["rule_version"] == "r8-v1"
+
+    plain = _RecordingConn()
+    asyncio.run(finish_run(plain, uuid.uuid4(), status="ok", report=report, rows_upserted=0))  # type: ignore[arg-type]
+    assert "rule_version" not in json.loads(str(plain.params["report"]))
+
+
+def test_finish_run_refuses_a_rule_version_that_is_not_a_plain_string():
+    class LeakyReport(ValidationReport):
+        def summary(self) -> dict[str, object]:
+            return super().summary() | {"rule_version": {"row_ref": "r1", "lat": 40.1}}
+
+    report = LeakyReport("fixture")
+    report.accept()
+    with pytest.raises(ValueError, match="rule_version must be a plain string"):
+        asyncio.run(finish_run(_RecordingConn(), uuid.uuid4(), status="ok", report=report, rows_upserted=0))  # type: ignore[arg-type]
 
 @requires_pg
 def test_run_lifecycle_quarantine_and_noop_lookup():

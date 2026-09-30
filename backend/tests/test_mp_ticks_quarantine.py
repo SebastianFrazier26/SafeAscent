@@ -5,7 +5,7 @@ from datetime import date
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.pipelines.mp_ticks_quarantine import classify_tick, run
+from app.pipelines.mp_ticks_quarantine import RULE_VERSION, classify_tick, run
 from tests.pgtest import migrated_db, requires_pg, sa_url
 
 TODAY = date(2026, 9, 28)
@@ -68,24 +68,66 @@ EXPECTED_REASONS = {
 EXPECTED_COUNTS = dict(Counter(reason or "clean" for reason in EXPECTED_REASONS.values()))
 
 
+XMIN_SQL = "SELECT tick_id, xmin::text FROM mp_ticks"
+LAST_RUN_SQL = (
+    "SELECT rows_upserted, validation_report->>'rule_version' FROM source_ingest_log "
+    "WHERE source = 'mp_ticks_quarantine' ORDER BY finished_at DESC LIMIT 1"
+)
+
+
 @requires_pg
 def test_sql_matches_the_python_rule_and_is_idempotent():
     async def scenario(url: str) -> None:
         engine = create_async_engine(url)
         try:
+            async with engine.connect() as conn:
+                xmin_before = dict((await conn.execute(text(XMIN_SQL))).all())
             async with engine.begin() as conn:
                 counts = await run(conn, today=TODAY)
+                first = (await conn.execute(text(LAST_RUN_SQL))).one()
             assert counts == EXPECTED_COUNTS
+            flagged = sum(n for reason, n in EXPECTED_COUNTS.items() if reason != "clean")
+            assert tuple(first) == (flagged, RULE_VERSION)
             async with engine.begin() as conn:
                 again = await run(conn, today=TODAY)
-                changed = (await conn.execute(text(
-                    "SELECT rows_upserted FROM source_ingest_log WHERE source = 'mp_ticks_quarantine' "
-                    "ORDER BY finished_at DESC LIMIT 1"))).scalar_one()
+                second = (await conn.execute(text(LAST_RUN_SQL))).one()
             assert again == counts
-            assert changed == 0
+            assert tuple(second) == (0, RULE_VERSION)
             async with engine.connect() as conn:
-                rows = dict((await conn.execute(text("SELECT tick_id, quarantine_reason FROM mp_ticks"))).all())
-            assert rows == EXPECTED_REASONS
+                rows = {
+                    tick_id: (reason, version)
+                    for tick_id, reason, version in (
+                        await conn.execute(text("SELECT tick_id, quarantine_reason, quarantine_rule_version FROM mp_ticks"))
+                    ).all()
+                }
+                xmin_after = dict((await conn.execute(text(XMIN_SQL))).all())
+            assert rows == {
+                tick_id: (reason, RULE_VERSION if reason is not None else None)
+                for tick_id, reason in EXPECTED_REASONS.items()
+            }
+            # I1 (final review): clean rows are never rewritten, not even to stamp a version.
+            clean = [tick_id for tick_id, reason in EXPECTED_REASONS.items() if reason is None]
+            assert clean and all(xmin_after[t] == xmin_before[t] for t in clean)
+        finally:
+            await engine.dispose()
+
+    with migrated_db(seed_sql=SEED) as name:
+        asyncio.run(scenario(sa_url(name)))
+
+
+@requires_pg
+def test_a_row_that_stops_being_flagged_is_cleared_back_to_null():
+    async def scenario(url: str) -> None:
+        engine = create_async_engine(url)
+        try:
+            async with engine.begin() as conn:
+                await run(conn, today=TODAY)
+                await conn.execute(text(
+                    "INSERT INTO mp_routes (mp_route_id, name, location_id) VALUES (900000999, 'Late Route', 900000100)"))
+                await run(conn, today=TODAY)
+                row = (await conn.execute(text(
+                    "SELECT quarantine_reason, quarantine_rule_version FROM mp_ticks WHERE tick_id = 4"))).one()
+            assert tuple(row) == (None, None)
         finally:
             await engine.dispose()
 

@@ -21,7 +21,7 @@ RunStatus = Literal["ok", "rejected", "failed"]
 # read the public log; the offending row itself belongs only in internal.ingest_quarantine
 # (M7, Task 2 review). Enforced here rather than trusted to callers, so a future change to
 # ValidationReport.summary() that starts including raw issues fails loudly instead of leaking.
-_ALLOWED_SUMMARY_KEYS = frozenset({"source", "rows_in", "accepted", "quarantined", "problems"})
+_ALLOWED_SUMMARY_KEYS = frozenset({"source", "rows_in", "accepted", "quarantined", "problems", "rule_version"})
 
 
 def sha256_rows(rows: Iterable[Sequence[object]]) -> str:
@@ -32,8 +32,12 @@ def sha256_rows(rows: Iterable[Sequence[object]]) -> str:
     return digest.hexdigest()
 
 
-def _validated_summary(report: ValidationReport, problems: list[str] | None) -> dict[str, object]:
+def _validated_summary(
+    report: ValidationReport, problems: list[str] | None, rule_version: str | None = None
+) -> dict[str, object]:
     summary = report.summary() | {"problems": problems or []}
+    if rule_version is not None:
+        summary["rule_version"] = rule_version
     extra = sorted(set(summary) - _ALLOWED_SUMMARY_KEYS)
     if extra:
         raise ValueError(
@@ -46,6 +50,8 @@ def _validated_summary(report: ValidationReport, problems: list[str] | None) -> 
     problem_list = summary["problems"]
     if not isinstance(problem_list, list) or not all(isinstance(item, str) for item in problem_list):
         raise ValueError("validation_report problems must be plain strings, never a raw row")
+    if "rule_version" in summary and not isinstance(summary["rule_version"], str):
+        raise ValueError("validation_report rule_version must be a plain string")
     return summary
 
 
@@ -81,15 +87,19 @@ async def finish_run(
     rows_upserted: int,
     problems: list[str] | None = None,
     cost_units: float | None = None,
+    rule_version: str | None = None,
 ) -> None:
     """Close out the run. Must run on the same connection, inside the same transaction, as
     the start_run/write_quarantine calls for this run_id — rows_quarantined here and the
     quarantine rows written separately must commit together, not as two independent writes
     a partial failure could split.
 
+    rule_version, when given, lands in validation_report: the one place a rule-driven job
+    records which rule judged the rows it left untouched.
+
     Raises ValueError if run_id has no 'running' row to close on this connection (unknown
     run_id, or a repeat finish_run on an already-finished run)."""
-    summary = _validated_summary(report, problems)
+    summary = _validated_summary(report, problems, rule_version)
     result = await conn.execute(
         text(
             "UPDATE source_ingest_log SET finished_at = now(), status = :status, rows_in = :rows_in, "

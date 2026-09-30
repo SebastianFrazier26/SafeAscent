@@ -53,11 +53,18 @@ WITH classified AS (
          END AS reason
   FROM mp_ticks t
 )
+-- Only flagged rows carry the rule version (owner decision 2026-09-29, final review I1):
+-- stamping clean rows too would rewrite all ~23M rows (and every index) on the first run.
+-- A row that stops being flagged is cleared back to NULL/NULL; the version that judged the
+-- clean rows is recorded once per run in source_ingest_log instead.
 UPDATE mp_ticks m
-SET quarantine_reason = c.reason, quarantine_rule_version = :rule_version
+SET quarantine_reason = c.reason,
+    quarantine_rule_version = CASE WHEN c.reason IS NULL THEN NULL ELSE CAST(:rule_version AS text) END
 FROM classified c
 WHERE m.tick_id = c.tick_id
-  AND (m.quarantine_reason IS DISTINCT FROM c.reason OR m.quarantine_rule_version IS DISTINCT FROM :rule_version)
+  AND (m.quarantine_reason IS DISTINCT FROM c.reason
+       OR m.quarantine_rule_version IS DISTINCT FROM
+          CASE WHEN c.reason IS NULL THEN NULL ELSE CAST(:rule_version AS text) END)
 """
 
 COUNTS_SQL = "SELECT coalesce(quarantine_reason, 'clean'), count(*) FROM mp_ticks GROUP BY 1"
@@ -73,7 +80,7 @@ async def run(conn: AsyncConnection, *, today: date) -> dict[str, int]:
     for reason, n in counts.items():
         if reason != "clean":
             report.quarantined[reason] = n
-    await finish_run(conn, run_id, status="ok", report=report, rows_upserted=changed)
+    await finish_run(conn, run_id, status="ok", report=report, rows_upserted=changed, rule_version=RULE_VERSION)
     return counts
 
 
