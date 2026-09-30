@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     HEALTHCHECKS_BEAT_URL: str | None = None
     WORKER_HEARTBEAT_TTL_SECONDS: int = 120
 
+    # Phase 2 data jobs connect as the least-privilege ingest role; never set on the API.
+    INGEST_DATABASE_URL: str | None = None
+
     model_config = SettingsConfigDict(
         env_file=".env",
         case_sensitive=True,

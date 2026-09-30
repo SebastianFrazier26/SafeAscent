@@ -148,7 +148,7 @@ All new ML code lives in `backend/app/ml/`. The functions are pure: `scoring.py`
 ### Feature store and registry tables (Alembic migrations)
 
 - `route_static_features(route_id PK, source, area_path ltree, type_group, aspect_deg, slope_deg, elevation_m, lithology, pitches, length_m, h3_r5, grid_bucket, updated_at)`
-- `cell_daily_conditions(grid_bucket, date, tmax, tmin, precip_mm, snowfall_cm, wind_max_ms, gust_max_ms, freeze_thaw, swe_delta_mm, nws_alert_codes text[], aqi, lightning_density, source, fetched_at, PK(grid_bucket, date))`. Wind is stored in m/s. There is no visibility column. Lightning columns follow Phase 2: `lightning_cg_nldn` (1989–2017), `lightning_density` (GLM, 2018+), `lightning_source`, `lightning_coverage`; both are NULL (missing, not zero) outside coverage (M12).
+- `cell_daily_conditions(grid_bucket, tz, date, tmax, tmin, precip_mm, snowfall_cm, wind_max_ms, gust_max_ms, freeze_thaw, swe_delta_mm, nws_alert_codes text[], aqi, record_kind, source, fetched_at, PK(grid_bucket, tz, date))`. `date` is the crag's local calendar day in IANA zone `tz`; `record_kind` is `era5`, `stopgap` (Forecast API `past_days`, non-ERA5) or `forecast` (Phase 2 plan 3, revised 2026-09-28). Wind is stored in m/s. There is no visibility column. Lightning is not a column of this table (revised 2026-09-28): read it through Phase 2 plan 7's SQL functions `lightning_glm_count(grid_bucket, tz, date)` (GLM total lightning from 2018-02-13, local day) and `lightning_nldn_count(grid_bucket, utc_date)` (NLDN cloud-to-ground, UTC-day tiles; a local day L is matched to UTC days L and L+1). Both return 0 only inside recorded coverage and NULL (missing, not zero) outside it (M12); area/objective coverage comes from the `scope_lightning_coverage` view.
 - `exposure_index(area_id, type_group, month, n_routes, proxy jsonb, proxy_version, as_of, PK(area_id, type_group, month, as_of))`. `proxy` holds the Phase 2 components (route density, season share, OpenBeta ticks, NPS visitation, permits, objective popularity, the optional internal `mp_tick_count` and `mp_ice_mixed_ticks`, in-app ticks later), each with its own missing flag. Objectives use their `canonical_areas` row.
 - `model_registry`:
   - Columns: `version text PK, family, kind, created_at, data_hash, train_window, metrics jsonb, thresholds jsonb, model_card jsonb, bundle bytea, bundle_sha256, bundle_bytes, status, promoted_at, promoted_by, parent_version, gate_result jsonb, diff_report jsonb`.
@@ -343,11 +343,12 @@ The issue body contains, in this order so the owner's review starts where it mat
 - MP rock routes and tick aggregates (ascent counts by season/month) may be displayed; ticks are public (owner decision 2026-09-28; `DATA_LICENSE.md` wording pending legal review). MP descriptions and other prose are never displayed, served, redistributed, or sent to third parties.
 - Where coverage is still thin, routes, areas and type groups show "insufficient data" with a coverage warning rather than being silently absent or scored low (see Definitions and M6).
 
-### M12 — Lightning: **NLDN tiles 1989–2017 + GOES GLM 2018+** (DECIDED)
+### M12 — Lightning: **NLDN tiles 1989→latest month + GOES GLM from 2018-02-13** (DECIDED; windows revised 2026-09-28, Phase 2 DP3 default pending owner confirmation)
 
-- **1989–2017:** NOAA NCEI SWDI NLDN daily cloud-to-ground flash counts per 0.1° tile (free; use constraint "cite dataset"), stored as `lightning_cg_nldn`. Western coverage is sparse before 1989, and there are no tiles north of 54°N.
-- **2018 onward and live:** NOAA GOES Geostationary Lightning Mapper (GLM), stored as `lightning_density` (±54° latitude).
-- **Missing, never zero:** outside coverage (before 1989, and north of 54°N, e.g. Denali) the covariate is NULL, and any learned term uses a missing indicator.
+- **NLDN, 1989 through the latest published month:** NOAA NCEI SWDI NLDN daily cloud-to-ground flash counts per 0.1° tile, per UTC day (free; use constraint "cite dataset"), appended monthly and read through `lightning_nldn_count(grid_bucket, utc_date)`; a local day L is matched to UTC days L and L+1. Tiles exist from 1986, but loading starts in 1989 because the network was not yet national. NLDN also covers GLM's 2018-01-01..02-12 gap. There are no tiles north of 54°N.
+- **GLM, 2018-02-13 onward and live:** NOAA GOES Geostationary Lightning Mapper total lightning, stored as non-zero local-day counts in Phase 2 plan 7's `lightning_daily` and read through `lightning_glm_count(grid_bucket, tz, date)`. Coverage follows plan 7's `glm_satellite(lat, lon, date)` rule: per-satellite field of view, West only from its operational date, nothing north of 54°N, a complete-hours ledger. Areas and objectives read it from the `scope_lightning_coverage` view. Live flashes go to `lightning_recent`, and their freshness comes from the run log.
+- **Alternative (DP3):** NLDN only for 1989–2017, with the 2018-01-01..02-12 gap left NULL.
+- **Missing, never zero:** outside coverage (before 1989, north of 54°N such as Denali, outside a satellite's field of view, or in an incomplete GLM hour) the covariate is NULL; both functions return 0 only inside recorded coverage, and any learned term uses a missing indicator.
 - **Homogeneity:** NLDN (cloud-to-ground) and GLM (total lightning) differ, so the model uses each as a within-cell, within-era anomaly against that cell's climatology for the same source; 2018–2026 overlap years calibrate the two (Phase 2 P2-7).
 - Live GLM lightning near a route or objective drives a **hazard alert** (the rule-based hazard banner), not just a multiplier.
 
@@ -437,7 +438,7 @@ Today's roughly 850 events, with 20% held out, leave about 680 for training. Tha
   - SNOTEL
   - NWS alerts API
   - AirNow AQI
-  - NOAA SWDI NLDN tiles (history 1989–2017) and GOES GLM lightning (2018+ and live; M12)
+  - NOAA SWDI NLDN tiles (1989 through the latest month, UTC days) and GOES GLM lightning (from 2018-02-13 and live; M12), via plan 7's `lightning_nldn_count` / `lightning_glm_count`
 
 ## UX safety rules
 
@@ -460,7 +461,7 @@ Today's roughly 850 events, with 20% held out, leave about 680 for training. Tha
   - A gate-failing challenger is `rejected` and never promoted; a passing one auto-promotes.
   - The diff report shows the `LARGE SHIFT` banner at > 5% band change, a > 10-point coverage shift, and a new family.
   - The ski-approach filter uses the configured radius (default 1 km).
-  - Lightning is NULL, not 0, before 1989 and north of 54°N; NLDN fills 1989–2017 and GLM 2018+.
+  - Lightning is NULL, not 0, before 1989, north of 54°N, and outside recorded coverage; NLDN covers 1989 through the latest month and GLM from 2018-02-13 (M12).
   - Objectives with `coverage_level = 'objective'` get exactly one row per type group in `objective_daily_scores`; `thin` ones are `insufficient`; objectives with route-level coverage get none.
   - Rollback flips `active`/`previous` atomically, and the partial unique index rejects two actives.
 - **Property tests (Hypothesis):**

@@ -45,7 +45,8 @@ SafeAscent uses a Neon-hosted PostgreSQL database with PostGIS for spatial queri
 | parent_id | INTEGER | FK to parent location (self-referential) |
 | latitude | FLOAT | Geographic latitude |
 | longitude | FLOAT | Geographic longitude |
-| elevation_ft | INTEGER | Elevation in feet |
+
+**Correction (2026-09-29):** this table has no `elevation_ft` column; an earlier version of this doc listed one. Elevation is not tracked for `mp_locations`.
 
 **Indexes:**
 - Primary key on `mp_id`
@@ -84,6 +85,31 @@ Colorado (parent_id=NULL)
 | mountain | VARCHAR | Mountain/location name |
 | route | VARCHAR | Route name (if known) |
 | tags | VARCHAR | Comma-separated tags |
+
+**Phase 2a repair columns (added by `0004`; written by plan 2's repair jobs, empty until then).** NULL means "not yet classified", never a default guess.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| date_precision | TEXT | `day`, `month`, `year`, `unknown` (check `accidents_date_precision_check`) |
+| year_source | TEXT | Where the year came from |
+| year_lo, year_hi | SMALLINT | Year bounds when only a range is known (check `accidents_year_bounds_check`: `year_lo <= year_hi`) |
+| geocode_precision | TEXT | `exact`, `crag`, `area`, `park_centroid`, `region_fallback`, `unknown` (check) |
+| geocode_method | TEXT | How the coordinates were derived |
+| country | TEXT | Country of the accident |
+| activity_class | TEXT | `climbing`, `climbing_approach`, `non_climbing` (check) |
+| activity_rule_version | TEXT | Rule version that set `activity_class` |
+| inclusion_flag | TEXT | Whether the row is used for modeling, and why |
+| incident_group_id | INTEGER | Groups duplicate reports of one incident (index `idx_accidents_incident_group`) |
+| is_canonical | BOOLEAN | NOT NULL, default `true`; false for a non-canonical duplicate |
+| severity_scale | TEXT | `full`, `fatal_only`, `unknown` (check) |
+| excluded_reason | TEXT | Why a row is excluded, if it is |
+| source_url | TEXT | Link to the source report |
+| updated_at | TIMESTAMPTZ | Last repair write |
+| exp_years_climbing | SMALLINT | Stated years of experience, 0–80 (check `accidents_exp_years_climbing_check`) |
+| exp_stated_level | TEXT | NOT NULL, default `unknown`; `novice`, `intermediate`, `experienced`, `expert`, `unknown` (check) |
+| exp_first_season | BOOLEAN | First season climbing, if stated |
+| guided | TEXT | NOT NULL, default `unknown`; `guided`, `unguided`, `unknown` (check) |
+| exp_rule_version | TEXT | Rule version that set the experience columns |
 
 **Indexes:**
 - Primary key on `accident_id`
@@ -155,6 +181,49 @@ WHERE ST_DWithin(
 
 ---
 
+### 6. mp_ticks
+**Purpose:** Mountain Project ascent log ("ticks") per route, read with raw SQL (no SQLAlchemy model) by the ascent-analytics endpoint and by Phase 2a's R8 quarantine job
+**Records:** growing (private scrape import)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| tick_id | INTEGER | Primary key |
+| route_id | VARCHAR(20) | Mountain Project route id, text (no FK — orphan rows are possible and expected) |
+| route_name | VARCHAR(255) | Route name as logged by the climber |
+| climber_name | VARCHAR(255) | NOT NULL. `ingest`'s grant on this table is column-level and excludes this column (nothing in Phase 2a needs it); `analyst` and `app` can still read it |
+| tick_date | DATE | Date of the ascent |
+| style | VARCHAR(50) | Ascent style as logged (lead, follow, tr, solo, etc.) |
+| created_at | TIMESTAMP | Row insert time, `timestamp without time zone` (writer's local clock, not UTC) |
+| quarantine_reason | TEXT | Added by `0004`. NULL (clean) or one of `future`, `orphan_route`, `pre_1970` — set by R8 (`app/pipelines/mp_ticks_quarantine.py`), never deletes the row |
+| quarantine_rule_version | TEXT | Added by `0004`. The R8 rule version that flagged the row (currently `r8-v1`); set only on flagged rows, NULL on clean rows. The version that judged the clean rows is recorded per run in `source_ingest_log.validation_report.rule_version` |
+
+**Constraints:**
+- `mp_ticks_quarantine_reason_check` (`0004`, `NOT VALID` on creation to avoid a full-table scan during the migration; validated separately against prod as a runbook step): `quarantine_reason IS NULL OR quarantine_reason IN ('future', 'orphan_route', 'pre_1970')`
+
+---
+
+### 7. source_ingest_log
+**Purpose:** One row per Phase 2 ingest run (R8, the tick-aggregate loader, and future Phase 2 jobs); audit trail for what ran, when, and with what result — never deleted
+**Records:** growing (one row per job run)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| run_id | UUID | Primary key |
+| source | TEXT | Job name, e.g. `mp_ticks_quarantine`, `mp_tick_aggregates` |
+| window_start | DATE | Nullable; the run's input window start, if the source has one |
+| window_end | DATE | Nullable; the run's input window end, if the source has one |
+| started_at | TIMESTAMP | Defaults to `now()` |
+| finished_at | TIMESTAMP | Nullable until the run completes |
+| status | TEXT | `running`, `ok`, `rejected`, or `failed` |
+| rows_in | INTEGER | Rows the run considered |
+| rows_upserted | INTEGER | Rows actually written |
+| rows_quarantined | INTEGER | Rows flagged rather than written |
+| content_sha256 | TEXT | Hash of the input content, used to detect a repeat load (`mp_tick_aggregates`'s no-op case) |
+| validation_report | JSONB | `ValidationReport.summary()` for the run: counts and short strings only (`source`, `rows_in`, `accepted`, `quarantined`, `problems`, and `rule_version` for rule-driven jobs such as R8), never a raw row |
+| cost_units | NUMERIC | Reserved for future API-cost accounting; unused by Phase 2a jobs |
+
+---
+
 ## Key Relationships
 
 Full diagram: [`data_model.png`](../data_model.png) (source `docs/diagrams/data_model.mmd`). The schema is owned by Alembic (`backend/alembic/`). Two more live tables have no SQLAlchemy model: `mp_ticks` (read with raw SQL by the ascent-analytics endpoint) and `area_weekly_weather` (not referenced by `app/`).
@@ -172,6 +241,19 @@ accidents (6.9K)
 ```
 
 **Note:** `accidents.mp_route_id` is a nullable FK to `mp_routes`, but the safety algorithm does not rely on it; it finds relevant accidents by spatial proximity (PostGIS). `historical_predictions.route_id` holds an MP route id without an FK constraint. Accidents do carry legacy FKs, `accidents.route_id → routes` and `accidents.mountain_id → mountains`. Phase 2a relinks them to `mp_routes`/`mp_locations` and drops the legacy tables. `ascents` and `climbers` were dropped by migration `0002_drop_ascents_climbers`.
+
+---
+
+## Schema `internal`
+
+Added by `0004_phase2a_foundation`. Owned by `migrator`; `app` has no `USAGE` on the schema at all (`backend/db/roles/verify_roles_phase2.sql`). `analyst` has read-only `SELECT`; `ingest` has exactly the grants Phase 2a jobs need (`backend/db/roles/grants_phase2.sql`), nothing more.
+
+| Table | Purpose |
+|-------|---------|
+| `accidents_raw` | Frozen snapshot of `public.accidents` taken by `0004` (primary key on `accident_id`, no other index) before Phase 2a's repair columns existed — the pre-2a shape, for comparison/rollback reference only |
+| `accident_revisions` | One row per field a future accident-repair job would change on an `accidents` row (old value, new value, method, rule version) — the table and model exist from `0004`, but no Phase 2a job writes to it yet |
+| `ingest_quarantine` | One row per input row an ingest job rejected rather than wrote, with a reason and optional JSON detail — never deleted |
+| `mp_tick_aggregates` | MP-reported ice/mixed tick counts by route/period/style, loaded from the private scraper's export (`app/pipelines/mp_tick_aggregates.py`); INSERT-only, a changed count is quarantined rather than overwritten |
 
 ---
 

@@ -42,13 +42,14 @@ package = false
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-addopts = "--verbose --cov=app --cov-report=term-missing --cov-report=html -m 'not needs_data'"
+addopts = "--verbose --cov=app --cov-report=term-missing --cov-report=html -m 'not needs_data and not db'"
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 markers = [
     "performance: marks tests as performance benchmarks (deselect with '-m \"not performance\"')",
     "needs_data: needs a populated database or live services; run with -m needs_data",
+    "db: read-only acceptance checks against a Neon branch as analyst; needs VERIFY_DATABASE_URL; run with -m db",
 ]
 
 [tool.ruff]
@@ -79,7 +80,18 @@ ignore_errors = true
 # mypy 2.3.1 while adding the celery-adjacent block below.
 # warn_redundant_casts is left out: mypy accepts it only globally, not per-module.
 [[tool.mypy.overrides]]
-module = ["app.config", "app.services.risk_bands", "app.healthchecks"]
+module = [
+    "app.config",
+    "app.services.risk_bands",
+    "app.healthchecks",
+    "app.pipelines",
+    "app.pipelines.validate",
+    "app.pipelines.grid",
+    "app.pipelines.ingest_log",
+    "app.pipelines.db",
+    "app.pipelines.mp_ticks_quarantine",
+    "app.pipelines.mp_tick_aggregates",
+]
 ignore_errors = false
 disallow_any_generics = true
 disallow_subclassing_any = true
@@ -99,6 +111,21 @@ extra_checks = true
 # (an untyped decorator). Everything else strict still enforces, incl. untyped calls.
 [[tool.mypy.overrides]]
 module = ["app.celery_signals", "app.tasks.ops"]
+ignore_errors = false
+disallow_any_generics = true
+disallow_untyped_calls = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_return_any = true
+no_implicit_reexport = true
+strict_equality = true
+
+# SQLAlchemy models: declarative_base() is typed Any, so subclassing Base always trips
+# disallow_subclassing_any; everything else strict still applies.
+[[tool.mypy.overrides]]
+module = ["app.models.pipeline"]
 ignore_errors = false
 disallow_any_generics = true
 disallow_untyped_calls = true

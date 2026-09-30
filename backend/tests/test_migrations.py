@@ -190,13 +190,16 @@ ROLES_DIR = BACKEND / "db" / "roles"
 # sa_test_owner stands in for Neon's neondb_owner: CREATEROLE but not superuser, so the
 # test sees PG16's automatic ADMIN grant to a role's creator, as prod will.
 OWNER_ROLE = "sa_test_owner"
-TEST_ROLES = ("migrator", "app", "analyst", OWNER_ROLE)
+# ingest/trainer come from create_roles_phase2.sql (test_roles_phase2.py and the prod-order test).
+TEST_ROLES = ("ingest", "trainer", "migrator", "app", "analyst", OWNER_ROLE)
 PASSWORDS = {
     "owner": "test-owner-pw",
     "migrator": "test-migrator-password-0123456789abcdef",
     "app": "test-app-password-0123456789abcdef0123",
 }
 ROLE_PASSWORD_ENV = {"MIGRATOR_PASSWORD": PASSWORDS["migrator"], "APP_PASSWORD": PASSWORDS["app"]}
+PHASE2_PASSWORDS = {"ingest": "test-ingest-password-0123456789abcdef0"}
+PHASE2_PASSWORD_ENV = {"INGEST_PASSWORD": PHASE2_PASSWORDS["ingest"]}
 
 ANALYST_FIXTURE_SQL = """
 CREATE ROLE analyst LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD 'test-analyst-pw';
@@ -354,6 +357,10 @@ def test_stamp_then_revoke_alembic_version_passes_verify(role_cleanup, fresh_db)
     assert created.returncode == 0, created.stderr
     verified = _psql(owner_url, ROLES_DIR / "verify_roles.sql", {})
     assert verified.returncode == 0, verified.stdout + verified.stderr
+
+    # migrator lacks CREATE on the database, so 0004 needs schema internal to exist already.
+    phase2 = _psql(owner_url, ROLES_DIR / "create_roles_phase2.sql", PHASE2_PASSWORD_ENV)
+    assert phase2.returncode == 0, phase2.stderr
 
     migrator_url = _role_url(fresh_db, "migrator", PASSWORDS["migrator"])
     cfg = _alembic_cfg_as(fresh_db, migrator_url)
