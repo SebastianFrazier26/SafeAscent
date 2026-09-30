@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 import re
 from bisect import bisect_left
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from statistics import median_low
@@ -129,37 +129,6 @@ def restrict_to_raw(rows: Sequence[dict[str, object]], raw_ids: frozenset[int]) 
     return [r for r in rows if int(str(r["accident_id"])) in raw_ids]
 
 
-def with_original_values(
-    rows: Sequence[dict[str, object]], originals: Mapping[tuple[int, str], str | None]
-) -> list[dict[str, object]]:
-    out: list[dict[str, object]] = []
-    for r in rows:
-        a = int(str(r["accident_id"]))
-        row = dict(r)
-        if (a, "date") in originals:
-            old = originals[(a, "date")]
-            row["date"] = date.fromisoformat(old) if old is not None else None
-        if (a, "year") in originals:
-            old = originals[(a, "year")]
-            row["year"] = float(old) if old is not None else None
-        out.append(row)
-    return out
-
-
-async def original_values(conn: AsyncConnection) -> dict[tuple[int, str], str | None]:
-    # G17: a row R1 re-dated must not count as a trusted neighbour (or stop being a suspect)
-    # under a later rule version. The first revision's old_value is the pre-repair value;
-    # reading it here avoids widening ingest's column grant on internal.accidents_raw.
-    result = await conn.execute(
-        text(
-            "SELECT DISTINCT ON (accident_id, field) accident_id, field, old_value "
-            "FROM internal.accident_revisions WHERE field IN ('date', 'year') "
-            "ORDER BY accident_id, field, id"
-        )
-    )
-    return {(int(row.accident_id), str(row.field)): row.old_value for row in result}
-
-
 async def raw_ids(conn: AsyncConnection) -> frozenset[int]:
     ids = frozenset(int(i) for i in (await conn.execute(text("SELECT accident_id FROM internal.accidents_raw"))).scalars())
     if not ids:
@@ -167,19 +136,39 @@ async def raw_ids(conn: AsyncConnection) -> frozenset[int]:
     return ids
 
 
+async def raw_rows(conn: AsyncConnection) -> list[dict[str, object]]:
+    result = await conn.execute(
+        text("SELECT accident_id, source, source_id, date, year FROM internal.accidents_raw ORDER BY accident_id")
+    )
+    rows = [dict(row._mapping) for row in result]
+    if not rows:
+        raise SystemExit("internal.accidents_raw is empty: 0004 snapshots accidents before any repair")
+    return rows
+
+
+def _as_date(value: object) -> date | None:
+    return value if isinstance(value, date) else None
+
+
+def _as_year(value: object) -> float | None:
+    return float(str(value)) if value is not None else None
+
+
 async def run_r2r1(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
-    # R1's neighbour rule and R2's day-15/Jul-1 rule describe the pre-2a AAC export only.
-    # Rows loaded later (plan 3's R11 facts CSV) set their own precision; re-dating them
-    # from source_id neighbours would move a 2025 record into the oldest years.
-    live = restrict_to_raw(await fetch_accidents(conn, ["source", "source_id", "date", "year"]), await raw_ids(conn))
-    live_dates = {int(str(r["accident_id"])): r["date"] if isinstance(r["date"], date) else None for r in live}
-    rows = with_original_values(live, await original_values(conn))
+    # R1's neighbour rule and R2's day-15/Jul-1 rule describe the pre-2a AAC export only, so
+    # both read the frozen snapshot (G17): a row R1 re-dated, or a hand edit to accidents,
+    # can never become a trusted neighbour. Rows loaded after 0004 (plan 3's R11 facts CSV)
+    # are absent from it: never trusted, never touched, only counted.
+    live = await fetch_accidents(conn, ["date", "year"])
+    rows = restrict_to_raw(await raw_rows(conn), frozenset(int(str(r["accident_id"])) for r in live))
+    raw_id_set = frozenset(int(str(r["accident_id"])) for r in rows)
+    current = {int(str(r["accident_id"])): r for r in restrict_to_raw(live, raw_id_set)}
     families = {int(str(r["accident_id"])): source_family(r["source"] if isinstance(r["source"], str) else None) for r in rows}
     aac = [
         AacRow(
             int(str(r["accident_id"])),
             source_sort_key(r["source_id"] if isinstance(r["source_id"], str) else None),
-            r["date"] if isinstance(r["date"], date) else None,
+            _as_date(r["date"]),
             r["date"].year if isinstance(r["date"], date) else (int(float(str(r["year"]))) if r["year"] is not None else None),
         )
         for r in rows
@@ -191,16 +180,23 @@ async def run_r2r1(conn: AsyncConnection, args: argparse.Namespace) -> dict[str,
     r1_report, r2_report = ValidationReport("repair:r1"), ValidationReport("repair:r2")
     for r in rows:
         a = int(str(r["accident_id"]))
-        d = r["date"] if isinstance(r["date"], date) else None
+        d = _as_date(r["date"])
+        year = _as_year(r["year"])
         if a in fixes:
             fix = fixes[a]
-            r1_changes += changes_for(fix, old_date=live_dates[a])
+            live_date = _as_date(current[a]["date"])
+            r1_changes += changes_for(fix, old_date=live_date)
             if fix.excluded_reason:
+                # D10: an unverified row keeps its original date, so one an earlier rule
+                # version or a hand edit moved is put back, with a revision showing the undo.
+                if (live_date, _as_year(current[a]["year"])) != (d, year):
+                    r1_changes += [Change(a, "date", d, "r1"), Change(a, "year", year, "r1")]
                 r1_report.quarantine(str(a), fix.excluded_reason)
             else:
+                if fix.new_date == live_date and _as_year(current[a]["year"]) != fix.year:
+                    r1_changes.append(Change(a, "year", fix.year, "r1"))
                 r1_report.accept()
             continue
-        year = float(str(r["year"])) if r["year"] is not None else None
         precision = r2_precision(families[a], d, year)
         r2_changes.append(Change(a, "date_precision", precision, "r2"))
         if precision == "unknown":
@@ -212,4 +208,4 @@ async def run_r2r1(conn: AsyncConnection, args: argparse.Namespace) -> dict[str,
     r2 = await run_step(conn, step="r2", rule_version=R2_VERSION, changes=r2_changes, report=r2_report, apply=args.apply)
     # D10: excluded, never deleted; the runbook reports this count as a Phase 3 recency-bias note.
     unverified = r1_report.quarantined["year_unverified"] + r2_report.quarantined["no_date"]
-    return {"r1": r1, "r2": r2, "year_unverified": unverified}
+    return {"r1": r1, "r2": r2, "year_unverified": unverified, "not_in_raw": len(live) - len(rows)}

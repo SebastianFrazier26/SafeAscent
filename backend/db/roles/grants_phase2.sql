@@ -47,8 +47,9 @@ GRANT UPDATE (date, year, latitude, longitude, coordinates, country, date_precis
               exp_years_climbing, exp_stated_level, exp_first_season, guided, exp_rule_version)
   ON public.accidents TO ingest;
 GRANT SELECT, INSERT ON internal.accident_revisions TO ingest;
--- R1/R2 need only to know which ids are in the frozen snapshot, not its narratives.
-GRANT SELECT (accident_id) ON internal.accidents_raw TO ingest;
+-- R1/R2 read their inputs from the frozen snapshot, so a repaired or hand-edited live row can
+-- never become a trusted neighbour; never description or any other narrative column.
+GRANT SELECT (accident_id, source, source_id, date, year) ON internal.accidents_raw TO ingest;
 -- trainer: nothing until Phase 3 (D13).
 
 RESET ROLE;

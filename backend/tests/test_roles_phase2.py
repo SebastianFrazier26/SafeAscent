@@ -99,7 +99,7 @@ def _run_real_jobs_as_ingest(ingest_url: str, tmp_path, monkeypatch) -> None:
         finally:
             await engine.dispose()
 
-    # G15: raw_ids, the original-values read and the R1/R2 column writes, all as ingest.
+    # G15: the accidents_raw reads and the R1/R2 column writes, all as ingest.
     out = asyncio.run(r2r1())
     assert out["year_unverified"] == 1
     assert out["r2"]["applied"] == 1
@@ -203,13 +203,15 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
     )
     _denied(ingest, "UPDATE internal.mp_tick_aggregates SET tick_count = 2 WHERE false")
     _denied(ingest, "DELETE FROM internal.ingest_quarantine")
-    _as(ingest, "SELECT accident_id FROM internal.accidents_raw")
+    _as(ingest, "SELECT accident_id, source, source_id, date, year FROM internal.accidents_raw")
+    _denied(ingest, "SELECT mountain FROM internal.accidents_raw")
     _denied(ingest, "SELECT description FROM internal.accidents_raw")
     _denied(ingest, "SELECT * FROM internal.accidents_raw")
     _as(ingest, "UPDATE mp_ticks SET quarantine_reason = NULL WHERE false")
     _as(owner_url, JOB_SEED_SQL)
     # The seed lands after 0004's snapshot; the migrator owns accidents_raw, so it stands in for it.
-    _as(migrator_url, "INSERT INTO internal.accidents_raw (accident_id, source, date) SELECT accident_id, source, date FROM accidents")
+    _as(migrator_url, "INSERT INTO internal.accidents_raw (accident_id, source, source_id, date, year) "
+        "SELECT accident_id, source, source_id, date, year FROM accidents")
     _run_real_jobs_as_ingest(ingest, tmp_path, monkeypatch)
     _as(ingest, "SELECT count(*) FROM accidents")
     _as(ingest, "SELECT mp_id, latitude, longitude FROM mp_locations")

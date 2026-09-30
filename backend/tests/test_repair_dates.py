@@ -14,7 +14,6 @@ from app.data.repair.dates import (
     restrict_to_raw,
     run_r2r1,
     source_sort_key,
-    with_original_values,
 )
 from tests.pgtest import migrated_db, requires_pg, sa_url
 
@@ -99,20 +98,6 @@ def test_restrict_to_raw_drops_rows_loaded_after_the_snapshot():
     assert restrict_to_raw(rows, frozenset({1})) == [rows[0]]
 
 
-def test_original_values_replace_repaired_date_and_year():
-    rows = [
-        {"accident_id": 1, "source": "AAC", "date": date(2003, 5, 2), "year": 2003.0},
-        {"accident_id": 2, "source": "AAC", "date": date(2003, 5, 2), "year": 2003.0},
-        {"accident_id": 3, "source": "AAC", "date": date(2010, 1, 1), "year": 2010.0},
-    ]
-    originals = {(1, "date"): "2023-05-02", (1, "year"): "2023", (2, "date"): None, (2, "year"): None}
-    out = with_original_values(rows, originals)
-    assert [(r["date"], r["year"]) for r in out] == [
-        (date(2023, 5, 2), 2023.0), (None, None), (date(2010, 1, 1), 2010.0)
-    ]
-    assert rows[0]["date"] == date(2003, 5, 2)
-
-
 # The R11 case: ANAC-2025-001 has sort key 1, so the neighbour rule would pull it into the oldest years.
 RAW_SEED = "\n".join(
     [
@@ -164,7 +149,7 @@ SUSPECT_SEED = "\n".join(
 
 
 @requires_pg
-def test_r1_reads_original_values_so_a_later_rule_version_sees_the_same_inputs(monkeypatch):
+def test_r1_reads_the_raw_snapshot_so_a_later_rule_version_sees_the_same_inputs(monkeypatch):
     async def scenario(url: str) -> None:
         engine = create_async_engine(url)
         try:
@@ -189,4 +174,48 @@ def test_r1_reads_original_values_so_a_later_rule_version_sees_the_same_inputs(m
             await engine.dispose()
 
     with migrated_db(seed_sql=SUSPECT_SEED) as name:
+        asyncio.run(scenario(sa_url(name)))
+
+
+# Row 6 (2023) has five trusted 2003 rows to its left but only four to its right; row 11 was
+# 2021 in the snapshot and is then hand-edited to 2003 in accidents, and row 12 arrives after 0004.
+MANUAL_SEED = "\n".join(
+    [
+        "INSERT INTO accidents (accident_id, source, source_id, date) VALUES "
+        + ", ".join(
+            f"({i}, 'AAC', 'ANAC-{i:04d}', '{ {6: '2023-05-02', 11: '2021-08-09'}.get(i, '2003-05-02') }')"
+            for i in range(1, 12)
+        )
+        + ";",
+        "INSERT INTO internal.accidents_raw (accident_id, source, source_id, date, year) "
+        "SELECT accident_id, source, source_id, date, year FROM accidents;",
+        "UPDATE accidents SET date = '2003-05-02', year = 2003 WHERE accident_id = 11;",
+        "INSERT INTO accidents (accident_id, source, source_id, date) VALUES (12, 'AAC', 'ANAC-0012', '2003-05-02');",
+    ]
+)
+
+
+@requires_pg
+def test_a_hand_edit_to_accidents_never_makes_a_row_trusted():
+    async def scenario(url: str) -> None:
+        engine = create_async_engine(url)
+        try:
+            async with engine.begin() as conn:
+                out = await run_r2r1(conn, argparse.Namespace(apply=True))
+            async with engine.connect() as conn:
+                rows = {
+                    r.accident_id: tuple(r[1:])
+                    for r in await conn.execute(text(
+                        "SELECT accident_id, date, year, excluded_reason FROM accidents WHERE accident_id IN (6, 11, 12)"))
+                }
+            # Live, rows 11 and 12 would complete row 6's right side and re-date it to 2003.
+            assert rows[6] == (date(2023, 5, 2), None, "year_unverified")
+            # D10: the unverified row goes back to its snapshot date, not the hand edit.
+            assert rows[11] == (date(2021, 8, 9), None, "year_unverified")
+            assert rows[12] == (date(2003, 5, 2), None, None)
+            assert (out["year_unverified"], out["not_in_raw"]) == (2, 1)
+        finally:
+            await engine.dispose()
+
+    with migrated_db(seed_sql=MANUAL_SEED) as name:
         asyncio.run(scenario(sa_url(name)))
