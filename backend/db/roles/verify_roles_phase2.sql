@@ -59,7 +59,7 @@ INSERT INTO role_checks VALUES
 -- column grant leaves has_table_privilege false.
 CREATE TEMP TABLE ingest_privs (tbl text, priv text);
 INSERT INTO ingest_privs VALUES
-  ('public.accidents', 'SELECT'), ('public.mp_routes', 'SELECT'), ('public.mp_locations', 'SELECT'),
+  ('public.mp_routes', 'SELECT'),
   ('public.source_ingest_log', 'SELECT'), ('public.source_ingest_log', 'INSERT'),
   ('public.source_ingest_log', 'UPDATE'),
   ('internal.mp_tick_aggregates', 'SELECT'), ('internal.mp_tick_aggregates', 'INSERT'),

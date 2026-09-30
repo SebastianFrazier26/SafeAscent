@@ -19,7 +19,9 @@ GRANT USAGE ON SCHEMA internal TO ingest, analyst;
 GRANT SELECT ON ALL TABLES IN SCHEMA internal TO analyst;
 
 -- Plan 1 (0004)
-GRANT SELECT ON public.accidents, public.mp_routes, public.mp_locations TO ingest;
+-- Only what plan 1's jobs read (R8 checks route ids; the loader reads route types). Plan 2 adds
+-- accidents and mp_locations with the jobs that read them (final review M7).
+GRANT SELECT ON public.mp_routes TO ingest;
 -- Narrows a stray table-level SELECT (e.g. granted by hand, or by an older version of this
 -- script) back down to the column set below on every rerun; REVOKE on a column grant alone is
 -- a no-op, so this must run first.

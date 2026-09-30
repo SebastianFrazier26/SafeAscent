@@ -1,12 +1,17 @@
 """Prod order, rehearsed: 0003 → create_roles.sql → create_roles_phase2.sql → migrator
 upgrades to head → grants_phase2.sql → verify scripts."""
 
+import asyncio
 import os
 import subprocess
+from datetime import date
 
 from alembic import command
+from sqlalchemy.ext.asyncio import create_async_engine
 
+from app.pipelines import mp_tick_aggregates, mp_ticks_quarantine
 from tests.pgtest import requires_pg
+from tests.test_mp_tick_aggregates import _export
 from tests.test_migrations import (
     ANALYST_FIXTURE_SQL,
     PASSWORDS,
@@ -27,31 +32,41 @@ from tests.test_migrations import (
 )
 
 pytestmark = requires_pg
+JOB_TODAY = date(2026, 9, 28)
 CREATE_PHASE2 = ROLES_DIR / "create_roles_phase2.sql"
 GRANTS_PHASE2 = ROLES_DIR / "grants_phase2.sql"
 VERIFY_PHASE2 = ROLES_DIR / "verify_roles_phase2.sql"
 
-# The shape of Task 5's R8 QUARANTINE_SQL, so a column missing from ingest's mp_ticks grant
+# M4 (final review): the real R8 job and loader run as ingest, so a grant the real SQL needs
 # fails here rather than on the first prod run.
-R8_SHAPED_SQL = """
-WITH classified AS (
-  SELECT t.tick_id,
-         CASE
-           WHEN t.tick_date > LEAST(DATE '2026-09-29', t.created_at::date + 1) THEN 'future'
-           WHEN CASE WHEN t.route_id ~ '^[0-9]{1,18}$'
-                     THEN NOT EXISTS (SELECT 1 FROM mp_routes r WHERE r.mp_route_id = t.route_id::bigint)
-                     ELSE true END THEN 'orphan_route'
-           WHEN t.tick_date < DATE '1970-01-01' THEN 'pre_1970'
-         END AS reason
-  FROM mp_ticks t
-)
-UPDATE mp_ticks m
-SET quarantine_reason = c.reason, quarantine_rule_version = 'r8-v1'
-FROM classified c
-WHERE m.tick_id = c.tick_id
-  AND (m.quarantine_reason IS DISTINCT FROM c.reason OR m.quarantine_rule_version IS DISTINCT FROM 'r8-v1');
-SELECT coalesce(quarantine_reason, 'clean'), count(*) FROM mp_ticks GROUP BY 1;
+JOB_SEED_SQL = """
+INSERT INTO mp_locations (mp_id, name) VALUES (900000100, 'Fixture Area');
+INSERT INTO mp_routes (mp_route_id, name, location_id, type) VALUES (900000002, 'Fixture Ice', 900000100, 'Ice');
+INSERT INTO mp_ticks (tick_id, route_id, climber_name, tick_date, created_at) VALUES
+  (1, '900000002', 'c', '2025-01-04', '2026-02-08 10:00'),
+  (2, '900000999', 'c', '2025-01-04', '2026-02-08 10:00');
 """
+
+
+def _run_real_jobs_as_ingest(ingest_url: str, tmp_path, monkeypatch) -> None:
+    sa_ingest = ingest_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+    async def r8() -> dict[str, int]:
+        engine = create_async_engine(sa_ingest)
+        try:
+            async with engine.begin() as conn:
+                return await mp_ticks_quarantine.run(conn, today=JOB_TODAY)
+        finally:
+            await engine.dispose()
+
+    assert asyncio.run(r8()) == {"clean": 1, "orphan_route": 1}
+    export = _export(tmp_path, [(900000002, "2025-01", "lead", 3)], [(900000002, 3, 1)])
+    monkeypatch.setattr(mp_tick_aggregates, "ingest_engine", lambda: create_async_engine(sa_ingest))
+    first = asyncio.run(mp_tick_aggregates.main(export, today=JOB_TODAY, max_quarantine_share=0.1, dry_run=False))
+    again = asyncio.run(mp_tick_aggregates.main(export, today=JOB_TODAY, max_quarantine_share=0.1, dry_run=False))
+    assert first["status"] == "ok" and first["rows_upserted"] == 2
+    assert again["status"] == "noop"
+
 
 # PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views; those belong to the
 # extension, not to any grant this project makes, so the check skips them as verify_roles.sql does.
@@ -66,7 +81,7 @@ TRAINER_STATE_SQL = (
 )
 
 
-def test_phase2_roles_least_privilege(role_cleanup, fresh_db):  # noqa: F811
+def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypatch):  # noqa: F811
     _require_psql()
     owner_url = _owner_db(fresh_db)
     cfg = _alembic_cfg_as(fresh_db, owner_url)
@@ -153,7 +168,10 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db):  # noqa: F811
     _denied(ingest, "DELETE FROM internal.ingest_quarantine")
     _denied(ingest, "SELECT count(*) FROM internal.accidents_raw")
     _as(ingest, "UPDATE mp_ticks SET quarantine_reason = NULL WHERE false")
-    _as(ingest, R8_SHAPED_SQL)
+    _as(owner_url, JOB_SEED_SQL)
+    _run_real_jobs_as_ingest(ingest, tmp_path, monkeypatch)
+    _denied(ingest, "SELECT count(*) FROM accidents")
+    _denied(ingest, "SELECT count(*) FROM mp_locations")
     _denied(ingest, "SELECT climber_name FROM mp_ticks")
     _denied(ingest, "SELECT * FROM mp_ticks")
     _denied(ingest, "UPDATE mp_ticks SET climber_name = 'x' WHERE false")
