@@ -142,8 +142,9 @@ def changes_for(fix: YearFix, *, old_date: date | None, old_excluded: str | None
         Change(a, "year_source", YEAR_SOURCE, "r1"),
         Change(a, "date_precision", fix.date_precision, "r1"),
     ]
-    # A verified year lifts only R1's own exclusion; any other step's exclusion stands.
-    if fix.excluded_reason is not None or old_excluded == YEAR_UNVERIFIED:
+    # R1 sets or lifts only its own exclusion; another step's reason stands either way (the
+    # row is already excluded, and overwriting would lose why).
+    if old_excluded in (None, YEAR_UNVERIFIED) and (fix.excluded_reason is not None or old_excluded is not None):
         changes.append(Change(a, "excluded_reason", fix.excluded_reason, "r1"))
     if fix.new_date is not None and fix.new_date != old_date:
         changes += [Change(a, "date", fix.new_date, "r1"), Change(a, "year", fix.year, "r1")]
@@ -199,16 +200,20 @@ async def run_r2r1(conn: AsyncConnection, args: argparse.Namespace) -> dict[str,
     r1_changes: list[Change] = []
     r2_changes: list[Change] = []
     r1_report, r2_report = ValidationReport("repair:r1"), ValidationReport("repair:r2")
+    already_excluded_other = 0
     for r in rows:
         a = int(str(r["accident_id"]))
         d = _as_date(r["date"])
         year = _as_year(r["year"])
+        live_excluded = _as_str(current[a]["excluded_reason"])
+        excluded_elsewhere = live_excluded not in (None, YEAR_UNVERIFIED)
         if a in fixes:
             fix = fixes[a]
             live_date = _as_date(current[a]["date"])
             live_year = _as_year(current[a]["year"])
-            r1_changes += changes_for(fix, old_date=live_date, old_excluded=_as_str(current[a]["excluded_reason"]))
+            r1_changes += changes_for(fix, old_date=live_date, old_excluded=live_excluded)
             if fix.excluded_reason:
+                already_excluded_other += excluded_elsewhere
                 # D10: an unverified row keeps its original date, so one an earlier rule
                 # version or a hand edit moved is put back, with a revision showing the undo.
                 if (live_date, live_year) != (d, year):
@@ -222,7 +227,10 @@ async def run_r2r1(conn: AsyncConnection, args: argparse.Namespace) -> dict[str,
         precision = r2_precision(families[a], d, year)
         r2_changes.append(Change(a, "date_precision", precision, "r2"))
         if precision == "unknown":
-            r2_changes.append(Change(a, "excluded_reason", YEAR_UNVERIFIED, "r2"))
+            if excluded_elsewhere:
+                already_excluded_other += 1
+            else:
+                r2_changes.append(Change(a, "excluded_reason", YEAR_UNVERIFIED, "r2"))
             r2_report.quarantine(str(a), "no_date")
         else:
             r2_report.accept()
@@ -247,4 +255,6 @@ async def run_r2r1(conn: AsyncConnection, args: argparse.Namespace) -> dict[str,
             for s, n in sorted(Counter(schemes.values()).items())
         },
         "not_in_raw": len(live) - len(rows),
+        # Counted in the unverified totals above, but keeping the other step's reason.
+        "already_excluded_other": already_excluded_other,
     }

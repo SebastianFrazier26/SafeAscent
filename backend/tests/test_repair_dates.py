@@ -174,6 +174,18 @@ def test_a_verified_year_clears_only_its_own_exclusion():
     assert excluded("non_climbing") == []
 
 
+def test_an_unverified_year_never_overwrites_another_exclusion():
+    rows = _trusted(0, [1995] * 10) + [_suspect(10)] + _trusted(11, [2004] * 10)
+    [fix] = r1_year_fixes(rows)
+
+    def excluded(old: str | None) -> list[object]:
+        return [c.new_value for c in changes_for(fix, old_date=None, old_excluded=old) if c.field == "excluded_reason"]
+
+    assert excluded(None) == ["year_unverified"]
+    assert excluded("year_unverified") == ["year_unverified"]
+    assert excluded("non_climbing") == []
+
+
 def test_restrict_to_raw_drops_rows_loaded_after_the_snapshot():
     rows = [{"accident_id": 1, "source_id": "ANAC-2003-0001"}, {"accident_id": 900000001, "source_id": "ANAC-2025-001"}]
     assert restrict_to_raw(rows, frozenset({1})) == [rows[0]]
@@ -342,4 +354,30 @@ def test_a_hand_edit_to_accidents_never_makes_a_row_trusted():
             await engine.dispose()
 
     with migrated_db(seed_sql=MANUAL_SEED) as name:
+        asyncio.run(scenario(sa_url(name)))
+
+
+@requires_pg
+def test_an_unverified_row_keeps_another_steps_exclusion():
+    async def scenario(url: str) -> None:
+        engine = create_async_engine(url)
+        try:
+            async with engine.begin() as conn:
+                out = await run_r2r1(conn, argparse.Namespace(apply=True))
+            async with engine.connect() as conn:
+                assert await _row(conn, 22, "date_precision, excluded_reason") == ("unknown", "non_climbing")
+                assert await _row(conn, 25, "date_precision, excluded_reason") == ("unknown", "non_climbing")
+            assert (out["already_excluded_other"], out["r1_year_unverified"], out["r2_no_date_unverified"]) == (2, 2, 1)
+        finally:
+            await engine.dispose()
+
+    seed = "\n".join(
+        [
+            SUSPECT_SEED,
+            "INSERT INTO accidents (accident_id, source) VALUES (25, 'NPS');",
+            "INSERT INTO internal.accidents_raw (accident_id, source) VALUES (25, 'NPS');",
+            "UPDATE accidents SET excluded_reason = 'non_climbing' WHERE accident_id IN (22, 25);",
+        ]
+    )
+    with migrated_db(seed_sql=seed) as name:
         asyncio.run(scenario(sa_url(name)))
