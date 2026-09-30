@@ -2957,11 +2957,11 @@ Use Phase 1 Plan B Task 8 Step 1 verbatim (`brew install libpq neonctl`, `psql` 
 verify_full_url() {
   PG_URL_NOPASS="$(uv run python3 -c '
 import sys
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 u = urlsplit(sys.argv[1])
 query = [(k, v) for k, v in parse_qsl(u.query) if k not in ("ssl", "sslmode", "sslrootcert")]
 query += [("sslmode", "verify-full"), ("sslrootcert", "system")]
-print(urlunsplit(("postgresql", u.netloc, u.path, urlencode(query), u.fragment)))
+print(urlunsplit(("postgresql", u.netloc, u.path, urlencode(query, quote_via=quote), u.fragment)))
 ' "$PG_URL_NOPASS")"
 }
 
@@ -2979,6 +2979,8 @@ if not host.startswith("ep-"):
 print(host)'
 }
 ```
+
+`quote_via=quote` matters: `urlencode`'s default `quote_plus` turns the space in the analyst URL's `options=-c default_transaction_read_only=on` into `+`, which libpq passes through literally, so the connection fails with `unrecognized configuration parameter "+default_transaction_read_only"` (hit in Task 10 Step 1, 2026-09-29).
 
 `${1:?}` matters: with an empty branch name `neonctl connection-string` silently returns the default branch's, i.e. **production's**, URL (Phase 1 Plan B Task 8 Step 3).
 
