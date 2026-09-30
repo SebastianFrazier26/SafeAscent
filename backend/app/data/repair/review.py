@@ -106,7 +106,9 @@ def read_decisions(path: Path, *, key: str, decision_column: str, allowed: froze
             if value not in allowed:
                 raise ValueError(f"{path.name} row {number}: {value!r} not in {sorted(allowed)}")
             raw_key = (row.get(key) or "").strip()
-            if not raw_key.isdigit():
+            # isdigit() accepts superscript/other Unicode digit forms (e.g. "²") that
+            # int() then rejects with a raw ValueError; isdecimal() is what int() actually parses.
+            if not raw_key.isdecimal():
                 raise ValueError(f"{path.name} row {number}: invalid {key} {raw_key!r}")
             if int(raw_key) in decisions:
                 raise ValueError(f"{path.name} row {number}: duplicate {key} {raw_key}")

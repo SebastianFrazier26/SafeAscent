@@ -99,3 +99,6 @@ def test_read_decisions_rejects_duplicate_and_non_numeric_keys(tmp_path):
     path.write_text("accident_id,agree\n1,yes\nabc,no\n")
     with pytest.raises(ValueError, match="k.csv row 2: invalid accident_id"):
         read_decisions(path, key="accident_id", decision_column="agree", allowed=frozenset({"yes", "no"}))
+    path.write_text("accident_id,agree\n1,yes\n²,no\n")
+    with pytest.raises(ValueError, match="k.csv row 2: invalid accident_id"):
+        read_decisions(path, key="accident_id", decision_column="agree", allowed=frozenset({"yes", "no"}))
