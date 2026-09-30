@@ -100,6 +100,8 @@ module = [
     "app.data.repair.__main__",
     "app.data.repair.checks",
     "app.data.repair.severity",
+    "app.pipelines.textsim",
+    "app.pipelines.geo",
 ]
 ignore_errors = false
 disallow_any_generics = true
