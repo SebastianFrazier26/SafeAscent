@@ -9,7 +9,9 @@ from datetime import date
 from alembic import command
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from app.data.repair.framework import LOCATION, Change, run_step
 from app.pipelines import mp_tick_aggregates, mp_ticks_quarantine
+from app.pipelines.validate import ValidationReport
 from tests.pgtest import requires_pg
 from tests.test_mp_tick_aggregates import _export
 from tests.test_migrations import (
@@ -37,7 +39,7 @@ CREATE_PHASE2 = ROLES_DIR / "create_roles_phase2.sql"
 GRANTS_PHASE2 = ROLES_DIR / "grants_phase2.sql"
 VERIFY_PHASE2 = ROLES_DIR / "verify_roles_phase2.sql"
 
-# M4 (final review): the real R8 job and loader run as ingest, so a grant the real SQL needs
+# M4 (final review): the real R8 job, loader and repair writer run as ingest, so a grant the real SQL needs
 # fails here rather than on the first prod run.
 JOB_SEED_SQL = """
 INSERT INTO mp_locations (mp_id, name) VALUES (900000100, 'Fixture Area');
@@ -45,6 +47,7 @@ INSERT INTO mp_routes (mp_route_id, name, location_id, type) VALUES (900000002, 
 INSERT INTO mp_ticks (tick_id, route_id, climber_name, tick_date, created_at) VALUES
   (1, '900000002', 'c', '2025-01-04', '2026-02-08 10:00'),
   (2, '900000999', 'c', '2025-01-04', '2026-02-08 10:00');
+INSERT INTO accidents (accident_id, source, date, latitude, longitude) VALUES (900000001, 'AAC', '2023-05-02', 40.0, -105.0);
 """
 
 
@@ -66,6 +69,23 @@ def _run_real_jobs_as_ingest(ingest_url: str, tmp_path, monkeypatch) -> None:
     again = asyncio.run(mp_tick_aggregates.main(export, today=JOB_TODAY, max_quarantine_share=0.1, dry_run=False))
     assert first["status"] == "ok" and first["rows_upserted"] == 2
     assert again["status"] == "noop"
+
+    async def repair() -> dict[str, object]:
+        engine = create_async_engine(sa_ingest)
+        changes = [
+            Change(900000001, "date_precision", "day", "fixture"),
+            Change(900000001, LOCATION, None, "fixture"),
+        ]
+        try:
+            async with engine.begin() as conn:
+                return await run_step(
+                    conn, step="fixture", rule_version="fixture-v1", changes=changes,
+                    report=ValidationReport(source="repair:fixture"), apply=True,
+                )
+        finally:
+            await engine.dispose()
+
+    assert asyncio.run(repair())["applied"] == 2
 
 
 # PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views; those belong to the
@@ -166,12 +186,20 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
     )
     _denied(ingest, "UPDATE internal.mp_tick_aggregates SET tick_count = 2 WHERE false")
     _denied(ingest, "DELETE FROM internal.ingest_quarantine")
-    _denied(ingest, "SELECT count(*) FROM internal.accidents_raw")
+    _as(ingest, "SELECT accident_id FROM internal.accidents_raw")
+    _denied(ingest, "SELECT description FROM internal.accidents_raw")
+    _denied(ingest, "SELECT * FROM internal.accidents_raw")
     _as(ingest, "UPDATE mp_ticks SET quarantine_reason = NULL WHERE false")
     _as(owner_url, JOB_SEED_SQL)
     _run_real_jobs_as_ingest(ingest, tmp_path, monkeypatch)
-    _denied(ingest, "SELECT count(*) FROM accidents")
-    _denied(ingest, "SELECT count(*) FROM mp_locations")
+    _as(ingest, "SELECT count(*) FROM accidents")
+    _as(ingest, "SELECT count(*) FROM mp_locations")
+    _as(ingest, "UPDATE accidents SET date_precision = 'day' WHERE false")
+    _as(ingest, "INSERT INTO internal.accident_revisions (accident_id, field, method, rule_version, run_id) SELECT accident_id, 'f', 'm', 'v', gen_random_uuid() FROM accidents WHERE false")
+    _denied(ingest, "UPDATE accidents SET description = 'x' WHERE false")
+    _denied(ingest, "UPDATE accidents SET source_id = 'x' WHERE false")
+    _denied(ingest, "DELETE FROM accidents WHERE false")
+    _denied(ingest, "UPDATE internal.accident_revisions SET method = 'x' WHERE false")
     _denied(ingest, "SELECT climber_name FROM mp_ticks")
     _denied(ingest, "SELECT * FROM mp_ticks")
     _denied(ingest, "UPDATE mp_ticks SET climber_name = 'x' WHERE false")
@@ -288,6 +316,7 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "ingest DELETE on public.source_ingest_log matches the expected set",
         "ingest UPDATE on internal.mp_tick_aggregates matches the expected set",
         "ingest SELECT on internal.accidents_raw matches the expected set",
+        "ingest accidents_raw column privileges match the expected set: description",
         "ingest mp_ticks column privileges match the expected set: climber_name",
         "ingest has nothing on sequence public.mp_ticks_tick_id_seq",
         "no default privileges grant ingest or trainer anything",

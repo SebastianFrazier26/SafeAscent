@@ -91,6 +91,11 @@ module = [
     "app.pipelines.db",
     "app.pipelines.mp_ticks_quarantine",
     "app.pipelines.mp_tick_aggregates",
+    "app.data",
+    "app.data.repair",
+    "app.data.repair.framework",
+    "app.data.repair.sources",
+    "app.data.repair.review",
 ]
 ignore_errors = false
 disallow_any_generics = true

@@ -19,8 +19,7 @@ GRANT USAGE ON SCHEMA internal TO ingest, analyst;
 GRANT SELECT ON ALL TABLES IN SCHEMA internal TO analyst;
 
 -- Plan 1 (0004)
--- Only what plan 1's jobs read (R8 checks route ids; the loader reads route types). Plan 2 adds
--- accidents and mp_locations with the jobs that read them (final review M7).
+-- Only what plan 1's jobs read (R8 checks route ids; the loader reads route types).
 GRANT SELECT ON public.mp_routes TO ingest;
 -- Narrows a stray table-level SELECT (e.g. granted by hand, or by an older version of this
 -- script) back down to the column set below on every rerun; REVOKE on a column grant alone is
@@ -34,6 +33,19 @@ GRANT SELECT, INSERT, UPDATE ON public.source_ingest_log TO ingest;
 -- INSERT only (spec): accepted months are closed, so a reload never needs to change them.
 GRANT SELECT, INSERT ON internal.mp_tick_aggregates TO ingest;
 GRANT SELECT, INSERT ON internal.ingest_quarantine TO ingest;
+
+-- Plan 2 (accident repair, PR 2a-1)
+GRANT SELECT ON public.accidents, public.mp_locations TO ingest;
+-- Only the repair columns plus the coordinate trio and updated_at: never description, source,
+-- source_id or accident_id, so a repair cannot rewrite a narrative or an incident's identity.
+GRANT UPDATE (date, year, latitude, longitude, coordinates, country, date_precision, year_source, year_lo, year_hi,
+              geocode_precision, geocode_method, activity_class, activity_rule_version, inclusion_flag,
+              incident_group_id, is_canonical, severity_scale, excluded_reason, source_url, updated_at,
+              exp_years_climbing, exp_stated_level, exp_first_season, guided, exp_rule_version)
+  ON public.accidents TO ingest;
+GRANT SELECT, INSERT ON internal.accident_revisions TO ingest;
+-- R1/R2 need only to know which ids are in the frozen snapshot, not its narratives.
+GRANT SELECT (accident_id) ON internal.accidents_raw TO ingest;
 -- trainer: nothing until Phase 3 (D13).
 
 RESET ROLE;
