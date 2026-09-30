@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
 from typing import Literal
 
@@ -22,6 +23,9 @@ RunStatus = Literal["ok", "rejected", "failed"]
 # (M7, Task 2 review). Enforced here rather than trusted to callers, so a future change to
 # ValidationReport.summary() that starts including raw issues fails loudly instead of leaking.
 _ALLOWED_SUMMARY_KEYS = frozenset({"source", "rows_in", "accepted", "quarantined", "problems", "rule_version"})
+# Run-level numbers a job may add (hand-check agreement, rows left for owner review). A new
+# metric joins this set in a reviewed change rather than riding a raw jsonb UPDATE (G13).
+_ALLOWED_METRICS = frozenset({"agreement", "review_pending"})
 
 
 def sha256_rows(rows: Iterable[Sequence[object]]) -> str:
@@ -32,13 +36,29 @@ def sha256_rows(rows: Iterable[Sequence[object]]) -> str:
     return digest.hexdigest()
 
 
+def _validated_metrics(metrics: Mapping[str, object]) -> dict[str, int | float]:
+    extra = sorted(set(metrics) - _ALLOWED_METRICS)
+    if extra:
+        raise ValueError(f"validation_report: unexpected metric(s) {extra}; allowed {sorted(_ALLOWED_METRICS)}")
+    for name, value in metrics.items():
+        # bool is an int subclass, and NaN/inf do not survive a jsonb round trip as numbers.
+        if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+            raise ValueError(f"validation_report metric {name!r} must be a finite number")
+    return {name: value for name, value in metrics.items() if isinstance(value, int | float)}
+
+
 def _validated_summary(
-    report: ValidationReport, problems: list[str] | None, rule_version: str | None = None
+    report: ValidationReport,
+    problems: list[str] | None,
+    rule_version: str | None = None,
+    metrics: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     summary = report.summary() | {"problems": problems or []}
     if rule_version is not None:
         summary["rule_version"] = rule_version
-    extra = sorted(set(summary) - _ALLOWED_SUMMARY_KEYS)
+    if metrics:
+        summary |= _validated_metrics(metrics)
+    extra = sorted(set(summary) - _ALLOWED_SUMMARY_KEYS - set(metrics or {}))
     if extra:
         raise ValueError(
             f"validation_report summary carries unexpected key(s) {extra}; only counts and "
@@ -88,6 +108,7 @@ async def finish_run(
     problems: list[str] | None = None,
     cost_units: float | None = None,
     rule_version: str | None = None,
+    metrics: Mapping[str, int | float] | None = None,
 ) -> None:
     """Close out the run. Must run on the same connection, inside the same transaction, as
     the start_run/write_quarantine calls for this run_id — rows_quarantined here and the
@@ -95,11 +116,12 @@ async def finish_run(
     a partial failure could split.
 
     rule_version, when given, lands in validation_report: the one place a rule-driven job
-    records which rule judged the rows it left untouched.
+    records which rule judged the rows it left untouched. metrics, when given, adds
+    allowlisted run-level numbers (see _ALLOWED_METRICS) beside the counts.
 
     Raises ValueError if run_id has no 'running' row to close on this connection (unknown
     run_id, or a repeat finish_run on an already-finished run)."""
-    summary = _validated_summary(report, problems, rule_version)
+    summary = _validated_summary(report, problems, rule_version, metrics)
     result = await conn.execute(
         text(
             "UPDATE source_ingest_log SET finished_at = now(), status = :status, rows_in = :rows_in, "

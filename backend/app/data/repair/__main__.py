@@ -9,10 +9,17 @@ from collections.abc import Awaitable, Callable
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from app.data.repair import dates
+from app.data.repair import dates, severity
 
 Step = Callable[[AsyncConnection, argparse.Namespace], Awaitable[dict[str, object]]]
-STEPS: dict[str, Step] = {"r2r1": dates.run_r2r1}
+STEPS: dict[str, Step] = {
+    "r2r1": dates.run_r2r1,
+    "r9": severity.run_r9,
+    "r9-export": severity.run_r9_export,
+    "r9-import": severity.run_r9_import,
+    "r1-export": severity.run_r1_export,
+    "r1-import": severity.run_r1_import,
+}
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Phase 2a accident repair, part 1 (PR 2a-1) — 2026-09-30
+
+- `app/data/repair/`: one audited, idempotent writer for accident repairs (`internal.accident_revisions` per changed field, keyed by rule version), a dry-run-first CLI (`python -m app.data.repair`), and seeded owner review CSVs in gitignored `data/review/`. Review CSVs never carry `description`; hand-check CSVs carry a locator (`source_id`, `date`, `location`, `mountain`) so the owner can find the AAC report.
+- R2 date precision (AAC day-15 → month, Jul-1 → year), R1 AAC year repair from `source_id` neighbours (rows with too few, noisy or contradictory neighbours, or off the running sequence, keep their date and are excluded as `year_unverified`; a re-dated row is year precision, read as the range `[year_lo, year_hi]`), R9 severity scale (NPS is fatal-only; `injury_severity` itself is never rewritten), with 40-row (R1) and 50-row (R9) hand checks recorded in `source_ingest_log`.
+- `finish_run` takes allowlisted run-level `metrics` (`agreement`, `review_pending`), checked like the rest of `validation_report`; the hand-check agreement goes through it rather than a raw jsonb update.
+- `ingest` gains table-level SELECT on `accidents`, column-level SELECT on `mp_locations (mp_id, latitude, longitude)`, SELECT/INSERT on `internal.accident_revisions`, column-level UPDATE on the repair columns of `accidents` (never `description`, `source`, `source_id`, `accident_id`), and column-level SELECT on `internal.accidents_raw (accident_id, source, source_id, date, year)` (never `description`).
+- R1/R2 only touch rows in the frozen pre-2a snapshot and read their inputs from it, so later refresh rows are never re-dated and a re-dated row never becomes a trusted neighbour.
+- `backend/scripts/runbook_helpers.sh`: verify-full runbook helpers (`ING`, `INGMOD`, `MIG`, `OWNER_PSQL`, `ANALYST_PSQL`, `VERIFY`, plus `split_pg_url`/`verify_full_url`). `TARGET_HOST` must be set explicitly, a Neon branch host or the literal `production`; unset refuses.
+- Acceptance cells `backend/tests/verify/test_phase2a_repair.py`: the R2 count cell counts R2-only rows (R1 outcomes printed separately), and the `year_unverified` count is printed by source and year as a Phase 3 recency-bias note.
+
 ### Phase 2a foundations: `ingest` role, `internal` schema, tick quarantine, MP tick-count loader — 2026-09-29
 
 - New `app/pipelines/` package: boundary validation with row quarantine and batch gates (`validate.py`); the packed 0.1° grid key shared with SQL via `grid_bucket_key()`, which returns NULL (not an exception) outside its valid range so SQL callers can filter or coalesce rather than crash (`grid.py`); the ingest run log (`ingest_log.py`); a verify-full-only `ingest` engine that refuses an `INGEST_DATABASE_URL` weaker than verify-full on a remote host (`db.py`).

@@ -10,7 +10,8 @@ from datetime import date
 from alembic import command
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.data.repair import dates
+from app.data.repair import dates, severity
+from app.data.repair.checks import record_check
 from app.data.repair.framework import LOCATION, Change, run_step
 from app.pipelines import mp_tick_aggregates, mp_ticks_quarantine
 from app.pipelines.validate import ValidationReport
@@ -103,6 +104,20 @@ def _run_real_jobs_as_ingest(ingest_url: str, tmp_path, monkeypatch) -> None:
     out = asyncio.run(r2r1())
     assert out["year_unverified"] == 1
     assert out["r2"]["applied"] == 1
+
+    async def r9_and_check() -> tuple[dict[str, object], dict[str, object]]:
+        engine = create_async_engine(sa_ingest)
+        try:
+            async with engine.begin() as conn:
+                return (
+                    await severity.run_r9(conn, argparse.Namespace(apply=True)),
+                    await record_check(conn, "repair:r9-check", {900000001: "yes"}),
+                )
+        finally:
+            await engine.dispose()
+
+    r9, check = asyncio.run(r9_and_check())
+    assert (r9["applied"], check["agreement"]) == (2, 1.0)
 
 
 # PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views; those belong to the
