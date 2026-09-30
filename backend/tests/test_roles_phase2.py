@@ -1,6 +1,7 @@
 """Prod order, rehearsed: 0003 → create_roles.sql → create_roles_phase2.sql → migrator
 upgrades to head → grants_phase2.sql → verify scripts."""
 
+import argparse
 import asyncio
 import os
 import subprocess
@@ -9,6 +10,7 @@ from datetime import date
 from alembic import command
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from app.data.repair import dates
 from app.data.repair.framework import LOCATION, Change, run_step
 from app.pipelines import mp_tick_aggregates, mp_ticks_quarantine
 from app.pipelines.validate import ValidationReport
@@ -88,6 +90,19 @@ def _run_real_jobs_as_ingest(ingest_url: str, tmp_path, monkeypatch) -> None:
             await engine.dispose()
 
     assert asyncio.run(repair())["applied"] == 3
+
+    async def r2r1() -> dict[str, object]:
+        engine = create_async_engine(sa_ingest)
+        try:
+            async with engine.begin() as conn:
+                return await dates.run_r2r1(conn, argparse.Namespace(apply=True))
+        finally:
+            await engine.dispose()
+
+    # G15: raw_ids, the original-values read and the R1/R2 column writes, all as ingest.
+    out = asyncio.run(r2r1())
+    assert out["year_unverified"] == 1
+    assert out["r2"]["applied"] == 1
 
 
 # PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views; those belong to the
@@ -193,6 +208,8 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
     _denied(ingest, "SELECT * FROM internal.accidents_raw")
     _as(ingest, "UPDATE mp_ticks SET quarantine_reason = NULL WHERE false")
     _as(owner_url, JOB_SEED_SQL)
+    # The seed lands after 0004's snapshot; the migrator owns accidents_raw, so it stands in for it.
+    _as(migrator_url, "INSERT INTO internal.accidents_raw (accident_id, source, date) SELECT accident_id, source, date FROM accidents")
     _run_real_jobs_as_ingest(ingest, tmp_path, monkeypatch)
     _as(ingest, "SELECT count(*) FROM accidents")
     _as(ingest, "SELECT mp_id, latitude, longitude FROM mp_locations")
