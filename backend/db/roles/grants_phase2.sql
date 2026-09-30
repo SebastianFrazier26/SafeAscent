@@ -50,6 +50,12 @@ GRANT SELECT, INSERT ON internal.accident_revisions TO ingest;
 -- R1/R2 read their inputs from the frozen snapshot, so a repaired or hand-edited live row can
 -- never become a trusted neighbour; never description or any other narrative column.
 GRANT SELECT (accident_id, source, source_id, date, year) ON internal.accidents_raw TO ingest;
+
+-- Plan 2 (0005, PR 2a-2)
+-- The GNIS loader upserts and then deletes features GNIS dropped (SELECT for ON CONFLICT and
+-- the DELETE's WHERE). R5 upserts its decisions and never deletes one: owner decisions stay.
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.gnis_summits TO ingest;
+GRANT SELECT, INSERT, UPDATE ON internal.duplicate_decisions TO ingest;
 -- trainer: nothing until Phase 3 (D13).
 
 RESET ROLE;

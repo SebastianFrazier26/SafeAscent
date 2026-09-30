@@ -13,9 +13,11 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from app.data.repair import dates, severity
 from app.data.repair.checks import record_check
 from app.data.repair.framework import LOCATION, Change, run_step
-from app.pipelines import mp_tick_aggregates, mp_ticks_quarantine
+from app.pipelines import gnis, mp_tick_aggregates, mp_ticks_quarantine
 from app.pipelines.validate import ValidationReport
 from tests.pgtest import requires_pg
+from tests.test_gnis import HEADER as GNIS_HEADER
+from tests.test_gnis import _line as gnis_line
 from tests.test_mp_tick_aggregates import _export
 from tests.test_migrations import (
     ANALYST_FIXTURE_SQL,
@@ -118,6 +120,14 @@ def _run_real_jobs_as_ingest(ingest_url: str, tmp_path, monkeypatch) -> None:
 
     r9, check = asyncio.run(r9_and_check())
     assert (r9["applied"], check["agreement"]) == (2, 1.0)
+
+    # G15: the GNIS loader's upsert and replace-delete, as ingest.
+    monkeypatch.setattr(gnis, "ingest_engine", lambda: create_async_engine(sa_ingest))
+    summits = tmp_path / "gnis.txt"
+    summits.write_text("\n".join([GNIS_HEADER, gnis_line("1", "Fixture Peak", "Summit", "Colorado", "40.25", "-105.6")]))
+    assert asyncio.run(gnis.main(summits))["status"] == "ok"
+    summits.write_text("\n".join([GNIS_HEADER, gnis_line("2", "Other Peak", "Summit", "Colorado", "40.2", "-105.6")]))
+    assert asyncio.run(gnis.main(summits))["rows_upserted"] == 1
 
 
 # PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views; those belong to the
@@ -238,6 +248,11 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
     _denied(ingest, "UPDATE accidents SET source_id = 'x' WHERE false")
     _denied(ingest, "DELETE FROM accidents WHERE false")
     _denied(ingest, "UPDATE internal.accident_revisions SET method = 'x' WHERE false")
+    _as(ingest, "INSERT INTO internal.duplicate_decisions (low_id, high_id, score, decision, decided_by, rule_version) "
+        "VALUES (1, 2, 0.9, 'merge', 'auto', 'r5-v1') ON CONFLICT (low_id, high_id) DO UPDATE SET score = EXCLUDED.score")
+    _as(ingest, "UPDATE internal.duplicate_decisions SET decision = 'distinct' WHERE low_id = 1")
+    _denied(ingest, "DELETE FROM internal.duplicate_decisions")
+    _denied(ingest, "TRUNCATE gnis_summits")
     _denied(ingest, "SELECT climber_name FROM mp_ticks")
     _denied(ingest, "SELECT * FROM mp_ticks")
     _denied(ingest, "UPDATE mp_ticks SET climber_name = 'x' WHERE false")
@@ -336,6 +351,8 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         migrator_url,
         "GRANT DELETE ON public.source_ingest_log TO ingest;"
         "GRANT UPDATE ON internal.mp_tick_aggregates TO ingest;"
+        "GRANT DELETE ON internal.duplicate_decisions TO ingest;"
+        "REVOKE DELETE ON public.gnis_summits FROM ingest;"
         "GRANT SELECT ON internal.accidents_raw TO ingest;"
         "GRANT SELECT (name) ON public.mp_locations TO ingest;"
         "GRANT SELECT (climber_name) ON public.mp_ticks TO ingest;"
@@ -354,6 +371,8 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
     for check in (
         "ingest DELETE on public.source_ingest_log matches the expected set",
         "ingest UPDATE on internal.mp_tick_aggregates matches the expected set",
+        "ingest DELETE on internal.duplicate_decisions matches the expected set",
+        "ingest DELETE on public.gnis_summits matches the expected set",
         "ingest SELECT on internal.accidents_raw matches the expected set",
         "ingest accidents_raw column privileges match the expected set: description",
         "ingest mp_locations column privileges match the expected set: name",

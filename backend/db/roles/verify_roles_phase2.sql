@@ -66,7 +66,12 @@ INSERT INTO ingest_privs VALUES
   ('internal.ingest_quarantine', 'SELECT'), ('internal.ingest_quarantine', 'INSERT'),
   -- Plan 2 (accident repair); mp_locations SELECT is column-level, checked below.
   ('public.accidents', 'SELECT'),
-  ('internal.accident_revisions', 'SELECT'), ('internal.accident_revisions', 'INSERT');
+  ('internal.accident_revisions', 'SELECT'), ('internal.accident_revisions', 'INSERT'),
+  -- Plan 2 (0005): the GNIS loader and R5 decisions.
+  ('public.gnis_summits', 'SELECT'), ('public.gnis_summits', 'INSERT'), ('public.gnis_summits', 'UPDATE'),
+  ('public.gnis_summits', 'DELETE'),
+  ('internal.duplicate_decisions', 'SELECT'), ('internal.duplicate_decisions', 'INSERT'),
+  ('internal.duplicate_decisions', 'UPDATE');
 
 -- PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views, so extension-owned
 -- relations are skipped throughout, as verify_roles.sql does.
