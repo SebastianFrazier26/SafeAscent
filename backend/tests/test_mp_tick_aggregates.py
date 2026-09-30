@@ -50,7 +50,7 @@ def _keys(rows):
 
 def test_loader_imports_no_network_client():
     tree = ast.parse(Path(loader.__file__).read_text())
-    imported = {n.names[0].name.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.Import)}
+    imported = {a.name.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
     imported |= {n.module.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module}
     assert not imported & {"httpx", "requests", "urllib", "aiohttp", "http", "socket"}
 

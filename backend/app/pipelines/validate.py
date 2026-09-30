@@ -101,8 +101,10 @@ def batch_gate(
     if report.rows_in == 0:
         return ["no rows"]
     problems: list[str] = []
-    if previous_rows_in:
-        if abs(report.rows_in - previous_rows_in) / previous_rows_in > count_tolerance:
+    if previous_rows_in is not None:
+        # A last ok run of 0 rows is a real baseline (final review M6), not "no baseline".
+        swing = abs(report.rows_in - previous_rows_in) / previous_rows_in if previous_rows_in else math.inf
+        if swing > count_tolerance:
             problems.append(
                 f"rows_in {report.rows_in} differs from last ok run {previous_rows_in} "
                 f"by more than {count_tolerance:.0%}"

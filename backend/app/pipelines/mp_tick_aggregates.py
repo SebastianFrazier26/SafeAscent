@@ -12,6 +12,13 @@ scraped_at is the private export's last-page time for the route, not its first (
 upserts it on every page). A route whose pages straddle a month boundary could therefore
 treat a month as partial when only its early days were actually unobserved; accepted for now
 (owner-noted), since a route's pages are normally fetched back to back.
+
+Known limitation (final review M9, open for the owner): MP's per-route totals only grow, and
+period='total' is INSERT-only, so on a newer scrape almost every stored total comes back as
+count_changed. At ~7-12 rows per route that alone is roughly 8-12% of the batch, above the
+default --max-quarantine-share 0.10, so a later-scrape reload is likely rejected whole and its
+newly closed months do not land. The first load is unaffected. Fix before the second scrape is
+loaded: exclude 'total' rows from the share, or key totals per scrape.
 """
 
 from __future__ import annotations

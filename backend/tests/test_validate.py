@@ -94,6 +94,14 @@ def test_batch_gate_rejects_count_swings_and_heavy_quarantine():
     ]
 
 
+def test_batch_gate_treats_a_zero_row_last_run_as_a_baseline():
+    report = ValidationReport("x")
+    report.accept()
+    assert batch_gate(report, previous_rows_in=0, count_tolerance=0.05, max_quarantine_share=1.0) == [
+        "rows_in 1 differs from last ok run 0 by more than 5%"
+    ]
+
+
 def test_batch_gate_rejects_an_empty_batch():
     assert batch_gate(ValidationReport("x"), previous_rows_in=None, count_tolerance=0.05, max_quarantine_share=1.0) == [
         "no rows"
