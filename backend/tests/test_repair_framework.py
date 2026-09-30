@@ -7,15 +7,18 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.data.repair.framework import LOCATION, Change, apply_changes, fetch_accidents, run_step
+from app.data.repair.framework import LOCATION, Change, _as_text, apply_changes, fetch_accidents, run_step
 from app.data.repair.sources import source_family
+from app.pipelines.ingest_log import sha256_rows
 from app.pipelines.validate import ValidationReport
 from tests.pgtest import migrated_db, requires_pg, sa_url
 
 SEED = """
 INSERT INTO accidents (accident_id, source, date, latitude, longitude) VALUES
   (1, 'AAC', '2023-05-02', 40.0, -105.0),
-  (2, 'NPS', '2010-07-01', 36.5, -118.3);
+  (2, 'NPS', '2010-07-01', 36.5, -118.3),
+  (3, 'NPS', '2011-07-01', 37.0, NULL),
+  (4, 'NPS', '2012-07-01', NULL, -119.0);
 """
 
 
@@ -38,6 +41,28 @@ def test_unrepairable_field_is_refused():
 
     with pytest.raises(ValueError, match="not repairable"):
         asyncio.run(go())
+
+
+def test_duplicate_keys_in_one_batch_are_refused_before_any_write():
+    async def go() -> None:
+        changes = [Change(1, "date_precision", "day", "r1"), Change(1, "date_precision", "year", "r1")]
+        await apply_changes(None, changes, rule_version="v", run_id=uuid.uuid4())  # type: ignore[arg-type]
+
+    # conn is None, so reaching any write would raise AttributeError instead.
+    with pytest.raises(ValueError, match="duplicate change for accident 1 field 'date_precision'"):
+        asyncio.run(go())
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (None, None), (True, "true"), (False, "false"), (2003.0, "2003"), (2003.5, "2003.5"), (7, "7"),
+        (date(2003, 5, 2), "2003-05-02"), ((36.6, -118.29), "36.600000,-118.290000"), ((37.0, None), "37.000000,null"),
+        ("day", "day"),
+    ],
+)
+def test_audit_text_is_canonical(value, expected):
+    assert _as_text(value) == expected
 
 
 def test_unreadable_column_is_refused():
@@ -131,6 +156,60 @@ def test_apply_logs_one_run_with_the_rule_version_through_the_allowlist():
             assert log.content_sha256 != "r1-v1" and len(log.content_sha256) == 64
             assert json.loads(log.validation_report)["rule_version"] == "r1-v1"
             assert str(rev_run) == summary["run_id"]
+            assert log.content_sha256 == sha256_rows([("r1-v1",), (1, "date_precision", "day", "r1")])
+        finally:
+            await engine.dispose()
+
+    with migrated_db(seed_sql=SEED) as name:
+        asyncio.run(scenario(sa_url(name)))
+
+
+@requires_pg
+def test_nulling_a_half_null_location_clears_both_halves():
+    async def scenario(url: str) -> None:
+        engine = create_async_engine(url)
+        try:
+            changes = [Change(3, LOCATION, None, "r3"), Change(4, LOCATION, None, "r3")]
+            async with engine.begin() as conn:
+                result = await apply_changes(conn, changes, rule_version="r3-v1", run_id=uuid.uuid4())
+            assert result.applied == 2
+            async with engine.connect() as conn:
+                rows = (await conn.execute(text(
+                    "SELECT latitude, longitude FROM accidents WHERE accident_id IN (3, 4) ORDER BY accident_id"))).all()
+                olds = (await conn.execute(text(
+                    "SELECT old_value FROM internal.accident_revisions WHERE field = 'latlon' ORDER BY accident_id"))).scalars().all()
+            assert [tuple(r) for r in rows] == [(None, None), (None, None)]
+            assert olds == ["37.000000,null", "null,-119.000000"]
+        finally:
+            await engine.dispose()
+
+    with migrated_db(seed_sql=SEED) as name:
+        asyncio.run(scenario(sa_url(name)))
+
+
+@requires_pg
+def test_unchanged_values_write_no_revision_and_a_new_rule_version_writes_a_second():
+    async def scenario(url: str) -> None:
+        engine = create_async_engine(url)
+        try:
+            async with engine.begin() as conn:
+                same = await apply_changes(
+                    conn,
+                    [Change(1, "date", date(2023, 5, 2), "r1"), Change(1, LOCATION, (40.0, -105.0), "r3")],
+                    rule_version="v1",
+                    run_id=uuid.uuid4(),
+                )
+                first = await apply_changes(conn, [Change(1, "year", 2003, "r1")], rule_version="v1", run_id=uuid.uuid4())
+                second = await apply_changes(conn, [Change(1, "year", 2004, "r1")], rule_version="v2", run_id=uuid.uuid4())
+            assert (same.applied, same.unchanged) == (0, 2)
+            assert (first.applied, second.applied) == (1, 1)
+            async with engine.connect() as conn:
+                revs = (await conn.execute(text(
+                    "SELECT field, rule_version, old_value, new_value FROM internal.accident_revisions "
+                    "WHERE accident_id = 1 ORDER BY id"))).all()
+                year = (await conn.execute(text("SELECT year FROM accidents WHERE accident_id = 1"))).scalar_one()
+            assert [tuple(r) for r in revs] == [("year", "v1", None, "2003"), ("year", "v2", "2003", "2004")]
+            assert year == 2004
         finally:
             await engine.dispose()
 

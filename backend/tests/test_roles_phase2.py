@@ -47,7 +47,8 @@ INSERT INTO mp_routes (mp_route_id, name, location_id, type) VALUES (900000002, 
 INSERT INTO mp_ticks (tick_id, route_id, climber_name, tick_date, created_at) VALUES
   (1, '900000002', 'c', '2025-01-04', '2026-02-08 10:00'),
   (2, '900000999', 'c', '2025-01-04', '2026-02-08 10:00');
-INSERT INTO accidents (accident_id, source, date, latitude, longitude) VALUES (900000001, 'AAC', '2023-05-02', 40.0, -105.0);
+INSERT INTO accidents (accident_id, source, date, latitude, longitude) VALUES
+  (900000001, 'AAC', '2023-05-02', 40.0, -105.0), (900000002, 'NPS', '2010-07-01', 36.5, -118.3);
 """
 
 
@@ -75,6 +76,7 @@ def _run_real_jobs_as_ingest(ingest_url: str, tmp_path, monkeypatch) -> None:
         changes = [
             Change(900000001, "date_precision", "day", "fixture"),
             Change(900000001, LOCATION, None, "fixture"),
+            Change(900000002, LOCATION, (36.6, -118.29), "fixture"),
         ]
         try:
             async with engine.begin() as conn:
@@ -85,7 +87,7 @@ def _run_real_jobs_as_ingest(ingest_url: str, tmp_path, monkeypatch) -> None:
         finally:
             await engine.dispose()
 
-    assert asyncio.run(repair())["applied"] == 2
+    assert asyncio.run(repair())["applied"] == 3
 
 
 # PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views; those belong to the
@@ -193,7 +195,9 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
     _as(owner_url, JOB_SEED_SQL)
     _run_real_jobs_as_ingest(ingest, tmp_path, monkeypatch)
     _as(ingest, "SELECT count(*) FROM accidents")
-    _as(ingest, "SELECT count(*) FROM mp_locations")
+    _as(ingest, "SELECT mp_id, latitude, longitude FROM mp_locations")
+    _denied(ingest, "SELECT name FROM mp_locations")
+    _denied(ingest, "SELECT * FROM mp_locations")
     _as(ingest, "UPDATE accidents SET date_precision = 'day' WHERE false")
     _as(ingest, "INSERT INTO internal.accident_revisions (accident_id, field, method, rule_version, run_id) SELECT accident_id, 'f', 'm', 'v', gen_random_uuid() FROM accidents WHERE false")
     _denied(ingest, "UPDATE accidents SET description = 'x' WHERE false")
@@ -299,6 +303,7 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "GRANT DELETE ON public.source_ingest_log TO ingest;"
         "GRANT UPDATE ON internal.mp_tick_aggregates TO ingest;"
         "GRANT SELECT ON internal.accidents_raw TO ingest;"
+        "GRANT SELECT (name) ON public.mp_locations TO ingest;"
         "GRANT SELECT (climber_name) ON public.mp_ticks TO ingest;"
         "GRANT USAGE ON SEQUENCE public.mp_ticks_tick_id_seq TO ingest;"
         "ALTER DEFAULT PRIVILEGES IN SCHEMA internal GRANT SELECT ON TABLES TO ingest;"
@@ -317,6 +322,7 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "ingest UPDATE on internal.mp_tick_aggregates matches the expected set",
         "ingest SELECT on internal.accidents_raw matches the expected set",
         "ingest accidents_raw column privileges match the expected set: description",
+        "ingest mp_locations column privileges match the expected set: name",
         "ingest mp_ticks column privileges match the expected set: climber_name",
         "ingest has nothing on sequence public.mp_ticks_tick_id_seq",
         "no default privileges grant ingest or trainer anything",

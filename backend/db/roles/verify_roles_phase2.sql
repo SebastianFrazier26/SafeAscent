@@ -64,8 +64,8 @@ INSERT INTO ingest_privs VALUES
   ('public.source_ingest_log', 'UPDATE'),
   ('internal.mp_tick_aggregates', 'SELECT'), ('internal.mp_tick_aggregates', 'INSERT'),
   ('internal.ingest_quarantine', 'SELECT'), ('internal.ingest_quarantine', 'INSERT'),
-  -- Plan 2 (accident repair)
-  ('public.accidents', 'SELECT'), ('public.mp_locations', 'SELECT'),
+  -- Plan 2 (accident repair); mp_locations SELECT is column-level, checked below.
+  ('public.accidents', 'SELECT'),
   ('internal.accident_revisions', 'SELECT'), ('internal.accident_revisions', 'INSERT');
 
 -- PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views, so extension-owned
@@ -149,6 +149,19 @@ SELECT 'ingest accidents column privileges match the expected set: ' || attname,
        has_column_privilege('ingest', 'public.accidents', attnum, 'UPDATE') = may_update
        AND NOT has_column_privilege('ingest', 'public.accidents', attnum, 'INSERT')
        AND NOT has_column_privilege('ingest', 'public.accidents', attnum, 'REFERENCES')
+FROM cols;
+
+WITH cols AS (
+  SELECT a.attnum, a.attname
+  FROM pg_attribute a
+  WHERE a.attrelid = 'public.mp_locations'::regclass AND a.attnum > 0 AND NOT a.attisdropped
+)
+INSERT INTO role_checks
+SELECT 'ingest mp_locations column privileges match the expected set: ' || attname,
+       has_column_privilege('ingest', 'public.mp_locations', attnum, 'SELECT') = (attname IN ('mp_id', 'latitude', 'longitude'))
+       AND NOT has_column_privilege('ingest', 'public.mp_locations', attnum, 'UPDATE')
+       AND NOT has_column_privilege('ingest', 'public.mp_locations', attnum, 'INSERT')
+       AND NOT has_column_privilege('ingest', 'public.mp_locations', attnum, 'REFERENCES')
 FROM cols;
 
 -- By oid from rels, not 'internal.accidents_raw'::regclass: the name lookup needs USAGE on

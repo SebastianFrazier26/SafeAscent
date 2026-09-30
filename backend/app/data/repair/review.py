@@ -9,14 +9,31 @@ from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
+# The one gitignored place review CSVs may land; anything else could end up committed.
+REVIEW_DIR = Path(__file__).resolve().parents[4] / "data" / "review"
+# Spreadsheet apps evaluate a cell starting with these as a formula.
+_FORMULA_PREFIXES = ("=", "+", "-", "@")
+
+
+def _cell(value: object) -> object:
+    if isinstance(value, str | int | float) and not isinstance(value, bool) and str(value).startswith(_FORMULA_PREFIXES):
+        return "'" + str(value)
+    return value
+
 
 def _write(path: Path, rows: Sequence[Mapping[str, object]], columns: Sequence[str], decision_column: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as fh:
+    # Narrative text stays out: review files are handled outside the database access controls.
+    if any(c.lower() == "description" for c in [*columns, decision_column]):
+        raise ValueError("review CSVs must not carry the description column")
+    target = path.resolve()
+    if not target.is_relative_to(REVIEW_DIR.resolve()):
+        raise ValueError(f"review CSVs go under {REVIEW_DIR} (gitignored), not {target}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
         writer.writerow([*columns, decision_column])
         for row in rows:
-            writer.writerow([row.get(c) for c in columns] + [""])
+            writer.writerow([_cell(row.get(c)) for c in columns] + [""])
 
 
 def export_sample(
@@ -79,5 +96,10 @@ def read_decisions(path: Path, *, key: str, decision_column: str, allowed: froze
                 raise ValueError(f"{path.name} row {number}: blank {decision_column}")
             if value not in allowed:
                 raise ValueError(f"{path.name} row {number}: {value!r} not in {sorted(allowed)}")
-            decisions[int(row[key])] = value
+            raw_key = (row.get(key) or "").strip()
+            if not raw_key.isdigit():
+                raise ValueError(f"{path.name} row {number}: invalid {key} {raw_key!r}")
+            if int(raw_key) in decisions:
+                raise ValueError(f"{path.name} row {number}: duplicate {key} {raw_key}")
+            decisions[int(raw_key)] = value
     return decisions

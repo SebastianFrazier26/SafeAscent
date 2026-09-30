@@ -51,10 +51,17 @@ class ApplyResult:
 
 
 def _as_text(value: object) -> str | None:
+    """Revision text is what a reversal reads back, so it is canonical: bools are
+    "true"/"false", integral floats drop ".0" (year is float8, so 2003.0 audits as "2003"),
+    and a location is "lat,lon" at 6 decimals with "null" for a missing half."""
     if value is None:
         return None
     if isinstance(value, tuple):
-        return f"{float(value[0]):.6f},{float(value[1]):.6f}"
+        return ",".join("null" if part is None else f"{float(part):.6f}" for part in value)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
     if isinstance(value, date):
         return value.isoformat()
     return str(value)
@@ -72,9 +79,15 @@ async def fetch_accidents(conn: AsyncConnection, columns: Sequence[str]) -> list
 async def apply_changes(
     conn: AsyncConnection, changes: Sequence[Change], *, rule_version: str, run_id: uuid.UUID
 ) -> ApplyResult:
+    seen: set[tuple[int, str]] = set()
     for change in changes:
         if change.field != LOCATION and change.field not in REPAIRABLE_FIELDS:
             raise ValueError(f"field {change.field!r} is not repairable")
+        # One revision row per key, so a second change to the same key in one batch would
+        # either be silently skipped or fight the first; refuse before anything is written.
+        if (change.accident_id, change.field) in seen:
+            raise ValueError(f"duplicate change for accident {change.accident_id} field {change.field!r}")
+        seen.add((change.accident_id, change.field))
     result = ApplyResult()
     for change in changes:
         key = {"a": change.accident_id, "f": change.field, "v": rule_version}
@@ -92,7 +105,8 @@ async def apply_changes(
                     {"a": change.accident_id},
                 )
             ).one()
-            old: object = None if row.latitude is None or row.longitude is None else (row.latitude, row.longitude)
+            # A half-null pair stays a tuple, so nulling it is a real change and clears both halves.
+            old: object = None if row.latitude is None and row.longitude is None else (row.latitude, row.longitude)
             if old == change.new_value:
                 result.unchanged += 1
                 continue
@@ -158,9 +172,11 @@ async def run_step(
     }
     if not apply:
         return summary | {"mode": "dry_run"}
-    # The hash covers the proposed changes, not the rule version (pre-flight G13): the
-    # version is recorded through finish_run's allowlisted validation_report instead.
-    content = sha256_rows((c.accident_id, c.field, _as_text(c.new_value), c.method) for c in changes)
+    # Repair runs never dedup on this hash (find_completed is not consulted; idempotency is
+    # the revisions key), so it only fingerprints what the run proposed, under which rule.
+    content = sha256_rows(
+        [(rule_version,), *((c.accident_id, c.field, _as_text(c.new_value), c.method) for c in changes)]
+    )
     run_id = await start_run(conn, source=f"repair:{step}", window_start=None, window_end=None, content_sha256=content)
     applied = await apply_changes(conn, changes, rule_version=rule_version, run_id=run_id)
     await finish_run(conn, run_id, status="ok", report=report, rows_upserted=applied.applied, rule_version=rule_version)

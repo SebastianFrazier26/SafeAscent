@@ -35,7 +35,10 @@ GRANT SELECT, INSERT ON internal.mp_tick_aggregates TO ingest;
 GRANT SELECT, INSERT ON internal.ingest_quarantine TO ingest;
 
 -- Plan 2 (accident repair, PR 2a-1)
-GRANT SELECT ON public.accidents, public.mp_locations TO ingest;
+GRANT SELECT ON public.accidents TO ingest;
+-- Narrows a table-level SELECT back to the columns the repair steps read, as for mp_ticks above.
+REVOKE SELECT ON public.mp_locations FROM ingest;
+GRANT SELECT (mp_id, latitude, longitude) ON public.mp_locations TO ingest;
 -- Only the repair columns plus the coordinate trio and updated_at: never description, source,
 -- source_id or accident_id, so a repair cannot rewrite a narrative or an incident's identity.
 GRANT UPDATE (date, year, latitude, longitude, coordinates, country, date_precision, year_source, year_lo, year_hi,
