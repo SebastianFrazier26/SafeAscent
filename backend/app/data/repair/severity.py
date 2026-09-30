@@ -123,6 +123,17 @@ async def r1_check_pool(conn: AsyncConnection) -> list[dict[str, object]]:
     )
 
 
+# The spec gate is ±1 year of the repaired point year, not of the [year_lo, year_hi] range:
+# grading against the range would pass a looser test than the one R1 is accepted on.
+R1_CHECK_INSTRUCTIONS = (
+    "look up each report in the AAC Publications archive (year and title only); "
+    "within_one_year=yes if |accident year in the report - year of `date`| <= 1, else no. "
+    "The year of `date` is R1's point year; year_lo..year_hi is its range, for context only: "
+    "a report year inside the range but more than 1 from the year of `date` is still no. "
+    "Use the accident year, not the publication year; if the report states no accident year, set no"
+)
+
+
 async def run_r1_export(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
     rows = await r1_check_pool(conn)
     out = _out(args, "r1_year_check.csv")
@@ -137,7 +148,7 @@ async def run_r1_export(conn: AsyncConnection, args: argparse.Namespace) -> dict
     return {
         "exported": n,
         "path": str(out),
-        "instructions": "look up each report in the AAC Publications archive (year and title only); within_one_year=yes|no",
+        "instructions": R1_CHECK_INSTRUCTIONS,
     }
 
 

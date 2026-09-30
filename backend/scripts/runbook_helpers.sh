@@ -9,6 +9,13 @@
 # URLs travel through the environment or stdin, and split_pg_url moves the password into
 # PGPASSWORD. psql always runs verify-full against the OS trust store.
 
+# Homebrew's libpq is keg-only, so a login shell has no psql on PATH (final review 2a-1 C4).
+# LIBPQ_BIN overrides the keg path; psql 16+ is needed for sslrootcert=system.
+if ! command -v psql >/dev/null 2>&1 && [ -x "${LIBPQ_BIN:-/opt/homebrew/opt/libpq/bin}/psql" ]; then
+  PATH="${LIBPQ_BIN:-/opt/homebrew/opt/libpq/bin}:$PATH"
+  export PATH
+fi
+
 # Phase 1 Plan B Task 8 Step 1, with python3 in place of `uv run python3` (stdlib only).
 split_pg_url() {
   { read -r PG_URL_NOPASS; read -r PGPASSWORD; } < <(SPLIT_PG_URL="$1" python3 -c '
@@ -35,6 +42,28 @@ query = [(k, v) for k, v in parse_qsl(u.query) if k not in ("ssl", "sslmode", "s
 query += [("sslmode", "verify-full"), ("sslrootcert", "system")]
 print(urlunsplit(("postgresql", u.netloc, u.path, urlencode(query, quote_via=quote), u.fragment)))
 ')"
+}
+
+_need_psql() {
+  command -v psql >/dev/null 2>&1 && return 0
+  echo "psql not found: brew install libpq, or set LIBPQ_BIN to its bin directory and re-source" >&2
+  return 1
+}
+
+# Foundations Task 8 Step 1: direct host of Neon branch $1, printing only the host name.
+# ${1:?} matters: neonctl given an empty branch name returns the default branch's, i.e.
+# production's, connection string.
+branch_host() {
+  neonctl connection-string "${1:?branch name}" --project-id still-morning-74008008 \
+      --role-name neondb_owner --database-name neondb \
+    | python3 -c '
+import sys
+from urllib.parse import urlsplit
+host = urlsplit(sys.stdin.read().strip()).hostname or ""
+# No pipefail here: a failed neonctl must print nothing, never "None".
+if not host.startswith("ep-"):
+    sys.exit("branch_host: no Neon endpoint host returned")
+print(host)'
 }
 
 _need_target() {
@@ -92,12 +121,12 @@ MIG() { ( _need_target && _load ./.env.migrator || exit 1
 
 OWNER_PSQL() { ( _need_target && _load ./.env.owner || exit 1
   url="$(_retarget "${OWNER_DATABASE_URL:-}")" || exit 1
-  _split_verified "$url" || exit 1
+  _split_verified "$url" && _need_psql || exit 1
   psql "$PG_URL_NOPASS" -X "$@" ); }
 
 ANALYST_PSQL() { ( _need_target && _load ./.env.analyst || exit 1
   url="$(_retarget "${ANALYST_DATABASE_URL:-}")" || exit 1
-  _split_verified "$url" || exit 1
+  _split_verified "$url" && _need_psql || exit 1
   psql "$PG_URL_NOPASS" -X "$@" ); }
 
 VERIFY() { ( _need_target && _load ./.env.analyst || exit 1

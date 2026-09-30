@@ -12,7 +12,7 @@
 
 **Prerequisite:** `2026-09-28-phase2a-foundations.md` merged and its runbook Tasks 8–9 done (roles, `0004`, backups).
 
-**Two PRs:** PR 2a-1 = Tasks 1–4 + runbook Task 12 (`feat/p2a-repair-dates`); PR 2a-2 = Tasks 5–11 + runbook Task 13 (`feat/p2a-repair-geo-dedupe`), branched from `main` after 2a-1 merges.
+**Two PRs:** PR 2a-1 = Tasks 1–4 + runbook Task 12 (branch `feat/phase2a-accident-repair`); PR 2a-2 = Tasks 5–11 + runbook Task 13 (branch `feat/phase2a-accident-repair-2`, stacked on 2a-1 and rebased onto it when 2a-1 changes).
 
 ## Global Constraints
 
@@ -22,7 +22,7 @@ Everything in the foundations plan's Global Constraints applies. In particular:
 - Accident narratives (`description`) are read internally by R4/R12 only; they never go into logs, run reports, fixtures, docs, commits, or review CSVs. Golden-set files hold `accident_id` + labels only.
 - Nulling coordinates must also null `coordinates` (the `accidents_coords_trigger` only fills it when both are non-null). Coordinates are nulled only for foreign rows (`foreign_place`, `outside_us`) and spec-mandated ambiguous GNIS names; every other doubtful point keeps its coordinates and is labelled by `geocode_precision` (the D10 principle applied to space). Consumers use a point only when `geocode_precision` is in `geocode.TRUSTED_POINT_PRECISIONS` (`exact`, `crag`, `area`, `park_centroid`), exposed as `accidents_clean.point_trusted`.
 - R1 and R2 touch only rows present in `internal.accidents_raw` (the frozen pre-2a copy). Rows loaded later (plan 3's R11 facts CSV, e.g. `ANAC-2025-001`) carry their own date precision and are never re-dated by the `source_id` neighbour rule, even when `r2r1` is re-run on a refresh.
-- Runbook database access goes only through `backend/scripts/runbook_helpers.sh` (Task 4), built on plan 1's `split_pg_url` + `verify_full_url`: TLS is `sslmode=verify-full&sslrootcert=system` for psql and `app.db.ssl.connect_args_for` for Python (verify cells use plan 1's `tests/verify/_db.fetch`); `TARGET_HOST` selects a Neon branch and is unset for prod, so no step can silently hit the wrong host.
+- Runbook database access goes only through `backend/scripts/runbook_helpers.sh` (Task 4), built on plan 1's `split_pg_url` + `verify_full_url`: TLS is `sslmode=verify-full&sslrootcert=system` for psql and `app.db.ssl.connect_args_for` for Python (verify cells use plan 1's `tests/verify/_db.fetch`); `TARGET_HOST` must be set explicitly, either a Neon branch host or the literal `production`, and every helper refuses while it is unset, so no step can silently hit the wrong host (O4).
 - `accidents.date` changes only where a rule dates a row confidently (D10); unverified years keep their date and get `excluded_reason = 'year_unverified'`.
 - No LLM anywhere in the pipeline. Owner review is only for the bands the spec names.
 - Review CSVs go to `data/review/` (gitignored by Task 1); nothing under it is committed.
@@ -30,7 +30,7 @@ Everything in the foundations plan's Global Constraints applies. In particular:
 ## Decisions this plan makes where the spec is silent (owner may overrule at review)
 
 1. **R1 edge rows.** A suspect row needs ≥5 trusted neighbours on *each* side by `source_id`; otherwise it is `year_unverified`. Without this, a genuine 2019+ record at the top of the id range would be pulled back to the last trusted year.
-2. **R1 median** is `statistics.median_low` (an actual neighbour year, never a .5).
+2. **R1 point year** is the median of all trusted neighbour years, clamped into the tight bound `[max(left), min(right)]`; an exact tie rounds down (rulings 2026-09-30, superseding `median_low`; Task 3's code block below predates this, and `dates.py` is authoritative).
 3. **R3a ambiguous names** null coordinates only when the row's current point is >50 km from *every* candidate summit; a row already near one of them is left alone.
 3a. **R3a state filter fallback.** A row's `state` can come from the same bad geocode (a "Mount McKinley" row marked CA). When the state-filtered GNIS lookup finds nothing, a *unique* nationwide match is still used (`geocode_method = 'gnis_summit_state_mismatch'`, so the hand check sees it); a non-unique nationwide match is not.
 4. **R3 default precision** for rows no rule touches: avalanche-source rows `exact` (reported incident coordinates), AAC rows with US coordinates `area` (geocoded from place text), NPS `park_centroid`, route-linked `crag`.
@@ -107,7 +107,7 @@ Everything in the foundations plan's Global Constraints applies. In particular:
 
 ---
 
-# PR 2a-1 — `feat/p2a-repair-dates`
+# PR 2a-1 — `feat/phase2a-accident-repair`
 
 ### Task 1: Repair framework, source families, review CSV helpers
 
@@ -1404,7 +1404,7 @@ git commit -m "feat(repair): R9 severity scale, R1/R9 hand-check round trips, 2a
 
 ---
 
-# PR 2a-2 — `feat/p2a-repair-geo-dedupe`
+# PR 2a-2 — `feat/phase2a-accident-repair-2`
 
 ### Task 5: Text similarity and distance helpers
 
@@ -3598,48 +3598,111 @@ Docs: `CHANGELOG.md` entry (heading from `printf '### Phase 2a accident repair, 
 
 ### Task 12: OWNER/AGENT RUNBOOK — apply PR 2a-1 (R2/R1, R9) on a branch, hand checks, prod
 
-From `/Users/sebastianfrazier/Developer/SafeAscent/backend`, with the helpers loaded: `. scripts/runbook_helpers.sh` (it defines `split_pg_url` and `verify_full_url` itself, and every helper refuses until `TARGET_HOST` is set: a Neon branch host, or the literal `production`). Every connection is TLS verify-full (`verify_full_url` for psql, `connect_args_for` via `tests/verify/_db.fetch` and `db.ingest_engine` for Python). Every repair runs as `ingest` and prints counts only.
+Final review 2a-1 (2026-09-30) rewrote this runbook: C1–C4, I1–I5, M1, M2, M4–M6.
 
-- [ ] **Step 1 (owner/agent): New Neon branch `p2a-1-rehearsal` from `main`; apply grants**
+Every connection is TLS verify-full (`verify_full_url` for psql, `connect_args_for` via `tests/verify/_db.fetch` and `db.ingest_engine` for Python). Every repair runs as `ingest` and prints counts only. Neon branch creation and the snapshot can be run by an agent under the owner's CLI authorization. Three things need the owner: the hand checks (Step 4), the sign-off on the unverified counts (Step 5), and authorizing prod (Step 6).
+
+**Shell state.** Run Steps 0–6 in one terminal session. `TARGET_HOST`, `B`, `BRANCH_HOST` and the helper functions live only in the shell that set them. In a new shell, re-run Step 0, then set `TARGET_HOST` again for the step you are on: the branch host for Steps 1–5, the literal `production` for Step 6. The helpers refuse while `TARGET_HOST` is unset, and it never defaults to prod. A `${VAR:?}` inside `$(…)` stops only the command substitution, not the block, so each guard below sits on its own line or opens its subshell.
+
+- [ ] **Step 0 (owner/agent): Tools and helpers**
 
 ```bash
-export TARGET_HOST='<p2a-1-rehearsal direct host, copied from the Console>'
+cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+uv sync --frozen
+. scripts/runbook_helpers.sh
+unset TARGET_HOST
+psql --version
+command -v neonctl
+```
+
+Expected:
+- `psql --version` prints 16 or later (read 2026-09-30: libpq 18.6). `sslrootcert=system` needs libpq 16+.
+- `neonctl` resolves.
+
+Homebrew's libpq is keg-only, so a login shell has no `psql`. Sourcing the helpers adds `/opt/homebrew/opt/libpq/bin` to `PATH` when no `psql` is found; set `LIBPQ_BIN` if the keg lives somewhere else. If `psql --version` still fails, `brew install libpq` and re-source. The helpers also define `branch_host` (foundations Task 8 Step 1).
+
+- [ ] **Step 1 (owner/agent): New Neon branch `p2a-1-rehearsal` from `production`; schema check; grants**
+
+```bash
+B=p2a-1-rehearsal
+neonctl branches create --project-id still-morning-74008008 --name "${B:?}" --parent production --output json \
+  | python3 -c 'import json,sys; b=json.load(sys.stdin)["branch"]; print(b["id"], b["name"], b["parent_id"])'
+BRANCH_HOST="$(branch_host "${B:?}")"
+( set -a; . ./.env.owner; set +a
+  [ -n "${BRANCH_HOST-}" ] || { echo 'BRANCH_HOST is not set: re-run the line that sets it' >&2; exit 1; }
+  case "$OWNER_DATABASE_URL" in *"@${BRANCH_HOST}/"* | *"@${BRANCH_HOST}?"* | *"@${BRANCH_HOST}:"*) echo 'BRANCH_HOST is production: stop' >&2; exit 1 ;; esac
+  echo "branch host ok" ) && export TARGET_HOST="$BRANCH_HOST"
+[ -n "${TARGET_HOST-}" ] && [ "$TARGET_HOST" != production ] && echo "target is the rehearsal branch"
+```
+
+Expected:
+- The parent is `br-restless-bar-ajw5zy4b` (`production`).
+- Then `branch host ok` and `target is the rehearsal branch`.
+- Anything else: stop. `TARGET_HOST` stays unset, so every helper refuses.
+
+```bash
+MIG current
 OWNER_PSQL -q -f db/roles/grants_phase2.sql
 OWNER_PSQL -q -f db/roles/verify_roles_phase2.sql
 ```
 
-Expected: `phase 2 grants applied`, `ALL PHASE 2 ROLE CHECKS PASSED`.
+Expected: `0004_phase2a_foundation (head)`, then `phase 2 grants applied`, then `ALL PHASE 2 ROLE CHECKS PASSED`.
 
-- [ ] **Step 2 (owner/agent): Confirm the source vocabulary and the raw snapshot** (source_family refuses unknown values; R1/R2 only touch raw-snapshot rows)
+If `MIG current` shows any other revision, stop: the foundations runbook (Task 9) has not reached this database. If `grants_phase2.sql` refuses with `run as migrator, or as an owner with SET on migrator`, apply the membership note in foundations Task 9 Step 2. Neon role memberships are per branch, so check the branch and prod separately.
+
+- [ ] **Step 2 (owner/agent): Confirm the source vocabulary, the raw snapshot, the AAC id schemes, and that no dates lie in the future**
+
+R1/R2 touch only raw-snapshot rows, and `source_family` refuses unknown values. The scheme query mirrors `dates.source_scheme`: whitespace-stripped and lower-cased, `^[0-9]{8}$` is `eight_digit`, and a trailing `[0-9]+[a-z]*$` (ASCII, as `_TRAILING_ID`, so `88a`/`88b`/`88t` count) is `sequence`.
 
 ```bash
 ANALYST_PSQL -At -c "SELECT source, count(*) FROM accidents GROUP BY 1 ORDER BY 1" \
-  -c "SELECT count(*) FILTER (WHERE source_id ~ '[0-9]+\s*$') AS parseable, count(*) FROM accidents WHERE source ILIKE 'aac%'" \
   -c "SELECT (SELECT count(*) FROM accidents) AS live, (SELECT count(*) FROM internal.accidents_raw) AS raw" \
-  -c "SELECT CASE WHEN source_id ~ '^\s*[0-9]{8}\s*$' THEN 'eight_digit' WHEN lower(source_id) ~ '[0-9]+[a-z]*\s*$' THEN 'sequence' ELSE 'unparseable' END AS scheme, count(*) AS n, count(*) FILTER (WHERE source_id !~ '^\s*[0-9]{8}\s*$' AND substring(lower(source_id) from '([0-9]+)[a-z]*\s*$')::numeric > 2683) AS base_over_2683 FROM internal.accidents_raw WHERE source ILIKE 'aac%' GROUP BY 1 ORDER BY 1"
+  -c "SELECT count(*) AS aac_total, count(source_id) AS with_source_id FROM internal.accidents_raw WHERE lower(btrim(source)) LIKE 'aac%'" \
+  -c "WITH k AS (SELECT lower(regexp_replace(coalesce(source_id, ''), '^\s+|\s+$', '', 'g')) AS key FROM internal.accidents_raw WHERE lower(btrim(source)) LIKE 'aac%') SELECT CASE WHEN key ~ '^[0-9]{8}$' THEN 'eight_digit' WHEN key ~ '[0-9]+[a-z]*$' THEN 'sequence' ELSE 'unparseable' END AS scheme, count(*) AS n, count(*) FILTER (WHERE key !~ '^[0-9]{8}$' AND substring(key from '([0-9]+)[a-z]*$')::numeric > 2683) AS base_over_2683 FROM k GROUP BY 1 ORDER BY 1" \
+  -c "SELECT source, count(*) FROM accidents WHERE date > (now() AT TIME ZONE 'UTC')::date GROUP BY 1 ORDER BY 1"
 ```
 
-Then the severity vocabulary (R9 refuses any value it does not map):
+Then read the severity vocabulary (R9 refuses any value it does not map). The `regexp_replace` strips all whitespace, as Python's `.strip()` does; plain `trim` strips spaces only.
 
 ```bash
-ANALYST_PSQL -At -c "SELECT source, lower(trim(injury_severity)), count(*) FROM accidents GROUP BY 1, 2 ORDER BY 1, 2"
+ANALYST_PSQL -At -c "SELECT source, lower(regexp_replace(coalesce(injury_severity, ''), '^\s+|\s+$', '', 'g')), count(*) FROM accidents GROUP BY 1, 2 ORDER BY 1, 2"
 ```
 
-Expected: only `fatal`, `serious`, `minor`, `near_miss`, blank/NULL, `unknown`, `n/a` or `none` (read 2026-09-30: aac serious/minor/fatal plus 2 blanks; avalanche minor/fatal/serious/near_miss; nps fatal). Any other value: stop, and the agent maps it in `severity.py` in a reviewed commit.
-
-Expected for the Step 2 queries above: every source maps to `aac|avalanche|nps` per `sources.py`; nearly all AAC `source_id`s parseable; `raw` equals `live` before plan 3's R11 load (afterwards `live − raw` is the number of refresh rows R1/R2 will skip); per-scheme counts near `sequence` 2,763 / `eight_digit` 68 / `unparseable` ~0 (read 2026-09-30; mirrors `dates.source_scheme`, record them in the PR), and `base_over_2683` = 0 on the `sequence` row. A sequence base above 2683 means ids outside the known 1–2683 run: stop and have the agent inspect them before R1 treats them as neighbours. If not, stop: the agent extends `source_family` / `source_sort_key` in a reviewed commit. (`analyst` reads `internal.accidents_raw` only if plan 1 granted it; if the third query is denied, run it with `OWNER_PSQL`.)
+Expected (the figures are from reads on 2026-09-30):
+- **Sources.** Every source maps to `aac`, `avalanche` or `nps` per `sources.py`. The severity read gave aac 2,763, avalanche 1,372 and nps 655. An unmapped source means stop: the agent extends `source_family` in a reviewed commit.
+- **Snapshot.** `raw` equals `live` before plan 3's R11 load. Afterwards, `live − raw` is the number of refresh rows that R1/R2 will skip.
+- **AAC totals.** `aac_total` is 2,763, from the severity read: 1,236 serious + 909 minor + 616 fatal + 2 blank.
+- **Schemes.**
+  - The three scheme rows sum to `aac_total` by construction.
+  - `eight_digit` is 68 (the 2019NNNN scheme).
+  - `sequence` + `unparseable` is 2,763 − 68 = 2,695, with `unparseable` at or near 0. It counts blank and NULL ids; `aac_total − with_source_id` of them are NULL.
+  - The earlier read ("1–2683 with a/b/t suffixes, 2,763 rows") counted every AAC row. So 2,695 is derived, not read directly: this step is its first direct read.
+  - Stop, and have the agent reconcile before any apply, if any of these holds: `aac_total ≠ 2,763`, `eight_digit ≠ 68`, or `unparseable > 10`.
+  - Record all three counts in the PR.
+- **`base_over_2683`** is 0 on the `sequence` row. A sequence base above 2683 means ids outside the known 1–2683 run. Stop, and have the agent inspect them before R1 treats them as neighbours.
+- **Future dates.** The future-date query returns no rows (future means after the current UTC day at run time). Any row: stop and raise it with the owner. R1 re-dates only AAC rows from 2019 on, so a future non-AAC row would stay in with `day` precision.
+- **Severities.** The only values are `fatal`, `serious`, `minor`, `near_miss`, blank/NULL, `unknown`, `n/a` and `none`. The 2026-09-30 read: aac serious/minor/fatal plus 2 blanks; avalanche minor/fatal/serious/near_miss; nps fatal. Any other value: stop, and the agent maps it in `severity.py` in a reviewed commit.
 
 - [ ] **Step 3 (owner/agent): Dry run, then apply on the branch**
 
 ```bash
-ING r9
-ING r2r1
+ING r9 | tee ../data/review/p2a1_r9_dry_branch.json
+ING r2r1 | tee ../data/review/p2a1_r2r1_dry_branch.json
 ING r2r1 --apply
 ING r2r1 --apply
 ING r9 --apply
 ```
 
-Expected: the first line (`ING r9`, a dry run) prints its JSON summary, which confirms `Settings` accepts the extra variables `.env.ingest` exports (an `Extra inputs are not permitted` error means stop and fix the env handling before any apply); its `crosstab` shows only mapped severities. The r2r1 dry run shows `proposed` counts (e.g. `date_precision=month` near 1,567 for AAC, `date_precision=year` near 123) and `mode: dry_run`; first apply `applied > 0`; the second apply `applied: 0` with everything `already_recorded` (idempotent).
+`data/review/` is gitignored, and these files hold counts only. Step 6 compares prod's dry runs against them.
+
+**Runtime.** Each `--apply` runs in one transaction and makes several round trips per change over the Mac-to-Neon link. The reviewer's estimate is about 30k round trips for `r2r1` and 19k for `r9`, i.e. roughly 10–25 minutes each; this was not measured. Run each apply without a short tool timeout. Killing one is safe, because the transaction rolls back, but the step has to be rerun.
+
+Expected:
+- The first line (`ING r9`, a dry run) prints its JSON summary. That confirms `Settings` accepts the extra variables `.env.ingest` exports. An `Extra inputs are not permitted` error means stop and fix the env handling before any apply.
+- The r9 dry run's `crosstab` shows only mapped severities.
+- The r2r1 dry run shows `mode: dry_run` and `proposed` counts, e.g. `date_precision=month` near 1,567 for AAC and `date_precision=year` near 123.
+- The first apply shows `applied > 0`.
+- The second apply is the idempotency check. The correct outcome is `applied: 0`, with every other change counted as `already_recorded` or `unchanged`. `unchanged > 0` is expected: an unverified row with no bound proposes `year_lo`/`year_hi = NULL` over a value that is already NULL, and that counts as `unchanged` on every run. Any `applied > 0` on the second run means stop.
 
 - [ ] **Step 4 (owner): Hand checks**
 
@@ -3648,36 +3711,141 @@ ING r1-export --out ../data/review/r1_year_check.csv
 ING r9-export --out ../data/review/severity_check.csv
 ```
 
-Open both CSVs in a spreadsheet. Each row carries `source_id`, `location` and `mountain` to find the report. R1 (only rows R1 re-dated; `year_unverified` rows are excluded because they kept their date on purpose): look up each report in the AAC Publications archive (year and title only) and set `within_one_year` to `yes`/`no`. R9: read the AAC report and set `agree` to `yes`/`no` for the stored severity. Save, then:
+Open both CSVs in a spreadsheet. Each row carries `source_id`, `location` and `mountain`, so the report can be found.
+
+- **R1.** The CSV lists only rows R1 re-dated. `year_unverified` rows are left out because they kept their date on purpose. Look up each report in the AAC Publications archive (year and title only). Then set `within_one_year` to `yes` if |accident year in the report − year of `date`| ≤ 1, otherwise `no`.
+  - The year of `date` is R1's point year, and the ±1 gate is measured against it (spec R1).
+  - `year_lo..year_hi` is the neighbour range, for context only. A report year inside the range but more than 1 from the year of `date` is still `no`.
+  - Use the accident year, not the publication year. If the report states no accident year, set `no`.
+  - The export's `instructions` field says the same (`severity.R1_CHECK_INSTRUCTIONS`).
+- **R9.** Read the AAC report and set `agree` to `yes`/`no` for the stored severity.
+
+Save both files **under these names**. Step 6 imports these exact files on prod, and no later step writes to them. Then run:
 
 ```bash
 ING r1-import --review-file ../data/review/r1_year_check.csv
 ING r9-import --review-file ../data/review/severity_check.csv
 ```
 
-Expected: `{"agreement": …}` for each. R1 must be ≥0.90; if not, stop (rule change needed). If R9 < 0.90, open a follow-up issue for a rule-based re-extraction (spec R9) — it does not block.
+Expected: `{"agreement": …}` for each.
+- R1 must be ≥0.90. If not, stop: a rule change is needed.
+- If R9 is <0.90, open a follow-up issue for a rule-based re-extraction (spec R9). It does not block.
 
-- [ ] **Step 5 (owner/agent): Acceptance cells on the branch**
+- [ ] **Step 5 (owner/agent): Acceptance cells on the branch, then owner sign-off**
 
 ```bash
 VERIFY tests/verify/test_phase2a_repair.py -q -k "r1 or r2 or r9 or every_row" -s
+python3 -c 'import json; print(json.dumps(json.load(open("../data/review/p2a1_r2r1_dry_branch.json"))["aac_schemes"], indent=1))'
 ```
 
-Expected: all pass; printed counts recorded in the PR.
+Expected: every cell passes.
 
-- [ ] **Step 6 (owner): Prod**
+**Owner sign-off (blocks prod).** The owner reads two things:
+- the `year_unverified` counts by source and year, printed by `test_r1_unverified_year_count_is_reported`;
+- the `aac_schemes` block (`rows`/`suspects`/`unverified` per scheme).
+
+The owner then signs off in the PR, with both tables pasted there.
+
+This is an accuracy call. By ruling, the 8-digit 2019NNNN scheme (68 rows, dated 2018–2024) is never used as a neighbour, so every suspect in it becomes `year_unverified`. So does every `sequence` suspect with fewer than 5 trusted neighbours on its right. Those may be the genuinely recent reports that Phase 3 recency depends on. `test_r1_2023_aac_count_is_at_most_twice_the_2015_2018_mean` is only an upper bound: it passes even if every row from 2019 on is excluded. No sign-off means no Step 6.
+
+- [ ] **Step 6 (owner authorizes): Prod**
+
+Do not repeat Steps 1–5. They create a branch, re-target the shell, and overwrite the owner's filled CSVs. Run only the blocks below, in order. Pick a time well clear of the 02:00 UTC nightly, which writes `historical_predictions`.
+
+**6a. Target prod and check the schema, then apply the grants.**
 
 ```bash
+cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+# PRODUCTION
 export TARGET_HOST=production
+MIG current
+OWNER_PSQL -q -f db/roles/grants_phase2.sql
+OWNER_PSQL -q -f db/roles/verify_roles_phase2.sql
 ```
 
-Then repeat Steps 1–5 exactly as written (the helpers now use the env-file hosts, i.e. prod; an unset `TARGET_HOST` refuses, it never defaults to prod). The hand-check imports are re-run against prod with the same CSVs (the sampled accident ids are identical because seeds and data match; if `r1-export` on prod lists different ids, stop and re-check on prod). Delete the `p2a-1-rehearsal` branch.
+Expected: the same as Step 1, starting with `0004_phase2a_foundation (head)`.
+
+**6b. Pre-checks.** Run Step 2's two `ANALYST_PSQL` blocks unchanged (`TARGET_HOST` is now `production`). Every count must equal the branch's, and the future-date query must return no rows. Otherwise stop.
+
+**6c. Dry runs.** Each must match the branch byte for byte, or stop.
+
+```bash
+# PRODUCTION
+ING r9 > ../data/review/p2a1_r9_dry_prod.json && cmp ../data/review/p2a1_r9_dry_branch.json ../data/review/p2a1_r9_dry_prod.json && echo "r9 dry run matches the branch"
+ING r2r1 > ../data/review/p2a1_r2r1_dry_prod.json && cmp ../data/review/p2a1_r2r1_dry_branch.json ../data/review/p2a1_r2r1_dry_prod.json && echo "r2r1 dry run matches the branch"
+```
+
+A difference means prod `accidents` changed after the branch was made. Stop, then recreate the rehearsal from current `production` and redo Steps 1–5.
+
+**6d. Snapshot `pre-2a-1` immediately before the apply.**
+
+```bash
+# PRODUCTION snapshot
+neonctl branches create --project-id still-morning-74008008 --name pre-2a-1 --parent production --output json \
+  | python3 -c 'import json,sys; b=json.load(sys.stdin)["branch"]; print(b["id"], b["name"], b["parent_id"], b["created_at"])'
+```
+
+Expected: parent `br-restless-bar-ajw5zy4b` (`production`). Record the id and `created_at` in the PR.
+
+**6e. Apply.** Same runtime note as Step 3.
+
+```bash
+# PRODUCTION
+ING r2r1 --apply
+ING r2r1 --apply
+ING r9 --apply
+```
+
+Expected: the same as Step 3. The second `r2r1 --apply` shows `applied: 0`, and everything else is `already_recorded` or `unchanged`.
+
+**6f. Confirm the prod hand-check samples are the branch's.** These exports go to new `_prod` filenames and never touch the owner's filled files.
+
+```bash
+# PRODUCTION
+ING r1-export --out ../data/review/r1_year_check_prod.csv
+ING r9-export --out ../data/review/severity_check_prod.csv
+ids() { python3 -c 'import csv,sys; print("\n".join(sorted(r["accident_id"] for r in csv.DictReader(open(sys.argv[1], newline="", encoding="utf-8")))))' "$1"; }
+diff <(ids ../data/review/r1_year_check.csv) <(ids ../data/review/r1_year_check_prod.csv) && echo "r1 ids match"
+diff <(ids ../data/review/severity_check.csv) <(ids ../data/review/severity_check_prod.csv) && echo "r9 ids match"
+```
+
+Expected: `r1 ids match` and `r9 ids match`. The seeds and the data are identical, so the samples are too.
+- On any diff, stop. Do not import the branch CSVs.
+- Instead, the owner hand-checks the `_prod` files, and those are imported in 6g.
+
+**6g. Import the owner's filled CSVs from Step 4, then run acceptance.**
+
+```bash
+# PRODUCTION
+ING r1-import --review-file ../data/review/r1_year_check.csv
+ING r9-import --review-file ../data/review/severity_check.csv
+VERIFY tests/verify/test_phase2a_repair.py -q -k "r1 or r2 or r9 or every_row" -s
+```
+
+Expected:
+- The agreements equal the branch's.
+- Every cell passes.
+- The printed unverified counts equal the ones the owner signed off in Step 5.
+- The imports refuse any id outside the prod pool, which is a second guard on 6f.
+
+**6h. Clean up.** Delete `p2a-1-rehearsal` only now. Keep `pre-2a-1` until the PR has merged and the owner says otherwise.
+
+- [ ] **Rollback.** What to do when something fails partway:
+  - **An apply fails or is killed** (6e: timeout, error, Ctrl-C): nothing from that invocation was written. Each `ING … --apply` commits once, and its `source_ingest_log` row is in the same transaction. Fix the cause and rerun. A rerun records only what is missing (`already_recorded` covers the rest).
+  - **A hand-check import fails** (6g): it only writes a `source_ingest_log` row, in one transaction. Fix the CSV or the cause and rerun.
+  - **The data is wrong after 6e.** Two options:
+    - **Restore `production` from `pre-2a-1`** with Neon's branch restore (or restore to a timestamp just before 6e). This is the full fallback. The exact Console/`neonctl` path was not checked while writing this; confirm it in Neon's docs before relying on it. First list what the restore would discard: `ANALYST_PSQL -At -c "SELECT source, started_at FROM source_ingest_log WHERE started_at > '<pre-2a-1 created_at>' ORDER BY 2"` (with `TARGET_HOST=production`).
+    - **Reverse single fields from `internal.accident_revisions`**, using `old_value` for rule versions `r1-v1`/`r2-v1`/`r9-v1`. This needs a reviewed script. Do not improvise it: `ingest` cannot delete revisions, and a hand-written bulk UPDATE would bypass the audit trail.
+  - **The `historical_predictions` caveat.** A branch or point-in-time restore of `production` discards every write made after the snapshot. That includes the nightly's `historical_predictions` rows, any Phase 2 runs, and any role or grant change. After such a restore:
+    - trigger the nightly once (`DEPLOYMENT.md`, Insufficient-data rollout step 3) to rebuild today and the next 2 days; the rows for the days in between are lost, not recomputed;
+    - re-run 6a's grants.
+  - **After a restore**, the `r1-v1`/`r2-v1`/`r9-v1` revisions are gone as well, so the corrected rule can be applied as the same or a new rule version.
 
 ---
 
 ### Task 13: OWNER/AGENT RUNBOOK — apply PR 2a-2 (GNIS, R3a/R3, R4, R5, R12, views)
 
-Same shell setup as Task 12 (`. scripts/runbook_helpers.sh`).
+Same shell setup as Task 12 Step 0 (`. scripts/runbook_helpers.sh`, `psql` 16+ resolvable, `TARGET_HOST` set explicitly per step).
 
 - [ ] **Step 1 (owner/agent): Branch `p2a-2-rehearsal`, migrate, grants** — `export TARGET_HOST='<p2a-2-rehearsal direct host>'`; then as foundations Task 9 Step 2 (migrator `alembic upgrade head` → `0006_accidents_clean (head)`, `alembic check` clean), then `OWNER_PSQL -q -f db/roles/grants_phase2.sql` and both verify scripts.
 

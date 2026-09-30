@@ -86,3 +86,49 @@ def test_split_verified_refuses_a_url_without_user_and_host(shell, tmp_path, url
     out = _run(shell, f"_split_verified '{url}'; echo rc=$?", tmp_path)
     assert "no user@host" in out.stderr
     assert out.stdout.strip() == "rc=1"
+
+
+BARE_PATH = "/usr/bin:/bin"
+needs_no_system_psql = pytest.mark.skipif(
+    shutil.which("psql", path=BARE_PATH) is not None, reason="psql is on the bare system PATH"
+)
+
+
+def _fake_bin(directory: Path, name: str, body: str = "exit 0") -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    exe = directory / name
+    exe.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+    exe.chmod(0o755)
+    return directory
+
+
+@needs_no_system_psql
+def test_sourcing_puts_the_keg_only_libpq_on_path(shell, tmp_path):
+    keg = _fake_bin(tmp_path / "libpq" / "bin", "psql")
+    out = _run(shell, "command -v psql", tmp_path, {"PATH": BARE_PATH, "LIBPQ_BIN": str(keg)})
+    assert (out.returncode, out.stdout.strip()) == (0, str(keg / "psql"))
+
+
+def test_sourcing_keeps_a_psql_already_on_path(shell, tmp_path):
+    first = _fake_bin(tmp_path / "first", "psql")
+    keg = _fake_bin(tmp_path / "keg", "psql")
+    out = _run(shell, "command -v psql", tmp_path, {"PATH": f"{first}:{BARE_PATH}", "LIBPQ_BIN": str(keg)})
+    assert out.stdout.strip() == str(first / "psql")
+
+
+@needs_no_system_psql
+def test_a_psql_helper_refuses_clearly_when_psql_is_missing(shell, tmp_path):
+    (tmp_path / ".env.owner").write_text("OWNER_DATABASE_URL=postgresql://u:p@h.example/db\n", encoding="utf-8")
+    env = {"PATH": BARE_PATH, "LIBPQ_BIN": str(tmp_path / "absent"), "TARGET_HOST": "production"}
+    out = _run(shell, "OWNER_PSQL -c 'SELECT 1'; echo rc=$?", tmp_path, env)
+    assert "psql not found" in out.stderr
+    assert out.stdout.strip() == "rc=1"
+
+
+def test_branch_host_refuses_an_empty_name_before_calling_neonctl(shell, tmp_path):
+    marker = tmp_path / "neonctl-called"
+    fake = _fake_bin(tmp_path / "bin", "neonctl", f"touch {marker}")
+    out = _run(shell, "branch_host ''", tmp_path, {"PATH": f"{fake}:{BARE_PATH}"})
+    assert out.returncode != 0 and out.stdout == ""
+    assert "branch name" in out.stderr
+    assert not marker.exists()

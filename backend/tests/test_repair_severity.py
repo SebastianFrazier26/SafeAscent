@@ -194,6 +194,7 @@ def test_r1_hand_check_exports_only_re_dated_rows(tmp_path, monkeypatch):
                 rows = list(csv.DictReader(fh))
             # Row 11 is re-dated from its neighbours; 22 and 23 are year_unverified and stay out.
             assert exported["exported"] == 1
+            assert "year of `date`| <= 1" in str(exported["instructions"])
             assert [(r["accident_id"], r["source_id"], r["year_lo"]) for r in rows] == [("11", "11", "2003")]
             _fill(path, "within_one_year", {"11": "yes"})
             stray = tmp_path / "stray.csv"
