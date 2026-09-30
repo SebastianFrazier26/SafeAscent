@@ -98,6 +98,8 @@ Everything in the foundations plan's Global Constraints applies. In particular:
 | 4, 6, 9, 11 | each other and plan 1 | `grants_phase2.sql`, `verify_roles_phase2.sql` | Append-only; serial commits. |
 | 7 | 9 | R5 must run after R3 | `dedupe` CLI refuses unless `r3-v1` revisions exist. |
 | 1–11 | each other | `backend/pyproject.toml` mypy list | Serial appends. |
+| 6 | plan 1 `0004` | `SET LOCAL lock_timeout = '5s'` in `0004` stays in force for any later revision applied in the same `alembic upgrade` transaction (plan 1 final review M11) | `0005` either sets its own `lock_timeout` (or `RESET lock_timeout`) at the top, or states in a comment that it relies on `0004`'s value on purpose. |
+| 1 | plan 1 grants | plan 1 grants `ingest` SELECT on `public.mp_routes` only (final review M7 dropped `accidents` and `mp_locations`) | Task 1's grants block adds `GRANT SELECT ON public.accidents, public.mp_locations TO ingest;` and the matching `('public.accidents', 'SELECT'), ('public.mp_locations', 'SELECT')` rows to `verify_roles_phase2.sql`'s `ingest_privs`. |
 | 11 | plan 3 (R11) | `accidents_clean` definition | Plan 3's loaded rows set the same columns so they flow into the view; plan 3's `accident_conditions` joins only `point_trusted` rows. |
 | 3 | plan 3 (R11) | `internal.accidents_raw` membership | R1/R2 skip ids not in the raw snapshot, so R11 rows are never re-dated. |
 | 4 | plans 3–8 runbooks | `backend/scripts/runbook_helpers.sh` | Created in Task 4; later runbooks source it and never redefine `ING`. |
@@ -573,6 +575,7 @@ def read_decisions(path: Path, *, key: str, decision_column: str, allowed: froze
 
 ```sql
 -- Plan 2 (accident repair, PR 2a-1)
+GRANT SELECT ON public.accidents, public.mp_locations TO ingest;
 GRANT UPDATE (date, year, latitude, longitude, coordinates, country, date_precision, year_source, year_lo, year_hi,
               geocode_precision, geocode_method, activity_class, activity_rule_version, inclusion_flag,
               incident_group_id, is_canonical, severity_scale, excluded_reason, source_url, updated_at,
