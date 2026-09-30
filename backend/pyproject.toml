@@ -96,6 +96,8 @@ module = [
     "app.data.repair.framework",
     "app.data.repair.sources",
     "app.data.repair.review",
+    "app.data.repair.dates",
+    "app.data.repair.__main__",
 ]
 ignore_errors = false
 disallow_any_generics = true
