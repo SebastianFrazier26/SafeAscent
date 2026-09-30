@@ -1672,6 +1672,8 @@ git commit -m "feat(pipelines): ingest run log, quarantine writer, verify-full i
 
 ### Task 4: `ingest` and `trainer` roles, `internal` schema, Phase 2 grants
 
+> **Superseded in part (2026-09-29 final review).** The code blocks below are the task as first written. The committed code, tests and SQL files are the source of truth where they differ (M7 narrowed `ingest`'s SELECT to `mp_routes`; I1 made R8 stamp only flagged rows).
+
 **Files:**
 - Create: `backend/db/roles/create_roles_phase2.sql`, `backend/db/roles/grants_phase2.sql`, `backend/db/roles/verify_roles_phase2.sql`, `backend/tests/test_roles_phase2.py`
 - Modify: `backend/scripts/write_role_url.py` (`ROLES`), `backend/tests/test_write_role_url.py`
@@ -2050,6 +2052,8 @@ git commit -m "feat(db): ingest role, NOLOGIN trainer placeholder, internal sche
 ---
 
 ### Task 5: R8 — quarantine garbage `mp_ticks` rows
+
+> **Superseded in part (2026-09-29 final review).** The code blocks below are the task as first written. The committed code, tests and SQL files are the source of truth where they differ (M7 narrowed `ingest`'s SELECT to `mp_routes`; I1 made R8 stamp only flagged rows).
 
 **Files:**
 - Create: `backend/app/pipelines/mp_ticks_quarantine.py`, `backend/tests/test_mp_ticks_quarantine.py`, `backend/tests/verify/__init__.py`, `backend/tests/verify/_db.py`, `backend/tests/verify/test_phase2a_foundation.py`
@@ -2930,9 +2934,16 @@ git commit -m "docs: Phase 2a foundations — roles, internal schema, pipeline c
 
 ### Task 8: OWNER/AGENT RUNBOOK — backups, restore rehearsal
 
-Runs from `/Users/sebastianfrazier/Developer/SafeAscent/backend` on `main` after this plan's PR merges. The agent may run it only when the owner has placed the needed env files; the agent never opens them. No command prints a password. **Do not deploy the merge to Railway until Task 9 Step 4 has succeeded** (see Task 9's deploy gate).
+Runs from `/Users/sebastianfrazier/Developer/SafeAscent/backend` on `main` after this plan's PR merges. The agent may run it only when the owner has placed the needed env files; the agent never opens them. No command prints a password.
 
-**Shell state (Tasks 8–10, final review M10).** The blocks below rely on shell functions and variables that live only in the shell that defined them: `split_pg_url`, `pg_verify_full`, `verify_full_url`, `branch_host` (Step 1), `PGBIN` (Step 1), and each step's `B`/`BRANCH_HOST`. Run Tasks 8–10 in one terminal session. In a new shell, first re-run Step 1's definitions and re-set `PGBIN` and the current step's `B`/`BRANCH_HOST`. Every block checks its dependencies up front (`type … >/dev/null || exit 1`, `${VAR:?}`) and stops instead of falling through to production.
+**Pre-merge gate (read before merging this plan's PR; final re-review N1).** The merged `Accident` model needs `0004`, which is applied only in Task 9 Step 4, so a deploy of the merge before then breaks `/predict`. Before clicking merge:
+- confirm auto-deploy is **off** on every Railway service (`api`, `worker`, `beat`, `frontend`); if it is on, pause it on every service first;
+- after merging, do not start a manual deploy;
+- turn auto-deploy back on, or deploy, only after Task 9 Step 4 has succeeded (Task 9's deploy gate).
+
+Put this gate in the PR description too.
+
+**Shell state (Tasks 8–10, final review M10).** The blocks below rely on shell functions and variables that live only in the shell that defined them: `split_pg_url`, `pg_verify_full`, `verify_full_url`, `branch_host` (Step 1), `PGBIN` (Step 1), and each step's `B`/`BRANCH_HOST`. Run Tasks 8–10 in one terminal session. In a new shell, first re-run Step 1's definitions and re-set `PGBIN` and the current step's `B`/`BRANCH_HOST`. Each branch-side subshell starts with an explicit check, `[ -n "${BRANCH_HOST-}" ] || { …; exit 1; }` (plus `type split_pg_url verify_full_url >/dev/null || exit 1` where the helpers are used), before any `$(…)`. A `${VAR:?}` inside `$(…)` only kills the command substitution, not the block, in both bash and zsh (final re-review N2). With `BRANCH_HOST` unset, the block stops at that first line. Production blocks are written out separately and never depend on `BRANCH_HOST`.
 
 **Files (gitignored or outside the repo, never committed):** `backend/.env.owner`, `backend/.env.analyst`, `~/Developer/safeascent-private/backups/pre-2a/*.dump`.
 
@@ -2958,7 +2969,14 @@ print(urlunsplit(("postgresql", u.netloc, u.path, urlencode(query), u.fragment))
 branch_host() {
   neonctl connection-string "${1:?branch name}" --project-id still-morning-74008008 \
       --role-name neondb_owner --database-name neondb \
-    | python3 -c 'import sys; from urllib.parse import urlsplit; print(urlsplit(sys.stdin.read().strip()).hostname)'
+    | python3 -c '
+import sys
+from urllib.parse import urlsplit
+host = urlsplit(sys.stdin.read().strip()).hostname or ""
+# No pipefail here: a failed neonctl must print nothing, never "None".
+if not host.startswith("ep-"):
+    sys.exit("branch_host: no Neon endpoint host returned")
+print(host)'
 }
 ```
 
@@ -3019,11 +3037,12 @@ cd /Users/sebastianfrazier/Developer/SafeAscent/backend
 B=p2a-restore-drill
 neonctl branches create --project-id still-morning-74008008 --name "${B:?}" --parent production --output json \
   | python3 -c 'import json,sys; b=json.load(sys.stdin)["branch"]; print(b["id"], b["name"], b["parent_id"])'
-BRANCH_HOST="$(branch_host "${B:?}")"
+BRANCH_HOST="$(branch_host "$B")"
 ( set -a; . ./.env.owner; set +a
+  [ -n "${BRANCH_HOST-}" ] || { echo 'BRANCH_HOST is not set: re-run the step that sets it' >&2; exit 1; }
   type split_pg_url verify_full_url >/dev/null || exit 1
-  case "$OWNER_DATABASE_URL" in *"@${BRANCH_HOST:?}/"*) echo 'BRANCH_HOST is production: stop' >&2; exit 1 ;; esac
-  URL="$(printf '%s' "$OWNER_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST:?}/#")"
+  case "$OWNER_DATABASE_URL" in *"@${BRANCH_HOST}/"*) echo 'BRANCH_HOST is production: stop' >&2; exit 1 ;; esac
+  URL="$(printf '%s' "$OWNER_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")"
   split_pg_url "$URL"; verify_full_url
   SRC="$PG_URL_NOPASS"
   DRILL="$(printf '%s' "$SRC" | sed -E 's#^(postgresql://[^/]+)/[^?]*#\1/restore_drill#')"
@@ -3045,6 +3064,8 @@ neonctl branches delete "${B:?}" --project-id still-morning-74008008
 Expected: the branch id with parent `br-restless-bar-ajw5zy4b` (production), then `accidents restored: match`, `weather restored: match`, `mp_ticks restored: match`. Only match/mismatch is printed, never counts of personal data. The branch is created after the dumps, so a production write in between can make a count differ by the rows written since; rerun Step 2 and this step back to back if that happens.
 
 Record "restore rehearsed 2026-MM-DD (pre-data + data; post-data not rehearsed), server major NN, tools postgresql@NN" in the PR thread.
+
+Cost (final re-review N9, owner's call): this drill writes ~23M `mp_ticks` rows into branch storage and WAL. A local `postgis/postgis:<PGMAJOR>` container proves the same thing, that the dumps are readable and complete, at no Neon cost: restore into it with the same `$PGBIN` tools, and compare against the counts from `$SRC`. It was not chosen by default because the Neon branch also rehearses the real server's extensions and settings.
 
 Rehearsed locally 2026-09-29 against `postgis/postgis:16-3.4-alpine` with a representative 0003-state database: the old command (no `--section`) failed on `CREATE TRIGGER … update_coordinates()`; libpq 18.6's `pg_restore` failed on `SET transaction_timeout`; PG16 `pg_dump`/`pg_restore` with the section flags restored all three tables with matching counts.
 
@@ -3077,9 +3098,10 @@ cd /Users/sebastianfrazier/Developer/SafeAscent/backend
 B=p2a-0-rehearsal
 neonctl branches create --project-id still-morning-74008008 --name "${B:?}" --parent production --output json \
   | python3 -c 'import json,sys; b=json.load(sys.stdin)["branch"]; print(b["id"], b["name"], b["parent_id"])'
-BRANCH_HOST="$(branch_host "${B:?}")"
+BRANCH_HOST="$(branch_host "$B")"
 ( set -a; . ./.env.owner; set +a
-  case "$OWNER_DATABASE_URL" in *"@${BRANCH_HOST:?}/"*) echo 'BRANCH_HOST is production: stop' >&2; exit 1 ;; esac
+  [ -n "${BRANCH_HOST-}" ] || { echo 'BRANCH_HOST is not set: re-run the step that sets it' >&2; exit 1; }
+  case "$OWNER_DATABASE_URL" in *"@${BRANCH_HOST}/"*) echo 'BRANCH_HOST is production: stop' >&2; exit 1 ;; esac
   echo "branch host ok" )
 ```
 
@@ -3095,17 +3117,20 @@ Expected: parent `br-restless-bar-ajw5zy4b` (production), then `branch host ok`.
 ```bash
 cd /Users/sebastianfrazier/Developer/SafeAscent/backend
 ( set -a; . ./.env.owner; set +a
+  [ -n "${BRANCH_HOST-}" ] || { echo 'BRANCH_HOST is not set: re-run the step that sets it' >&2; exit 1; }
   type split_pg_url verify_full_url >/dev/null || exit 1
-  BRANCH_URL="$(printf '%s' "$OWNER_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST:?}/#")"
+  BRANCH_URL="$(printf '%s' "$OWNER_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")"
   split_pg_url "$BRANCH_URL"; verify_full_url
   set -a; . ./.env.ingest; set +a
-  psql "$PG_URL_NOPASS" -X -q -f db/roles/create_roles_phase2.sql )
+  psql "$PG_URL_NOPASS" -X -q -f db/roles/create_roles_phase2.sql ) &&
 ( set -a; . ./.env.migrator; set +a
-  export MIGRATOR_DATABASE_URL="$(printf '%s' "$MIGRATOR_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST:?}/#")"
-  uv run alembic upgrade head && uv run alembic current && uv run alembic check )
+  [ -n "${BRANCH_HOST-}" ] || { echo 'BRANCH_HOST is not set: re-run the step that sets it' >&2; exit 1; }
+  export MIGRATOR_DATABASE_URL="$(printf '%s' "$MIGRATOR_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")"
+  uv run alembic upgrade head && uv run alembic current && uv run alembic check ) &&
 ( set -a; . ./.env.owner; set +a
+  [ -n "${BRANCH_HOST-}" ] || { echo 'BRANCH_HOST is not set: re-run the step that sets it' >&2; exit 1; }
   type split_pg_url verify_full_url >/dev/null || exit 1
-  BRANCH_URL="$(printf '%s' "$OWNER_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST:?}/#")"
+  BRANCH_URL="$(printf '%s' "$OWNER_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")"
   split_pg_url "$BRANCH_URL"; verify_full_url
   psql "$PG_URL_NOPASS" -X -q -f db/roles/grants_phase2.sql
   psql "$PG_URL_NOPASS" -X -q -f db/roles/verify_roles.sql
@@ -3117,8 +3142,10 @@ Expected: `roles ingest and trainer created; schema internal owned by migrator`;
 - [ ] **Step 3 (owner/agent): Acceptance on the branch as `analyst`**
 
 ```bash
+cd /Users/sebastianfrazier/Developer/SafeAscent/backend
 ( set -a; . ./.env.analyst; set +a
-  VERIFY_DATABASE_URL="$(printf '%s' "$ANALYST_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST:?}/#")" \
+  [ -n "${BRANCH_HOST-}" ] || { echo 'BRANCH_HOST is not set: re-run the step that sets it' >&2; exit 1; }
+  VERIFY_DATABASE_URL="$(printf '%s' "$ANALYST_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")" \
     uv run pytest -m db tests/verify/test_phase2a_foundation.py -q -k accidents_raw )
 ```
 
@@ -3128,38 +3155,76 @@ Expected: `1 passed`. (The R8 checks run after Task 10.) Keep the branch for Tas
 
 - [ ] **Step 4 (owner): Snapshot `pre-2a`, then apply to prod**
 
-Pick a time well clear of the 02:00 UTC nightly (it writes `historical_predictions`). Immediately before the apply, snapshot production (final review I3) and note the UTC time:
+Pick a time well clear of the 02:00 UTC nightly (it writes `historical_predictions`). If Task 8's dumps are not from today, re-run Task 8 Step 2 first (it needs `PGBIN` from Task 8 Step 1; the `mp_ticks` dump takes minutes), so that the snapshot below stays immediately before the apply (final re-review N4).
+
+Immediately before the apply, snapshot production (final review I3) and note the UTC time:
 
 ```bash
 neonctl branches create --project-id still-morning-74008008 --name pre-2a --parent production --output json \
   | python3 -c 'import json,sys; b=json.load(sys.stdin)["branch"]; print(b["id"], b["name"], b["parent_id"], b["created_at"])'
 ```
 
-Expected: parent `br-restless-bar-ajw5zy4b` (production). Record the `created_at` in the PR. `pre-2a` is the point-in-time fallback; do not delete it until plan 3 lands. If Task 8's dumps are not from today, re-run Task 8 Step 2 now too.
+Expected: parent `br-restless-bar-ajw5zy4b` (production). Record the `created_at` in the PR. `pre-2a` is the point-in-time fallback; do not delete it until plan 3 lands.
 
-Then repeat Step 2's second block (create roles, migrate, grant and verify) without the `sed` host substitution (use `OWNER_DATABASE_URL` and `MIGRATOR_DATABASE_URL` as they are, still through `split_pg_url; verify_full_url`), then Step 3 against prod. Expected outputs are identical.
+Then apply to **production**. These are Step 2's and Step 3's blocks with no host substitution (final re-review N3):
+
+```bash
+cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+# PRODUCTION
+( set -a; . ./.env.owner; set +a
+  type split_pg_url verify_full_url >/dev/null || exit 1
+  split_pg_url "$OWNER_DATABASE_URL"; verify_full_url
+  set -a; . ./.env.ingest; set +a
+  psql "$PG_URL_NOPASS" -X -q -f db/roles/create_roles_phase2.sql ) &&
+( set -a; . ./.env.migrator; set +a
+  uv run alembic upgrade head && uv run alembic current && uv run alembic check ) &&
+( set -a; . ./.env.owner; set +a
+  type split_pg_url verify_full_url >/dev/null || exit 1
+  split_pg_url "$OWNER_DATABASE_URL"; verify_full_url
+  psql "$PG_URL_NOPASS" -X -q -f db/roles/grants_phase2.sql
+  psql "$PG_URL_NOPASS" -X -q -f db/roles/verify_roles.sql
+  psql "$PG_URL_NOPASS" -X -q -f db/roles/verify_roles_phase2.sql )
+# PRODUCTION acceptance as analyst
+( set -a; . ./.env.analyst; set +a
+  VERIFY_DATABASE_URL="$ANALYST_DATABASE_URL" \
+    uv run pytest -m db tests/verify/test_phase2a_foundation.py -q -k accidents_raw )
+```
+
+Expected outputs are identical to Steps 2 and 3. The membership note under Step 2 applies to production separately.
 
 If `alembic upgrade` fails with a lock timeout (`canceling statement due to lock timeout`) or a deadlock (`0004` locks `accidents` then `mp_ticks`; the ascent-analytics endpoint reads them in the other order), nothing was applied: `0004` runs in one transaction. Rerun the migrator block.
 
 After Step 3 passes on prod, the deploy gate above is lifted.
 
-- [ ] **Step 5 (owner): Validate the `NOT VALID` constraint** — 0004 added `mp_ticks_quarantine_reason_check` as `NOT VALID` (I2) so the migration itself never scans the full table; validate it now, as `migrator`, against prod:
+- [ ] **Step 5 (owner): Validate the `NOT VALID` constraint** — 0004 added `mp_ticks_quarantine_reason_check` as `NOT VALID` (I2) so the migration itself never scans the full table; validate it now, as `migrator`. `VALIDATE` scans all ~23M rows under SHARE UPDATE EXCLUSIVE, which blocks neither reads nor writes; `lock_timeout` only stops it from queueing behind DDL or a manual `VACUUM`.
+
+First on the rehearsal branch, to learn how long the scan takes:
 
 ```bash
+cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+( set -a; . ./.env.migrator; set +a
+  [ -n "${BRANCH_HOST-}" ] || { echo 'BRANCH_HOST is not set: re-run the step that sets it' >&2; exit 1; }
+  type split_pg_url verify_full_url >/dev/null || exit 1
+  split_pg_url "$(printf '%s' "$MIGRATOR_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")"; verify_full_url
+  time psql "$PG_URL_NOPASS" -X -c "SET lock_timeout = '5s'; ALTER TABLE mp_ticks VALIDATE CONSTRAINT mp_ticks_quarantine_reason_check;" )
+```
+
+Then on **production**:
+
+```bash
+# PRODUCTION
 ( set -a; . ./.env.migrator; set +a
   type split_pg_url verify_full_url >/dev/null || exit 1
   split_pg_url "$MIGRATOR_DATABASE_URL"; verify_full_url
   psql "$PG_URL_NOPASS" -X -c "SET lock_timeout = '5s'; ALTER TABLE mp_ticks VALIDATE CONSTRAINT mp_ticks_quarantine_reason_check;" )
 ```
 
-`VALIDATE` scans all ~23M rows under SHARE UPDATE EXCLUSIVE, which blocks neither reads nor writes; `lock_timeout` only stops it from queueing behind DDL or a manual `VACUUM`. Run it on `p2a-0-rehearsal` first (same command with the branch host) to learn how long the scan takes.
-
 Expected: `SET` then `ALTER TABLE` (no error; the constraint was already true for every existing row, since `quarantine_reason` is NULL until Task 10's R8 run). A failure here means some row already violates the check — stop and diagnose before Task 10 writes any quarantine values.
 
 - [ ] **Rollback (final review I3).** What to do when something fails partway:
   - `alembic upgrade` fails (lock timeout, deadlock, any error): nothing was applied (one transaction). Fix the cause and rerun.
   - `0004` applied but `grants_phase2.sql` or a verify script fails: fix and rerun them; both are idempotent. Nothing needs reverting.
-  - `0004` must be reverted **before Task 10 runs**: as `migrator`, `uv run alembic downgrade 0003_hist_insufficient_data`. It refuses once any new table holds rows or any Phase 2a column holds a non-default value, which is the case after Task 10.
+  - `0004` must be reverted **before Task 10 runs**: as `migrator`, `uv run alembic downgrade 0003_hist_insufficient_data`. It refuses once any new table holds rows or any Phase 2a column holds a non-default value, which is the case after Task 10. If this merge has been deployed since Step 4, first redeploy the pre-merge build on every service (the merged model needs `0004`, so downgrading under it breaks `/predict`), and put the deploy gate back in force (final re-review N6).
   - After Task 10 has written, or if the data itself is wrong: restore `production` from `pre-2a` with Neon's branch restore, or, more precisely, restore `production` to a timestamp just before Step 4 (point-in-time, within the project's history retention). The exact Console/`neonctl` path was not checked while writing this; confirm it in Neon's docs before relying on it.
   - **`historical_predictions` caveat:** a branch or point-in-time restore of `production` discards every write made after that point, including the nightly's `historical_predictions` rows (and any Phase 1 role or grant change). After such a restore, trigger the nightly once (`DEPLOYMENT.md`, Insufficient-data rollout step 3) to rebuild today and the next 2 days; the rows for days in between are lost, not recomputed. Also check that the deploy gate still holds: the restored database has no `0004`.
 
@@ -3209,17 +3274,37 @@ Record the three facts (or `loader: unknown`) in the PR. If any of them disagree
 
 - [ ] **Step 2 (owner/agent): Run R8 on the rehearsal branch, then prod**
 
+On the rehearsal branch:
+
 ```bash
+cd /Users/sebastianfrazier/Developer/SafeAscent/backend
 ( set -a; . ./.env.ingest; set +a
-  export INGEST_DATABASE_URL="$(printf '%s' "$INGEST_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST:?}/#")"
+  [ -n "${BRANCH_HOST-}" ] || { echo 'BRANCH_HOST is not set: re-run the step that sets it' >&2; exit 1; }
+  export INGEST_DATABASE_URL="$(printf '%s' "$INGEST_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")"
   DATABASE_URL="$INGEST_DATABASE_URL" uv run python -m app.pipelines.mp_ticks_quarantine )
+( set -a; . ./.env.analyst; set +a
+  [ -n "${BRANCH_HOST-}" ] || { echo 'BRANCH_HOST is not set: re-run the step that sets it' >&2; exit 1; }
+  VERIFY_DATABASE_URL="$(printf '%s' "$ANALYST_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")" \
+    uv run pytest -m db tests/verify/test_phase2a_foundation.py -q )
 ```
 
 Expected: one JSON line, e.g. `{"counts": {"clean": …, "future": …, "orphan_route": …, "pre_1970": …}, "rule_version": "r8-v1"}`. Only flagged rows are written (owner decision 2026-09-29, final review I1): clean rows keep `quarantine_reason` and `quarantine_rule_version` NULL, and the run's `source_ingest_log.validation_report` records `"rule_version": "r8-v1"`. The first run updates only the ~5K flagged rows, not the whole table.
 - Compare with the audit: 1,322 future at the 2026-02-08 cutoff, and 3,602 orphan route ids. The one-day capture slack may lower `future` slightly below 1,322. `future` must still be ≥ 57, the rows dated after 2026-09-28.
 - Record the counts in the PR.
 - Re-run: the counts are identical.
-- Then run on prod (no `sed`), and run `VERIFY_DATABASE_URL="$ANALYST_DATABASE_URL" uv run pytest -m db tests/verify/test_phase2a_foundation.py -q` inside the analyst subshell → `4 passed`.
+- The branch acceptance run prints `4 passed` (final re-review N8: a verify-side problem shows up here, before production).
+- Then on **production**:
+
+```bash
+cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+# PRODUCTION
+( set -a; . ./.env.ingest; set +a
+  DATABASE_URL="$INGEST_DATABASE_URL" uv run python -m app.pipelines.mp_ticks_quarantine )
+( set -a; . ./.env.analyst; set +a
+  VERIFY_DATABASE_URL="$ANALYST_DATABASE_URL" uv run pytest -m db tests/verify/test_phase2a_foundation.py -q )
+```
+
+  Expected: the same JSON shape, then `4 passed`.
 
 - [ ] **Step 3 (owner): Load the tick aggregates, only after the private scrape reports complete**
 
@@ -3231,12 +3316,44 @@ sqlite3 ~/Developer/safeascent-private/mp_ticks/mp_ice_ticks.sqlite ".backup '$S
 
 cd /Users/sebastianfrazier/Developer/SafeAscent/backend
 ( set -a; . ./.env.ingest; set +a
-  export INGEST_DATABASE_URL="$(printf '%s' "$INGEST_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST:?}/#")"
-  DATABASE_URL="$INGEST_DATABASE_URL" uv run python -m app.pipelines.mp_tick_aggregates \
-    --sqlite "$SNAPSHOT" --dry-run )
+  [ -n "${BRANCH_HOST-}" ] || { echo 'BRANCH_HOST is not set: re-run the step that sets it' >&2; exit 1; }
+  [ -s "${SNAPSHOT-}" ] || { echo 'SNAPSHOT missing' >&2; exit 1; }
+  export INGEST_DATABASE_URL="$(printf '%s' "$INGEST_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")"
+  DATABASE_URL="$INGEST_DATABASE_URL" uv run python -m app.pipelines.mp_tick_aggregates --sqlite "$SNAPSHOT" --dry-run )
 ```
 
-Expected: `"status": "dry_run"` with a report of counts only. If `problems` is non-empty, stop and review the quarantine reasons with the agent (counts only). Then run without `--dry-run` against the same `$SNAPSHOT` (branch, then prod without `sed`): `"status": "ok"`; a second run prints `"status": "noop"`. Delete the `p2a-0-rehearsal` branch and remove `$SNAPSHOT`'s temp directory.
+Expected: `"status": "dry_run"` with a report of counts only. If `problems` is non-empty, stop and review the quarantine reasons with the agent (counts only). Otherwise load on the branch, twice:
+
+```bash
+( set -a; . ./.env.ingest; set +a
+  [ -n "${BRANCH_HOST-}" ] || { echo 'BRANCH_HOST is not set: re-run the step that sets it' >&2; exit 1; }
+  export INGEST_DATABASE_URL="$(printf '%s' "$INGEST_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")"
+  DATABASE_URL="$INGEST_DATABASE_URL" uv run python -m app.pipelines.mp_tick_aggregates --sqlite "$SNAPSHOT" &&
+  DATABASE_URL="$INGEST_DATABASE_URL" uv run python -m app.pipelines.mp_tick_aggregates --sqlite "$SNAPSHOT" )
+```
+
+Expected: `"status": "ok"`, then `"status": "noop"`.
+
+Then on **production**, against the same `$SNAPSHOT`:
+
+```bash
+cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+# PRODUCTION
+( set -a; . ./.env.ingest; set +a
+  [ -s "${SNAPSHOT-}" ] || { echo 'SNAPSHOT missing' >&2; exit 1; }
+  DATABASE_URL="$INGEST_DATABASE_URL" uv run python -m app.pipelines.mp_tick_aggregates --sqlite "$SNAPSHOT" --dry-run )
+# Only if the dry run's problems list is empty:
+( set -a; . ./.env.ingest; set +a
+  DATABASE_URL="$INGEST_DATABASE_URL" uv run python -m app.pipelines.mp_tick_aggregates --sqlite "$SNAPSHOT" &&
+  DATABASE_URL="$INGEST_DATABASE_URL" uv run python -m app.pipelines.mp_tick_aggregates --sqlite "$SNAPSHOT" )
+```
+
+Expected: `dry_run`, then `ok`, then `noop`. Then clean up (final re-review N7):
+
+```bash
+neonctl branches delete p2a-0-rehearsal --project-id still-morning-74008008
+[ -n "${SNAPSHOT-}" ] && rm -rf "$(dirname "$SNAPSHOT")"
+```
 
 - [ ] **Step 4 (owner): Later scrapes**
 - Reloading the same export never accepts its `partial_month` rows (D3). Months at or after the scrape month land only from a **newer** private scrape that finished after those months closed.
