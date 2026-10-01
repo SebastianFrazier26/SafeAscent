@@ -103,6 +103,7 @@ module = [
     "app.data.repair.geocode",
     "app.data.repair.activity",
     "app.data.repair.dedupe",
+    "app.data.repair.experience",
     "app.pipelines.textsim",
     "app.pipelines.geo",
     "app.pipelines.gnis",

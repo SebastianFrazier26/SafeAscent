@@ -256,3 +256,28 @@ def test_r5_every_group_has_exactly_one_canonical_head():
         "OR bool_and(accident_id <> incident_group_id)) g"
     )
     assert row["bad"] == 0
+
+
+def test_r12_golden_precision_on_filled_values_and_recall_reported():
+    gold = {int(r["accident_id"]): r for r in golden("experience_v1.csv")}
+    assert len(gold) >= 80, "label the golden set first (runbook Task 13)"
+    ids = ",".join(str(i) for i in gold)
+    rows = fetch(f"SELECT accident_id, exp_years_climbing, exp_stated_level, exp_first_season, guided FROM accidents WHERE accident_id IN ({ids})")
+    filled = correct = stated = found = 0
+    blank = {"", "none", "null", "unknown"}
+    for r in rows:
+        g = gold[r["accident_id"]]
+        for col, missing in (("exp_years_climbing", None), ("exp_stated_level", "unknown"), ("exp_first_season", None), ("guided", "unknown")):
+            truth = g[col].strip().lower()
+            got_right = r[col] != missing and str(r[col]).lower() == truth
+            if r[col] != missing:
+                filled += 1
+                correct += got_right
+            if truth not in blank:
+                stated += 1
+                found += got_right
+    print({"filled": filled, "correct": correct, "recall": round(found / stated, 3) if stated else None})
+    # A rule that fills nothing would pass a precision-only bar; the golden set is
+    # stratified toward rows where R12 fires, so zero filled values is a failure.
+    assert filled > 0, "R12 filled no golden value"
+    assert correct / filled >= 0.95
