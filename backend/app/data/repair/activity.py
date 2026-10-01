@@ -1,8 +1,9 @@
 """R4: versioned activity classes. Ski/snowmobile rows count as climbing approaches only
 when the narrative uses climbing vocabulary (uphill-skinning phrasing excluded) and the
 point is within 1 km of alpine/ice/mixed terrain; unknown vocabularies stop the run.
-A blank activity is never guessed (owner decision O1): those rows wait, unclassified, for
-the owner's r4-review-export/-import round trip, and the apply goes ahead without them."""
+A blank or placeholder activity is never guessed (owner decision O1, review round 1): those
+rows wait, unclassified, for the owner's r4-review-export/-import round trip, and the apply
+goes ahead without them."""
 
 from __future__ import annotations
 
@@ -28,7 +29,7 @@ from app.pipelines.validate import ValidationReport
 
 R4_VERSION = "r4-v1"
 R4_OBJECTIVES_VERSION = "r4-v2"
-# Owner classifications of blank-activity rows. Every r4-review-* revision freezes the row
+# Owner classifications of rows needs_review sends to the owner. Every r4-review-* revision freezes the row
 # against later R4 runs.
 R4_REVIEW_VERSION = "r4-review-v1"
 SKI_APPROACH_RADIUS_M = 1000
@@ -43,17 +44,28 @@ SKI_LIKE = frozenset({
     "snowmobiling", "snowmobile", "sidecountry skiing", "ski mountaineering",
 })
 NON_CLIMBING = frozenset({
-    "hiking", "snowshoeing", "hunting", "sledding", "snowbiking", "residential", "highway", "other",
+    "hiking", "snowshoeing", "hunting", "sledding", "snowbiking", "residential", "highway",
     "inbounds skiing", "ranger", "motorized", "walking", "scrambling off trail",
 })
 CLIMB_LEXICON = ("ice climb", "couloir climb", "summit attempt", "alpine route", "rappel", "crampon")
 SKIN_EXCLUSIONS = ("skin track", "skinning", "climbing skins", "on skins", "skinned up")
+# Reviewed placeholders: a source's "we don't know" says nothing either way (review round 1:
+# avalanche "unknown" would block the apply as unmapped; AAC "other" was non_climbing on no evidence).
+PLACEHOLDER = frozenset({"unknown", "other"})
+# An AAC ski-mountaineering report is often a climbing objective reached on skis; the
+# avalanche-centre rule (lexicon + terrain) was not built for AAC narratives.
+AAC_REVIEW = frozenset({"ski mountaineering"})
 REVIEW_CLASSES = frozenset({"climbing", "climbing_approach", "non_climbing"})
 REVIEW_CHOICES = REVIEW_CLASSES | {"none"}
 
 
 def is_blank(activity: str | None) -> bool:
     return not normalize_text(activity)
+
+
+def needs_review(family: SourceFamily, activity: str | None) -> bool:
+    act = normalize_text(activity)
+    return not act or act in PLACEHOLDER or (family == "aac" and act in AAC_REVIEW)
 
 
 def _mentions(narrative: str, phrases: Sequence[str]) -> bool:
@@ -66,9 +78,9 @@ def _mentions(narrative: str, phrases: Sequence[str]) -> bool:
 def classify_activity(
     family: SourceFamily, activity: str | None, text: str, near_climb_terrain: bool
 ) -> tuple[str, str | None] | None:
-    """(class, inclusion flag), or None when the activity is blank (owner review) or
-    outside every vocabulary (the run stops until a reviewed change maps it)."""
-    if is_blank(activity):
+    """(class, inclusion flag), or None when the row needs the owner (needs_review) or its
+    activity is outside every vocabulary (the run stops until a reviewed change maps it)."""
+    if needs_review(family, activity):
         return None
     act = normalize_text(activity)
     if family == "nps":
@@ -217,7 +229,7 @@ async def run_r4(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, o
     classes: Counter[str] = Counter()
     pending = 0
     for row in inputs.rows:
-        if is_blank(row.activity):
+        if needs_review(row.family, row.activity):
             pending += 1
             report.quarantine(str(row.accident_id), "activity_pending_review")
             continue
@@ -249,7 +261,7 @@ def _out(args: argparse.Namespace, name: str) -> Path:
 
 
 async def run_r4_golden_export(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
-    """Drawn only from rows the rule decides, after the vocabulary is complete: blank-activity
+    """Drawn only from rows the rule decides, after the vocabulary is complete: needs_review
     rows are the owner's, and a golden set drawn before the vocabulary settles would describe
     a different pool."""
     inputs = await _rows(conn)
@@ -257,7 +269,7 @@ async def run_r4_golden_export(conn: AsyncConnection, args: argparse.Namespace) 
     candidates: list[dict[str, object]] = []
     unmapped: Counter[str] = Counter()
     for row in inputs.rows:
-        if is_blank(row.activity):
+        if needs_review(row.family, row.activity):
             continue
         result = classify_activity(row.family, row.activity, row.narrative, row.near_climb_terrain)
         if result is None:
@@ -284,15 +296,23 @@ async def run_r4_golden_export(conn: AsyncConnection, args: argparse.Namespace) 
     }
 
 
-async def _review_pool(conn: AsyncConnection) -> list[dict[str, object]]:
+async def _review_pool(conn: AsyncConnection) -> tuple[list[dict[str, object]], dict[int, str | None]]:
+    """Pending rows, and the rows the owner already decided (id -> recorded class)."""
     snapshot = await _snapshot(conn)
+    history = await _history(conn)
     rows = await fetch_accidents(
         conn, ["source", "source_id", "date", "state", "mountain", "route", "accident_type", "activity_class"]
     )
-    return [
+    pending = [
         r for r in rows
-        if _id(r) in snapshot and is_blank(snapshot[_id(r)][1]) and r["activity_class"] is None
+        if _id(r) in snapshot and needs_review(source_family(snapshot[_id(r)][0]), snapshot[_id(r)][1])
+        and r["activity_class"] is None
     ]
+    decided = {
+        _id(r): _str(r["activity_class"]) for r in rows
+        if decided_elsewhere(_str(r["activity_class"]), history.get(_id(r), ())) == "owner_decided"
+    }
+    return pending, decided
 
 
 REVIEW_COLUMNS = ["accident_id", "source", "source_id", "date", "state", "mountain", "route", "accident_type"]
@@ -300,7 +320,7 @@ REVIEW_COLUMNS = ["accident_id", "source", "source_id", "date", "state", "mounta
 
 async def run_r4_review_export(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
     """Every pending row, not a sample: each one is a class nobody has decided yet."""
-    pool = await _review_pool(conn)
+    pool, _ = await _review_pool(conn)
     out = _out(args, "r4_activity_review.csv")
     review._write(out, pool, REVIEW_COLUMNS, "activity_class", overwrite=args.overwrite)
     return {
@@ -314,14 +334,23 @@ async def run_r4_review_export(conn: AsyncConnection, args: argparse.Namespace) 
 
 
 async def run_r4_review_import(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
-    pool = await _review_pool(conn)
+    pool, decided = await _review_pool(conn)
     decisions = review.read_decisions(
         Path(args.review_file), key="accident_id", decision_column="activity_class", allowed=REVIEW_CHOICES
     )
-    refuse_ineligible(decisions, {_id(r) for r in pool})
+    refuse_ineligible(decisions, {_id(r) for r in pool} | set(decided))
+    # A re-import of the same file is a no-op. A different answer for a decided row would be a
+    # silent second decision under the same rule version, so it needs a new review version.
+    changed = sorted(a for a, c in decisions.items() if a in decided and c != (decided[a] or "none"))
+    if changed:
+        raise ValueError(f"{len(changed)} row(s) already decided differently under {R4_REVIEW_VERSION}, e.g. {changed[:5]}")
     report = ValidationReport("repair:r4-review")
     changes: list[Change] = []
+    already = 0
     for accident_id, choice in sorted(decisions.items()):
+        if accident_id in decided:
+            already += 1
+            continue
         if choice == "none":
             report.quarantine(str(accident_id), "owner_none")
             continue
@@ -332,4 +361,4 @@ async def run_r4_review_import(conn: AsyncConnection, args: argparse.Namespace) 
         conn, step="r4-review", rule_version=R4_REVIEW_VERSION, changes=changes, report=report, apply=args.apply,
         metrics={"review_pending": pending},
     )
-    return summary | {"review_pending": pending}
+    return summary | {"review_pending": pending, "already_decided": already}

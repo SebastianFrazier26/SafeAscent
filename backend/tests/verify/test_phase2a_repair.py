@@ -214,11 +214,13 @@ def test_r4_golden_set_at_least_95_percent():
     assert hits / len(labels) >= 0.95
 
 
-def test_r4_blank_activity_rows_pending_owner_review_are_reported():
+def test_r4_rows_pending_owner_review_are_reported():
     [row] = fetch(
         "SELECT count(*) AS n FROM accidents a JOIN internal.accidents_raw r USING (accident_id) "
-        # Mirrors activity.is_blank: no letter or digit at all ("", "  ", "?").
-        "WHERE regexp_replace(lower(coalesce(r.activity, '')), '[^a-z0-9]', '', 'g') = '' AND a.activity_class IS NULL"
+        # Mirrors activity.needs_review: blank ("", "?"), a placeholder, or AAC ski mountaineering.
+        "CROSS JOIN LATERAL (SELECT trim(regexp_replace(lower(coalesce(r.activity, '')), '[^a-z0-9]+', ' ', 'g')) AS act) n "
+        "WHERE a.activity_class IS NULL AND (n.act IN ('', 'unknown', 'other') "
+        "OR (lower(trim(r.source)) LIKE 'aac%' AND n.act = 'ski mountaineering'))"
     )
     # O1: never guessed; the PR records how many the owner still has to classify.
     print({"activity_review_pending": row["n"]})

@@ -10,7 +10,14 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.data.repair import activity, review
 from app.data.repair.__main__ import STEPS
-from app.data.repair.activity import ActivityRow, R4Input, classify_activity, decided_elsewhere, is_blank
+from app.data.repair.activity import (
+    ActivityRow,
+    R4Input,
+    classify_activity,
+    decided_elsewhere,
+    is_blank,
+    needs_review,
+)
 from tests.pgtest import migrated_db, requires_pg, sa_url
 
 SUMMIT_TEXT = "they were on a summit attempt and switched to crampons"
@@ -56,6 +63,23 @@ def test_blank_activity_is_never_classified_even_for_nps(value):
     assert is_blank(value)
     assert classify_activity("nps", value, "", False) is None
     assert classify_activity("aac", value, SUMMIT_TEXT, True) is None
+
+
+@pytest.mark.parametrize(
+    "family,value",
+    [("avalanche", "unknown"), ("aac", "other"), ("aac", "Other"), ("nps", "UNKNOWN"), ("aac", "ski_mountaineering")],
+)
+def test_placeholder_values_and_aac_ski_mountaineering_go_to_owner_review(family, value):
+    # Review round 1 (C1/I1/M1): placeholders carry no evidence either way, and an AAC
+    # ski-mountaineering report is often a climbing objective, so the owner reads them.
+    assert needs_review(family, value)
+    assert classify_activity(family, value, SUMMIT_TEXT, True) is None
+
+
+def test_ski_rows_outside_aac_keep_the_rule():
+    assert not needs_review("avalanche", "backcountry_skiing")
+    assert classify_activity("avalanche", "ski_mountaineering", "", False) == ("non_climbing", None)
+    assert classify_activity("avalanche", "snowmobiling", "", False) == ("non_climbing", None)
 
 
 def test_decided_elsewhere_lets_r4_redecide_only_its_own_rows():
@@ -118,6 +142,22 @@ def test_blank_activity_rows_wait_for_review_and_never_block_apply(monkeypatch):
     assert seen["metrics"] == {"review_pending": 2}
     assert seen["quarantined"] == {"activity_pending_review": 2}
     assert out["review_pending"] == 2 and out["unmapped"] == {}
+
+
+def test_placeholder_rows_are_pending_and_never_block_apply(monkeypatch):
+    seen = {}
+
+    async def fake_rows(conn):
+        return _input((1, "avalanche", "unknown", "", False), (2, "aac", "other", "", False), (3, "aac", "ski_mountaineering", "", False))
+
+    async def fake_run_step(conn, *, step, rule_version, changes, report, apply, metrics=None):
+        seen["changes"] = list(changes)
+        return {"mode": "apply"}
+
+    monkeypatch.setattr(activity, "_rows", fake_rows)
+    monkeypatch.setattr(activity, "run_step", fake_run_step)
+    out = asyncio.run(activity.run_r4(None, argparse.Namespace(apply=True)))  # type: ignore[arg-type]
+    assert seen["changes"] == [] and out["review_pending"] == 3 and out["unmapped"] == {}
 
 
 def test_unmapped_values_are_reported_on_a_dry_run(monkeypatch):
@@ -298,6 +338,8 @@ def test_owner_review_classifies_blank_activity_rows_and_r4_never_redecides_them
                     await activity.run_r4_review_import(conn, argparse.Namespace(review_file=str(stray), apply=False))
 
             _fill(path, "activity_class", {"4": "Climbing"})
+            filled = tmp_path / "r4_filled.csv"
+            filled.write_bytes(path.read_bytes())
             async with engine.connect() as conn:
                 dry = await activity.run_r4_review_import(conn, argparse.Namespace(review_file=str(path), apply=False))
                 assert dry["mode"] == "dry_run"
@@ -312,6 +354,14 @@ def test_owner_review_classifies_blank_activity_rows_and_r4_never_redecides_them
                 got = await _all(conn, CLASSES_SQL.replace("ORDER BY", "WHERE accident_id = 4 ORDER BY"))
                 left = await activity.run_r4_review_export(conn, _export_args(overwrite=True))
             assert applied["applied"] == 2
+            # M2: re-importing the same file is a no-op; changing a recorded decision is refused.
+            async with engine.begin() as conn:
+                reimport = await activity.run_r4_review_import(conn, argparse.Namespace(review_file=str(filled), apply=True))
+            assert (reimport["applied"], reimport["already_decided"]) == (0, 1)
+            _fill(filled, "activity_class", {"4": "non_climbing"})
+            async with engine.connect() as conn:
+                with pytest.raises(ValueError, match="already decided"):
+                    await activity.run_r4_review_import(conn, argparse.Namespace(review_file=str(filled), apply=False))
             assert got == [(4, "climbing", "r4-review-v1", None)]
             assert again["review_pending"] == 0 and again["skipped"]["owner_decided"] == 1
             assert later["skipped"]["owner_decided"] == 1
@@ -378,4 +428,42 @@ def test_golden_export_hides_the_decision_and_refuses_unmapped_vocabulary(tmp_pa
             await engine.dispose()
 
     with migrated_db(seed_sql=ACTIVITY_SEED) as name:
+        asyncio.run(scenario(sa_url(name)))
+
+
+PLACEHOLDER_SEED = ACTIVITY_SEED + """
+INSERT INTO accidents (accident_id, source, source_id, activity, latitude, longitude, geocode_precision) VALUES
+  (9, 'avalanche.org', NULL, 'unknown', 40.004, -105.0, 'exact'),
+  (10, 'AAC', '110', 'Other', 44.0, -71.3, 'area'),
+  (11, 'AAC', '111', 'Ski Mountaineering', 40.004, -105.0, 'area');
+INSERT INTO internal.accidents_raw (accident_id, source, source_id, activity)
+  SELECT accident_id, source, source_id, activity FROM accidents WHERE accident_id IN (9, 10, 11);
+"""
+
+
+@requires_pg
+def test_placeholder_and_aac_ski_mountaineering_rows_are_pending_and_exported(tmp_path, monkeypatch):
+    monkeypatch.setattr(review, "REVIEW_DIR", tmp_path)
+
+    async def scenario(url: str) -> None:
+        engine = create_async_engine(url)
+        try:
+            async with engine.begin() as conn:
+                out = await activity.run_r4(conn, argparse.Namespace(apply=True))
+            async with engine.connect() as conn:
+                exported = await activity.run_r4_review_export(conn, _export_args())
+                golden = await activity.run_r4_golden_export(conn, _export_args())
+                got = await _all(conn, "SELECT activity_class FROM accidents WHERE accident_id IN (9, 10, 11)")
+            with (tmp_path / "r4_activity_review.csv").open(newline="", encoding="utf-8") as fh:
+                ids = sorted(int(r["accident_id"]) for r in csv.DictReader(fh))
+            with (tmp_path / "activity_golden_candidates.csv").open(newline="", encoding="utf-8") as fh:
+                drawn = {int(r["accident_id"]) for r in csv.DictReader(fh)}
+            assert out["review_pending"] == 4 and out["unmapped"] == {}
+            assert got == [(None,), (None,), (None,)]
+            assert exported["exported"] == 4 and ids == [4, 9, 10, 11]
+            assert not drawn & {4, 9, 10, 11} and sum(golden["strata"].values()) == 5
+        finally:
+            await engine.dispose()
+
+    with migrated_db(seed_sql=PLACEHOLDER_SEED) as name:
         asyncio.run(scenario(sa_url(name)))
