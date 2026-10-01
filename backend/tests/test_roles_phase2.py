@@ -129,7 +129,7 @@ def _run_real_jobs_as_ingest(ingest_url: str, tmp_path, monkeypatch) -> None:
     summits.write_text("\n".join([GNIS_HEADER, gnis_line("2", "Other Peak", "Summit", "Colorado", "40.2", "-105.6")]))
     assert asyncio.run(gnis.main(summits))["rows_upserted"] == 1
 
-    # R3 and its check exports as ingest: gnis_summits and revisions reads, the coordinate writes.
+    # R3 and its check exports as ingest: snapshot, gnis_summits and revisions reads, the label writes.
     monkeypatch.setattr(review, "REVIEW_DIR", tmp_path)
 
     async def r3() -> tuple[dict[str, object], ...]:

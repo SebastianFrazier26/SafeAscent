@@ -18,7 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.data.repair import review
-from app.data.repair.checks import YES_NO, record_check, refuse_ineligible
+from app.data.repair.checks import YES_NO, agreement, record_check, refuse_ineligible
 from app.data.repair.framework import LOCATION, Change, fetch_accidents, run_step
 from app.data.repair.sources import SourceFamily, source_family
 from app.pipelines.geo import haversine_km
@@ -33,7 +33,9 @@ R3_PICK_VERSION = "r3-review-pick-v1"
 MOVE_KM = 50.0
 ALASKA_MIN_LAT = 55.0
 # The Aleutians and the western Alaska Peninsula lie south of 55N at these longitudes; the
-# 55N rule is for AK-labelled rows geocoded into the lower 48 or Hawaii.
+# 55N rule is for AK-labelled rows geocoded into the lower 48 or Hawaii. The latitude floor
+# keeps Kauai and Niihau (lon -159..-160) out of the exemption.
+ALEUTIAN_MIN_LAT = 50.0
 ALEUTIAN_MAX_LON = -158.0
 ALEUTIAN_MIN_LON = 172.0
 # Points a spatial rule may use. region_fallback/unknown rows keep their coordinates
@@ -136,11 +138,18 @@ def _fold(value: str | None) -> str:
     return normalize_text("".join(c for c in decomposed if not unicodedata.combining(c)))
 
 
+_COUNTRY_SUFFIXES = {"canada": "CA", "mexico": "MX"}
+
+
 def foreign_state(state: str | None) -> str | None:
+    """The whole state field only, never a substring ("Durango, CO", "Ontario, OR" are US);
+    "<province or Mexican state>, <its country>" is the one compound form accepted."""
     folded = _fold(state)
-    return STATE_FOREIGN.get(folded) or next(
-        (code for name, code in STATE_FOREIGN.items() if len(name) > 2 and f" {name} " in f" {folded} "), None
-    )
+    if folded in STATE_FOREIGN or folded in FOREIGN_TERMS:
+        return STATE_FOREIGN.get(folded) or FOREIGN_TERMS[folded]
+    head, _, country = folded.rpartition(" ")
+    code = _COUNTRY_SUFFIXES.get(country)
+    return code if code is not None and STATE_FOREIGN.get(head) == code else None
 
 
 def classify_state(state: str | None) -> str:
@@ -150,7 +159,7 @@ def classify_state(state: str | None) -> str:
     code = state_code(state)
     if code is not None:
         return f"us:{code}"
-    foreign = foreign_state(state) or foreign_country(state)
+    foreign = foreign_state(state)
     return f"foreign:{foreign}" if foreign else "unmapped"
 
 
@@ -178,6 +187,12 @@ def find_fallback_points(rows: Sequence[GeoRow], *, min_rows: int = 5, min_names
         if key:
             names[p].add(key)
     return {p for p, n in counts.items() if n >= min_rows and len(names[p]) >= min_names}
+
+
+def alaska_point_misplaced(lat: float, lon: float) -> bool:
+    """An AK-labelled point that cannot be in Alaska (shared with the acceptance cell)."""
+    aleutian = lat >= ALEUTIAN_MIN_LAT and (lon <= ALEUTIAN_MAX_LON or lon >= ALEUTIAN_MIN_LON)
+    return lat < ALASKA_MIN_LAT and not aleutian
 
 
 def _moveable(row: GeoRow) -> bool:
@@ -219,8 +234,8 @@ def _r3a(row: GeoRow, index: SummitIndex, state: str | None) -> GeoFix | None:
 
 def geocode_fix(row: GeoRow, index: SummitIndex, fallback: set[tuple[float, float]]) -> GeoFix:
     state = state_code(row.state)
-    foreign = None if state else foreign_state(row.state)
-    foreign = foreign or foreign_country(row.mountain, row.state)
+    # Free-text terms scan the mountain name only; the state field is matched whole (N3).
+    foreign = (None if state else foreign_state(row.state)) or foreign_country(row.mountain)
     if foreign is not None:
         return GeoFix(row.accident_id, None, "unknown", "foreign_place", foreign)
     moved = _r3a(row, index, state)
@@ -229,8 +244,7 @@ def geocode_fix(row: GeoRow, index: SummitIndex, fallback: set[tuple[float, floa
     lat, lon = row.lat, row.lon
     if lat is None or lon is None:
         return GeoFix(row.accident_id, KEEP, "unknown", "no_coords", "US" if state else None)
-    aleutian = lon <= ALEUTIAN_MAX_LON or lon >= ALEUTIAN_MIN_LON
-    if _point(lat, lon) in fallback or (state == "AK" and lat < ALASKA_MIN_LAT and not aleutian):
+    if _point(lat, lon) in fallback or (state == "AK" and alaska_point_misplaced(lat, lon)):
         hits = index.lookup(place_key(row.mountain), state) if state else []
         if len(hits) == 1 and _moveable(row):
             return GeoFix(row.accident_id, (hits[0].lat, hits[0].lon), "area", "gnis_summit", "US")
@@ -265,17 +279,19 @@ NOT_IN_SNAPSHOT = "not_in_snapshot"
 SNAPSHOT_POINT = "snapshot_point"
 MOVED_BY_OTHER_RULE = "moved_by_other_rule"
 LiveRow = tuple[float | None, float | None, str | None]
-History = Mapping[int, set[tuple[str, str]]]
+# Per accident, (field, rule_version) in revision order (oldest first).
+History = Mapping[int, Sequence[tuple[str, str]]]
 
 
-def _owner_decided(history: set[tuple[str, str]]) -> bool:
+def _owner_decided(history: Sequence[tuple[str, str]]) -> bool:
     return any(version.startswith("r3-review-") for _, version in history)
 
 
-def _labelled_elsewhere(precision: str | None, history: set[tuple[str, str]]) -> bool:
-    return precision is not None and not any(
-        field == "geocode_precision" and version.startswith("r3-v") for field, version in history
-    )
+def _labelled_elsewhere(precision: str | None, history: Sequence[tuple[str, str]]) -> bool:
+    # Whoever set the label last owns it: an R3 label later relabelled by another rule is
+    # that rule's, not R3's to overwrite.
+    last = next((version for field, version in reversed(history) if field == "geocode_precision"), None)
+    return precision is not None and (last is None or not last.startswith("r3-v"))
 
 
 def snapshot_fixes(
@@ -294,7 +310,7 @@ def snapshot_fixes(
     changes: list[Change] = []
     skipped: Counter[str] = Counter()
     for accident_id, (lat, lon, precision) in live.items():
-        past = history.get(accident_id, set())
+        past = history.get(accident_id, ())
         if _owner_decided(past):
             skipped["owner_decided"] += 1
             continue
@@ -383,18 +399,22 @@ async def run_r3_clusters(conn: AsyncConnection, args: argparse.Namespace) -> di
 
 
 async def run_r3_states(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
-    """Task 13 pre-check: every raw state value with its class; unmapped ones need a reviewed
-    mapping (or are accepted as stateless) before r3 --apply."""
+    """Task 13 pre-check: every raw state value with its class. Before r3 --apply the owner
+    confirms each foreign one (R3 nulls those points) and maps or accepts each unmapped one."""
     result = await conn.execute(text("SELECT state, count(*) FROM internal.accidents_raw GROUP BY 1 ORDER BY 1"))
     states = [{"state": st, "n": int(n), "class": classify_state(st)} for st, n in result.all()]
-    return {"states": states, "unmapped": [s for s in states if s["class"] == "unmapped"]}
+    return {
+        "states": states,
+        "unmapped": [s for s in states if s["class"] == "unmapped"],
+        "foreign": [s for s in states if str(s["class"]).startswith("foreign:")],
+    }
 
 
-async def _history(conn: AsyncConnection) -> dict[int, set[tuple[str, str]]]:
-    result = await conn.execute(text("SELECT DISTINCT accident_id, field, rule_version FROM internal.accident_revisions"))
-    history: dict[int, set[tuple[str, str]]] = defaultdict(set)
+async def _history(conn: AsyncConnection) -> dict[int, list[tuple[str, str]]]:
+    result = await conn.execute(text("SELECT accident_id, field, rule_version FROM internal.accident_revisions ORDER BY id"))
+    history: dict[int, list[tuple[str, str]]] = defaultdict(list)
     for accident_id, field, version in result.all():
-        history[int(accident_id)].add((str(field), str(version)))
+        history[int(accident_id)].append((str(field), str(version)))
     return history
 
 
@@ -494,7 +514,8 @@ def rejection_changes(row: GeoRow) -> list[Change]:
 
 
 async def run_r3a_import(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
-    """Records the agreement; with --apply, also sends every "no" row back (r3-review-v1)."""
+    """With --apply: records the agreement and sends every "no" row back (r3-review-v1).
+    The dry run reports both and writes nothing."""
     decisions = review.read_decisions(Path(args.review_file), key="accident_id", decision_column="correct", allowed=YES_NO)
     refuse_ineligible(decisions, {_id(r) for r in await r3a_check_pool(conn)})
     raw = await raw_geo_rows(conn)
@@ -504,12 +525,16 @@ async def run_r3a_import(conn: AsyncConnection, args: argparse.Namespace) -> dic
     for accident_id in rejected:
         report.quarantine(str(accident_id), "gnis_rejected")
         changes += rejection_changes(raw[accident_id])
-    check = await record_check(conn, "repair:r3a-check", decisions)
+    apply = bool(getattr(args, "apply", False))
+    if apply:
+        check = await record_check(conn, "repair:r3a-check", decisions)
+    else:
+        # The rate is recorded with the rejections it implies, never ahead of them.
+        check = {"source": "repair:r3a-check", "n": len(decisions), "agreement": agreement(decisions), "mode": "dry_run"}
     if not changes:
         return check
     sent_back = await run_step(
-        conn, step="r3a-reject", rule_version=R3_REVIEW_VERSION, changes=changes, report=report,
-        apply=bool(getattr(args, "apply", False)),
+        conn, step="r3a-reject", rule_version=R3_REVIEW_VERSION, changes=changes, report=report, apply=apply
     )
     return check | {"rejected": sent_back}
 

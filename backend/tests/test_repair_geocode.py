@@ -17,11 +17,13 @@ from app.data.repair.geocode import (
     GeoFix,
     GeoRow,
     SummitIndex,
+    alaska_point_misplaced,
     changes_for,
     classify_state,
     cluster_summary,
     find_fallback_points,
     foreign_country,
+    foreign_state,
     geocode_fix,
     owner_review_changes,
     plot_stratum,
@@ -361,9 +363,14 @@ def test_r3a_check_exports_every_move_with_its_summit_and_records_the_agreement(
             stray.write_text(path.read_text(encoding="utf-8") + "4" + "," * (len(header) - 1) + "yes\n")
             async with engine.begin() as conn:
                 with pytest.raises(ValueError, match="outside the hand-check pool"):
-                    await run_r3a_import(conn, argparse.Namespace(review_file=str(stray)))
+                    await run_r3a_import(conn, argparse.Namespace(review_file=str(stray), apply=True))
             async with engine.begin() as conn:
-                out = await run_r3a_import(conn, argparse.Namespace(review_file=str(path)))
+                dry = await run_r3a_import(conn, argparse.Namespace(review_file=str(path), apply=False))
+                logged = await _rows(conn, "SELECT count(*) FROM source_ingest_log WHERE source = 'repair:r3a-check'")
+            # N6: a dry run reports the rate but records nothing.
+            assert (dry["mode"], dry["agreement"], logged) == ("dry_run", 1.0, [(0,)])
+            async with engine.begin() as conn:
+                out = await run_r3a_import(conn, argparse.Namespace(review_file=str(path), apply=True))
             assert out == {"source": "repair:r3a-check", "n": 2, "agreement": 1.0}
         finally:
             await engine.dispose()
@@ -505,6 +512,16 @@ def test_provinces_and_mexican_states_are_foreign_on_the_state_field_only():
                             ("Sonora Peak", "CA"), ("Yukon River bluffs", "AK")]:
         assert geocode_fix(row(mountain=mountain, state=state, lat=32.4, lon=-110.8), INDEX, set()).method != "foreign_place"
     assert foreign_country("El Potrero Chico", None) == "MX"
+
+
+def test_foreign_state_matches_the_whole_field_or_a_country_suffix():
+    for value in ("Durango, CO", "Ontario, OR", "Hidalgo County, TX", "New Mexico", "Sonora Pass", "Alberta Creek"):
+        assert foreign_state(value) is None, value
+        assert geocode_fix(row(mountain="Some Peak", state=value, lat=37.0, lon=-107.9), INDEX, set()).method != "foreign_place"
+    for value, code in [("Alberta, Canada", "CA"), ("BC Canada", "CA"), (" Yukon ", "CA"), ("Sonora, Mexico", "MX"),
+                        ("Nuevo León, México", "MX"), ("Canada", "CA")]:
+        assert foreign_state(value) == code, value
+    assert classify_state("Durango, CO") == "unmapped"
     assert foreign_country("Potrero Chico", "Nuevo Leon") == "MX"
 
 
@@ -526,8 +543,16 @@ def test_aleutian_points_are_exempt_from_the_55n_rule():
     adak = geocode_fix(row(mountain="Some Glacier", state="AK", lat=51.9, lon=-176.6), INDEX, set())
     attu = geocode_fix(row(mountain="Some Glacier", state="AK", lat=52.9, lon=173.2), INDEX, set())
     assert (adak.precision, attu.precision) == ("area", "area")
-    honolulu = geocode_fix(row(mountain="Some Glacier", state="AK", lat=21.3, lon=-157.8), INDEX, set())
-    assert honolulu.precision == "region_fallback"
+    for lat, lon in [(21.3, -157.8), (22.0, -159.4), (21.9, -160.15)]:  # Honolulu, Kauai, Niihau
+        fix = geocode_fix(row(mountain="Some Glacier", state="AK", lat=lat, lon=lon), INDEX, set())
+        assert fix.precision == "region_fallback", (lat, lon)
+
+
+def test_the_shared_alaska_rule_exempts_only_the_aleutian_band():
+    assert [alaska_point_misplaced(lat, lon) for lat, lon in [
+        (51.9, -176.6), (52.9, 173.2), (54.8, -163.0), (22.0, -159.4), (21.9, -160.15), (47.6, -122.3), (54.8, -132.0),
+        (61.2, -149.9),
+    ]] == [False, False, False, True, True, True, True, False]
 
 
 def test_blank_names_do_not_count_as_distinct_cluster_names():
@@ -553,14 +578,23 @@ NPS_ROW = row(3, family="nps", lat=36.5, lon=-118.3)
 def test_snapshot_fixes_never_re_decide_owner_or_curated_rows():
     raw = {1: SEATTLE_RAINIER, 3: NPS_ROW}
     live = {1: (63.0, -151.0, "area"), 3: (36.5, -118.3, "crag")}
-    history = {1: {("latlon", "r3-review-pick-v1"), ("geocode_method", "r3-review-pick-v1")}}
+    history = {1: [("latlon", "r3-review-pick-v1"), ("geocode_method", "r3-review-pick-v1")]}
     fixes, changes, skipped = snapshot_fixes(raw, live, INDEX, history)
     assert (fixes, changes, dict(skipped)) == ([], [], {"owner_decided": 1, "labelled_elsewhere": 1})
 
 
+def test_the_rule_that_set_the_label_last_decides_whether_r3_may_relabel():
+    live = {3: (36.5, -118.3, "crag")}
+    relabelled = [("geocode_precision", "r3-v1"), ("geocode_precision", "r11-v1")]
+    fixes, changes, skipped = snapshot_fixes({3: NPS_ROW}, live, INDEX, {3: relabelled})
+    assert (fixes, changes, dict(skipped)) == ([], [], {"labelled_elsewhere": 1})
+    fixes, _, skipped = snapshot_fixes({3: NPS_ROW}, live, INDEX, {3: relabelled[::-1]})
+    assert [f.method for f in fixes] == ["nps_source"] and not skipped
+
+
 def test_snapshot_fixes_re_decide_r3s_own_rows_from_the_snapshot():
     # v2 after v1: the live point is v1's move, the labels are v1's; the decision comes from raw.
-    history = {1: {("latlon", "r3-v1"), ("geocode_precision", "r3-v1")}}
+    history = {1: [("latlon", "r3-v1"), ("geocode_precision", "r3-v1")]}
     fixes, changes, _ = snapshot_fixes({1: SEATTLE_RAINIER}, {1: (46.853, -121.76, "area")}, INDEX, history)
     assert [f.method for f in fixes] == ["gnis_summit"]
     assert changes[0].field == LOCATION and changes[0].new_value == (46.853, -121.76)
@@ -570,7 +604,7 @@ def test_snapshot_restore_is_skipped_when_another_rule_moved_the_point():
     nps = {3: NPS_ROW}
     hand = snapshot_fixes(nps, {3: (36.0, -118.0, None)}, INDEX, {})
     assert [(c.field, c.method) for c in hand[1]][0] == (LOCATION, "snapshot_point")
-    ruled = snapshot_fixes(nps, {3: (36.0, -118.0, None)}, INDEX, {3: {("latlon", "r11-v1")}})
+    ruled = snapshot_fixes(nps, {3: (36.0, -118.0, None)}, INDEX, {3: [("latlon", "r11-v1")]})
     assert [(f.precision, f.method, f.location) for f in ruled[0]] == [("unknown", "moved_by_other_rule", KEEP)]
     assert all(c.field != LOCATION for c in ruled[1])
 
@@ -631,7 +665,7 @@ def test_a_rejected_r3a_move_goes_back_untrusted_and_into_review(tmp_path, monke
             _fill(path, "correct", {"1": "no", "6": "yes"})
             async with engine.connect() as conn:
                 dry = await run_r3a_import(conn, argparse.Namespace(review_file=str(path), apply=False))
-            assert dry["rejected"]["mode"] == "dry_run"
+            assert dry["rejected"]["mode"] == "dry_run" and dry["mode"] == "dry_run"
             async with engine.begin() as conn:
                 out = await run_r3a_import(conn, argparse.Namespace(review_file=str(path), apply=True))
             assert (out["agreement"], out["rejected"]["applied"]) == (0.5, 3)
@@ -686,10 +720,13 @@ def test_task13_state_precheck_runs_and_flags_unmapped_values():
         try:
             async with engine.begin() as conn:
                 await conn.execute(text("UPDATE internal.accidents_raw SET state = 'USA' WHERE accident_id = 5"))
+                await conn.execute(text("UPDATE internal.accidents_raw SET state = 'Alberta, Canada' WHERE accident_id = 3"))
                 for statement in (s for s in sql.split(";") if "SELECT" in s):
                     assert (await conn.execute(text(statement))).all()
                 out = await run_r3_states(conn, argparse.Namespace())
             assert out["unmapped"] == [{"state": "USA", "n": 1, "class": "unmapped"}]
+            # Owner confirms every foreign classification before r3 --apply nulls those points.
+            assert out["foreign"] == [{"state": "Alberta, Canada", "n": 1, "class": "foreign:CA"}]
             assert {"state": "Alaska", "n": 1, "class": "us:AK"} in out["states"]
         finally:
             await engine.dispose()

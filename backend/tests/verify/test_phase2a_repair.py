@@ -136,7 +136,8 @@ def test_r3a_named_peaks_are_near_their_summit():
 
 
 def test_r3_no_trusted_rows_at_raw_fallback_points_and_no_alaska_text_below_55n():
-    from app.data.repair.geocode import TRUSTED_POINT_PRECISIONS, GeoRow, find_fallback_points
+    from app.data.repair.geocode import TRUSTED_POINT_PRECISIONS, GeoRow, alaska_point_misplaced, find_fallback_points
+    from app.pipelines.gnis import state_code
 
     # G6: fallback points come from the pre-repair snapshot with the step's own rule; rebuilt
     # from live coordinates, R3a's summit moves would form "clusters" of area rows by design.
@@ -150,25 +151,30 @@ def test_r3_no_trusted_rows_at_raw_fallback_points_and_no_alaska_text_below_55n(
         if (round(r["latitude"], 3), round(r["longitude"], 3)) in points
         and r["geocode_precision"] in TRUSTED_POINT_PRECISIONS
     ]
-    [ak] = fetch(
-        "SELECT count(*) AS n FROM accidents WHERE lower(trim(state)) IN ('ak', 'alaska') AND latitude < 55 "
-        "AND geocode_precision IN ('exact','crag','area','park_centroid')"
-    )
-    print({"raw_fallback_points": len(points), "trusted_at_fallback": at_fallback[:20], "ak_below_55": ak["n"]})
+    # The step's own Alaska rule (Aleutian band exempt), not a re-typed copy of it.
+    ak = [
+        r["accident_id"] for r in fetch(
+            "SELECT accident_id, state, latitude, longitude, geocode_precision FROM accidents "
+            "WHERE latitude IS NOT NULL AND longitude IS NOT NULL"
+        )
+        if state_code(r["state"]) == "AK" and r["geocode_precision"] in TRUSTED_POINT_PRECISIONS
+        and alaska_point_misplaced(r["latitude"], r["longitude"])
+    ]
+    print({"raw_fallback_points": len(points), "trusted_at_fallback": at_fallback[:20], "ak_misplaced": ak[:20]})
     # Fallback points keep their coordinates (A7/D10), so the spec's "no rows remain" reads
     # as "no row there is labelled usable as a point".
-    assert (at_fallback, ak["n"]) == ([], 0)
+    assert (at_fallback, ak) == ([], [])
 
 
 def test_r3_ambiguous_rows_pending_owner_review_are_reported():
     rows = fetch(
         "SELECT country IS NULL AS no_country, count(*) AS n FROM accidents "
-        "WHERE geocode_method IN ('gnis_ambiguous', 'gnis_state_unmatched') GROUP BY 1 ORDER BY 1"
+        "WHERE geocode_method IN ('gnis_ambiguous', 'gnis_state_unmatched', 'gnis_rejected') GROUP BY 1 ORDER BY 1"
     )
     # Untrusted and never moved; the PR records the count the owner still has to settle.
     print({"summit_review_pending": [dict(r) for r in rows]})
     [row] = fetch(
-        "SELECT count(*) AS n FROM accidents WHERE geocode_method IN ('gnis_ambiguous', 'gnis_state_unmatched') "
+        "SELECT count(*) AS n FROM accidents WHERE geocode_method IN ('gnis_ambiguous', 'gnis_state_unmatched', 'gnis_rejected') "
         "AND geocode_precision IS DISTINCT FROM 'unknown'"
     )
     assert row["n"] == 0
