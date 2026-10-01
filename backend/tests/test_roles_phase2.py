@@ -148,9 +148,10 @@ def _run_real_jobs_as_ingest(ingest_url: str, tmp_path, monkeypatch) -> None:
             await engine.dispose()
 
     r3_out, r3a, plot, ambiguous = asyncio.run(r3())
-    # Decided from the snapshot: the fixture repair's null and move above are put back.
-    assert r3_out["applied"] == 8 and r3_out["methods"] == {"nps_source": 1, "source_geocode": 1}
-    assert (r3a["exported"], plot["strata"]["park_centroid"], plot["strata"]["area"], ambiguous["exported"]) == (0, 1, 1, 0)
+    # The fixture repair above moved both points under an audited rule, so R3 keeps them but
+    # cannot vouch for them: labels only, both untrusted.
+    assert r3_out["applied"] == 6 and r3_out["methods"] == {"moved_by_other_rule": 2}
+    assert (r3a["exported"], plot["strata"]["unknown"], ambiguous["exported"]) == (0, 1, 0)
 
 
 # PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views; those belong to the

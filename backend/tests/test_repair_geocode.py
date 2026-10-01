@@ -14,15 +14,20 @@ from app.data.repair.geocode import (
     DENALI_GNIS_ID,
     KEEP,
     TRUSTED_POINT_PRECISIONS,
+    GeoFix,
     GeoRow,
     SummitIndex,
     changes_for,
+    classify_state,
+    cluster_summary,
     find_fallback_points,
     foreign_country,
     geocode_fix,
     owner_review_changes,
     plot_stratum,
+    rejection_changes,
     review_candidates,
+    snapshot_fixes,
     run_r3,
     run_r3_ambiguous_export,
     run_r3_ambiguous_import,
@@ -92,9 +97,12 @@ def test_ambiguous_name_far_from_all_candidates_is_nulled():
     assert (fix.location, fix.precision, fix.method, fix.country) == (None, "unknown", "gnis_ambiguous", None)
 
 
-def test_state_from_a_bad_geocode_falls_back_to_a_unique_national_match():
-    fix = geocode_fix(row(mountain="Mount McKinley", state="CA", lat=37.8, lon=-122.0), INDEX, set())
-    assert (fix.location, fix.precision, fix.method) == ((63.069, -151.007), "area", "gnis_summit_state_mismatch")
+def test_a_summit_unique_in_one_other_state_is_reviewed_not_moved():
+    # I2: the state or the point is wrong and nothing says which, even with one candidate.
+    ca = row(mountain="Mount McKinley", state="CA", lat=37.8, lon=-122.0)
+    fix = geocode_fix(ca, INDEX, set())
+    assert (fix.location, fix.precision, fix.method, fix.country) == (KEEP, "unknown", "gnis_state_unmatched", "US")
+    assert [s.gnis_id for s in review_candidates(ca, INDEX)] == [DENALI_GNIS_ID]
 
 
 def test_state_fallback_never_uses_a_non_unique_national_match():
@@ -219,7 +227,7 @@ def test_owner_review_moves_only_to_a_listed_candidate():
 def test_cli_registers_the_geocode_steps():
     assert {
         "r3", "r3-clusters", "r3a-export", "r3a-import", "r3-plot-export", "r3-plot-import",
-        "r3-ambiguous-export", "r3-ambiguous-import",
+        "r3-ambiguous-export", "r3-ambiguous-import", "r3-states",
     } <= set(STEPS)
 
 
@@ -480,6 +488,209 @@ def test_r3_decides_from_the_snapshot_so_hand_edits_and_v1_output_never_feed_it(
                 v2 = await run_r3(conn, argparse.Namespace(apply=False))
             assert v2["methods"] == v1["methods"]
             assert v2["proposed"]["latlon=moved"] == 2 and v2["proposed"]["latlon=null"] == 1
+        finally:
+            await engine.dispose()
+
+    with migrated_db(seed_sql=GEO_SEED) as name:
+        asyncio.run(scenario(sa_url(name)))
+
+
+def test_provinces_and_mexican_states_are_foreign_on_the_state_field_only():
+    for state, code in [("British Columbia", "CA"), ("BC", "CA"), ("Yukon", "CA"), ("Québec", "CA"),
+                        ("Sonora", "MX"), ("Nuevo León", "MX"), ("Canada", "CA")]:
+        fix = geocode_fix(row(mountain="Some Peak", state=state, lat=47.0, lon=-120.0), INDEX, set())
+        assert (fix.location, fix.method, fix.country) == (None, "foreign_place", code), state
+    # The same words in a mountain name with a US state stay US.
+    for mountain, state in [("Canada del Oro", "AZ"), ("Cañada del Oro", "Arizona"), ("Ontario Peak", "CA"),
+                            ("Sonora Peak", "CA"), ("Yukon River bluffs", "AK")]:
+        assert geocode_fix(row(mountain=mountain, state=state, lat=32.4, lon=-110.8), INDEX, set()).method != "foreign_place"
+    assert foreign_country("El Potrero Chico", None) == "MX"
+    assert foreign_country("Potrero Chico", "Nuevo Leon") == "MX"
+
+
+def test_a_state_that_is_not_a_us_state_never_scopes_a_name_move():
+    for state in ("USA", "Unknown", "Wash."):
+        fix = geocode_fix(row(mountain="Mt. Rainier", state=state, lat=47.6, lon=-122.2), INDEX, set())
+        assert fix.location is KEEP and fix.method != "gnis_summit", state
+        far = geocode_fix(row(mountain="Bald Mountain", state=state, lat=34.0, lon=-118.2), INDEX, set())
+        assert far.location is KEEP, state
+
+
+def test_classify_state_flags_values_state_code_cannot_map():
+    assert [classify_state(v) for v in (None, "  ", "Colorado", "wa", "British Columbia", "USA")] == [
+        "blank", "blank", "us:CO", "us:WA", "foreign:CA", "unmapped",
+    ]
+
+
+def test_aleutian_points_are_exempt_from_the_55n_rule():
+    adak = geocode_fix(row(mountain="Some Glacier", state="AK", lat=51.9, lon=-176.6), INDEX, set())
+    attu = geocode_fix(row(mountain="Some Glacier", state="AK", lat=52.9, lon=173.2), INDEX, set())
+    assert (adak.precision, attu.precision) == ("area", "area")
+    honolulu = geocode_fix(row(mountain="Some Glacier", state="AK", lat=21.3, lon=-157.8), INDEX, set())
+    assert honolulu.precision == "region_fallback"
+
+
+def test_blank_names_do_not_count_as_distinct_cluster_names():
+    rows = [row(i, mountain=m, lat=39.739, lon=-104.99) for i, m in enumerate([None, "", "  ", "Place A", "Place B"])]
+    assert find_fallback_points(rows) == set()
+    assert find_fallback_points([*rows, row(9, mountain="Place C", lat=39.739, lon=-104.99)]) == {(39.739, -104.99)}
+
+
+def test_cluster_summary_reports_family_counts_and_no_names():
+    rows = [row(i, family="aac" if i < 4 else "nps", mountain=f"Place {i}", lat=39.739, lon=-104.99) for i in range(6)]
+    out = cluster_summary([*rows, row(50, mountain="Elsewhere", lat=40.0, lon=-105.0)])
+    assert out == {
+        "fallback_points": 1, "rows_at_fallback_points": 6,
+        "points": {"39.739,-104.99": {"rows": 6, "families": {"aac": 4, "nps": 2}}},
+    }
+    assert "Place" not in str(out)
+
+
+SEATTLE_RAINIER = row(1, mountain="Mt. Rainier", state="WA", lat=47.6, lon=-122.2)
+NPS_ROW = row(3, family="nps", lat=36.5, lon=-118.3)
+
+
+def test_snapshot_fixes_never_re_decide_owner_or_curated_rows():
+    raw = {1: SEATTLE_RAINIER, 3: NPS_ROW}
+    live = {1: (63.0, -151.0, "area"), 3: (36.5, -118.3, "crag")}
+    history = {1: {("latlon", "r3-review-pick-v1"), ("geocode_method", "r3-review-pick-v1")}}
+    fixes, changes, skipped = snapshot_fixes(raw, live, INDEX, history)
+    assert (fixes, changes, dict(skipped)) == ([], [], {"owner_decided": 1, "labelled_elsewhere": 1})
+
+
+def test_snapshot_fixes_re_decide_r3s_own_rows_from_the_snapshot():
+    # v2 after v1: the live point is v1's move, the labels are v1's; the decision comes from raw.
+    history = {1: {("latlon", "r3-v1"), ("geocode_precision", "r3-v1")}}
+    fixes, changes, _ = snapshot_fixes({1: SEATTLE_RAINIER}, {1: (46.853, -121.76, "area")}, INDEX, history)
+    assert [f.method for f in fixes] == ["gnis_summit"]
+    assert changes[0].field == LOCATION and changes[0].new_value == (46.853, -121.76)
+
+
+def test_snapshot_restore_is_skipped_when_another_rule_moved_the_point():
+    nps = {3: NPS_ROW}
+    hand = snapshot_fixes(nps, {3: (36.0, -118.0, None)}, INDEX, {})
+    assert [(c.field, c.method) for c in hand[1]][0] == (LOCATION, "snapshot_point")
+    ruled = snapshot_fixes(nps, {3: (36.0, -118.0, None)}, INDEX, {3: {("latlon", "r11-v1")}})
+    assert [(f.precision, f.method, f.location) for f in ruled[0]] == [("unknown", "moved_by_other_rule", KEEP)]
+    assert all(c.field != LOCATION for c in ruled[1])
+
+
+def test_a_rejected_move_returns_to_its_snapshot_point_untrusted():
+    assert [(c.field, c.new_value) for c in rejection_changes(SEATTLE_RAINIER)] == [
+        (LOCATION, (47.6, -122.2)), ("geocode_precision", "unknown"), ("geocode_method", "gnis_rejected"), ("country", "US"),
+    ]
+    assert GeoFix(1, KEEP, "unknown", "gnis_rejected", "US").precision not in TRUSTED_POINT_PRECISIONS
+
+
+@requires_pg
+def test_owner_decisions_survive_r3_reruns_and_a_v2(tmp_path, monkeypatch):
+    monkeypatch.setattr(review, "REVIEW_DIR", tmp_path)
+
+    async def scenario(url: str) -> None:
+        engine = create_async_engine(url)
+        try:
+            async with engine.begin() as conn:
+                await run_r3(conn, argparse.Namespace(apply=True))
+            async with engine.connect() as conn:
+                await run_r3_ambiguous_export(conn, argparse.Namespace(out=None, overwrite=False))
+            path = tmp_path / "r3_ambiguous.csv"
+            _fill(path, "gnis_id", {"4": str(DENALI_GNIS_ID)})
+            async with engine.begin() as conn:
+                await run_r3_ambiguous_import(conn, argparse.Namespace(review_file=str(path), apply=True))
+            async with engine.begin() as conn:
+                again = await run_r3(conn, argparse.Namespace(apply=True))
+            monkeypatch.setattr(geocode, "R3_VERSION", "r3-v2")
+            async with engine.connect() as conn:
+                v2 = await run_r3(conn, argparse.Namespace(apply=False))
+                got = await _rows(
+                    conn, "SELECT latitude, longitude, geocode_precision, geocode_method FROM accidents WHERE accident_id = 4"
+                )
+            # C1: the rerun used to put row 4 back at its old point while it kept a trusted label.
+            assert got == [(63.069, -151.007, "area", "owner_summit")]
+            assert (again["applied"], again["skipped"]) == (0, {"owner_decided": 1})
+            assert v2["skipped"] == {"owner_decided": 1} and "gnis_ambiguous" not in v2["methods"]
+        finally:
+            await engine.dispose()
+
+    with migrated_db(seed_sql=GEO_SEED) as name:
+        asyncio.run(scenario(sa_url(name)))
+
+
+@requires_pg
+def test_a_rejected_r3a_move_goes_back_untrusted_and_into_review(tmp_path, monkeypatch):
+    monkeypatch.setattr(review, "REVIEW_DIR", tmp_path)
+
+    async def scenario(url: str) -> None:
+        engine = create_async_engine(url)
+        try:
+            async with engine.begin() as conn:
+                await run_r3(conn, argparse.Namespace(apply=True))
+            async with engine.connect() as conn:
+                await run_r3a_export(conn, argparse.Namespace(out=None, overwrite=False))
+            path = tmp_path / "r3a_moves.csv"
+            _fill(path, "correct", {"1": "no", "6": "yes"})
+            async with engine.connect() as conn:
+                dry = await run_r3a_import(conn, argparse.Namespace(review_file=str(path), apply=False))
+            assert dry["rejected"]["mode"] == "dry_run"
+            async with engine.begin() as conn:
+                out = await run_r3a_import(conn, argparse.Namespace(review_file=str(path), apply=True))
+            assert (out["agreement"], out["rejected"]["applied"]) == (0.5, 3)
+            async with engine.connect() as conn:
+                got = await _rows(
+                    conn, "SELECT latitude, longitude, geocode_precision, geocode_method FROM accidents WHERE accident_id = 1"
+                )
+                exported = await run_r3_ambiguous_export(conn, argparse.Namespace(out=None, overwrite=False))
+            assert got == [(47.6, -122.2, "unknown", "gnis_rejected")]
+            assert exported["exported"] == 2
+            async with engine.begin() as conn:
+                again = await run_r3(conn, argparse.Namespace(apply=True))
+            assert again["applied"] == 0 and again["skipped"] == {"owner_decided": 1}
+        finally:
+            await engine.dispose()
+
+    with migrated_db(seed_sql=GEO_SEED) as name:
+        asyncio.run(scenario(sa_url(name)))
+
+
+@requires_pg
+def test_rows_labelled_outside_r3_are_skipped_and_counted():
+    async def scenario(url: str) -> None:
+        engine = create_async_engine(url)
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text("UPDATE accidents SET geocode_precision = 'crag', geocode_method = 'curated' WHERE accident_id = 1"))
+            async with engine.begin() as conn:
+                out = await run_r3(conn, argparse.Namespace(apply=True))
+            async with engine.connect() as conn:
+                got = await _rows(conn, "SELECT latitude, longitude, geocode_precision, geocode_method FROM accidents WHERE accident_id = 1")
+            assert out["skipped"] == {"labelled_elsewhere": 1}
+            assert got == [(47.6, -122.2, "crag", "curated")]
+        finally:
+            await engine.dispose()
+
+    with migrated_db(seed_sql=GEO_SEED) as name:
+        asyncio.run(scenario(sa_url(name)))
+
+
+@requires_pg
+def test_task13_state_precheck_runs_and_flags_unmapped_values():
+    from pathlib import Path
+
+    from app.data.repair.geocode import run_r3_states
+
+    path = Path(__file__).resolve().parents[1] / "db" / "checks" / "p2a2_precheck.sql"
+    sql = "\n".join(line for line in path.read_text().splitlines() if not line.startswith("--"))
+
+    async def scenario(url: str) -> None:
+        engine = create_async_engine(url)
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text("UPDATE internal.accidents_raw SET state = 'USA' WHERE accident_id = 5"))
+                for statement in (s for s in sql.split(";") if "SELECT" in s):
+                    assert (await conn.execute(text(statement))).all()
+                out = await run_r3_states(conn, argparse.Namespace())
+            assert out["unmapped"] == [{"state": "USA", "n": 1, "class": "unmapped"}]
+            assert {"state": "Alaska", "n": 1, "class": "us:AK"} in out["states"]
         finally:
             await engine.dispose()
 

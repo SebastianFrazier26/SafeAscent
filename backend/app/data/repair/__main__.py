@@ -21,6 +21,7 @@ STEPS: dict[str, Step] = {
     "r1-import": severity.run_r1_import,
     "r3": geocode.run_r3,
     "r3-clusters": geocode.run_r3_clusters,
+    "r3-states": geocode.run_r3_states,
     "r3a-export": geocode.run_r3a_export,
     "r3a-import": geocode.run_r3a_import,
     "r3-plot-export": geocode.run_r3_plot_export,
