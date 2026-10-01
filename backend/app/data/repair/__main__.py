@@ -28,6 +28,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--apply", action="store_true", help="write changes (default: dry run)")
     parser.add_argument("--review-file", help="decisions CSV for *-import steps")
     parser.add_argument("--out", help="output path for *-export steps")
+    parser.add_argument(
+        "--overwrite", action="store_true", help="*-export: replace an existing file (it may hold filled decisions)"
+    )
     return parser
 
 

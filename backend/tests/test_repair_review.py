@@ -102,3 +102,34 @@ def test_read_decisions_rejects_duplicate_and_non_numeric_keys(tmp_path):
     path.write_text("accident_id,agree\n1,yes\n²,no\n")
     with pytest.raises(ValueError, match="k.csv row 2: invalid accident_id"):
         read_decisions(path, key="accident_id", decision_column="agree", allowed=frozenset({"yes", "no"}))
+
+
+def test_export_refuses_to_replace_an_existing_file_unless_asked(tmp_path):
+    rows = [{"accident_id": i} for i in range(5)]
+    path = tmp_path / "filled.csv"
+    path.write_text("accident_id,agree\n1,yes\n", encoding="utf-8")
+    with pytest.raises(FileExistsError, match="--overwrite"):
+        export_sample(rows, n=3, seed=1, path=path, columns=["accident_id"], decision_column="agree")
+    with pytest.raises(FileExistsError):
+        export_stratified(
+            rows, stratum=lambda r: "all", quotas={"all": 3}, seed=1, path=path,
+            columns=["accident_id"], decision_column="agree",
+        )
+    assert path.read_text(encoding="utf-8") == "accident_id,agree\n1,yes\n"
+    export_sample(rows, n=3, seed=1, path=path, columns=["accident_id"], decision_column="agree", overwrite=True)
+    assert path.read_text(encoding="utf-8").splitlines()[0] == "accident_id,agree"
+
+
+def test_cli_overwrite_flag_defaults_off():
+    from app.data.repair.__main__ import build_parser
+
+    assert build_parser().parse_args(["r1-export"]).overwrite is False
+    assert build_parser().parse_args(["r1-export", "--overwrite"]).overwrite is True
+
+
+def test_read_decisions_accepts_an_excel_utf8_bom(tmp_path):
+    path = tmp_path / "bom.csv"
+    path.write_bytes("﻿accident_id,agree\n7,yes\n".encode("utf-8"))
+    assert read_decisions(path, key="accident_id", decision_column="agree", allowed=frozenset({"yes", "no"})) == {
+        7: "yes"
+    }

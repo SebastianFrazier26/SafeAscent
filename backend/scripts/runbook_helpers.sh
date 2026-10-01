@@ -132,3 +132,19 @@ ANALYST_PSQL() { ( _need_target && _load ./.env.analyst || exit 1
 VERIFY() { ( _need_target && _load ./.env.analyst || exit 1
   url="$(_retarget "${ANALYST_DATABASE_URL:-}")" || exit 1
   VERIFY_DATABASE_URL="$url" uv run pytest -m db "$@" ); }
+
+# save_once FILE CMD...: runs CMD and keeps its stdout in FILE, refusing if FILE exists.
+# Runbook evidence (a pre-apply dry run, a pre-check read) is compared later; re-running
+# a step in a fresh session must not replace it with post-apply output (final re-review
+# 2a-1 m1, m6). A failed or empty run leaves no FILE behind, so the step can be retried.
+save_once() {
+  [ -n "${1:-}" ] && [ "$#" -ge 2 ] || { echo "usage: save_once FILE CMD..." >&2; return 1; }
+  local _dest="$1" _tmp="$1.partial.$$"
+  shift
+  [ ! -e "$_dest" ] || { echo "$_dest exists: not overwriting (delete it deliberately to redo)" >&2; return 1; }
+  if "$@" > "$_tmp" && [ -s "$_tmp" ]; then
+    mv "$_tmp" "$_dest" && cat "$_dest"
+  else
+    rm -f "$_tmp"; echo "save_once: command failed or printed nothing; $_dest not written" >&2; return 1
+  fi
+}

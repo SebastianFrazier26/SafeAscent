@@ -3598,11 +3598,37 @@ Docs: `CHANGELOG.md` entry (heading from `printf '### Phase 2a accident repair, 
 
 ### Task 12: OWNER/AGENT RUNBOOK — apply PR 2a-1 (R2/R1, R9) on a branch, hand checks, prod
 
-Final review 2a-1 (2026-09-30) rewrote this runbook: C1–C4, I1–I5, M1, M2, M4–M6.
+Final review 2a-1 (2026-09-30) rewrote this runbook (C1–C4, I1–I5, M1, M2, M4–M6); the re-review (2026-10-01) added N1–N3 and m1–m6.
 
-Every connection is TLS verify-full (`verify_full_url` for psql, `connect_args_for` via `tests/verify/_db.fetch` and `db.ingest_engine` for Python). Every repair runs as `ingest` and prints counts only. Neon branch creation and the snapshot can be run by an agent under the owner's CLI authorization. Three things need the owner: the hand checks (Step 4), the sign-off on the unverified counts (Step 5), and authorizing prod (Step 6).
+Every connection is TLS verify-full (`verify_full_url` for psql, `connect_args_for` via `tests/verify/_db.fetch` and `db.ingest_engine` for Python). Every repair runs as `ingest` and prints counts only. Neon branch creation and the snapshot can be run by an agent under the owner's CLI authorization. Three things need the owner: the hand checks (Step 4b), the sign-off on the unverified counts (Step 5), and authorizing prod (Step 6).
 
-**Shell state.** Run Steps 0–6 in one terminal session. `TARGET_HOST`, `B`, `BRANCH_HOST` and the helper functions live only in the shell that set them. In a new shell, re-run Step 0, then set `TARGET_HOST` again for the step you are on: the branch host for Steps 1–5, the literal `production` for Step 6. The helpers refuse while `TARGET_HOST` is unset, and it never defaults to prod. A `${VAR:?}` inside `$(…)` stops only the command substitution, not the block, so each guard below sits on its own line or opens its subshell.
+**Shell state.** `TARGET_HOST`, `B`, `BRANCH_HOST` and the helper functions live only in the shell that set them. An agent whose tool starts a fresh shell per command is in a new shell on every block. A `${VAR:?}` inside `$(…)` stops only the command substitution, not the block, so each guard below sits on its own line or opens its subshell. The helpers refuse while `TARGET_HOST` is unset, and it never defaults to prod. In a new shell, run one of these re-entry blocks first, then only the block you are on. Never re-run an export (Step 4a) or a creation (Step 1's `neonctl branches create`, 6d).
+
+**Re-enter the rehearsal branch (Steps 1–5).** This repeats Step 1's prod-host guard; it never creates anything.
+
+```bash
+cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+. scripts/runbook_helpers.sh
+unset TARGET_HOST
+B=p2a-1-rehearsal
+BRANCH_HOST="$(branch_host "${B:?}")"
+( set -a; . ./.env.owner; set +a
+  [ -n "${BRANCH_HOST-}" ] || { echo 'BRANCH_HOST is not set: re-run the line that sets it' >&2; exit 1; }
+  case "$OWNER_DATABASE_URL" in *"@${BRANCH_HOST}/"* | *"@${BRANCH_HOST}?"* | *"@${BRANCH_HOST}:"*) echo 'BRANCH_HOST is production: stop' >&2; exit 1 ;; esac
+  echo "branch host ok" ) && export TARGET_HOST="$BRANCH_HOST"
+[ -n "${TARGET_HOST-}" ] && [ "$TARGET_HOST" != production ] && echo "target is the rehearsal branch"
+```
+
+Expected: `branch host ok` and `target is the rehearsal branch`. Anything else: stop; `TARGET_HOST` stays unset.
+
+**Re-enter prod (Step 6 only, after the owner's go-ahead).**
+
+```bash
+cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+. scripts/runbook_helpers.sh
+# PRODUCTION
+export TARGET_HOST=production
+```
 
 - [ ] **Step 0 (owner/agent): Tools and helpers**
 
@@ -3625,7 +3651,7 @@ Homebrew's libpq is keg-only, so a login shell has no `psql`. Sourcing the helpe
 
 ```bash
 B=p2a-1-rehearsal
-neonctl branches create --project-id still-morning-74008008 --name "${B:?}" --parent production --output json \
+neonctl branches create --project-id still-morning-74008008 --name "${B:?}" --parent production --no-secrets --output json \
   | python3 -c 'import json,sys; b=json.load(sys.stdin)["branch"]; print(b["id"], b["name"], b["parent_id"])'
 BRANCH_HOST="$(branch_host "${B:?}")"
 ( set -a; . ./.env.owner; set +a
@@ -3639,6 +3665,8 @@ Expected:
 - The parent is `br-restless-bar-ajw5zy4b` (`production`).
 - Then `branch host ok` and `target is the rehearsal branch`.
 - Anything else: stop. `TARGET_HOST` stays unset, so every helper refuses.
+- `--no-secrets` keeps the owner password out of the JSON stream (neonctl 6.0.0, read 2026-10-01). With the default compute, the JSON is `{"branch": …, "endpoints": …}`, so `["branch"]` still resolves. Do not add `--no-compute`.
+- Run this block once. If the branch already exists, use the re-entry block above instead.
 
 ```bash
 MIG current
@@ -3652,26 +3680,19 @@ If `MIG current` shows any other revision, stop: the foundations runbook (Task 9
 
 - [ ] **Step 2 (owner/agent): Confirm the source vocabulary, the raw snapshot, the AAC id schemes, and that no dates lie in the future**
 
-R1/R2 touch only raw-snapshot rows, and `source_family` refuses unknown values. The scheme query mirrors `dates.source_scheme`: whitespace-stripped and lower-cased, `^[0-9]{8}$` is `eight_digit`, and a trailing `[0-9]+[a-z]*$` (ASCII, as `_TRAILING_ID`, so `88a`/`88b`/`88t` count) is `sequence`.
+R1/R2 touch only raw-snapshot rows, and `source_family` refuses unknown values. `db/checks/p2a1_precheck.sql` holds the read; each output row starts with its label (`source`, `live_raw`, `aac_total`, `scheme`, `severity`). It normalises `source`, `source_id` and `injury_severity` with `regexp_replace(…, '^\s+|\s+$', '', 'g')`, which strips all whitespace like Python's `.strip()` (plain `btrim` strips spaces only, so `'\taac'` would be missed). The scheme query mirrors `dates.source_scheme`: lower-cased, `^[0-9]{8}$` is `eight_digit`, and a trailing `[0-9]+[a-z]*$` (ASCII, as `_TRAILING_ID`, so `88a`/`88b`/`88t` count) is `sequence`. `tests/test_p2a1_precheck_sql.py` holds the SQL and the Python rules to the same counts.
 
 ```bash
-ANALYST_PSQL -At -c "SELECT source, count(*) FROM accidents GROUP BY 1 ORDER BY 1" \
-  -c "SELECT (SELECT count(*) FROM accidents) AS live, (SELECT count(*) FROM internal.accidents_raw) AS raw" \
-  -c "SELECT count(*) AS aac_total, count(source_id) AS with_source_id FROM internal.accidents_raw WHERE lower(btrim(source)) LIKE 'aac%'" \
-  -c "WITH k AS (SELECT lower(regexp_replace(coalesce(source_id, ''), '^\s+|\s+$', '', 'g')) AS key FROM internal.accidents_raw WHERE lower(btrim(source)) LIKE 'aac%') SELECT CASE WHEN key ~ '^[0-9]{8}$' THEN 'eight_digit' WHEN key ~ '[0-9]+[a-z]*$' THEN 'sequence' ELSE 'unparseable' END AS scheme, count(*) AS n, count(*) FILTER (WHERE key !~ '^[0-9]{8}$' AND substring(key from '([0-9]+)[a-z]*$')::numeric > 2683) AS base_over_2683 FROM k GROUP BY 1 ORDER BY 1" \
-  -c "SELECT source, count(*) FROM accidents WHERE date > (now() AT TIME ZONE 'UTC')::date GROUP BY 1 ORDER BY 1"
+save_once ../data/review/p2a1_step2_branch.txt ANALYST_PSQL -v ON_ERROR_STOP=1 -At -f db/checks/p2a1_precheck.sql
+ANALYST_PSQL -At -c "SELECT source, count(*) FROM accidents WHERE date > (now() AT TIME ZONE 'UTC')::date GROUP BY 1 ORDER BY 1"
 ```
 
-Then read the severity vocabulary (R9 refuses any value it does not map). The `regexp_replace` strips all whitespace, as Python's `.strip()` does; plain `trim` strips spaces only.
-
-```bash
-ANALYST_PSQL -At -c "SELECT source, lower(regexp_replace(coalesce(injury_severity, ''), '^\s+|\s+$', '', 'g')), count(*) FROM accidents GROUP BY 1, 2 ORDER BY 1, 2"
-```
+`save_once` (in the helpers) keeps the output in `p2a1_step2_branch.txt` and refuses to replace it, so 6b can diff prod against this exact read. The future-date query depends on the run date, so it is not saved or diffed.
 
 Expected (the figures are from reads on 2026-09-30):
 - **Sources.** Every source maps to `aac`, `avalanche` or `nps` per `sources.py`. The severity read gave aac 2,763, avalanche 1,372 and nps 655. An unmapped source means stop: the agent extends `source_family` in a reviewed commit.
 - **Snapshot.** `raw` equals `live` before plan 3's R11 load. Afterwards, `live − raw` is the number of refresh rows that R1/R2 will skip.
-- **AAC totals.** `aac_total` is 2,763, from the severity read: 1,236 serious + 909 minor + 616 fatal + 2 blank.
+- **AAC totals.** The `aac_total` row is `aac_total|<rows>|<with source_id>`; rows is 2,763, from the severity read: 1,236 serious + 909 minor + 616 fatal + 2 blank.
 - **Schemes.**
   - The three scheme rows sum to `aac_total` by construction.
   - `eight_digit` is 68 (the 2019NNNN scheme).
@@ -3679,21 +3700,21 @@ Expected (the figures are from reads on 2026-09-30):
   - The earlier read ("1–2683 with a/b/t suffixes, 2,763 rows") counted every AAC row. So 2,695 is derived, not read directly: this step is its first direct read.
   - Stop, and have the agent reconcile before any apply, if any of these holds: `aac_total ≠ 2,763`, `eight_digit ≠ 68`, or `unparseable > 10`.
   - Record all three counts in the PR.
-- **`base_over_2683`** is 0 on the `sequence` row. A sequence base above 2683 means ids outside the known 1–2683 run. Stop, and have the agent inspect them before R1 treats them as neighbours.
-- **Future dates.** The future-date query returns no rows (future means after the current UTC day at run time). Any row: stop and raise it with the owner. R1 re-dates only AAC rows from 2019 on, so a future non-AAC row would stay in with `day` precision.
+- **`base_over_2683`** (the last column of the `scheme|sequence|…` row) is 0. A sequence base above 2683 means ids outside the known 1–2683 run. Stop, and have the agent inspect them before R1 treats them as neighbours.
+- **Future dates.** The inline future-date query returns no rows (future means after the current UTC day at run time). Any row: stop and raise it with the owner. R1 re-dates only AAC rows from 2019 on, so a future non-AAC row would stay in with `day` precision.
 - **Severities.** The only values are `fatal`, `serious`, `minor`, `near_miss`, blank/NULL, `unknown`, `n/a` and `none`. The 2026-09-30 read: aac serious/minor/fatal plus 2 blanks; avalanche minor/fatal/serious/near_miss; nps fatal. Any other value: stop, and the agent maps it in `severity.py` in a reviewed commit.
 
 - [ ] **Step 3 (owner/agent): Dry run, then apply on the branch**
 
 ```bash
-ING r9 | tee ../data/review/p2a1_r9_dry_branch.json
-ING r2r1 | tee ../data/review/p2a1_r2r1_dry_branch.json
+save_once ../data/review/p2a1_r9_dry_branch.json ING r9
+save_once ../data/review/p2a1_r2r1_dry_branch.json ING r2r1
 ING r2r1 --apply
 ING r2r1 --apply
 ING r9 --apply
 ```
 
-`data/review/` is gitignored, and these files hold counts only. Step 6 compares prod's dry runs against them.
+`data/review/` is gitignored, and these files hold counts only. Step 6 compares prod's dry runs against them. `save_once` refuses an existing file, so re-running this step after an apply can never replace the pre-apply dry run; a refusal there is expected, and the apply lines that follow are idempotent.
 
 **Runtime.** Each `--apply` runs in one transaction and makes several round trips per change over the Mac-to-Neon link. The reviewer's estimate is about 30k round trips for `r2r1` and 19k for `r9`, i.e. roughly 10–25 minutes each; this was not measured. Run each apply without a short tool timeout. Killing one is safe, because the transaction rolls back, but the step has to be rerun.
 
@@ -3704,12 +3725,16 @@ Expected:
 - The first apply shows `applied > 0`.
 - The second apply is the idempotency check. The correct outcome is `applied: 0`, with every other change counted as `already_recorded` or `unchanged`. `unchanged > 0` is expected: an unverified row with no bound proposes `year_lo`/`year_hi = NULL` over a value that is already NULL, and that counts as `unchanged` on every run. Any `applied > 0` on the second run means stop.
 
-- [ ] **Step 4 (owner): Hand checks**
+- [ ] **Step 4a (agent): Export the hand-check samples — run once, never again**
 
 ```bash
 ING r1-export --out ../data/review/r1_year_check.csv
 ING r9-export --out ../data/review/severity_check.csv
 ```
+
+Expected: `exported` 40 and 50 (or the pool size if smaller). Both exports refuse an existing file (`FileExistsError … pass --overwrite`): the file may already hold the owner's decisions. A refusal here means 4a already ran. Go to 4b/4c, and never pass `--overwrite` unless the owner has said in writing that the filled files are to be discarded.
+
+- [ ] **Step 4b (owner): Fill in the hand checks**
 
 Open both CSVs in a spreadsheet. Each row carries `source_id`, `location` and `mountain`, so the report can be found.
 
@@ -3720,7 +3745,9 @@ Open both CSVs in a spreadsheet. Each row carries `source_id`, `location` and `m
   - The export's `instructions` field says the same (`severity.R1_CHECK_INSTRUCTIONS`).
 - **R9.** Read the AAC report and set `agree` to `yes`/`no` for the stored severity.
 
-Save both files **under these names**. Step 6 imports these exact files on prod, and no later step writes to them. Then run:
+Save both files **under the same names**. A spreadsheet's "CSV UTF-8" byte-order mark is fine (the import reads `utf-8-sig`). Step 6 imports these exact files on prod, and no later step writes to them. Record in the PR how many R1 rows were `no` only because the report states no accident year. If those rows alone take R1 agreement below 0.90, escalate to the owner (re-sample, or date the accident through neighbouring reports) rather than calling it an R1 rule failure.
+
+- [ ] **Step 4c (owner/agent): Import the filled CSVs** — the only half to re-run in a new shell
 
 ```bash
 ING r1-import --review-file ../data/review/r1_year_check.csv
@@ -3750,7 +3777,9 @@ This is an accuracy call. By ruling, the 8-digit 2019NNNN scheme (68 rows, dated
 
 - [ ] **Step 6 (owner authorizes): Prod**
 
-Do not repeat Steps 1–5. They create a branch, re-target the shell, and overwrite the owner's filled CSVs. Run only the blocks below, in order. Pick a time well clear of the 02:00 UTC nightly, which writes `historical_predictions`.
+Do not repeat Steps 1–5. They create a branch and re-target the shell, and Step 4a's exports belong to the branch only. Run only the blocks below, in order. Pick a time well clear of the 02:00 UTC nightly, which writes `historical_predictions`.
+
+**STOP — agent: wait for the owner's written go-ahead for prod in this session before running anything below.** The Step 5 sign-off in the PR is not that go-ahead; it is a separate, explicit message ("go ahead with prod"). Without it, end here and report.
 
 **6a. Target prod and check the schema, then apply the grants.**
 
@@ -3765,14 +3794,23 @@ OWNER_PSQL -q -f db/roles/verify_roles_phase2.sql
 
 Expected: the same as Step 1, starting with `0004_phase2a_foundation (head)`.
 
-**6b. Pre-checks.** Run Step 2's two `ANALYST_PSQL` blocks unchanged (`TARGET_HOST` is now `production`). Every count must equal the branch's, and the future-date query must return no rows. Otherwise stop.
+**6b. Pre-checks, diffed against the branch.**
+
+```bash
+# PRODUCTION
+save_once ../data/review/p2a1_step2_prod.txt ANALYST_PSQL -v ON_ERROR_STOP=1 -At -f db/checks/p2a1_precheck.sql
+diff ../data/review/p2a1_step2_branch.txt ../data/review/p2a1_step2_prod.txt && echo "pre-checks match the branch"
+ANALYST_PSQL -At -c "SELECT source, count(*) FROM accidents WHERE date > (now() AT TIME ZONE 'UTC')::date GROUP BY 1 ORDER BY 1"
+```
+
+Expected: `pre-checks match the branch`, and the future-date query returns no rows. Otherwise stop.
 
 **6c. Dry runs.** Each must match the branch byte for byte, or stop.
 
 ```bash
 # PRODUCTION
-ING r9 > ../data/review/p2a1_r9_dry_prod.json && cmp ../data/review/p2a1_r9_dry_branch.json ../data/review/p2a1_r9_dry_prod.json && echo "r9 dry run matches the branch"
-ING r2r1 > ../data/review/p2a1_r2r1_dry_prod.json && cmp ../data/review/p2a1_r2r1_dry_branch.json ../data/review/p2a1_r2r1_dry_prod.json && echo "r2r1 dry run matches the branch"
+save_once ../data/review/p2a1_r9_dry_prod.json ING r9 >/dev/null && cmp ../data/review/p2a1_r9_dry_branch.json ../data/review/p2a1_r9_dry_prod.json && echo "r9 dry run matches the branch"
+save_once ../data/review/p2a1_r2r1_dry_prod.json ING r2r1 >/dev/null && cmp ../data/review/p2a1_r2r1_dry_branch.json ../data/review/p2a1_r2r1_dry_prod.json && echo "r2r1 dry run matches the branch"
 ```
 
 A difference means prod `accidents` changed after the branch was made. Stop, then recreate the rehearsal from current `production` and redo Steps 1–5.
@@ -3781,7 +3819,7 @@ A difference means prod `accidents` changed after the branch was made. Stop, the
 
 ```bash
 # PRODUCTION snapshot
-neonctl branches create --project-id still-morning-74008008 --name pre-2a-1 --parent production --output json \
+neonctl branches create --project-id still-morning-74008008 --name pre-2a-1 --parent production --no-secrets --output json \
   | python3 -c 'import json,sys; b=json.load(sys.stdin)["branch"]; print(b["id"], b["name"], b["parent_id"], b["created_at"])'
 ```
 
@@ -3804,21 +3842,26 @@ Expected: the same as Step 3. The second `r2r1 --apply` shows `applied: 0`, and 
 # PRODUCTION
 ING r1-export --out ../data/review/r1_year_check_prod.csv
 ING r9-export --out ../data/review/severity_check_prod.csv
-ids() { python3 -c 'import csv,sys; print("\n".join(sorted(r["accident_id"] for r in csv.DictReader(open(sys.argv[1], newline="", encoding="utf-8")))))' "$1"; }
+ids() { python3 -c 'import csv,sys; print("\n".join(sorted(r["accident_id"] for r in csv.DictReader(open(sys.argv[1], newline="", encoding="utf-8-sig")))))' "$1"; }
 diff <(ids ../data/review/r1_year_check.csv) <(ids ../data/review/r1_year_check_prod.csv) && echo "r1 ids match"
 diff <(ids ../data/review/severity_check.csv) <(ids ../data/review/severity_check_prod.csv) && echo "r9 ids match"
 ```
 
 Expected: `r1 ids match` and `r9 ids match`. The seeds and the data are identical, so the samples are too.
 - On any diff, stop. Do not import the branch CSVs.
-- Instead, the owner hand-checks the `_prod` files, and those are imported in 6g.
+- Instead, the owner hand-checks the `_prod` files, and 6g imports those (the commented lines).
+- This diff is the real guard: the import's `refuse_ineligible` checks the whole re-dated pool, not the sample, so a branch CSV would still import after a mismatch.
 
-**6g. Import the owner's filled CSVs from Step 4, then run acceptance.**
+**6g. Import the owner's filled CSVs from Step 4b, then run acceptance.**
 
 ```bash
 # PRODUCTION
-ING r1-import --review-file ../data/review/r1_year_check.csv
-ING r9-import --review-file ../data/review/severity_check.csv
+R1_CSV=../data/review/r1_year_check.csv
+R9_CSV=../data/review/severity_check.csv
+# Only after a 6f mismatch and the owner's re-check of the _prod files:
+# R1_CSV=../data/review/r1_year_check_prod.csv; R9_CSV=../data/review/severity_check_prod.csv
+ING r1-import --review-file "${R1_CSV:?}"
+ING r9-import --review-file "${R9_CSV:?}"
 VERIFY tests/verify/test_phase2a_repair.py -q -k "r1 or r2 or r9 or every_row" -s
 ```
 

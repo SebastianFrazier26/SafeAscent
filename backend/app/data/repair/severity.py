@@ -83,7 +83,13 @@ async def run_r9_export(conn: AsyncConnection, args: argparse.Namespace) -> dict
     rows = await r9_check_pool(conn)
     out = _out(args, "severity_check.csv")
     n = review.export_sample(
-        rows, n=50, seed=9, path=out, columns=[*LOCATOR_COLUMNS, "injury_severity"], decision_column="agree"
+        rows,
+        n=50,
+        seed=9,
+        path=out,
+        columns=[*LOCATOR_COLUMNS, "injury_severity"],
+        decision_column="agree",
+        overwrite=args.overwrite,
     )
     return {
         "exported": n,
@@ -144,6 +150,7 @@ async def run_r1_export(conn: AsyncConnection, args: argparse.Namespace) -> dict
         path=out,
         columns=[*LOCATOR_COLUMNS, "year_lo", "year_hi", "source_url"],
         decision_column="within_one_year",
+        overwrite=args.overwrite,
     )
     return {
         "exported": n,

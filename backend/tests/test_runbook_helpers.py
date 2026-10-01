@@ -132,3 +132,28 @@ def test_branch_host_refuses_an_empty_name_before_calling_neonctl(shell, tmp_pat
     assert out.returncode != 0 and out.stdout == ""
     assert "branch name" in out.stderr
     assert not marker.exists()
+
+
+def test_save_once_writes_a_new_file_and_echoes_it(shell, tmp_path):
+    out = _run(shell, "save_once out.txt echo hello; echo rc=$?", tmp_path)
+    assert out.stdout.splitlines() == ["hello", "rc=0"]
+    assert (tmp_path / "out.txt").read_text() == "hello\n"
+
+
+def test_save_once_never_replaces_existing_evidence(shell, tmp_path):
+    (tmp_path / "out.txt").write_text("before apply\n")
+    out = _run(shell, "save_once out.txt echo after; echo rc=$?", tmp_path)
+    assert "exists: not overwriting" in out.stderr and out.stdout.strip() == "rc=1"
+    assert (tmp_path / "out.txt").read_text() == "before apply\n"
+
+
+@pytest.mark.parametrize("command", ["false", "true"])
+def test_save_once_leaves_nothing_after_a_failed_or_empty_run(shell, tmp_path, command):
+    out = _run(shell, f"save_once out.txt {command}; echo rc=$?", tmp_path)
+    assert out.stdout.strip() == "rc=1" and "not written" in out.stderr
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_save_once_runs_a_helper_function(shell, tmp_path):
+    out = _run(shell, "greet() { echo \"hi $1\"; }; save_once g.txt greet there; echo rc=$?", tmp_path)
+    assert out.stdout.splitlines() == ["hi there", "rc=0"]

@@ -149,7 +149,7 @@ def test_r9_hand_check_round_trip_carries_the_locator_and_logs_the_agreement(tmp
         engine = create_async_engine(url)
         try:
             async with engine.connect() as conn:
-                exported = await run_r9_export(conn, argparse.Namespace(out=None))
+                exported = await run_r9_export(conn, argparse.Namespace(out=None, overwrite=False))
             path = tmp_path / "severity_check.csv"
             assert exported["exported"] == 2 and exported["path"] == str(path)
             with path.open(newline="", encoding="utf-8") as fh:
@@ -188,7 +188,7 @@ def test_r1_hand_check_exports_only_re_dated_rows(tmp_path, monkeypatch):
             async with engine.begin() as conn:
                 await run_r2r1(conn, argparse.Namespace(apply=True))
             async with engine.connect() as conn:
-                exported = await run_r1_export(conn, argparse.Namespace(out=None))
+                exported = await run_r1_export(conn, argparse.Namespace(out=None, overwrite=False))
             path = tmp_path / "r1_year_check.csv"
             with path.open(newline="", encoding="utf-8") as fh:
                 rows = list(csv.DictReader(fh))
@@ -197,6 +197,11 @@ def test_r1_hand_check_exports_only_re_dated_rows(tmp_path, monkeypatch):
             assert "year of `date`| <= 1" in str(exported["instructions"])
             assert [(r["accident_id"], r["source_id"], r["year_lo"]) for r in rows] == [("11", "11", "2003")]
             _fill(path, "within_one_year", {"11": "yes"})
+            filled = path.read_text(encoding="utf-8")
+            async with engine.connect() as conn:
+                with pytest.raises(FileExistsError, match="--overwrite"):
+                    await run_r1_export(conn, argparse.Namespace(out=None, overwrite=False))
+            assert path.read_text(encoding="utf-8") == filled
             stray = tmp_path / "stray.csv"
             stray.write_text(path.read_text(encoding="utf-8") + "22,,,,,,,,yes\n", encoding="utf-8")
             async with engine.begin() as conn:

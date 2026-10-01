@@ -30,13 +30,24 @@ def _cell(value: object) -> object:
     return value
 
 
-def _write(path: Path, rows: Sequence[Mapping[str, object]], columns: Sequence[str], decision_column: str) -> None:
+def _write(
+    path: Path,
+    rows: Sequence[Mapping[str, object]],
+    columns: Sequence[str],
+    decision_column: str,
+    *,
+    overwrite: bool = False,
+) -> None:
     # Narrative text stays out: review files are handled outside the database access controls.
     if any(c.lower() == "description" for c in [*columns, decision_column]):
         raise ValueError("review CSVs must not carry the description column")
     target = path.resolve()
     if not target.is_relative_to(REVIEW_DIR.resolve()):
         raise ValueError(f"review CSVs go under {REVIEW_DIR} (gitignored), not {target}")
+    # A re-run export in a fresh session would otherwise blank the owner's filled-in
+    # decisions (final re-review 2a-1 N1); replacing a file must be asked for.
+    if target.exists() and not overwrite:
+        raise FileExistsError(f"{target.name} already exists: it may hold filled-in decisions; pass --overwrite to replace it")
     target.parent.mkdir(parents=True, exist_ok=True)
     with target.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
@@ -53,9 +64,10 @@ def export_sample(
     path: Path,
     columns: Sequence[str],
     decision_column: str,
+    overwrite: bool = False,
 ) -> int:
     chosen = random.Random(seed).sample(list(rows), min(n, len(rows)))
-    _write(path, chosen, columns, decision_column)
+    _write(path, chosen, columns, decision_column, overwrite=overwrite)
     return len(chosen)
 
 
@@ -68,6 +80,7 @@ def export_stratified(
     path: Path,
     columns: Sequence[str],
     decision_column: str,
+    overwrite: bool = False,
 ) -> dict[str, int]:
     """A uniform sample is mostly easy rows, so a >=95% bar would pass without testing
     the rule; quotas pull in the rows where the rule actually fires. A short stratum is
@@ -92,13 +105,15 @@ def export_stratified(
         taken["_topup"] = len(extra)
         chosen += extra
     rng.shuffle(chosen)
-    _write(path, chosen, columns, decision_column)
+    _write(path, chosen, columns, decision_column, overwrite=overwrite)
     return taken
 
 
 def read_decisions(path: Path, *, key: str, decision_column: str, allowed: frozenset[str]) -> dict[int, str]:
     decisions: dict[int, str] = {}
-    with path.open(newline="", encoding="utf-8") as fh:
+    # utf-8-sig: Excel's "CSV UTF-8" prepends a BOM, which would otherwise glue onto the
+    # first header and make the key column look missing.
+    with path.open(newline="", encoding="utf-8-sig") as fh:
         for number, row in enumerate(csv.DictReader(fh), start=1):
             value = (row.get(decision_column) or "").strip().lower()
             if not value:
