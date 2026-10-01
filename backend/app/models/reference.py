@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CHAR, DateTime, Float, Index, Integer, Text, func
+from sqlalchemy import CHAR, CheckConstraint, DateTime, Float, Index, Integer, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -14,7 +14,11 @@ from app.db.session import Base
 
 class GnisSummit(Base):
     __tablename__ = "gnis_summits"
-    __table_args__ = (Index("ix_gnis_summits_name_key", "name_key"),)
+    __table_args__ = (
+        Index("ix_gnis_summits_name_key", "name_key"),
+        CheckConstraint("state_code ~ '^[A-Z]{2}$'", name="gnis_summits_state_code_check"),
+        CheckConstraint("lat BETWEEN -90 AND 90 AND lon BETWEEN -180 AND 180", name="gnis_summits_coords_check"),
+    )
 
     gnis_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
     name: Mapped[str] = mapped_column(Text)
@@ -27,7 +31,12 @@ class GnisSummit(Base):
 
 class DuplicateDecision(Base):
     __tablename__ = "duplicate_decisions"
-    __table_args__ = {"schema": "internal"}
+    __table_args__ = (
+        CheckConstraint("low_id < high_id", name="duplicate_decisions_order_check"),
+        CheckConstraint("decision IN ('merge', 'distinct')", name="duplicate_decisions_decision_check"),
+        CheckConstraint("decided_by IN ('auto', 'owner')", name="duplicate_decisions_by_check"),
+        {"schema": "internal"},
+    )
 
     low_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
     high_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)

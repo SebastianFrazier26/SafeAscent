@@ -26,7 +26,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.pipelines.db import ingest_engine
-from app.pipelines.ingest_log import find_completed, finish_run, last_ok_rows_in, sha256_rows, start_run, write_quarantine
+from app.pipelines.ingest_log import finish_run, last_ok_rows_in, last_ok_sha, sha256_rows, start_run, write_quarantine
 from app.pipelines.textsim import place_key
 from app.pipelines.validate import ValidationReport, batch_gate, coord_problem
 
@@ -127,7 +127,6 @@ def parse_domestic_names(
         if gnis_id in seen:
             report.quarantine(ref, "duplicate_id")
             continue
-        seen.add(gnis_id)
         name = (row["feature_name"] or "").strip()
         if not name:
             report.quarantine(ref, "missing_name")
@@ -146,6 +145,7 @@ def parse_domestic_names(
             report.quarantine(ref, problem)
             continue
         report.accept()
+        seen.add(gnis_id)
         summits.append(Summit(gnis_id, name, place_key(name), code, lat, lon))
     return summits
 
@@ -184,7 +184,7 @@ async def main(path: Path) -> dict[str, object]:
     engine = ingest_engine()
     try:
         async with engine.begin() as conn:
-            if await find_completed(conn, source=SOURCE, window_start=None, window_end=None, content_sha256=sha):
+            if await last_ok_sha(conn, SOURCE) == sha:
                 return {"status": "noop", "rows_upserted": 0}
             previous = await last_ok_rows_in(conn, SOURCE)
             problems = batch_gate(report, previous_rows_in=previous, count_tolerance=0.05, max_quarantine_share=0.01)

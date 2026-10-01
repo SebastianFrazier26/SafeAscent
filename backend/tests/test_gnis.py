@@ -72,6 +72,21 @@ def test_bad_ids_names_and_coordinates_are_quarantined_not_raised():
     }
 
 
+def test_a_rejected_row_does_not_claim_its_id():
+    report = ValidationReport("gnis_summits")
+    summits = parse_domestic_names(
+        [
+            HEADER,
+            _line("11", "Bad Lat", "Summit", "Utah", "north", "-111.1"),
+            _line("11", "Good", "Summit", "Utah", "40.1", "-111.1"),
+            _line("11", "Good Again", "Summit", "Utah", "40.2", "-111.2"),
+        ],
+        report,
+    )
+    assert [(s.gnis_id, s.name) for s in summits] == [(11, "Good")]
+    assert report.quarantined == {"bad_coords": 1, "duplicate_id": 1}
+
+
 def test_names_are_kept_as_gnis_publishes_them():
     # GNIS (2026-09-29 file) lists the Alaska summit as "Mount McKinley" and carries no alternate
     # names; the loader stores the official name and leaves alias handling to the geocoder.
@@ -176,6 +191,20 @@ def test_main_loads_replaces_and_noops_on_a_repeat(tmp_path, monkeypatch):
         assert len(rows) == 100
         assert rows[0] == (101, "Renamed Peak", "UT")
         assert rows[-1] == (100000, "Added Peak", "UT")
+
+
+@requires_pg
+def test_reloading_an_older_file_restores_it(tmp_path, monkeypatch):
+    with migrated_db() as name:
+        url = sa_url(name)
+        monkeypatch.setattr(gnis, "ingest_engine", lambda: create_async_engine(url))
+        a = _write(tmp_path, "a.txt", [HEADER, *_clean(100)])
+        b = _write(tmp_path, "b.txt", [HEADER, *_clean(100, start=300)])
+        for path in (a, b, a):
+            out = asyncio.run(gnis.main(path))
+            assert (out["status"], out["rows_upserted"]) == ("ok", 100)
+        assert [r[0] for r in _summits(url)] == list(range(100, 200))
+        assert asyncio.run(gnis.main(a))["status"] == "noop"
 
 
 @requires_pg

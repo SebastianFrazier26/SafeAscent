@@ -174,6 +174,20 @@ async def last_ok_rows_in(conn: AsyncConnection, source: str) -> int | None:
     return rows_in
 
 
+async def last_ok_sha(conn: AsyncConnection, source: str) -> str | None:
+    """content_sha256 of the source's latest ok run. A whole-table snapshot source compares
+    against this, not find_completed: reloading an older file after a newer one must apply it."""
+    result = await conn.execute(
+        text(
+            "SELECT content_sha256 FROM source_ingest_log WHERE source = :source AND status = 'ok' "
+            "ORDER BY finished_at DESC LIMIT 1"
+        ),
+        {"source": source},
+    )
+    sha: str | None = result.scalar_one_or_none()
+    return sha
+
+
 async def write_quarantine(conn: AsyncConnection, run_id: uuid.UUID, report: ValidationReport) -> int:
     """Insert one row per issue. Must run on the same connection, inside the same
     transaction, as start_run/finish_run for this run_id, so these rows and finish_run's

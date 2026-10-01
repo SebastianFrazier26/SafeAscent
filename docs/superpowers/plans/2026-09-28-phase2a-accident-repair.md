@@ -4086,7 +4086,7 @@ unzip -l /tmp/gnis_national.zip | grep -i DomesticNames_National
 INGMOD app.pipelines.gnis --file /tmp/gnis_national.zip
 ```
 
-If `curl` returns 404, take the current "National … Text" link from https://www.usgs.gov/us-board-on-geographic-names/download-gnis-data. Expected: `"status": "ok"` with roughly 60–80K summits accepted. A header error means the file format changed: stop and update `REQUIRED`.
+If `curl` returns 404, take the current "National … Text" link from https://www.usgs.gov/us-board-on-geographic-names/download-gnis-data. Expected: `"status": "ok"` with roughly 60–80K summits accepted. A header error means the file format changed: stop and update `REQUIRED`. Quarantine-share headroom: on the 2026-09-29 file the loader quarantined 471 of 69,180 in-scope summits (~0.68%; 465 blank-state rows at 0,0) against the 1% gate, about 220 rows of headroom (territory summits are skipped, not quarantined). A GNIS release that crosses 1% is rejected by design: read the quarantine reasons before changing the gate. Record `skipped.territory` and the quarantine counts in the PR.
 
 - [ ] **Step 3 (owner): Review fallback clusters, then R3a/R3**
 
