@@ -100,6 +100,7 @@ module = [
     "app.data.repair.__main__",
     "app.data.repair.checks",
     "app.data.repair.severity",
+    "app.data.repair.geocode",
     "app.pipelines.textsim",
     "app.pipelines.geo",
     "app.pipelines.gnis",

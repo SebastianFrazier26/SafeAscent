@@ -10,7 +10,7 @@ from datetime import date
 from alembic import command
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.data.repair import dates, severity
+from app.data.repair import dates, geocode, review, severity
 from app.data.repair.checks import record_check
 from app.data.repair.framework import LOCATION, Change, run_step
 from app.pipelines import gnis, mp_tick_aggregates, mp_ticks_quarantine
@@ -128,6 +128,28 @@ def _run_real_jobs_as_ingest(ingest_url: str, tmp_path, monkeypatch) -> None:
     assert asyncio.run(gnis.main(summits))["status"] == "ok"
     summits.write_text("\n".join([GNIS_HEADER, gnis_line("2", "Other Peak", "Summit", "Colorado", "40.2", "-105.6")]))
     assert asyncio.run(gnis.main(summits))["rows_upserted"] == 1
+
+    # R3 and its check exports as ingest: gnis_summits and revisions reads, the coordinate writes.
+    monkeypatch.setattr(review, "REVIEW_DIR", tmp_path)
+
+    async def r3() -> tuple[dict[str, object], ...]:
+        engine = create_async_engine(sa_ingest)
+        try:
+            async with engine.begin() as conn:
+                out = await geocode.run_r3(conn, argparse.Namespace(apply=True))
+                exports = argparse.Namespace(out=None, overwrite=False)
+                return (
+                    out,
+                    await geocode.run_r3a_export(conn, exports),
+                    await geocode.run_r3_plot_export(conn, exports),
+                    await geocode.run_r3_ambiguous_export(conn, exports),
+                )
+        finally:
+            await engine.dispose()
+
+    r3_out, r3a, plot, ambiguous = asyncio.run(r3())
+    assert r3_out["applied"] == 5 and r3_out["methods"] == {"no_coords": 1, "nps_source": 1}
+    assert (r3a["exported"], plot["strata"]["park_centroid"], ambiguous["exported"]) == (0, 1, 0)
 
 
 # PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views; those belong to the

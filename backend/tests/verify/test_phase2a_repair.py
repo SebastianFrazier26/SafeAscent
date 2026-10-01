@@ -85,3 +85,104 @@ def test_r9_severity_scale_set_and_agreement_recorded():
     [row] = fetch("SELECT count(*) FILTER (WHERE severity_scale IS NULL) AS missing FROM accidents")
     assert row["missing"] == 0
     _latest_check("repair:r9-check", R9_POOL, 50)
+
+
+# place_key -> (GNIS name_key, state) of the summit the spec names. Rows are checked only when
+# their own state is that state or blank: "Washington", "Hood" and "McKinley" are common summit
+# names elsewhere, and a mis-stated row naming a nationally unique summit was already moved.
+# "washington" is checked for NH rows only (the bare name is also WA's and OR's).
+# "denali" is held to the one aliased feature; "mckinley" may be either AK summit of that name.
+NAMED = {"denali": ("#denali", "AK"), "mckinley": ("mckinley", "AK"), "rainier": ("rainier", "WA"),
+         "hood": ("hood", "OR"), "shasta": ("shasta", "CA"), "grand teton": ("grand teton", "WY"),
+         "washington": ("washington", "NH")}
+
+
+def test_r3a_named_peaks_are_near_their_summit():
+    from app.data.repair.geocode import DENALI_GNIS_ID, TRUSTED_POINT_PRECISIONS
+    from app.pipelines.geo import haversine_km
+    from app.pipelines.gnis import state_code
+    from app.pipelines.textsim import place_key
+
+    summits = fetch(
+        "SELECT gnis_id, name_key, state_code, lat, lon FROM gnis_summits WHERE (name_key, state_code) IN "
+        "(('denali','AK'),('mckinley','AK'),('rainier','WA'),('hood','OR'),('shasta','CA'),('grand teton','WY'),"
+        f"('washington','NH')) OR gnis_id = {DENALI_GNIS_ID}"
+    )
+    targets: dict[tuple[str, str], list[tuple[float, float]]] = {}
+    for s in summits:
+        # G19: GNIS names the AK summit "Mount McKinley"; the alias table pins it by feature id.
+        key = ("#denali", "AK") if s["gnis_id"] == DENALI_GNIS_ID else (s["name_key"], s["state_code"])
+        targets.setdefault(key, []).append((s["lat"], s["lon"]))
+        if s["gnis_id"] == DENALI_GNIS_ID:
+            targets.setdefault((s["name_key"], s["state_code"]), []).append((s["lat"], s["lon"]))
+    assert set(NAMED.values()) <= set(targets), f"GNIS lookup incomplete: {sorted(targets)}"
+    trusted = ", ".join(f"'{p}'" for p in sorted(TRUSTED_POINT_PRECISIONS))
+    far, checked = [], 0
+    for r in fetch(
+        "SELECT accident_id, mountain, state, latitude, longitude FROM accidents "
+        f"WHERE latitude IS NOT NULL AND geocode_precision IN ({trusted})"
+    ):
+        target = NAMED.get(place_key(r["mountain"]))
+        if target is None:
+            continue
+        row_state = state_code(r["state"])
+        if row_state != target[1] and (row_state is not None or target == ("washington", "NH")):
+            continue
+        checked += 1
+        if min(haversine_km(r["latitude"], r["longitude"], lat, lon) for lat, lon in targets[target]) > 50:
+            far.append(r["accident_id"])
+    print({"named_rows_checked": checked, "far": far[:20]})
+    assert checked > 0 and far == []
+
+
+def test_r3_no_trusted_rows_at_raw_fallback_points_and_no_alaska_text_below_55n():
+    from app.data.repair.geocode import TRUSTED_POINT_PRECISIONS, GeoRow, find_fallback_points
+
+    # G6: fallback points come from the pre-repair snapshot with the step's own rule; rebuilt
+    # from live coordinates, R3a's summit moves would form "clusters" of area rows by design.
+    raw = fetch("SELECT accident_id, mountain, latitude, longitude FROM internal.accidents_raw")
+    points = find_fallback_points(
+        [GeoRow(r["accident_id"], "aac", r["mountain"], None, r["latitude"], r["longitude"], None) for r in raw]
+    )
+    live = fetch("SELECT accident_id, latitude, longitude, geocode_precision FROM accidents WHERE latitude IS NOT NULL")
+    at_fallback = [
+        r["accident_id"] for r in live
+        if (round(r["latitude"], 3), round(r["longitude"], 3)) in points
+        and r["geocode_precision"] in TRUSTED_POINT_PRECISIONS
+    ]
+    [ak] = fetch(
+        "SELECT count(*) AS n FROM accidents WHERE lower(trim(state)) IN ('ak', 'alaska') AND latitude < 55 "
+        "AND geocode_precision IN ('exact','crag','area','park_centroid')"
+    )
+    print({"raw_fallback_points": len(points), "trusted_at_fallback": at_fallback[:20], "ak_below_55": ak["n"]})
+    # Fallback points keep their coordinates (A7/D10), so the spec's "no rows remain" reads
+    # as "no row there is labelled usable as a point".
+    assert (at_fallback, ak["n"]) == ([], 0)
+
+
+def test_r3_ambiguous_rows_pending_owner_review_are_reported():
+    rows = fetch(
+        "SELECT country IS NULL AS no_country, count(*) AS n FROM accidents "
+        "WHERE geocode_method = 'gnis_ambiguous' GROUP BY 1 ORDER BY 1"
+    )
+    # Untrusted and never moved; the PR records the count the owner still has to settle.
+    print({"gnis_ambiguous": [dict(r) for r in rows]})
+    [row] = fetch(
+        "SELECT count(*) AS n FROM accidents WHERE geocode_method = 'gnis_ambiguous' "
+        "AND geocode_precision IS DISTINCT FROM 'unknown'"
+    )
+    assert row["n"] == 0
+
+
+R3A_POOL = "SELECT count(*) FROM accidents WHERE geocode_method LIKE 'gnis\\_summit%'"
+R3_PLOT_POOL = "SELECT count(*) FROM accidents WHERE latitude IS NOT NULL AND longitude IS NOT NULL"
+
+
+def test_r3a_hand_check_covers_every_move_at_95_percent():
+    [row] = fetch(f"SELECT ({R3A_POOL}) AS n")
+    # Every move is checked, not a sample (rows_in >= the whole pool).
+    assert _latest_check("repair:r3a-check", R3A_POOL, row["n"]) >= 0.95
+
+
+def test_r3_plot_check_at_95_percent():
+    assert _latest_check("repair:r3-plot-check", R3_PLOT_POOL, 50) >= 0.95
