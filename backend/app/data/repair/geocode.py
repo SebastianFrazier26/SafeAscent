@@ -149,6 +149,13 @@ def _r3a(row: GeoRow, index: SummitIndex, state: str | None) -> GeoFix | None:
         if haversine_km(row.lat, row.lon, s.lat, s.lon) > MOVE_KM:
             return GeoFix(row.accident_id, (s.lat, s.lon), "area", method, "US")
         return None
+    if not hits and state is not None:
+        # The named summit exists only in other states (several), so either the state or the
+        # point is wrong and nothing says which: untrusted, kept, owner review.
+        elsewhere = index.lookup(key, None)
+        if elsewhere and all(haversine_km(row.lat, row.lon, s.lat, s.lon) > MOVE_KM for s in elsewhere):
+            return GeoFix(row.accident_id, KEEP, "unknown", "gnis_state_unmatched", "US")
+        return None
     if len(hits) > 1 and all(haversine_km(row.lat, row.lon, s.lat, s.lon) > MOVE_KM for s in hits):
         # Being near one candidate settles it; otherwise no candidate is picked (owner review).
         # Spec R3a nulls the state-less case; with a known state the point is kept, labelled.
@@ -200,6 +207,34 @@ def changes_for(fix: GeoFix) -> list[Change]:
     return changes
 
 
+NOT_IN_SNAPSHOT = "not_in_snapshot"
+SNAPSHOT_POINT = "snapshot_point"
+
+
+def snapshot_fixes(
+    raw: Mapping[int, GeoRow], live: Mapping[int, tuple[float | None, float | None]], index: SummitIndex
+) -> tuple[list[GeoFix], list[Change]]:
+    """Decisions come from the pre-repair snapshot only (G17 principle, as R1): a hand edit to
+    a live row, or R3's own earlier moves and nulls, never feed a later run. A kept point is
+    the snapshot point, so a live point that drifted from it is put back (audited) rather
+    than left under a label that describes a different point. Rows absent from the snapshot
+    are labelled untrusted and never moved."""
+    fallback = find_fallback_points(list(raw.values()))
+    fixes: list[GeoFix] = []
+    changes: list[Change] = []
+    for accident_id, (lat, lon) in live.items():
+        row = raw.get(accident_id)
+        if row is None:
+            fix = GeoFix(accident_id, KEEP, "unknown", NOT_IN_SNAPSHOT, None)
+        else:
+            fix = geocode_fix(row, index, fallback)
+            if fix.location is KEEP and row.lat is not None and row.lon is not None and (lat, lon) != (row.lat, row.lon):
+                changes.append(Change(accident_id, LOCATION, (row.lat, row.lon), SNAPSHOT_POINT))
+        fixes.append(fix)
+        changes += changes_for(fix)
+    return fixes, changes
+
+
 def _str(value: object) -> str | None:
     return value if isinstance(value, str) else None
 
@@ -228,14 +263,22 @@ async def _index(conn: AsyncConnection) -> SummitIndex:
     return SummitIndex(summits)
 
 
-async def _load(conn: AsyncConnection) -> tuple[list[GeoRow], SummitIndex]:
-    raw = await fetch_accidents(conn, ["source", "mountain", "state", "latitude", "longitude", "mp_route_id"])
-    return [_geo_row(r) for r in raw], await _index(conn)
+async def raw_geo_rows(conn: AsyncConnection) -> dict[int, GeoRow]:
+    result = await conn.execute(
+        text(
+            "SELECT accident_id, source, mountain, state, latitude, longitude, mp_route_id "
+            "FROM internal.accidents_raw ORDER BY accident_id"
+        )
+    )
+    rows = {int(r.accident_id): _geo_row(dict(r._mapping)) for r in result}
+    if not rows:
+        raise SystemExit("internal.accidents_raw is empty: 0004 snapshots accidents before any repair")
+    return rows
 
 
 async def run_r3_clusters(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
     """Coordinates and counts only (no names), for the owner's cluster review before r3 --apply."""
-    rows, _ = await _load(conn)
+    rows = list((await raw_geo_rows(conn)).values())
     points = find_fallback_points(rows)
     sizes = Counter(_point(r.lat, r.lon) for r in rows if r.lat is not None and r.lon is not None)
     by_point = {f"{lat},{lon}": sizes[(lat, lon)] for lat, lon in sorted(points)}
@@ -243,19 +286,18 @@ async def run_r3_clusters(conn: AsyncConnection, args: argparse.Namespace) -> di
 
 
 async def run_r3(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
-    rows, index = await _load(conn)
-    fallback = find_fallback_points(rows)
+    raw = await raw_geo_rows(conn)
+    index = await _index(conn)
+    live = {_id(r): (_float(r["latitude"]), _float(r["longitude"])) for r in await fetch_accidents(conn, ["latitude", "longitude"])}
+    fixes, changes = snapshot_fixes(raw, live, index)
     report = ValidationReport("repair:r3")
-    changes: list[Change] = []
     methods: Counter[str] = Counter()
-    for r in rows:
-        fix = geocode_fix(r, index, fallback)
+    for fix in fixes:
         methods[fix.method] += 1
         if fix.precision in TRUSTED_POINT_PRECISIONS:
             report.accept()
         else:
-            report.quarantine(str(r.accident_id), fix.method)
-        changes += changes_for(fix)
+            report.quarantine(str(fix.accident_id), fix.method)
     summary = await run_step(conn, step="r3", rule_version=R3_VERSION, changes=changes, report=report, apply=args.apply)
     # CLI output only. A missing alias feature means "Denali" rows silently stop resolving.
     missing = sorted(set(GNIS_ALIASES) - index.ids)
@@ -378,8 +420,10 @@ async def run_r3_plot_import(conn: AsyncConnection, args: argparse.Namespace) ->
 
 
 def review_candidates(row: GeoRow, index: SummitIndex) -> list[Summit]:
-    """The summits that made a gnis_ambiguous row ambiguous: in its state, or nationwide without one."""
-    hits = index.lookup(place_key(row.mountain), state_code(row.state))
+    """The summits that put a row in review: in its state, else nationwide (no state, or the
+    name exists only in other states)."""
+    key, state = place_key(row.mountain), state_code(row.state)
+    hits = index.lookup(key, state) or (index.lookup(key, None) if state else [])
     return sorted(hits, key=lambda s: s.gnis_id)
 
 
@@ -396,19 +440,22 @@ def owner_review_changes(accident_id: int, choice: str, candidates: Sequence[Sum
 MAX_LISTED_CANDIDATES = 30
 
 
-async def _ambiguous_pool(conn: AsyncConnection) -> tuple[list[dict[str, object]], SummitIndex]:
-    rows = await fetch_accidents(
-        conn,
-        ["source", "source_id", "location", "mountain", "state", "latitude", "longitude", "mp_route_id", "geocode_method"],
-    )
-    return [r for r in rows if r["geocode_method"] == "gnis_ambiguous"], await _index(conn)
+REVIEW_METHODS = frozenset({"gnis_ambiguous", "gnis_state_unmatched"})
+
+
+async def _ambiguous_pool(conn: AsyncConnection) -> tuple[list[dict[str, object]], dict[int, list[Summit]]]:
+    rows = await fetch_accidents(conn, ["source_id", "location", "mountain", "state", "latitude", "longitude", "geocode_method"])
+    raw, index = await raw_geo_rows(conn), await _index(conn)
+    pool = [r for r in rows if r["geocode_method"] in REVIEW_METHODS and _id(r) in raw]
+    # Candidates from the snapshot fields R3 decided on, not from the live row.
+    return pool, {_id(r): review_candidates(raw[_id(r)], index) for r in pool}
 
 
 async def run_r3_ambiguous_export(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
-    pool, index = await _ambiguous_pool(conn)
+    pool, by_id = await _ambiguous_pool(conn)
     rows = []
     for r in pool:
-        candidates = review_candidates(_geo_row(r), index)
+        candidates = by_id[_id(r)]
         listed = "; ".join(f"{s.gnis_id} {s.name} {s.state_code} {s.lat},{s.lon}" for s in candidates[:MAX_LISTED_CANDIDATES])
         if len(candidates) > MAX_LISTED_CANDIDATES:
             listed += f"; (+{len(candidates) - MAX_LISTED_CANDIDATES} more in gnis_summits)"
@@ -419,13 +466,15 @@ async def run_r3_ambiguous_export(conn: AsyncConnection, args: argparse.Namespac
     return {
         "exported": len(rows),
         "path": str(out),
-        "instructions": "read each report; gnis_id = the candidate summit it names, or none if the report does not settle it",
+        "instructions": (
+            "read each report; gnis_id = the candidate summit it names (state and point may both be wrong), "
+            "or none if the report does not settle it"
+        ),
     }
 
 
 async def run_r3_ambiguous_import(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
-    pool, index = await _ambiguous_pool(conn)
-    candidates = {_id(r): review_candidates(_geo_row(r), index) for r in pool}
+    _, candidates = await _ambiguous_pool(conn)
     allowed = frozenset({"none"} | {str(s.gnis_id) for cs in candidates.values() for s in cs})
     path = Path(args.review_file)
     try:

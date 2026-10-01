@@ -148,8 +148,9 @@ def _run_real_jobs_as_ingest(ingest_url: str, tmp_path, monkeypatch) -> None:
             await engine.dispose()
 
     r3_out, r3a, plot, ambiguous = asyncio.run(r3())
-    assert r3_out["applied"] == 5 and r3_out["methods"] == {"no_coords": 1, "nps_source": 1}
-    assert (r3a["exported"], plot["strata"]["park_centroid"], ambiguous["exported"]) == (0, 1, 0)
+    # Decided from the snapshot: the fixture repair's null and move above are put back.
+    assert r3_out["applied"] == 8 and r3_out["methods"] == {"nps_source": 1, "source_geocode": 1}
+    assert (r3a["exported"], plot["strata"]["park_centroid"], plot["strata"]["area"], ambiguous["exported"]) == (0, 1, 1, 0)
 
 
 # PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views; those belong to the
@@ -250,15 +251,17 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
     )
     _denied(ingest, "UPDATE internal.mp_tick_aggregates SET tick_count = 2 WHERE false")
     _denied(ingest, "DELETE FROM internal.ingest_quarantine")
-    _as(ingest, "SELECT accident_id, source, source_id, date, year FROM internal.accidents_raw")
-    _denied(ingest, "SELECT mountain FROM internal.accidents_raw")
+    _as(ingest, "SELECT accident_id, source, source_id, date, year, mountain, state, latitude, longitude, mp_route_id "
+        "FROM internal.accidents_raw")
+    _denied(ingest, "SELECT location FROM internal.accidents_raw")
+    _denied(ingest, "SELECT route FROM internal.accidents_raw")
     _denied(ingest, "SELECT description FROM internal.accidents_raw")
     _denied(ingest, "SELECT * FROM internal.accidents_raw")
     _as(ingest, "UPDATE mp_ticks SET quarantine_reason = NULL WHERE false")
     _as(owner_url, JOB_SEED_SQL)
     # The seed lands after 0004's snapshot; the migrator owns accidents_raw, so it stands in for it.
-    _as(migrator_url, "INSERT INTO internal.accidents_raw (accident_id, source, source_id, date, year) "
-        "SELECT accident_id, source, source_id, date, year FROM accidents")
+    _as(migrator_url, "INSERT INTO internal.accidents_raw (accident_id, source, source_id, date, year, latitude, longitude) "
+        "SELECT accident_id, source, source_id, date, year, latitude, longitude FROM accidents")
     _run_real_jobs_as_ingest(ingest, tmp_path, monkeypatch)
     _as(ingest, "SELECT count(*) FROM accidents")
     _as(ingest, "SELECT mp_id, latitude, longitude FROM mp_locations")

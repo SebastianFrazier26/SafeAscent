@@ -163,12 +163,12 @@ def test_r3_no_trusted_rows_at_raw_fallback_points_and_no_alaska_text_below_55n(
 def test_r3_ambiguous_rows_pending_owner_review_are_reported():
     rows = fetch(
         "SELECT country IS NULL AS no_country, count(*) AS n FROM accidents "
-        "WHERE geocode_method = 'gnis_ambiguous' GROUP BY 1 ORDER BY 1"
+        "WHERE geocode_method IN ('gnis_ambiguous', 'gnis_state_unmatched') GROUP BY 1 ORDER BY 1"
     )
     # Untrusted and never moved; the PR records the count the owner still has to settle.
-    print({"gnis_ambiguous": [dict(r) for r in rows]})
+    print({"summit_review_pending": [dict(r) for r in rows]})
     [row] = fetch(
-        "SELECT count(*) AS n FROM accidents WHERE geocode_method = 'gnis_ambiguous' "
+        "SELECT count(*) AS n FROM accidents WHERE geocode_method IN ('gnis_ambiguous', 'gnis_state_unmatched') "
         "AND geocode_precision IS DISTINCT FROM 'unknown'"
     )
     assert row["n"] == 0

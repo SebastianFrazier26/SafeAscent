@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.data.repair import review
+from app.data.repair import geocode, review
 from app.data.repair.__main__ import STEPS
 from app.data.repair.framework import LOCATION
 from app.data.repair.geocode import (
@@ -98,8 +98,20 @@ def test_state_from_a_bad_geocode_falls_back_to_a_unique_national_match():
 
 
 def test_state_fallback_never_uses_a_non_unique_national_match():
+    # The named summit exists, just not in the stated state: never trusted at this point.
     fix = geocode_fix(row(mountain="Bald Mountain", state="WA", lat=47.0, lon=-120.0), INDEX, set())
-    assert (fix.location, fix.method) == (KEEP, "source_geocode")
+    assert (fix.location, fix.precision, fix.method, fix.country) == (KEEP, "unknown", "gnis_state_unmatched", "US")
+
+
+def test_a_summit_only_in_other_states_is_untrusted_and_reviewed():
+    index = SummitIndex([MCKINLEY, MCKINLEY_PEAK, Summit(30, "McKinley Peak", "mckinley", "WA", 47.0, -121.0)])
+    ca = row(mountain="Mount McKinley", state="CA", lat=37.8, lon=-122.0)
+    fix = geocode_fix(ca, index, set())
+    assert (fix.location, fix.precision, fix.method) == (KEEP, "unknown", "gnis_state_unmatched")
+    assert [s.gnis_id for s in review_candidates(ca, index)] == [30, DENALI_GNIS_ID, 1423626]
+    # A point already on one of them is settled by its position.
+    near = geocode_fix(row(mountain="Mount McKinley", state="CA", lat=47.01, lon=-121.0), index, set())
+    assert (near.precision, near.method) == ("area", "source_geocode")
 
 
 def test_ambiguous_name_near_one_candidate_is_kept():
@@ -223,6 +235,11 @@ INSERT INTO accidents (accident_id, source, source_id, mountain, state, latitude
   (4, 'AAC', 'a4', 'Mount McKinley', 'Alaska', 61.2, -149.9, NULL),
   (5, 'avalanche.org', NULL, 'Mount Rainier', 'WA', 47.6, -122.2, NULL),
   (6, 'AAC', 'a6', 'Denali', 'AK', 61.2, -149.9, NULL);
+INSERT INTO internal.accidents_raw (accident_id, source, source_id, mountain, state, latitude, longitude, mp_route_id)
+  SELECT accident_id, source, source_id, mountain, state, latitude, longitude, mp_route_id FROM accidents;
+-- Loaded after the snapshot (like plan 3's R11 rows): never trusted, never moved.
+INSERT INTO accidents (accident_id, source, source_id, mountain, state, latitude, longitude) VALUES
+  (7, 'AAC', 'a7', 'Mt. Rainier', 'WA', 47.6, -122.2);
 """
 
 
@@ -263,6 +280,7 @@ def test_r3_labels_moves_and_nulls_with_an_audit_and_a_rerun_changes_nothing():
                 (4, 61.2, -149.9, "unknown", "gnis_ambiguous", "US", False),
                 (5, 47.6, -122.2, "exact", "source_coords", "US", False),
                 (6, 63.069, -151.007, "area", "gnis_summit", "US", False),
+                (7, 47.6, -122.2, "unknown", "not_in_snapshot", None, False),
             ]
             assert audit == [
                 (1, "47.600000,-122.200000", "46.853000,-121.760000"),
@@ -270,9 +288,9 @@ def test_r3_labels_moves_and_nulls_with_an_audit_and_a_rerun_changes_nothing():
                 (6, "61.200000,-149.900000", "63.069000,-151.007000"),
             ]
             assert first["methods"]["gnis_ambiguous"] == 1
-            # Rows 1 and 6 now sit on their summits, so the rerun proposes no move for them, and
-            # every label it proposes is already recorded under r3-v1: nothing changes.
-            assert (first["applied"], again["applied"], again["unchanged"], again["already_recorded"]) == (21, 0, 0, 19)
+            # Inputs come from the snapshot, so the rerun proposes exactly what the first run did.
+            assert (first["applied"], first["unchanged"]) == (23, 1)
+            assert (again["applied"], again["unchanged"], again["already_recorded"]) == (0, 1, 23)
         finally:
             await engine.dispose()
 
@@ -362,8 +380,8 @@ def test_r3_plot_check_writes_matching_csv_and_geojson(tmp_path, monkeypatch):
             with csv_path.open(newline="", encoding="utf-8") as fh:
                 rows = list(csv.DictReader(fh))
             features = json.loads(geojson_path.read_text())["features"]
-            # Every row with a point is in the pool (5 of 6; the foreign row was nulled).
-            assert sorted(r["accident_id"] for r in rows) == ["1", "3", "4", "5", "6"]
+            # Every row with a point is in the pool (6 of 7; the foreign row was nulled).
+            assert sorted(r["accident_id"] for r in rows) == ["1", "3", "4", "5", "6", "7"]
             assert sorted(str(f["properties"]["accident_id"]) for f in features) == sorted(r["accident_id"] for r in rows)
             moved = next(f for f in features if f["properties"]["accident_id"] == 6)
             assert moved["geometry"]["coordinates"] == [-151.007, 63.069]
@@ -375,10 +393,10 @@ def test_r3_plot_check_writes_matching_csv_and_geojson(tmp_path, monkeypatch):
                     await run_r3_plot_export(conn, argparse.Namespace(out=None, overwrite=False))
                 again = await run_r3_plot_export(conn, argparse.Namespace(out=None, overwrite=True))
             assert again["csv"] == str(csv_path)
-            _fill(csv_path, "plausible", {r: "yes" if r != "4" else "no" for r in ("1", "3", "4", "5", "6")})
+            _fill(csv_path, "plausible", {r: "yes" if r not in ("4", "7") else "no" for r in ("1", "3", "4", "5", "6", "7")})
             async with engine.begin() as conn:
                 out = await run_r3_plot_import(conn, argparse.Namespace(review_file=str(csv_path)))
-            assert out == {"source": "repair:r3-plot-check", "n": 5, "agreement": 0.8}
+            assert out == {"source": "repair:r3-plot-check", "n": 6, "agreement": 4 / 6}
         finally:
             await engine.dispose()
 
@@ -424,6 +442,44 @@ def test_ambiguous_rows_go_to_owner_review_and_only_a_listed_summit_is_applied(t
                 with pytest.raises(ValueError, match="not pending review"):
                     await run_r3_ambiguous_import(conn, argparse.Namespace(review_file=str(path), apply=False))
             assert got == [(63.069, -151.007, "area", "owner_summit")]
+        finally:
+            await engine.dispose()
+
+    with migrated_db(seed_sql=GEO_SEED) as name:
+        asyncio.run(scenario(sa_url(name)))
+
+
+@requires_pg
+def test_r3_decides_from_the_snapshot_so_hand_edits_and_v1_output_never_feed_it(monkeypatch):
+    async def scenario(url: str) -> None:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                v1_dry = await run_r3(conn, argparse.Namespace(apply=False))
+            async with engine.begin() as conn:
+                # Hand edits after the snapshot: row 1 dragged next to its summit, row 3 moved off.
+                await conn.execute(text("UPDATE accidents SET latitude = 46.85, longitude = -121.75 WHERE accident_id = 1"))
+                await conn.execute(text("UPDATE accidents SET latitude = 36.0, longitude = -118.0 WHERE accident_id = 3"))
+            async with engine.begin() as conn:
+                v1 = await run_r3(conn, argparse.Namespace(apply=True))
+            async with engine.connect() as conn:
+                got = await _rows(
+                    conn, "SELECT accident_id, latitude, longitude, geocode_method FROM accidents WHERE accident_id IN (1, 3) "
+                    "ORDER BY 1",
+                )
+                restored = await _rows(
+                    conn, "SELECT method, old_value, new_value FROM internal.accident_revisions "
+                    "WHERE accident_id = 3 AND field = 'latlon'",
+                )
+            assert v1["methods"] == v1_dry["methods"]
+            assert got == [(1, 46.853, -121.76, "gnis_summit"), (3, 36.5, -118.3, "nps_source")]
+            assert restored == [("snapshot_point", "36.000000,-118.000000", "36.500000,-118.300000")]
+            # A later rule version still sees the pre-repair points, not v1's moves and nulls.
+            monkeypatch.setattr(geocode, "R3_VERSION", "r3-v2")
+            async with engine.connect() as conn:
+                v2 = await run_r3(conn, argparse.Namespace(apply=False))
+            assert v2["methods"] == v1["methods"]
+            assert v2["proposed"]["latlon=moved"] == 2 and v2["proposed"]["latlon=null"] == 1
         finally:
             await engine.dispose()
 
