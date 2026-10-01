@@ -3697,10 +3697,10 @@ Expected (the figures are from reads on 2026-09-30):
   - The three scheme rows sum to `aac_total` by construction.
   - `eight_digit` is 68 (the 2019NNNN scheme).
   - `sequence` + `unparseable` is 2,763 − 68 = 2,695, with `unparseable` at or near 0. It counts blank and NULL ids; `aac_total − with_source_id` of them are NULL.
-  - The earlier read ("1–2683 with a/b/t suffixes, 2,763 rows") counted every AAC row. So 2,695 is derived, not read directly: this step is its first direct read.
+  - The earlier read ("1–2685 with a/b/t suffixes, 2,763 rows") counted every AAC row. So 2,695 is derived, not read directly: this step is its first direct read.
   - Stop, and have the agent reconcile before any apply, if any of these holds: `aac_total ≠ 2,763`, `eight_digit ≠ 68`, or `unparseable > 10`.
   - Record all three counts in the PR.
-- **`base_over_2683`** (the last column of the `scheme|sequence|…` row) is 0. A sequence base above 2683 means ids outside the known 1–2683 run. Stop, and have the agent inspect them before R1 treats them as neighbours.
+- **`base_over_2685`** (the last column of the `scheme|sequence|…` row) is 0. A sequence base above 2685 means ids outside the known 1–2685 run (2684a, 2684b, 2685a, 2685b are the suffixed tail of that run, not over it). Stop, and have the agent inspect them before R1 treats them as neighbours.
 - **Future dates.** The inline future-date query returns no rows (future means after the current UTC day at run time). Any row: stop and raise it with the owner. R1 re-dates only AAC rows from 2019 on, so a future non-AAC row would stay in with `day` precision.
 - **Severities.** The only values are `fatal`, `serious`, `minor`, `near_miss`, blank/NULL, `unknown`, `n/a` and `none`. The 2026-09-30 read: aac serious/minor/fatal plus 2 blanks; avalanche minor/fatal/serious/near_miss; nps fatal. Any other value: stop, and the agent maps it in `severity.py` in a reviewed commit.
 

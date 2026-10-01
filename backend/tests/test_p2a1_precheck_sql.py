@@ -22,6 +22,8 @@ ROWS = [
     ("aac", None, "fatal"),
     ("aac", "x", "serious"),
     ("aac", "2700", "minor"),
+    ("aac", "2685b", "serious"),
+    ("aac", "2686", "fatal"),
     ("aac", "\t55\n", "near_miss"),
     ("aac", "2019-001", "fatal"),
     ("aac", "120190001", "fatal"),
@@ -67,7 +69,7 @@ def test_precheck_sql_matches_the_python_rules():
     schemes = {r[1]: r[2] for r in rows if r[0] == "scheme"}
     assert schemes == dict(Counter(source_scheme(r[1]) for r in aac))
     [over] = [r[3] for r in rows if r[0] == "scheme" and r[1] == "sequence"]
-    assert over == 2  # "2700" and the 9-digit "120190001"
+    assert over == 3  # "2700", the 9-digit "120190001", and "2686"; "2685b" (base 2685) is sequence but not over
     severities = Counter()
     for r in rows:
         if r[0] == "severity":

@@ -1,6 +1,6 @@
 """R1 (AAC year repair from source_id neighbours) and R2 (date precision).
 
-AAC source_ids form one running sequence (1-2683 on prod, read 2026-09-30; some ids carry
+AAC source_ids form one running sequence (1-2685 (incl. a/b/t suffixes) on prod, read 2026-09-30; some ids carry
 a/b/t suffix variants of one base) whose order follows accident year, so the trusted
 (pre-2019) rows on either side of a suspect row bound its real year: no earlier than the
 latest year on its left, no later than the earliest on its right. The point year is the
