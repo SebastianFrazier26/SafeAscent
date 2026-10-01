@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import uuid
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 
@@ -161,6 +161,7 @@ async def run_step(
     changes: Sequence[Change],
     report: ValidationReport,
     apply: bool,
+    metrics: Mapping[str, int | float] | None = None,
 ) -> dict[str, object]:
     """Dry run by default: the summary is returned, never logged. On apply, start_run,
     the writes and finish_run share `conn`, so the caller's one commit lands them together."""
@@ -183,7 +184,10 @@ async def run_step(
     )
     run_id = await start_run(conn, source=f"repair:{step}", window_start=None, window_end=None, content_sha256=content)
     applied = await apply_changes(conn, changes, rule_version=rule_version, run_id=run_id)
-    await finish_run(conn, run_id, status="ok", report=report, rows_upserted=applied.applied, rule_version=rule_version)
+    await finish_run(
+        conn, run_id, status="ok", report=report, rows_upserted=applied.applied, rule_version=rule_version,
+        metrics=metrics,
+    )
     return summary | {
         "mode": "apply",
         "run_id": str(run_id),

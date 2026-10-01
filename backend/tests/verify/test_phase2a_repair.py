@@ -192,3 +192,39 @@ def test_r3a_hand_check_covers_every_move_at_95_percent():
 
 def test_r3_plot_check_at_95_percent():
     assert _latest_check("repair:r3-plot-check", R3_PLOT_POOL, 50) >= 0.95
+
+
+def golden(name: str) -> list[dict[str, str]]:
+    import csv
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[3] / "data" / "golden" / name
+    with path.open(newline="", encoding="utf-8-sig") as fh:
+        return list(csv.DictReader(fh))
+
+
+def test_r4_golden_set_at_least_95_percent():
+    # int() on every id is what keeps the IN list below safe to interpolate.
+    labels = {int(r["accident_id"]): r["label"].strip().lower() for r in golden("activity_v1.csv")}
+    assert len(labels) >= 60, "label the golden set first (runbook Task 13)"
+    ids = ",".join(str(i) for i in labels)
+    got = {r["accident_id"]: r["activity_class"] for r in fetch(f"SELECT accident_id, activity_class FROM accidents WHERE accident_id IN ({ids})")}
+    hits = sum(got.get(i) == label for i, label in labels.items())
+    print({"r4_golden": len(labels), "hits": hits})
+    assert hits / len(labels) >= 0.95
+
+
+def test_r4_blank_activity_rows_pending_owner_review_are_reported():
+    [row] = fetch(
+        "SELECT count(*) AS n FROM accidents a JOIN internal.accidents_raw r USING (accident_id) "
+        # Mirrors activity.is_blank: no letter or digit at all ("", "  ", "?").
+        "WHERE regexp_replace(lower(coalesce(r.activity, '')), '[^a-z0-9]', '', 'g') = '' AND a.activity_class IS NULL"
+    )
+    # O1: never guessed; the PR records how many the owner still has to classify.
+    print({"activity_review_pending": row["n"]})
+    [bad] = fetch(
+        "SELECT count(*) AS n FROM accidents WHERE activity_class IS NOT NULL AND ("
+        "activity_rule_version IS NULL "
+        "OR (activity_class = 'climbing_approach') <> (inclusion_flag IS NOT DISTINCT FROM 'ski_approach_best_effort'))"
+    )
+    assert bad["n"] == 0

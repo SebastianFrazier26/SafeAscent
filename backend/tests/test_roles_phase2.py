@@ -10,7 +10,7 @@ from datetime import date
 from alembic import command
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.data.repair import dates, geocode, review, severity
+from app.data.repair import activity, dates, geocode, review, severity
 from app.data.repair.checks import record_check
 from app.data.repair.framework import LOCATION, Change, run_step
 from app.pipelines import gnis, mp_tick_aggregates, mp_ticks_quarantine
@@ -153,6 +153,25 @@ def _run_real_jobs_as_ingest(ingest_url: str, tmp_path, monkeypatch) -> None:
     assert r3_out["applied"] == 6 and r3_out["methods"] == {"moved_by_other_rule": 2}
     assert (r3a["exported"], plot["strata"]["unknown"], ambiguous["exported"]) == (0, 1, 0)
 
+    # R4 and its exports as ingest: snapshot activity, the MP terrain columns, the class writes.
+    async def r4() -> tuple[dict[str, object], ...]:
+        engine = create_async_engine(sa_ingest)
+        try:
+            async with engine.begin() as conn:
+                out = await activity.run_r4(conn, argparse.Namespace(apply=True))
+                exports = argparse.Namespace(out=None, overwrite=False)
+                return (
+                    out,
+                    await activity.run_r4_review_export(conn, exports),
+                    await activity.run_r4_golden_export(conn, exports),
+                )
+        finally:
+            await engine.dispose()
+
+    r4_out, r4_review, r4_golden = asyncio.run(r4())
+    # The seed's snapshot rows carry no activity: both wait for the owner, nothing is guessed.
+    assert (r4_out["review_pending"], r4_review["exported"], sum(r4_golden["strata"].values())) == (2, 2, 0)
+
 
 # PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views; those belong to the
 # extension, not to any grant this project makes, so the check skips them as verify_roles.sql does.
@@ -252,8 +271,8 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
     )
     _denied(ingest, "UPDATE internal.mp_tick_aggregates SET tick_count = 2 WHERE false")
     _denied(ingest, "DELETE FROM internal.ingest_quarantine")
-    _as(ingest, "SELECT accident_id, source, source_id, date, year, mountain, state, latitude, longitude, mp_route_id "
-        "FROM internal.accidents_raw")
+    _as(ingest, "SELECT accident_id, source, source_id, date, year, mountain, state, latitude, longitude, mp_route_id, "
+        "activity FROM internal.accidents_raw")
     _denied(ingest, "SELECT location FROM internal.accidents_raw")
     _denied(ingest, "SELECT route FROM internal.accidents_raw")
     _denied(ingest, "SELECT description FROM internal.accidents_raw")

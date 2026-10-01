@@ -442,6 +442,16 @@ async def run_r3(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, o
     }
 
 
+async def require_r3(conn: AsyncConnection, step: str) -> None:
+    """For steps that read R3's point labels (D12). The run log, not the revisions: an r3
+    apply that changed nothing still labelled every row."""
+    ran = await conn.execute(
+        text("SELECT EXISTS (SELECT 1 FROM source_ingest_log WHERE source = 'repair:r3' AND status = 'ok')")
+    )
+    if not ran.scalar_one():
+        raise SystemExit(f"{step} reads R3's geocode_precision labels: apply r3 first")
+
+
 def plot_stratum(row: Mapping[str, object]) -> str:
     method = str(row.get("geocode_method") or "")
     if method.startswith("gnis_summit"):

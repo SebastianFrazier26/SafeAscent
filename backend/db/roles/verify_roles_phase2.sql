@@ -137,7 +137,7 @@ SELECT 'ingest mp_ticks column privileges match the expected set: ' || attname,
 FROM cols;
 
 -- ingest's column grants from plan 2: UPDATE on accidents exactly the repair columns (never
--- description, source, source_id or accident_id); SELECT on accidents_raw only the R1/R2/R3 inputs.
+-- description, source, source_id or accident_id); SELECT on accidents_raw only the R1-R4 inputs.
 WITH cols AS (
   SELECT a.attnum, a.attname,
          a.attname IN ('date', 'year', 'latitude', 'longitude', 'coordinates', 'country', 'date_precision',
@@ -179,7 +179,8 @@ WITH cols AS (
 INSERT INTO role_checks
 SELECT 'ingest accidents_raw column privileges match the expected set: ' || attname,
        has_column_privilege('ingest', oid, attnum, 'SELECT') = (attname IN ('accident_id', 'source', 'source_id', 'date', 'year',
-                                                                     'mountain', 'state', 'latitude', 'longitude', 'mp_route_id'))
+                                                                     'mountain', 'state', 'latitude', 'longitude', 'mp_route_id',
+                                                                     'activity'))
        AND NOT has_column_privilege('ingest', oid, attnum, 'UPDATE')
        AND NOT has_column_privilege('ingest', oid, attnum, 'INSERT')
        AND NOT has_column_privilege('ingest', oid, attnum, 'REFERENCES')

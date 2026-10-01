@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from app.data.repair import dates, geocode, severity
+from app.data.repair import activity, dates, geocode, severity
 
 Step = Callable[[AsyncConnection, argparse.Namespace], Awaitable[dict[str, object]]]
 STEPS: dict[str, Step] = {
@@ -28,6 +28,10 @@ STEPS: dict[str, Step] = {
     "r3-plot-import": geocode.run_r3_plot_import,
     "r3-ambiguous-export": geocode.run_r3_ambiguous_export,
     "r3-ambiguous-import": geocode.run_r3_ambiguous_import,
+    "r4": activity.run_r4,
+    "r4-golden-export": activity.run_r4_golden_export,
+    "r4-review-export": activity.run_r4_review_export,
+    "r4-review-import": activity.run_r4_review_import,
 }
 
 
