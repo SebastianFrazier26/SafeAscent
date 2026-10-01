@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from app.data.repair import activity, dates, geocode, severity
+from app.data.repair import activity, dates, dedupe, geocode, severity
 
 Step = Callable[[AsyncConnection, argparse.Namespace], Awaitable[dict[str, object]]]
 STEPS: dict[str, Step] = {
@@ -32,6 +32,8 @@ STEPS: dict[str, Step] = {
     "r4-golden-export": activity.run_r4_golden_export,
     "r4-review-export": activity.run_r4_review_export,
     "r4-review-import": activity.run_r4_review_import,
+    "r5": dedupe.run_r5,
+    "r5-import": dedupe.run_r5_import,
 }
 
 
@@ -42,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--review-file", help="decisions CSV for *-import steps")
     parser.add_argument("--out", help="output path for *-export steps")
     parser.add_argument(
-        "--overwrite", action="store_true", help="*-export: replace an existing file (it may hold filled decisions)"
+        "--overwrite", action="store_true", help="*-export (and r5 --apply): replace an existing file (it may hold filled decisions); r5-import: replace earlier owner decisions"
     )
     return parser
 

@@ -230,3 +230,29 @@ def test_r4_rows_pending_owner_review_are_reported():
         "OR (activity_class = 'climbing_approach') <> (inclusion_flag IS NOT DISTINCT FROM 'ski_approach_best_effort'))"
     )
     assert bad["n"] == 0
+
+
+def test_r5_no_exact_duplicates_among_canonical_rows():
+    [row] = fetch(
+        "SELECT count(*) AS n FROM (SELECT source, date, latitude, longitude, accident_type, activity, injury_severity, "
+        "mountain, route, md5(coalesce(description, '')) FROM accidents WHERE is_canonical "
+        "GROUP BY 1,2,3,4,5,6,7,8,9,10 HAVING count(*) > 1) d"
+    )
+    assert row["n"] == 0
+
+
+def test_r5_latest_applied_run_left_no_pair_undecided():
+    [row] = fetch(
+        "SELECT (validation_report->>'review_pending')::int AS pending FROM source_ingest_log "
+        "WHERE source = 'repair:r5' AND status = 'ok' ORDER BY finished_at DESC LIMIT 1"
+    )
+    assert row["pending"] == 0
+
+
+def test_r5_every_group_has_exactly_one_canonical_head():
+    [row] = fetch(
+        "SELECT count(*) AS bad FROM (SELECT incident_group_id FROM accidents WHERE incident_group_id IS NOT NULL "
+        "GROUP BY 1 HAVING count(*) FILTER (WHERE is_canonical) <> 1 "
+        "OR bool_and(accident_id <> incident_group_id)) g"
+    )
+    assert row["bad"] == 0
