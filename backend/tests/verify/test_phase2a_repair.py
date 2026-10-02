@@ -236,6 +236,9 @@ def test_r5_no_exact_duplicates_among_canonical_rows():
     [row] = fetch(
         "SELECT count(*) AS n FROM (SELECT source, date, latitude, longitude, accident_type, activity, injury_severity, "
         "mountain, route, md5(coalesce(description, '')) FROM accidents WHERE is_canonical "
+        # M2 (owner): rows with neither a date nor any narrative are not exact duplicates;
+        # this mirrors normalize_text (lowercase, then any a-z0-9 left).
+        "AND (date IS NOT NULL OR lower(coalesce(description, '')) ~ '[a-z0-9]') "
         "GROUP BY 1,2,3,4,5,6,7,8,9,10 HAVING count(*) > 1) d"
     )
     assert row["n"] == 0

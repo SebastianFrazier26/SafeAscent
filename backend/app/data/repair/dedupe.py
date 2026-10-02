@@ -1,6 +1,6 @@
 """R5: exact duplicates merge automatically; fuzzy pairs (±2 days, ≤5 km) are scored and
-auto-decided at ≥0.90 (merge) and ≤0.40 (distinct); only the band between goes to the
-owner. A row whose point is untrusted cannot use the distance rule, so it is compared on
+auto-decided at ≥0.90 (merge, and only when the place names agree) and ≤0.40 (distinct);
+only the band between goes to the owner. A row whose point is untrusted cannot use the distance rule, so it is compared on
 date, state and text evidence instead, and every such pair goes to the owner (owner
 decision O2: never auto-merged). Duplicates are only ever marked (incident_group_id,
 is_canonical), never deleted, and a row that leaves a group is restored.
@@ -44,6 +44,12 @@ WEIGHTS = {"date": 0.30, "distance": 0.25, "type": 0.15, "severity": 0.15, "name
 GEO_RANK = {"exact": 0, "crag": 1, "area": 2, "park_centroid": 3, "region_fallback": 4, "unknown": 5}
 SOURCE_RANK = {"aac": 0, "avalanche": 1, "nps": 2}
 RANGE_YEAR_SOURCE = "aac_source_id_neighbours"
+# I2 (owner, 2026-10-01): an area or park-centroid point stands for a whole area, so two rows
+# sharing one are only half as likely to be co-located as two crag-level points.
+FULL_DISTANCE_PRECISIONS = frozenset({"exact", "crag"})
+AREA_DISTANCE_CREDIT = 0.5
+# I3 (owner): the rows accidents_clean keeps (O3: a NULL country stays, flagged).
+CLEAN_ACTIVITY = frozenset({"climbing", "climbing_approach"})
 # O2 text evidence. These thresholds only decide which untrusted-point pairs the owner sees
 # (nothing is auto-decided on them); they are first guesses, to be checked against the
 # review size in the Task 13 rehearsal. Too low floods the CSV, too high double counts.
@@ -85,6 +91,10 @@ class DupRow:
     names: tuple[str, ...] = ()
     # Normalised narrative, held in memory only for O2; never exported, logged or printed.
     narrative: str = field(default="", repr=False, compare=False)
+    # place_key of mountain and of route, each on its own: a shared one names the same summit or route.
+    peaks: frozenset[str] = frozenset()
+    # Would accidents_clean keep this row (activity class, country, no exclusion)?
+    clean: bool = True
 
 
 def _same(a: str | None, b: str | None) -> float:
@@ -136,9 +146,12 @@ def pair_score(a: DupRow, b: DupRow) -> float:
     gap = interval_gap_days(ia, ib) if ia is not None and ib is not None else MAX_DAYS + 1
     weight = min(PRECISION_WEIGHT.get(a.date_precision or "", 0.0), PRECISION_WEIGHT.get(b.date_precision or "", 0.0))
     ca, cb = _coords(a), _coords(b)
-    near = (
-        max(0.0, 1 - haversine_km(ca[0], ca[1], cb[0], cb[1]) / MAX_KM) if ca is not None and cb is not None else 0.5
-    )
+    if ca is None or cb is None:
+        near = 0.5
+    else:
+        near = max(0.0, 1 - haversine_km(ca[0], ca[1], cb[0], cb[1]) / MAX_KM)
+        if not {a.geocode_precision, b.geocode_precision} <= FULL_DISTANCE_PRECISIONS:
+            near *= AREA_DISTANCE_CREDIT
     name = jaro_winkler(a.place, b.place) if a.place and b.place else 0.5
     score = (
         WEIGHTS["date"] * weight * max(0.0, 1 - gap / (MAX_DAYS + 1))
@@ -158,9 +171,28 @@ def band(score: float) -> Literal["merge", "distinct", "review"]:
     return "review"
 
 
+def places_agree(a: DupRow, b: DupRow) -> bool:
+    return bool(a.peaks & b.peaks) or bool(a.place and b.place and jaro_winkler(a.place, b.place) >= PLACE_MATCH_AT)
+
+
+def decide(a: DupRow, b: DupRow, score: float, basis: Basis) -> Literal["merge", "distinct", "review"]:
+    """The auto decision for a scored pair that has no owner decision. Only the distance rule
+    auto-decides (O2: an untrusted-point pair always goes to the owner), and an auto merge also
+    needs the place names to agree (I2): same day and place-level point alone is not enough."""
+    if basis != "distance":
+        return "review"
+    verdict = band(score)
+    if verdict == "merge" and not places_agree(a, b):
+        return "review"
+    return verdict
+
+
 def exact_groups(rows: Sequence[DupRow]) -> list[list[int]]:
     by_key: dict[tuple[object, ...], list[int]] = defaultdict(list)
     for row in rows:
+        # M2 (owner): with no date and no narrative, equal remaining fields are no evidence of one incident.
+        if row.date is None and not row.narrative:
+            continue
         by_key[(row.family, *row.exact_key)].append(row.accident_id)
     return sorted(sorted(ids) for ids in by_key.values() if len(ids) > 1)
 
@@ -266,12 +298,15 @@ def _group_of(ids: Iterable[int], merges: Iterable[tuple[int, int]]) -> dict[int
 Pair = tuple[int, int]
 
 
-def resolve_merges(ids: Iterable[int], decided: Mapping[Pair, tuple[str, str]]) -> tuple[list[Pair], list[Pair]]:
-    """(merges to apply, auto merges withheld for the owner). decided maps a pair to
-    (decision, decided_by). Groups are transitive, so auto merges A-B and B-C would join A and
-    C even where A-C was judged distinct; such a group keeps only its owner merges and its auto
-    merges go to the owner instead. Owner merges outrank an auto distinct; owner decisions that
-    contradict each other are refused."""
+def resolve_merges(
+    ids: Iterable[int], decided: Mapping[Pair, tuple[str, str]], *, pending: Iterable[Pair] = ()
+) -> tuple[list[Pair], dict[Pair, Pair]]:
+    """(merges to apply, {auto merge withheld for the owner: the pair that withheld it}).
+    decided maps a pair to (decision, decided_by); pending are pairs waiting for the owner.
+    Groups are transitive, so auto merges A-B and B-C would join A and C even where A-C was
+    judged distinct, or is still waiting for the owner (I1); such a group keeps only its owner
+    merges and its auto merges go to the owner instead. Owner merges outrank an auto distinct
+    and settle a pending pair they already join; contradictory owner decisions are refused."""
     ids = list(ids)
     owner_merges = sorted(p for p, (d, by) in decided.items() if d == "merge" and by == "owner")
     owner_group = _group_of(ids, owner_merges)
@@ -281,22 +316,26 @@ def resolve_merges(ids: Iterable[int], decided: Mapping[Pair, tuple[str, str]]) 
     )
     if clash:
         raise ValueError(f"owner decisions contradict: distinct pair(s) {clash[:5]} are joined by owner merges")
-    distinct = [
-        p for p, (d, _) in decided.items()
-        if d == "distinct" and not (p[0] in owner_group and owner_group[p[0]] == owner_group.get(p[1]))
-    ]
+    blocking = sorted(
+        {p for p, (d, _) in decided.items() if d == "distinct"} | set(pending)
+    )
+    blocking = [p for p in blocking if not (p[0] in owner_group and owner_group[p[0]] == owner_group.get(p[1]))]
     merges = sorted(p for p, (d, _) in decided.items() if d == "merge")
     full_group = _group_of(ids, merges)
-    split = {full_group[a] for a, b in distinct if a in full_group and full_group[a] == full_group.get(b)}
-    withheld = [p for p in merges if decided[p][1] == "auto" and full_group[p[0]] in split]
-    held = set(withheld)
-    return [p for p in merges if p not in held], withheld
+    split: dict[int, Pair] = {}
+    for a, b in blocking:
+        if a in full_group and full_group[a] == full_group.get(b):
+            split.setdefault(full_group[a], (a, b))
+    withheld = {p: split[full_group[p[0]]] for p in merges if decided[p][1] == "auto" and full_group[p[0]] in split}
+    return [p for p in merges if p not in withheld], withheld
 
 
 def canonical(members: Sequence[DupRow]) -> int:
     best = min(
         members,
         key=lambda r: (
+            # I3 (owner): a head the clean set drops would drop the whole incident with it.
+            0 if r.clean else 1,
             0 if r.date_precision == "day" else 1,
             GEO_RANK.get(r.geocode_precision or "unknown", 5),
             SOURCE_RANK[r.family],
@@ -390,6 +429,12 @@ def _dup_row(r: Mapping[str, object]) -> DupRow:
         state=state_code(_str(r["state"])),
         names=names,
         narrative=normalize_text(_str(r["description"])),
+        peaks=frozenset(k for k in (place_key(_str(r[c])) for c in ("mountain", "route")) if k),
+        clean=(
+            _str(r["activity_class"]) in CLEAN_ACTIVITY
+            and _str(r["country"]) in (None, "US")
+            and r["excluded_reason"] is None
+        ),
     )
 
 
@@ -400,6 +445,7 @@ class Plan:
     decided: dict[Pair, tuple[str, float, str]]  # pair -> (decision, score, decided_by)
     review: list[tuple[int, int, float, Basis]]
     merges: list[Pair]
+    conflict_with: dict[Pair, Pair]
     scored: set[Pair]
     owner: dict[Pair, str]
     skipped: Counter[str]
@@ -422,6 +468,7 @@ async def _plan(conn: AsyncConnection) -> Plan:
         "source", "source_id", "date", "latitude", "longitude", "accident_type", "activity", "injury_severity",
         "mountain", "route", "location", "state", "description", "date_precision", "geocode_precision",
         "year_lo", "year_hi", "year_source", "incident_group_id", "is_canonical",
+        "activity_class", "country", "excluded_reason",
     ])
     history = await _group_history(conn)
     rows: dict[int, DupRow] = {}
@@ -461,7 +508,7 @@ async def _plan(conn: AsyncConnection) -> Plan:
         if (lo, hi) in owner:
             decided[(lo, hi)] = (owner[(lo, hi)], score, "owner")
             continue
-        verdict = band(score)
+        verdict = decide(rows[lo], rows[hi], score, "distance")
         if verdict == "review":
             review.append((lo, hi, score, "distance"))
         else:
@@ -472,22 +519,28 @@ async def _plan(conn: AsyncConnection) -> Plan:
             decided[(lo, hi)] = (owner[(lo, hi)], score, "owner")
         else:
             review.append((lo, hi, score, basis))
-    merges, withheld = resolve_merges(rows, {p: (d, by) for p, (d, _, by) in decided.items()})
+    merges, withheld = resolve_merges(
+        rows, {p: (d, by) for p, (d, _, by) in decided.items()}, pending=[(lo, hi) for lo, hi, _, _ in review]
+    )
     for pair in withheld:
         _, score, _ = decided.pop(pair)
         review.append((pair[0], pair[1], score, "conflict"))
-    return Plan(rows, locators, decided, sorted(review), merges, scored, owner, skipped)
+    return Plan(rows, locators, decided, sorted(review), merges, withheld, scored, owner, skipped)
 
 
 REVIEW_SIDE = ["source", "source_id", "date", "date_precision", "state", "mountain", "route", "accident_type",
                "injury_severity", "geocode_precision"]
-REVIEW_COLUMNS = ["low_id", "high_id", "basis", "score", *(f"{c}_{s}" for s in "ab" for c in REVIEW_SIDE)]
+REVIEW_COLUMNS = ["low_id", "high_id", "basis", "conflict_with", "score", *(f"{c}_{s}" for s in "ab" for c in REVIEW_SIDE)]
 
 
 def _review_rows(plan: Plan) -> list[dict[str, object]]:
     out: list[dict[str, object]] = []
     for lo, hi, score, basis in plan.review:
-        row: dict[str, object] = {"low_id": lo, "high_id": hi, "basis": basis, "score": score}
+        trigger = plan.conflict_with.get((lo, hi))
+        row: dict[str, object] = {
+            "low_id": lo, "high_id": hi, "basis": basis, "score": score,
+            "conflict_with": f"{trigger[0]}-{trigger[1]}" if trigger else "",
+        }
         for side, accident_id in (("a", lo), ("b", hi)):
             loc, dup = plan.locators[accident_id], plan.rows[accident_id]
             values = dict(loc) | {"date_precision": dup.date_precision, "geocode_precision": dup.geocode_precision}
@@ -600,4 +653,8 @@ async def run_r5_import(conn: AsyncConnection, args: argparse.Namespace) -> dict
                 "decision = EXCLUDED.decision, decided_by = 'owner', rule_version = EXCLUDED.rule_version, "
                 "run_id = NULL, decided_at = now()"),
                 {"lo": lo, "hi": hi, "s": score, "d": d, "v": R5_BASE})
-    return {"mode": "apply" if args.apply else "dry_run", "imported": len(new), "unchanged": len(incoming) - len(new)}
+    overwritten = [f"{lo}-{hi}: {plan.owner[(lo, hi)]}->{d}" for (lo, hi), (d, _) in sorted(new.items()) if (lo, hi) in plan.owner]
+    return {
+        "mode": "apply" if args.apply else "dry_run", "imported": len(new), "unchanged": len(incoming) - len(new),
+        "overwritten": overwritten,
+    }

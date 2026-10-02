@@ -16,6 +16,7 @@ from app.data.repair.dedupe import (
     candidate_pairs,
     canonical,
     date_interval,
+    decide,
     exact_groups,
     group_changes,
     groups,
@@ -33,7 +34,7 @@ from tests.pgtest import migrated_db, requires_pg, sa_url
 
 
 def r(i, d=date(2010, 7, 1), lat=40.0, lon=-105.0, typ="fall", sev="serious", place="Fixture Peak",
-      fam="aac", dp="day", gp="area", key=None, **kw):
+      fam="aac", dp="day", gp="exact", key=None, **kw):
     return DupRow(i, fam, d, lat, lon, typ, sev, place, dp, gp, key or (i,), **kw)
 
 
@@ -52,6 +53,40 @@ def test_unknown_distance_scores_half_not_zero():
     assert pair_score(r(1, gp="region_fallback"), r(2)) == pytest.approx(1.0 - 0.25 * 0.5)
 
 
+def test_area_and_centroid_points_get_half_distance_credit():
+    # I2 (owner): only exact/crag points vouch for co-location in full.
+    assert pair_score(r(1, gp="area"), r(2)) == pytest.approx(1.0 - 0.25 * 0.5)
+    assert pair_score(r(1, gp="crag"), r(2, gp="crag")) == 1.0
+    assert pair_score(r(1, gp="park_centroid"), r(2, gp="area")) == pytest.approx(1.0 - 0.25 * 0.5)
+
+
+def test_auto_merge_needs_matching_place_names():
+    same_crag = (r(1, place="longs kieners", peaks=frozenset({"longs", "kieners"})),
+                 r(2, fam="nps", place="longs", peaks=frozenset({"longs"})))
+    assert decide(*same_crag, pair_score(*same_crag), "distance") == "merge"
+    unnamed = (r(1, place=""), r(2, fam="nps", place=""))
+    assert pair_score(*unnamed) >= 0.90 and decide(*unnamed, pair_score(*unnamed), "distance") == "review"
+    shared_summit = (r(1, place="sneffels east", peaks=frozenset({"sneffels"})),
+                     r(2, place="lavender couloir", peaks=frozenset({"sneffels", "lavender couloir"})))
+    assert decide(*shared_summit, 0.95, "distance") == "merge"
+
+
+def test_two_park_centroid_falls_on_one_day_go_to_review_not_merge():
+    for places in (("half dome", "el capitan"), ("", "")):
+        a = r(1, fam="nps", gp="park_centroid", place=places[0])
+        b = r(2, fam="nps", gp="park_centroid", place=places[1])
+        [(_, _, score)] = candidate_pairs([a, b])
+        assert decide(a, b, score, "distance") == "review"
+
+
+def test_untrusted_pairs_go_to_review_whatever_their_score():
+    a, b = r(1, gp="region_fallback", typ="fall", sev="fatal"), r(2, fam="nps", typ="avalanche", sev="minor", dp="year")
+    assert pair_score(a, b) <= 0.40
+    for basis in ("place_name", "place_mention", "narrative"):
+        assert decide(a, b, pair_score(a, b), basis) == "review"
+    assert decide(a, b, 0.99, "place_name") == "review"
+
+
 def test_bands():
     assert (band(0.95), band(0.40), band(0.41), band(0.89)) == ("merge", "distinct", "review", "review")
 
@@ -59,6 +94,13 @@ def test_bands():
 def test_exact_groups_are_within_source_only():
     rows = [r(1, key=("k",)), r(2, key=("k",)), r(3, key=("k",), fam="nps")]
     assert exact_groups(rows) == [[1, 2]]
+
+
+def test_exact_merge_needs_a_shared_date_or_narrative():
+    # M2 (owner): two bare rows with no date and no narrative are not evidence of one incident.
+    assert exact_groups([r(1, d=None, key=("k",)), r(2, d=None, key=("k",))]) == []
+    told = [r(1, d=None, key=("k",), narrative="rappel anchor failed"), r(2, d=None, key=("k",), narrative="rappel anchor failed")]
+    assert exact_groups(told) == [[1, 2]]
 
 
 def test_groups_are_transitive():
@@ -70,6 +112,14 @@ def test_canonical_precedence_day_then_geocode_then_aac_then_lowest_id():
     assert canonical([r(5, gp="region_fallback"), r(9, gp="exact")]) == 9
     assert canonical([r(5, fam="nps"), r(9, fam="aac")]) == 9
     assert canonical([r(9), r(5)]) == 5
+
+
+def test_canonical_head_is_a_row_accidents_clean_keeps_when_any_member_is():
+    # I3 (owner): a day-precision head that the clean set excludes would drop the incident.
+    excluded_day = r(5, dp="day", clean=False)
+    kept_month = r(9, dp="month", gp="area", fam="nps")
+    assert canonical([excluded_day, kept_month]) == 9
+    assert canonical([excluded_day, r(9, dp="month", clean=False)]) == 5
 
 
 def test_new_owner_decision_produces_a_new_rule_version():
@@ -170,17 +220,27 @@ def test_group_changes_reset_rows_that_left_a_group():
 def test_owner_distinct_withholds_auto_merges_that_would_join_the_pair():
     decided = {(1, 2): ("merge", "auto"), (2, 3): ("merge", "auto"), (1, 3): ("distinct", "owner"), (4, 5): ("merge", "auto")}
     merges, withheld = resolve_merges([1, 2, 3, 4, 5], decided)
-    assert merges == [(4, 5)] and withheld == [(1, 2), (2, 3)]
+    assert merges == [(4, 5)] and withheld == {(1, 2): (1, 3), (2, 3): (1, 3)}
 
 
 def test_auto_distinct_inside_a_transitive_auto_group_sends_the_merges_to_the_owner():
     decided = {(1, 2): ("merge", "auto"), (2, 3): ("merge", "auto"), (1, 3): ("distinct", "auto")}
-    assert resolve_merges([1, 2, 3], decided) == ([], [(1, 2), (2, 3)])
+    assert resolve_merges([1, 2, 3], decided) == ([], {(1, 2): (1, 3), (2, 3): (1, 3)})
+
+
+def test_a_pending_review_pair_inside_a_merged_group_withholds_its_auto_merges():
+    # I1: A-B 0.90 and B-C 0.90 auto-merge, A-C 0.80 waits for the owner; merging A-B-C would
+    # decide A-C before the owner does.
+    decided = {(1, 2): ("merge", "auto"), (2, 3): ("merge", "auto")}
+    assert resolve_merges([1, 2, 3], decided, pending=[(1, 3)]) == ([], {(1, 2): (1, 3), (2, 3): (1, 3)})
+    # Owner merges that already join the pair settle it.
+    owner = {(1, 2): ("merge", "owner"), (2, 3): ("merge", "owner")}
+    assert resolve_merges([1, 2, 3], owner, pending=[(1, 3)]) == ([(1, 2), (2, 3)], {})
 
 
 def test_owner_merges_override_an_auto_distinct():
     decided = {(1, 2): ("merge", "owner"), (2, 3): ("merge", "owner"), (1, 3): ("distinct", "auto")}
-    assert resolve_merges([1, 2, 3], decided) == ([(1, 2), (2, 3)], [])
+    assert resolve_merges([1, 2, 3], decided) == ([(1, 2), (2, 3)], {})
 
 
 def test_contradictory_owner_decisions_are_refused():
@@ -239,8 +299,8 @@ INSERT INTO accidents (accident_id, source, source_id, date, latitude, longitude
                        mountain, route, state, description, date_precision, geocode_precision, activity) VALUES
   (1, 'AAC', '1', '2010-07-02', 40.0, -105.0, 'fall', 'serious', 'Fixture Peak', NULL, 'CO', 'same words', 'day', 'area', 'rock_climbing'),
   (2, 'AAC', '1b', '2010-07-02', 40.0, -105.0, 'fall', 'serious', 'Fixture Peak', NULL, 'CO', 'same words', 'day', 'area', 'rock_climbing'),
-  (3, 'AAC', '3', '2011-08-10', 41.0, -106.0, 'fall', 'fatal', 'Longs Peak', NULL, 'CO', 'alpha text', 'day', 'exact', 'mountaineering'),
-  (4, 'NPS', NULL, '2011-08-10', 41.001, -106.0, 'fall', 'fatal', 'Longs Peak', NULL, 'CO', 'bravo text', 'day', 'park_centroid', 'hiking'),
+  (3, 'AAC', '3', '2011-08-10', 41.0, -106.0, 'fall', 'fatal', 'Longs Peak', NULL, 'CO', 'alpha text', 'day', 'crag', 'mountaineering'),
+  (4, 'NPS', NULL, '2011-08-10', 41.001, -106.0, 'fall', 'fatal', 'Longs Peak', NULL, 'CO', 'bravo text', 'day', 'crag', 'hiking'),
   (5, 'AAC', '5', '2012-06-15', 42.0, -107.0, 'fall', 'serious', 'Fixture Spire', NULL, 'WY', 'charlie text', 'month', 'area', 'rock_climbing'),
   (6, 'NPS', NULL, '2012-06-03', 42.0, -107.0, 'fall', 'serious', 'Fixture Spire', NULL, 'WY', 'delta text', 'day', 'park_centroid', 'rock_climbing'),
   (7, 'AAC', '7', '2013-05-04', 39.7, -105.0, 'fall', 'serious', 'Mount Sneffels', NULL, 'Colorado', 'echo text', 'day', 'region_fallback', 'mountaineering'),
@@ -320,6 +380,7 @@ def test_r5_round_trip_auto_bands_owner_review_flip_and_flip_back(tmp_path, monk
             with out.open(newline="", encoding="utf-8") as fh:
                 exported = list(csv.DictReader(fh))
             assert "description" not in exported[0] and list(exported[0])[-1] == "decision"
+            assert [e["conflict_with"] for e in exported] == ["", ""]
             assert [(e["low_id"], e["high_id"], e["basis"]) for e in exported] == [("5", "6", "distance"), ("7", "8", "place_name")]
             assert {e["source_id_a"] for e in exported} == {"5", "7"}
             assert not any("text" in v for e in exported for v in e.values())
@@ -339,6 +400,7 @@ def test_r5_round_trip_auto_bands_owner_review_flip_and_flip_back(tmp_path, monk
             async with engine.connect() as conn:
                 after_owner = await _all(conn, GROUPS_SQL)
             assert imported["imported"] == 2 and reimported == imported | {"imported": 0, "unchanged": 2}
+            assert imported["overwritten"] == []
             assert decided["review_pending"] == 0 and decided["review_pairs"] == 0
             assert after_owner[4:6] == [(5, 6, False), (6, 6, True)]
 
@@ -347,8 +409,9 @@ def test_r5_round_trip_auto_bands_owner_review_flip_and_flip_back(tmp_path, monk
                 with pytest.raises(ValueError, match="already decided differently"):
                     await dedupe.run_r5_import(conn, _args(review_file=str(flip), apply=True))
             async with engine.begin() as conn:
-                await dedupe.run_r5_import(conn, _args(review_file=str(flip), apply=True, overwrite=True))
+                flip_import = await dedupe.run_r5_import(conn, _args(review_file=str(flip), apply=True, overwrite=True))
                 await dedupe.run_r5(conn, _args(apply=True))
+            assert flip_import["overwritten"] == ["5-6: merge->distinct"]
             async with engine.connect() as conn:
                 flipped = await _all(conn, GROUPS_SQL)
             assert flipped[4:6] == [(5, None, True), (6, None, True)]
