@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### MP tick-aggregate reloads only add new months — 2026-10-02
+
+- Owner decision: a later scrape's reload of `internal.mp_tick_aggregates` never touches a stored `(mp_route_id, period, style)` row, matching count or not. A changed count (most often MP's ever-growing `total`) is now skipped and counted `already_loaded_changed` in the run's stats, rather than quarantined `count_changed`; it never counts toward `--max-quarantine-share`. This resolves the known limitation noted 2026-09-29, where MP's ever-growing totals pushed most later-scrape reloads above the default 10% quarantine gate and got them rejected whole, so a scrape's newly closed months never landed. `app/pipelines/mp_tick_aggregates.py`; tests in `tests/test_mp_tick_aggregates.py`; `DEPLOYMENT.md` and the plan 1 runbook (`docs/superpowers/plans/2026-09-28-phase2a-foundations.md`, Task 10 Step 4) updated to match.
+
 ### Phase 2a foundations: `ingest` role, `internal` schema, tick quarantine, MP tick-count loader — 2026-09-29
 
 - New `app/pipelines/` package: boundary validation with row quarantine and batch gates (`validate.py`); the packed 0.1° grid key shared with SQL via `grid_bucket_key()`, which returns NULL (not an exception) outside its valid range so SQL callers can filter or coalesce rather than crash (`grid.py`); the ingest run log (`ingest_log.py`); a verify-full-only `ingest` engine that refuses an `INGEST_DATABASE_URL` weaker than verify-full on a remote host (`db.py`).

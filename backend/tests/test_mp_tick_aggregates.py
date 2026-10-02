@@ -102,7 +102,8 @@ def test_future_months_bad_values_scope_and_incomplete_routes_are_quarantined(tm
         "routes": 4,
         "mp_reported_total": 18,
         "accepted_month_ticks": 0,
-        "already_loaded": 0,
+        "already_loaded_same": 0,
+        "already_loaded_changed": 0,
         "total_mismatch_routes": 1,
     }
 
@@ -120,9 +121,12 @@ def test_stored_rows_are_never_overwritten(tmp_path):
     totals, monthly = read_export(path)
     existing = {(R1, "2025-01", "lead"): 3, (R1, "total", "all"): 7}
     rows, report, stats = validate(totals, monthly, route_types=ICE, existing=existing, today=TODAY)
+    # 2025-01 lead is a stored key whose exported count grew (3 -> 4): skipped, never quarantined
+    # or applied (owner decision 2026-10-02). Only the genuinely new 2025-03 key loads.
     assert _keys(rows) == {(R1, "2025-03", "lead", 1)}
-    assert report.quarantined == {"count_changed": 1}
-    assert stats["already_loaded"] == 1
+    assert report.quarantined == {}
+    assert stats["already_loaded_same"] == 1  # total: 7 == 7
+    assert stats["already_loaded_changed"] == 1  # 2025-01 lead: 3 -> 4
 
 
 def test_read_export_works_against_a_wal_mode_export_with_a_live_writer(tmp_path):
@@ -203,7 +207,7 @@ def test_reload_in_a_later_month_is_still_a_noop(tmp_path, monkeypatch):
 
 
 @requires_pg
-def test_changed_counts_are_quarantined_never_overwritten(tmp_path, monkeypatch):
+def test_changed_counts_are_skipped_never_overwritten(tmp_path, monkeypatch):
     first_path = _export(tmp_path, [(R1, "2025-01", "lead", 3)], [(R1, 3, 1)], name="a.sqlite")
     second_path = _export(
         tmp_path, [(R1, "2025-01", "lead", 4), (R1, "2025-03", "lead", 1)], [(R1, 5, 1)],
@@ -212,11 +216,33 @@ def test_changed_counts_are_quarantined_never_overwritten(tmp_path, monkeypatch)
     with migrated_db(seed_sql=_seed_ice_route()) as name:
         url = sa_url(name)
         monkeypatch.setattr(loader, "ingest_engine", lambda: create_async_engine(url))
-        asyncio.run(main(first_path, today=TODAY, max_quarantine_share=0.9, dry_run=False))
-        second = asyncio.run(main(second_path, today=TODAY, max_quarantine_share=0.9, dry_run=False))
+        asyncio.run(main(first_path, today=TODAY, max_quarantine_share=0.1, dry_run=False))
+        second = asyncio.run(main(second_path, today=TODAY, max_quarantine_share=0.1, dry_run=False))
         assert second["status"] == "ok" and second["rows_upserted"] == 1
-        assert second["report"]["quarantined"] == {"count_changed": 2}
+        assert second["report"]["quarantined"] == {}
+        assert second["stats"]["already_loaded_changed"] == 2  # 2025-01 lead (3->4) and total (3->5)
         assert asyncio.run(_stored(url)) == [("2025-01", "lead", 3), ("2025-03", "lead", 1), ("total", "all", 3)]
+
+
+@requires_pg
+def test_second_scrape_with_grown_old_months_loads_only_the_new_month(tmp_path, monkeypatch):
+    first_path = _export(tmp_path, [(R1, "2025-01", "lead", 3)], [(R1, 3, 1)], name="a.sqlite")
+    second_path = _export(
+        tmp_path, [(R1, "2025-01", "lead", 5), (R1, "2026-09", "lead", 2)], [(R1, 7, 1)],
+        scraped_at="2026-10-05T00:00:00+00:00", name="b.sqlite",
+    )
+    with migrated_db(seed_sql=_seed_ice_route()) as name:
+        url = sa_url(name)
+        monkeypatch.setattr(loader, "ingest_engine", lambda: create_async_engine(url))
+        first = asyncio.run(main(first_path, today=TODAY, max_quarantine_share=0.1, dry_run=False))
+        second = asyncio.run(main(second_path, today=date(2026, 10, 10), max_quarantine_share=0.1, dry_run=False))
+        assert first["status"] == "ok"
+        assert second["status"] == "ok" and second["rows_upserted"] == 1  # only 2026-09 lead is new
+        assert second["report"]["quarantined"] == {}
+        assert second["stats"]["already_loaded_changed"] == 2  # grown 2025-01 lead and grown total
+        assert asyncio.run(_stored(url)) == [
+            ("2025-01", "lead", 3), ("2026-09", "lead", 2), ("total", "all", 3),
+        ]
 
 
 @requires_pg
