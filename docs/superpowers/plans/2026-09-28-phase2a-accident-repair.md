@@ -19,7 +19,7 @@
 Everything in the foundations plan's Global Constraints applies. In particular:
 - No DDL under `backend/app/`; schema changes only in revisions `0005`, `0006`; forward-only with refusing downgrades.
 - Every repair is idempotent per `(accident_id, field, rule_version)`; a rerun with the same rule version changes nothing. Rows are never deleted; excluded rows stay with `excluded_reason`.
-- Accident narratives (`description`) are read internally by R4/R12 only; they never go into logs, run reports, fixtures, docs, commits, or review CSVs. Golden-set files hold `accident_id` + labels only.
+- Accident narratives (`description`) are read internally, in memory, by R4, R5 (O2: an md5 and word tokens) and R12 only; they never go into logs, run reports, fixtures, docs, commits, or review CSVs. Golden-set files hold `accident_id` + labels only.
 - Nulling coordinates must also null `coordinates` (the `accidents_coords_trigger` only fills it when both are non-null). Coordinates are nulled only for foreign rows (`foreign_place`, `outside_us`) and spec-mandated ambiguous GNIS names; every other doubtful point keeps its coordinates and is labelled by `geocode_precision` (the D10 principle applied to space). Consumers use a point only when `geocode_precision` is in `geocode.TRUSTED_POINT_PRECISIONS` (`exact`, `crag`, `area`, `park_centroid`), exposed as `accidents_clean.point_trusted`.
 - R1 and R2 touch only rows present in `internal.accidents_raw` (the frozen pre-2a copy). Rows loaded later (plan 3's R11 facts CSV, e.g. `ANAC-2025-001`) carry their own date precision and are never re-dated by the `source_id` neighbour rule, even when `r2r1` is re-run on a refresh.
 - Runbook database access goes only through `backend/scripts/runbook_helpers.sh` (Task 4), built on plan 1's `split_pg_url` + `verify_full_url`: TLS is `sslmode=verify-full&sslrootcert=system` for psql and `app.db.ssl.connect_args_for` for Python (verify cells use plan 1's `tests/verify/_db.fetch`); `TARGET_HOST` must be set explicitly, either a Neon branch host or the literal `production`, and every helper refuses while it is unset, so no step can silently hit the wrong host (O4).
@@ -4075,11 +4075,26 @@ Expected:
 
 ### Task 13: OWNER/AGENT RUNBOOK — apply PR 2a-2 (GNIS, R3a/R3, R4, R5, R12, views)
 
-Rewritten in the Task 11 docs pass (2026-10-01) to the Task 12 pattern (final review 2a-1 C1–C4, I1–I5; re-review N1–N3, m1–m6), plus the 2a-2 carries: the `r3-states` stop (Task 7 I1/N3), export-once/fill/import halves and `save_once` evidence for every hand check and review CSV, measured review sizes (Task 9 O2 thresholds, R4 O1), timed R3/R5 applies (G14), the `require_r3`/`require_r4` order, and the GNIS quarantine margin (G20).
+Rewritten in the Task 11 docs pass (2026-10-01) to the Task 12 pattern (final review 2a-1 C1–C4, I1–I5; re-review N1–N3, m1–m6), plus the 2a-2 carries: the `r3-states` stop (Task 7 I1/N3), export-once/fill/import halves and `save_once` evidence for every hand check and review CSV, measured review sizes (Task 9 O2 thresholds, R4 O1), timed R3/R5 applies (G14), the `require_r3`/`require_r4` order, and the GNIS quarantine margin (G20). Final review 2a-2 (2026-10-01) then fixed the execution model: gate blocks before every prod write (C1), comparison helpers in `runbook_helpers.sh` that fail closed (C2), the `r3-states` diff after the grants (C3), the Step 0 checkout (C4), and I1–I5.
 
 Every connection is TLS verify-full (`verify_full_url` for psql, `connect_args_for` via `tests/verify/_db.fetch` and `db.ingest_engine` for Python). Every repair runs as `ingest` and prints counts only; no CSV carries a narrative. Neon branch creation and snapshots can be run by an agent under the owner's CLI authorization. The owner does: the `r3-states` confirmation (Step 3), the cluster review and every hand check or review CSV (Steps 4–10), the sign-off (Step 11) and authorizing prod (Step 12).
 
-**Shell state.** As Task 12: `TARGET_HOST`, `B`, `BRANCH_HOST` and the helper functions live only in the shell that set them; each guard sits on its own line or opens its subshell; the helpers refuse while `TARGET_HOST` is unset, and it never defaults to prod. In a new shell, run a re-entry block first, then only the block you are on. Never re-run an export (the `*a` steps), a `save_once` line that already wrote its file, or a creation (Step 1's `neonctl branches create`, 12c).
+**Shell state.** As Task 12: `TARGET_HOST`, `B`, `BRANCH_HOST` and the helper functions live only in the shell that set them; each guard sits on its own line or opens its subshell; the helpers refuse while `TARGET_HOST` is unset, and it never defaults to prod. An agent runs every block in a fresh shell (Task 12 rehearsal), so on the branch it runs the re-entry block first, then only the block it is on. No block defines a function for a later block: every helper the blocks use (`ING`, `save_once`, `same_ids`, `gate_pass`, `gate_require`, `bg_start`, `bg_wait`) comes from `scripts/runbook_helpers.sh`, and a helper that is missing fails with "command not found", never a pass. Never re-run an export (the `*a` steps), a `save_once` line that already wrote its file, or a creation (Step 1's `neonctl branches create`, 12b).
+
+**Long runs (I5).** An agent's tool call stops at 10 minutes, and the R3, R4, R5 and R12 applies, the GNIS load and the full `VERIFY` run make thousands of Neon round trips. They never run in the foreground:
+- `bg_start LOG CMD…` (from `backend/`) runs CMD under `nohup` with its output in LOG, with the exported `TARGET_HOST`, and ends LOG with `RUNBOOK_ELAPSED=<n>s` (the G14 wall time) and `RUNBOOK_EXIT=<rc>`. It refuses a LOG that exists, so a re-run block never starts a second apply.
+- `bg_wait LOG` polls in its own block for up to 9 minutes. It returns 0 when CMD exited 0 (prints the log tail with the counts), 2 while CMD is still running (run the same `bg_wait` block again; never start a second run), and 1 when CMD failed or its process is gone with no exit line. A failed or killed apply wrote nothing (one transaction): fix the cause, move the log to `../data/review/logs/failed/`, then run the `bg_start` block again.
+- `bg_wait LOG 0` checks without waiting; a block that chains `bg_wait LOG 0 && …` runs its next step only after LOG finished ok.
+- By hand: `tail -n 5 ../data/review/logs/<name>.log`; the run is done when the last line is `RUNBOOK_EXIT=0`. If `bg_wait` reports the process gone at once, the agent's tool kills background children when a call returns: move the log aside and run that `bg_start` line with the tool's own background mode (`run_in_background`) instead.
+
+**Gates (Step 12).** Every prod write runs in its own block, after a gate block that checks what it depends on. Every Step 12 block runs inside `( … )` and opens with the prod preamble, so it works in a fresh shell. Every check in a gate block ends in `|| exit 1`, and only when all of them hold does the block call `gate_pass NAME`, which prints `GATE OK: NAME` and leaves a marker in `$GATE_DIR`. The write block opens with `gate_require NAME || exit 1`, so it refuses unless that gate passed, even when run blindly. **A gate that does not print `GATE OK` means STOP:** run nothing further and report to the owner. `same_ids` fails, and never matches, when a file or column is missing or when either export has no rows.
+
+**Rule changes mid-rehearsal (I2).** Steps 3, 4, 7, 8 and 9 can stop for a reviewed rule change (a state mapping, the cluster rule, a wrong R3a/R3 move, the R4 vocabularies, the O2 thresholds). Any such change restarts the rehearsal:
+1. The owner consents to deleting `p2a-2-rehearsal`.
+2. The agent moves every file this rehearsal wrote under `data/review/` to `data/review/superseded-<date>/`, including the filled CSVs and `logs/`. Only `gnis_national.zip` and `gnis_national.sha256` stay. The owner re-fills the new exports.
+3. The agent recreates the branch from current `production` (Step 1) and restarts at Step 1.
+
+`save_once` never overwrites, and 12e–12i compare prod against the fixed `*_branch.*` names. A "redo under a new file name" would therefore leave prod compared against stale evidence, and against branch rows written under the old rule.
 
 **Order.** R4 reads R3's labels (`require_r3`), R5 reads R3 and R4 (`require_r3`, `require_r4`), and R5's group heads prefer rows `accidents_clean` keeps, which reads R4's classes and R3's countries. So every R3 review (Steps 5–7) and the R4 review (Step 8) is imported before R5 runs (Step 9). R12 is independent.
 
@@ -4100,16 +4115,46 @@ BRANCH_HOST="$(branch_host "${B:?}")"
 
 Expected: `branch host ok` and `target is the rehearsal branch`. Anything else: stop; `TARGET_HOST` stays unset.
 
-**Re-enter prod (Step 12 only, after the owner's go-ahead).**
+**Prod preamble (Step 12 only, after the owner's go-ahead).** There is no separate prod re-entry block. Every Step 12 block repeats this first line itself, inside its own subshell:
+
+```bash
+cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+```
+
+- [ ] **Step 0 (owner/agent): Checkout, tools and helpers**
+
+Preconditions:
+- PR 2a-1 is merged and applied on prod (Task 12 Step 6 done).
+- `feat/phase2a-accident-repair-2` has been rebased onto the merged 2a-1. That is a reviewed step, as for any stacked PR.
+
+**C4.** The role env files exist only in the main checkout's `backend/`, and `VERIFY` reads the goldens (Steps 8b and 10) from the checkout it runs in. So the whole runbook runs from the main checkout, with this PR's branch checked out there.
+
+Git will not check out a branch that a worktree holds. So the agent first removes the review worktree `SafeAscent-2a2`. Removing it discards no commit, because worktrees share the repository's commits and refs. The agent never copies, links or prints an env file into a worktree.
+
+```bash
+( M=/Users/sebastianfrazier/Developer/SafeAscent; W=/Users/sebastianfrazier/Developer/SafeAscent-2a2
+  [ -z "$(git -C "$M" status --porcelain --untracked-files=no)" ] || { echo "main checkout has uncommitted changes: STOP" >&2; exit 1; }
+  if git -C "$M" worktree list --porcelain | grep -qx "worktree $W"; then
+    [ -z "$(git -C "$W" status --porcelain)" ] || { echo "$W has uncommitted or untracked files: STOP, ask the owner" >&2; exit 1; }
+    git -C "$M" worktree remove "$W" || exit 1
+  fi
+  git -C "$M" checkout feat/phase2a-accident-repair-2 || exit 1
+  [ "$(git -C "$M" branch --show-current)" = feat/phase2a-accident-repair-2 ] && echo "checkout ok" )
+```
+
+Expected: `checkout ok`. Never pass `--force`: a refused removal or checkout is a stop. The main checkout's gitignored `backend/.env.*` and `data/review/` are untouched by the checkout.
 
 ```bash
 cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+uv sync --frozen
 . scripts/runbook_helpers.sh
-# PRODUCTION
-export TARGET_HOST=production
+unset TARGET_HOST
+psql --version
+command -v neonctl
+type same_ids gate_pass gate_require bg_start bg_wait >/dev/null && echo "2a-2 helpers loaded"
 ```
 
-- [ ] **Step 0 (owner/agent): Tools and helpers** — exactly Task 12 Step 0 (`uv sync --frozen`, helpers sourced, `unset TARGET_HOST`, `psql` 16+, `neonctl` resolves). Precondition: PR 2a-1 is applied on prod (Task 12 Step 6 done), and this PR's branch is checked out.
+Expected: as Task 12 Step 0 (`psql` 16+, `neonctl` resolves), plus `2a-2 helpers loaded`. If that line is missing, an older `runbook_helpers.sh` is checked out (the wrong branch): stop.
 
 - [ ] **Step 1 (owner/agent): New Neon branch `p2a-2-rehearsal` from `production`; migrate; grants**
 
@@ -4137,7 +4182,12 @@ OWNER_PSQL -q -f db/roles/verify_roles.sql
 OWNER_PSQL -q -f db/roles/verify_roles_phase2.sql
 ```
 
-Expected: `0004_phase2a_foundation (head)` before (anything else: stop, Task 12 has not reached prod), `0006_accidents_clean (head)` after, `No new upgrade operations detected.`, `phase 2 grants applied`, `ALL ROLE CHECKS PASSED`, `ALL PHASE 2 ROLE CHECKS PASSED`. The 0005/0006 upgrade runs in one transaction under `lock_timeout = '5s'`; a lock timeout rolls back both and is safe to rerun.
+Expected, in order:
+- The first `MIG current` prints `0004_phase2a_foundation` with **no** `(head)` (I1): this branch's code ships 0005/0006, so alembic marks only `0006` as head. Anything else: stop, because Task 12 has not reached prod.
+- The second prints `0006_accidents_clean (head)`.
+- Then `No new upgrade operations detected.`, `phase 2 grants applied`, `ALL ROLE CHECKS PASSED` and `ALL PHASE 2 ROLE CHECKS PASSED`.
+
+The 0005/0006 upgrade runs in one transaction under `lock_timeout = '5s'`. A lock timeout rolls back both and is safe to rerun.
 
 - [ ] **Step 2 (owner/agent): Download GNIS once, load it** (open public-domain USGS file; not scraping)
 
@@ -4149,7 +4199,11 @@ GNIS_ZIP=../data/review/gnis_national.zip
   https://prd-tnm.s3.amazonaws.com/StagedProducts/GeographicNames/DomesticNames/DomesticNames_National_Text.zip
 save_once ../data/review/gnis_national.sha256 shasum -a 256 "$GNIS_ZIP"
 unzip -l "$GNIS_ZIP" | grep -i DomesticNames_National
-INGMOD app.pipelines.gnis --file "$GNIS_ZIP"
+bg_start ../data/review/logs/gnis_branch.log INGMOD app.pipelines.gnis --file "$GNIS_ZIP"
+```
+
+```bash
+bg_wait ../data/review/logs/gnis_branch.log
 ```
 
 If `curl` returns 404, take the current "National … Text" link from https://www.usgs.gov/us-board-on-geographic-names/download-gnis-data. Expected: `"status": "ok"` with roughly 60–80K summits accepted. A header error means the format changed: stop and update `REQUIRED`.
@@ -4168,21 +4222,37 @@ save_once ../data/review/p2a2_r3_states_branch.json ING r3-states
 Expected:
 - The `gnis_denali` rows include `1414314` (Mount McKinley, AK). If not, stop: the reviewed alias table in `geocode.py` points at a feature this GNIS file lacks.
 - **STOP — owner confirmation.** The agent pastes the `foreign` and `unmapped` lists to the owner and waits for a written answer before Step 4:
-  - Every `foreign` value: R3 nulls those rows' points and sets their country, which drops them from `accidents_clean`. The owner confirms each, or the agent fixes the list in a reviewed commit.
-  - Every `unmapped` value (e.g. "USA", "Wash."): R3 never moves such a row by name, and its country stays NULL (kept by `accidents_clean`, O3). The owner either accepts that or asks for a mapping in `state_code` (reviewed commit, new tests), and this step is redone on a fresh file name.
+  - Every `foreign` value: R3 nulls those rows' points and sets their country, which drops them from `accidents_clean`. The owner confirms each, or the agent fixes the list in a reviewed commit (a rule change: restart, see above).
+  - Every `unmapped` value (e.g. "USA", "Wash."): R3 never moves such a row by name, and its country stays NULL (kept by `accidents_clean`, O3). The owner either accepts that or asks for a mapping in `state_code` (reviewed commit, new tests; a rule change: restart).
 
-- [ ] **Step 4 (owner/agent): Fallback clusters, then R3a/R3**
+- [ ] **Step 4 (owner/agent): Fallback clusters and the R3 dry run, STOP for the owner, then R3a/R3**
 
 ```bash
 ING r3-clusters
 save_once ../data/review/p2a2_r3_dry_branch.json ING r3
-time ING r3 --apply
-time ING r3 --apply
 ```
 
-The owner looks at the cluster list (coordinates and row counts only): each point should be a city or park centroid, not a real crag. A real crag (e.g. a popular cliff with many distinct route names) means stop: the agent changes `min_names` or an exclusion list in a reviewed commit, and the dry run is redone under a new file name.
+**STOP — owner cluster review, before any apply (I2).** The owner looks at the cluster list (coordinates and row counts only): each point should be a city or park centroid, not a real crag. A real crag (e.g. a popular cliff with many distinct route names) means the agent changes `min_names` or an exclusion list in a reviewed commit: a rule change, so restart (see above). Only on the owner's written "clusters ok":
 
-Expected: the first apply `applied > 0`; the second `applied: 0` (everything `already_recorded` or `unchanged`). **Time both (G14)** and record the wall time in the PR; each apply is one transaction, so killing one is safe but it must be rerun. Run without a short tool timeout.
+```bash
+bg_start ../data/review/logs/r3_apply1_branch.log ING r3 --apply
+```
+
+```bash
+bg_wait ../data/review/logs/r3_apply1_branch.log
+```
+
+Then the idempotency rerun, which starts only if the first apply finished ok:
+
+```bash
+bg_wait ../data/review/logs/r3_apply1_branch.log 0 && bg_start ../data/review/logs/r3_apply2_branch.log ING r3 --apply
+```
+
+```bash
+bg_wait ../data/review/logs/r3_apply2_branch.log
+```
+
+Expected: the first apply `applied > 0`; the second `applied: 0` (everything `already_recorded` or `unchanged`). **Record both `RUNBOOK_ELAPSED` values in the PR (G14).**
 
 - [ ] **Step 5a (agent): Export the R3a move list — run once, never again**
 
@@ -4194,14 +4264,20 @@ Every row R3a moved to a GNIS summit (`gnis_summit`), not a sample; expected ~60
 
 - [ ] **Step 5b (owner): Fill `correct`** — `yes` when the new point is the summit the record names (the `summit` column), else `no`. Save under the same name (a spreadsheet BOM is fine).
 
-- [ ] **Step 5c (owner/agent): Import** — the only half to re-run in a new shell
+- [ ] **Step 5c (owner/agent): Import.** The dry import can be re-run in a new shell as often as needed. The `--apply` runs once: after it, every `no` row has left the pool, and a re-import refuses those rows.
 
 ```bash
 ING r3a-import --review-file ../data/review/r3a_moves.csv
+```
+
+```bash
 ING r3a-import --review-file ../data/review/r3a_moves.csv --apply
 ```
 
-Expected: the dry run prints the agreement and how many `no` rows it would send back; the apply records the agreement (≥0.95, or stop: a wrong move is a rule fix in a reviewed commit and a new rule version, never a hand edit) and sends every `no` row back to its snapshot point as `unknown`/`gnis_rejected` under `r3-review-v1`, which puts it in Step 6's review pool.
+Expected:
+- The dry run prints the agreement and how many `no` rows it would send back.
+- The apply records the agreement. It must be ≥0.95; if not, stop: a wrong move is a rule fix in a reviewed commit (a rule change: restart), never a hand edit.
+- The apply sends every `no` row back to its snapshot point as `unknown`/`gnis_rejected` under `r3-review-v1`, which puts it in Step 6's review pool.
 
 - [ ] **Step 6a (agent): Export the R3 review pool — run once**
 
@@ -4213,10 +4289,13 @@ The pool is every row R3 could not settle: `gnis_ambiguous`, `gnis_state_unmatch
 
 - [ ] **Step 6b (owner): Fill `gnis_id`** — read each report; set the candidate summit it names (state and point may both be wrong), or `none` if the report does not settle it.
 
-- [ ] **Step 6c (owner/agent): Import**
+- [ ] **Step 6c (owner/agent): Import** (dry, then the apply once)
 
 ```bash
 ING r3-ambiguous-import --review-file ../data/review/r3_ambiguous.csv
+```
+
+```bash
 ING r3-ambiguous-import --review-file ../data/review/r3_ambiguous.csv --apply
 ```
 
@@ -4239,7 +4318,7 @@ ING r3-plot-import --review-file ../data/review/r3_spot_check.csv
 VERIFY tests/verify/test_phase2a_repair.py -q -k r3 -s
 ```
 
-Expected: agreement ≥0.95 and the R3 cells pass. Give every `no` row's `accident_id` to the agent (rule fix, never a hand edit). The R3 pending-review count printed by the cells goes in the PR.
+Expected: agreement ≥0.95 and the R3 cells pass. Give every `no` row's `accident_id` to the agent: a rule fix (a rule change: restart), never a hand edit. The R3 pending-review count printed by the cells goes in the PR.
 
 - [ ] **Step 8 (owner/agent): R4 classes, owner review, golden set**
 
@@ -4247,11 +4326,22 @@ Expected: agreement ≥0.95 and the R3 cells pass. Give every `no` row's `accide
 save_once ../data/review/p2a2_r4_dry_branch.json ING r4
 ```
 
-If `unmapped` is non-empty, stop: the agent extends the vocabularies in `activity.py` (reviewed commit, new test rows), and the dry run is redone under a new file name. `--apply` refuses while anything is unmapped. Then:
+If `unmapped` is non-empty, stop: the agent extends the vocabularies in `activity.py` (reviewed commit, new test rows; a rule change: restart). `--apply` refuses while anything is unmapped. Then:
 
 ```bash
-ING r4 --apply
-ING r4 --apply
+bg_start ../data/review/logs/r4_apply1_branch.log ING r4 --apply
+```
+
+```bash
+bg_wait ../data/review/logs/r4_apply1_branch.log
+```
+
+```bash
+bg_wait ../data/review/logs/r4_apply1_branch.log 0 && bg_start ../data/review/logs/r4_apply2_branch.log ING r4 --apply
+```
+
+```bash
+bg_wait ../data/review/logs/r4_apply2_branch.log
 ```
 
 Expected: `terrain_version: r4-v1`; the second apply `applied: 0`. **Record `review_pending` in the PR** (the R4 review size: blank or placeholder activities such as `unknown`/`other`, and AAC ski mountaineering; O1 says these are never guessed).
@@ -4265,10 +4355,13 @@ ING r4-golden-export --out ../data/review/activity_golden_candidates.csv
 
 **8b (owner):** in `r4_activity_review.csv`, set `activity_class` to `climbing|climbing_approach|non_climbing` from the source report, or `none` if it does not settle it (the row stays pending). In the golden candidates, label each row by reading the source record (`strata` in the export output shows what was drawn), and copy **only** `accident_id,label` into `data/golden/activity_v1.csv`, committed on the PR branch.
 
-**8c (owner/agent):**
+**8c (owner/agent):** the dry import, then (a separate block) the apply and the cells:
 
 ```bash
 ING r4-review-import --review-file ../data/review/r4_activity_review.csv
+```
+
+```bash
 ING r4-review-import --review-file ../data/review/r4_activity_review.csv --apply
 VERIFY tests/verify/test_phase2a_repair.py -q -k r4 -s
 ```
@@ -4281,27 +4374,49 @@ Expected: golden ≥0.95; the remaining `review_pending` is printed and recorded
 save_once ../data/review/p2a2_r5_dry_branch.json ING r5
 ```
 
-**Measure before writing anything.** Record `review_pairs` and `review_basis` (`distance`, `place_name`, `place_mention`, `narrative`, `conflict`) in the PR. The O2 thresholds (place 0.85, narrative 0.35) are first guesses: if the owner judges the review too large, stop; the agent tightens `narrative` first (reviewed commit), and the dry run is redone under a new file name. Only day–day pairs can reach the auto-merge band, so AAC month/year rows paired with NPS/CAIC day records land in review by design.
+**Measure before writing anything.** Record `review_pairs` and `review_basis` (`distance`, `place_name`, `place_mention`, `narrative`, `conflict`) in the PR.
+
+The O2 thresholds (place 0.85, narrative 0.35) are first guesses. If the owner judges the review too large, stop: the agent tightens `narrative` first, in a reviewed commit. That is a rule change, so restart.
+
+Only day–day pairs can reach the auto-merge band. So AAC month/year rows paired with NPS/CAIC day records land in review by design.
 
 **9a (agent), run once:**
 
 ```bash
-time ING r5 --apply --out ../data/review/duplicates.csv
+bg_start ../data/review/logs/r5_apply1_branch.log ING r5 --apply --out ../data/review/duplicates.csv
 ```
 
-Writes the auto decisions and exports the review band. **Time it (G14).** If `duplicates.csv` exists the step refuses and rolls back everything: 9a already ran, go to 9b.
+```bash
+bg_wait ../data/review/logs/r5_apply1_branch.log
+```
+
+Writes the auto decisions and exports the review band. **Record `RUNBOOK_ELAPSED` (G14).** If `bg_start` says the log exists, 9a already ran: go to 9b.
 
 **9b (owner):** fill `decision` (`merge|distinct`) for every row by comparing the two source records (`conflict_with` names the pair that withheld a `conflict` row).
 
-**9c (owner/agent):**
+**9c (owner/agent):** the dry import, then (a separate block) the apply and the second R5 run (I4: its own `--out`, never the filled file):
 
 ```bash
 ING r5-import --review-file ../data/review/duplicates.csv
-ING r5-import --review-file ../data/review/duplicates.csv --apply
-time ING r5 --apply
 ```
 
-Expected: the dry import lists `imported` and an empty `overwritten`; the second `r5 --apply` (a new rule version, since the decision set changed; rows that left a group are reset) reports `review_pending: 0` and `path: null`. If owner merges surface new review pairs (`review_pending > 0`), export them to a **new** file (`--out ../data/review/duplicates_round2.csv`), never `--overwrite` the filled one, and repeat 9b–9c on it.
+```bash
+ING r5-import --review-file ../data/review/duplicates.csv --apply && \
+  bg_start ../data/review/logs/r5_apply2_branch.log ING r5 --apply --out ../data/review/duplicates_round2.csv
+```
+
+```bash
+bg_wait ../data/review/logs/r5_apply2_branch.log
+```
+
+Expected:
+- The dry import lists `imported` and an empty `overwritten`.
+- The second `r5 --apply` is a new rule version, because the decision set changed; rows that left a group are reset. It reports `review_pending: 0` and `path: null`.
+
+If owner merges surface new review pairs (`review_pending > 0`), that apply wrote them to `duplicates_round2.csv`. It never writes to the filled `duplicates.csv`. Round 2 then runs like this:
+- The owner fills `duplicates_round2.csv` (as 9b).
+- 9c repeats with the next names: import `duplicates_round2.csv`, log `r5_apply3_branch.log`, `--out ../data/review/duplicates_round3.csv`. Further rounds follow the same pattern.
+- **Record the number of rounds in the PR.** 12h repeats exactly those rounds.
 
 **9d (owner): spot-check 30 auto merges from the latest run only** (D13: stale auto rows from earlier runs are not sampled):
 
@@ -4310,7 +4425,9 @@ ANALYST_PSQL -At -c "SELECT low_id, high_id, score FROM internal.duplicate_decis
 VERIFY tests/verify/test_phase2a_repair.py -q -k r5 -s
 ```
 
-All 30 must be real duplicates (spec: 100%); any miss is a rule fix. The cells include `review_pending == 0` on the latest applied run and one canonical head per group.
+All 30 must be real duplicates (spec: 100%); any miss is a rule fix (a rule change: restart).
+
+The cells include `review_pending == 0` on the latest applied run and one canonical head per group. `r5_no_exact_duplicates_among_canonical_rows` also fails if the owner marked an exact-duplicate `conflict` pair `distinct`. In that case the owner confirms the pair, and the agent records it in the PR rather than treating it as a rule failure.
 
 - [ ] **Step 10 (owner/agent): R12 experience facts**
 
@@ -4322,8 +4439,22 @@ ING r12-golden-export --out ../data/review/experience_golden_candidates.csv
 The export runs once (60 rows where R12 fires, 20 where it does not). The owner fills the four columns by reading each record (blank or `unknown` where it states nothing; `exp_first_season` is `true`, `false` or blank) and copies ids and labels into `data/golden/experience_v1.csv`, committed. Then:
 
 ```bash
-ING r12 --apply
-ING r12 --apply
+bg_start ../data/review/logs/r12_apply1_branch.log ING r12 --apply
+```
+
+```bash
+bg_wait ../data/review/logs/r12_apply1_branch.log
+```
+
+```bash
+bg_wait ../data/review/logs/r12_apply1_branch.log 0 && bg_start ../data/review/logs/r12_apply2_branch.log ING r12 --apply
+```
+
+```bash
+bg_wait ../data/review/logs/r12_apply2_branch.log
+```
+
+```bash
 VERIFY tests/verify/test_phase2a_repair.py -q -k r12 -s
 uv run pytest tests/test_experience_not_required.py -q
 ```
@@ -4333,7 +4464,14 @@ Expected: second apply `applied: 0`; precision ≥0.95 on filled values, `filled
 - [ ] **Step 11 (owner/agent): Full acceptance, the 2a-2 audit re-run, the clean views; owner sign-off**
 
 ```bash
-VERIFY tests/verify -q -s
+bg_start ../data/review/logs/verify_branch.log VERIFY tests/verify -q -s
+```
+
+```bash
+bg_wait ../data/review/logs/verify_branch.log
+```
+
+```bash
 VERIFY tests/verify/test_phase2a_repair.py -q -s -k "r1_2023 or r3a_named or r3_no_trusted or r5_no_exact or clean_set or cm_training"
 ```
 
@@ -4347,146 +4485,398 @@ ANALYST_PSQL -At -c "SELECT count(*) AS outside_us, count(*) FILTER (WHERE c.acc
 
 Record both numbers in the PR for the owner.
 
-**Owner sign-off (blocks prod).** The PR carries: GNIS counts and sha256; the `r3-states` confirmation; R3/R5 apply times; R3a, R3-plot agreements; review sizes (R3 ambiguous `exported`, R4 `review_pending`, R5 `review_pairs` with `review_basis`) and what is still pending after import; R4/R12 golden scores and R12 recall; the 30-pair spot check; `clean_null_country` (O3: rows the clean set keeps with no country, by `geocode_method`); the `outside_us` count from the query below, reported to the owner on its own; D8 (a real southern-panhandle AK point below 55°N, e.g. Dall Island, is labelled `region_fallback`). No sign-off means no Step 12.
+**Owner sign-off (blocks prod).** The PR carries:
+- GNIS counts and sha256.
+- The `r3-states` confirmation.
+- R3/R5 apply times (`RUNBOOK_ELAPSED`).
+- R3a and R3-plot agreements.
+- Review sizes (R3 ambiguous `exported`, R4 `review_pending`, R5 `review_pairs` with `review_basis`), the number of R5 rounds, and what is still pending after import.
+- R4/R12 golden scores and R12 recall.
+- The 30-pair spot check.
+- `clean_null_country` (O3: rows the clean set keeps with no country, by `geocode_method`).
+- The `outside_us` count from the query above, reported to the owner on its own.
+- D8: a real southern-panhandle AK point below 55°N (e.g. Dall Island) is labelled `region_fallback`.
+
+No sign-off means no Step 12.
 
 - [ ] **Step 12 (owner authorizes): Prod**
 
-Do not repeat Steps 1–11: they create a branch, re-target the shell, and their exports belong to the branch. Run only the blocks below, in order, well clear of the 02:00 UTC nightly. Deploy order: this PR's code reads `gnis_summits`/`duplicate_decisions`, so it is not deployed before 12d.
+Do not repeat Steps 1–11: they create a branch, re-target the shell, and their exports belong to the branch. Run only the blocks below, one at a time, in order, well clear of the 02:00 UTC nightly.
+
+- Every block is a subshell that opens with the prod preamble.
+- Every write block refuses unless its gate passed.
+- A block that does not end with its expected `GATE OK` or `finished ok` line is a STOP.
+
+Deploy order: this PR's code reads `gnis_summits`/`duplicate_decisions`, so it is not deployed before 12d.
 
 **STOP — agent: wait for the owner's written go-ahead for prod in this session before running anything below.** The Step 11 sign-off is not that go-ahead; it is a separate, explicit message ("go ahead with prod"). Without it, end here and report.
 
-**12a. Target prod; schema and pre-checks diffed against the branch.**
+**12a. Gate: prod is at 0004, and no earlier prod attempt left gates.** The `r3-states` diff waits for 12e (C3): `r3-states` reads `accidents_raw.state`, which ingest can read only after 12c's `grants_phase2.sql`, and that cannot run before 0005.
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
-# PRODUCTION
-export TARGET_HOST=production
-MIG current
-save_once ../data/review/p2a2_r3_states_prod.json ING r3-states >/dev/null && cmp ../data/review/p2a2_r3_states_branch.json ../data/review/p2a2_r3_states_prod.json && echo "states match the branch"
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+  # PRODUCTION
+  [ ! -e "$GATE_DIR" ] || { echo "$GATE_DIR exists: an earlier prod attempt; STOP, ask the owner" >&2; exit 1; }
+  cur="$(MIG current)" || exit 1
+  printf '%s\n' "$cur"
+  [ "$cur" = 0004_phase2a_foundation ] || { echo "prod is not at 0004_phase2a_foundation: STOP" >&2; exit 1; }
+  gate_pass prod_at_0004 )
 ```
 
-Expected: `0004_phase2a_foundation (head)` and `states match the branch` (the owner's Step 3 confirmation covers exactly these values). Otherwise stop. The precheck SQL's GNIS half needs 0005, so its diff waits for 12e.
+Expected: `0004_phase2a_foundation` (no `(head)`, I1) and `GATE OK: prod_at_0004`.
 
-**12b. Snapshot `pre-2a-2` immediately before the migration.**
+**12b. Snapshot `pre-2a-2` immediately before the migration.** Run once; if neonctl says the branch exists, stop and ask the owner (never recreate it).
 
 ```bash
-# PRODUCTION snapshot
-neonctl branches create --project-id still-morning-74008008 --name pre-2a-2 --parent production --no-secrets --output json \
-  | python3 -c 'import json,sys; b=json.load(sys.stdin)["branch"]; print(b["id"], b["name"], b["parent_id"], b["created_at"])'
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+  # PRODUCTION snapshot
+  gate_require prod_at_0004 || exit 1
+  snap="$(neonctl branches create --project-id still-morning-74008008 --name pre-2a-2 --parent production --no-secrets --output json \
+    | python3 -c 'import json,sys; b=json.load(sys.stdin)["branch"]; print(b["id"], b["name"], b["parent_id"], b["created_at"])')" || exit 1
+  printf '%s\n' "$snap"
+  case "$snap" in *" pre-2a-2 br-restless-bar-ajw5zy4b "*) gate_pass snapshot ;; *) echo "snapshot parent is not production: STOP" >&2; exit 1 ;; esac )
 ```
 
-Expected: parent `br-restless-bar-ajw5zy4b` (`production`). Record the id and `created_at` in the PR.
+Expected: parent `br-restless-bar-ajw5zy4b` (`production`) and `GATE OK: snapshot`. Record the id and `created_at` in the PR.
 
 **12c. Migrate, check, grants, verify.**
 
 ```bash
-# PRODUCTION
-MIG upgrade head
-MIG current
-MIG check
-OWNER_PSQL -q -f db/roles/grants_phase2.sql
-OWNER_PSQL -q -f db/roles/verify_roles.sql
-OWNER_PSQL -q -f db/roles/verify_roles_phase2.sql
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+  # PRODUCTION
+  gate_require snapshot || exit 1
+  MIG upgrade head || exit 1
+  cur="$(MIG current)" || exit 1
+  printf '%s\n' "$cur"
+  [ "$cur" = "0006_accidents_clean (head)" ] || { echo "prod is not at 0006_accidents_clean (head): STOP" >&2; exit 1; }
+  MIG check || exit 1
+  OWNER_PSQL -q -f db/roles/grants_phase2.sql || exit 1
+  OWNER_PSQL -q -f db/roles/verify_roles.sql || exit 1
+  OWNER_PSQL -q -f db/roles/verify_roles_phase2.sql || exit 1
+  gate_pass migrated )
 ```
 
-Expected: the same as Step 1, ending at `0006_accidents_clean (head)`.
+Expected: the same lines as Step 1, ending with `GATE OK: migrated`. The three SQL files set `ON_ERROR_STOP`, so a failed check exits non-zero.
 
-**12d. Load the same GNIS file.**
+**12d. Gate: the same GNIS file; then load it.**
 
 ```bash
-# PRODUCTION
-shasum -a 256 ../data/review/gnis_national.zip | cmp - ../data/review/gnis_national.sha256 && echo "same GNIS file"
-INGMOD app.pipelines.gnis --file ../data/review/gnis_national.zip
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+  # PRODUCTION
+  gate_require migrated || exit 1
+  shasum -a 256 ../data/review/gnis_national.zip | cmp - ../data/review/gnis_national.sha256 || { echo "not the Step 2 GNIS file: STOP" >&2; exit 1; }
+  gate_pass gnis_file )
 ```
 
-Expected: `same GNIS file`, and the same accepted, skipped and quarantined counts as Step 2.
-
-**12e. Pre-check and dry-run diffs.** Each must match the branch byte for byte, or stop (prod changed after the branch was made: recreate the rehearsal from current `production`).
+Only after `GATE OK: gnis_file`:
 
 ```bash
-# PRODUCTION
-save_once ../data/review/p2a2_precheck_prod.txt ANALYST_PSQL -v ON_ERROR_STOP=1 -At -f db/checks/p2a2_precheck.sql >/dev/null && diff ../data/review/p2a2_precheck_branch.txt ../data/review/p2a2_precheck_prod.txt && echo "pre-checks match the branch"
-save_once ../data/review/p2a2_r3_dry_prod.json ING r3 >/dev/null && cmp ../data/review/p2a2_r3_dry_branch.json ../data/review/p2a2_r3_dry_prod.json && echo "r3 dry run matches the branch"
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+  # PRODUCTION
+  gate_require gnis_file || exit 1
+  bg_start ../data/review/logs/gnis_prod.log INGMOD app.pipelines.gnis --file ../data/review/gnis_national.zip )
 ```
 
-**12f. R3 apply (timed), then the R3 reviews from the owner's branch files.** Each export goes to a `_prod` name, never touching the filled files; an id diff means stop: the owner fills the `_prod` file instead, and that one is imported.
-
 ```bash
-# PRODUCTION
-ids() { python3 -c 'import csv,sys; print("\n".join(sorted(r["accident_id"] for r in csv.DictReader(open(sys.argv[1], newline="", encoding="utf-8-sig")))))' "$1"; }
-time ING r3 --apply
-time ING r3 --apply
-ING r3a-export --out ../data/review/r3a_moves_prod.csv
-diff <(ids ../data/review/r3a_moves.csv) <(ids ../data/review/r3a_moves_prod.csv) && echo "r3a ids match"
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+  bg_wait ../data/review/logs/gnis_prod.log )
 ```
 
-Only after `r3a ids match`:
+Expected: `finished ok`, with the same accepted, skipped and quarantined counts as Step 2 (compare with `gnis_branch.log`; any difference: STOP).
+
+**12e. Gate: states, pre-check and R3 dry run equal the branch's** byte for byte. A difference means prod changed after the branch was made: STOP, and recreate the rehearsal from current `production`. Each `save_once` runs only if its `_prod` file is not there yet, so a re-run of this gate compares the first pre-apply evidence.
 
 ```bash
-# PRODUCTION
-ING r3a-import --review-file ../data/review/r3a_moves.csv --apply
-ING r3-ambiguous-export --out ../data/review/r3_ambiguous_prod.csv
-diff <(ids ../data/review/r3_ambiguous.csv) <(ids ../data/review/r3_ambiguous_prod.csv) && echo "r3 review ids match"
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+  # PRODUCTION
+  bg_wait ../data/review/logs/gnis_prod.log 0 >/dev/null || { echo "the GNIS load has not finished ok: STOP" >&2; exit 1; }
+  R=../data/review
+  [ -e $R/p2a2_r3_states_prod.json ] || save_once $R/p2a2_r3_states_prod.json ING r3-states >/dev/null || exit 1
+  cmp $R/p2a2_r3_states_branch.json $R/p2a2_r3_states_prod.json || { echo "r3-states differ: STOP" >&2; exit 1; }
+  [ -e $R/p2a2_precheck_prod.txt ] || save_once $R/p2a2_precheck_prod.txt ANALYST_PSQL -v ON_ERROR_STOP=1 -At -f db/checks/p2a2_precheck.sql >/dev/null || exit 1
+  diff $R/p2a2_precheck_branch.txt $R/p2a2_precheck_prod.txt || { echo "pre-checks differ: STOP" >&2; exit 1; }
+  [ -e $R/p2a2_r3_dry_prod.json ] || save_once $R/p2a2_r3_dry_prod.json ING r3 >/dev/null || exit 1
+  cmp $R/p2a2_r3_dry_branch.json $R/p2a2_r3_dry_prod.json || { echo "r3 dry run differs: STOP" >&2; exit 1; }
+  gate_pass r3_dry )
 ```
 
-Only after `r3 review ids match`:
+Expected: `GATE OK: r3_dry`. The owner's Step 3 confirmation covers exactly these state values.
+
+**12f. R3 apply and the idempotency rerun, then the R3 reviews from the owner's branch files.** Each prod export goes to a `_prod` name and never touches a filled file. A `same_ids` mismatch is a STOP. In that case the owner fills the `_prod` file instead, and the agent imports that file in place of the branch one.
 
 ```bash
-# PRODUCTION
-ING r3-ambiguous-import --review-file ../data/review/r3_ambiguous.csv --apply
-ING r3-plot-export --out ../data/review/r3_spot_check_prod.csv
-diff <(ids ../data/review/r3_spot_check.csv) <(ids ../data/review/r3_spot_check_prod.csv) && echo "r3 plot ids match"
-ING r3-plot-import --review-file ../data/review/r3_spot_check.csv
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+  # PRODUCTION
+  gate_require r3_dry || exit 1
+  bg_start ../data/review/logs/r3_apply1_prod.log ING r3 --apply )
 ```
 
-Expected: agreements equal the branch's.
-
-**12g. R4.**
-
 ```bash
-# PRODUCTION
-save_once ../data/review/p2a2_r4_dry_prod.json ING r4 >/dev/null && cmp ../data/review/p2a2_r4_dry_branch.json ../data/review/p2a2_r4_dry_prod.json && echo "r4 dry run matches the branch"
-ING r4 --apply
-ING r4-review-export --out ../data/review/r4_activity_review_prod.csv
-diff <(ids ../data/review/r4_activity_review.csv) <(ids ../data/review/r4_activity_review_prod.csv) && echo "r4 review ids match"
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+  bg_wait ../data/review/logs/r3_apply1_prod.log )
 ```
 
-Only after both matches: `ING r4-review-import --review-file ../data/review/r4_activity_review.csv --apply`.
-
-**12h. R5 (timed).** The dry run must equal the branch's pre-apply one; the prod review export goes to its own file and must list the same pairs before the owner's branch file is imported.
-
 ```bash
-# PRODUCTION
-pairs() { python3 -c 'import csv,sys; print("\n".join(sorted(r["low_id"]+"-"+r["high_id"] for r in csv.DictReader(open(sys.argv[1], newline="", encoding="utf-8-sig")))))' "$1"; }
-save_once ../data/review/p2a2_r5_dry_prod.json ING r5 >/dev/null && cmp ../data/review/p2a2_r5_dry_branch.json ../data/review/p2a2_r5_dry_prod.json && echo "r5 dry run matches the branch"
-time ING r5 --apply --out ../data/review/duplicates_prod.csv
-diff <(pairs ../data/review/duplicates.csv) <(pairs ../data/review/duplicates_prod.csv) && echo "r5 pairs match"
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+  # PRODUCTION
+  bg_wait ../data/review/logs/r3_apply1_prod.log 0 >/dev/null || { echo "R3 apply 1 has not finished ok: STOP" >&2; exit 1; }
+  bg_start ../data/review/logs/r3_apply2_prod.log ING r3 --apply )
 ```
 
-Only after `r5 pairs match` (and, if Step 9 needed a second round, the same for `duplicates_round2.csv`):
-
 ```bash
-# PRODUCTION
-ING r5-import --review-file ../data/review/duplicates.csv --apply
-time ING r5 --apply
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+  bg_wait ../data/review/logs/r3_apply2_prod.log )
 ```
 
-Expected: `review_pending: 0`, as on the branch.
+Expected: the same `applied` counts as the branch's two applies (the second `applied: 0`). Record both `RUNBOOK_ELAPSED` values.
 
-**12i. R12 and acceptance.**
+Gate: R3a ids.
 
 ```bash
-# PRODUCTION
-save_once ../data/review/p2a2_r12_dry_prod.json ING r12 >/dev/null && cmp ../data/review/p2a2_r12_dry_branch.json ../data/review/p2a2_r12_dry_prod.json && echo "r12 dry run matches the branch"
-ING r12 --apply
-VERIFY tests/verify -q -s
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+  # PRODUCTION
+  bg_wait ../data/review/logs/r3_apply2_prod.log 0 >/dev/null || { echo "R3 apply 2 has not finished ok: STOP" >&2; exit 1; }
+  [ -e ../data/review/r3a_moves_prod.csv ] || ING r3a-export --out ../data/review/r3a_moves_prod.csv || exit 1
+  same_ids ../data/review/r3a_moves.csv ../data/review/r3a_moves_prod.csv accident_id || exit 1
+  gate_pass r3a_ids )
+```
+
+Only after `GATE OK: r3a_ids`:
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+  # PRODUCTION
+  gate_require r3a_ids || exit 1
+  ING r3a-import --review-file ../data/review/r3a_moves.csv --apply || exit 1
+  gate_pass r3a_imported )
+```
+
+Gate: R3 review ids.
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+  # PRODUCTION
+  gate_require r3a_imported || exit 1
+  [ -e ../data/review/r3_ambiguous_prod.csv ] || ING r3-ambiguous-export --out ../data/review/r3_ambiguous_prod.csv || exit 1
+  same_ids ../data/review/r3_ambiguous.csv ../data/review/r3_ambiguous_prod.csv accident_id || exit 1
+  gate_pass r3_review_ids )
+```
+
+Only after `GATE OK: r3_review_ids`:
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+  # PRODUCTION
+  gate_require r3_review_ids || exit 1
+  ING r3-ambiguous-import --review-file ../data/review/r3_ambiguous.csv --apply || exit 1
+  gate_pass r3_review_imported )
+```
+
+Gate: R3 plot ids (I3: the import is in its own block).
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+  # PRODUCTION
+  gate_require r3_review_imported || exit 1
+  [ -e ../data/review/r3_spot_check_prod.csv ] || ING r3-plot-export --out ../data/review/r3_spot_check_prod.csv || exit 1
+  same_ids ../data/review/r3_spot_check.csv ../data/review/r3_spot_check_prod.csv accident_id || exit 1
+  gate_pass r3_plot_ids )
+```
+
+Only after `GATE OK: r3_plot_ids`:
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+  # PRODUCTION
+  gate_require r3_plot_ids || exit 1
+  ING r3-plot-import --review-file ../data/review/r3_spot_check.csv || exit 1
+  gate_pass r3_done )
+```
+
+Expected: every agreement equals the branch's.
+
+**12g. R4.** Gate: the dry run equals the branch's.
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+  # PRODUCTION
+  gate_require r3_done || exit 1
+  [ -e ../data/review/p2a2_r4_dry_prod.json ] || save_once ../data/review/p2a2_r4_dry_prod.json ING r4 >/dev/null || exit 1
+  cmp ../data/review/p2a2_r4_dry_branch.json ../data/review/p2a2_r4_dry_prod.json || { echo "r4 dry run differs: STOP" >&2; exit 1; }
+  gate_pass r4_dry )
+```
+
+Only after `GATE OK: r4_dry`:
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+  # PRODUCTION
+  gate_require r4_dry || exit 1
+  bg_start ../data/review/logs/r4_apply_prod.log ING r4 --apply )
+```
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+  bg_wait ../data/review/logs/r4_apply_prod.log )
+```
+
+Gate: R4 review ids.
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+  # PRODUCTION
+  bg_wait ../data/review/logs/r4_apply_prod.log 0 >/dev/null || { echo "R4 apply has not finished ok: STOP" >&2; exit 1; }
+  [ -e ../data/review/r4_activity_review_prod.csv ] || ING r4-review-export --out ../data/review/r4_activity_review_prod.csv || exit 1
+  same_ids ../data/review/r4_activity_review.csv ../data/review/r4_activity_review_prod.csv accident_id || exit 1
+  gate_pass r4_review_ids )
+```
+
+Only after `GATE OK: r4_review_ids`:
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+  # PRODUCTION
+  gate_require r4_review_ids || exit 1
+  ING r4-review-import --review-file ../data/review/r4_activity_review.csv --apply || exit 1
+  gate_pass r4_done )
+```
+
+**12h. R5.** The dry run must equal the branch's pre-apply one, and each prod review export goes to its own file. It must list the same pairs before the owner's branch file is imported.
+
+Gate: R5 dry run.
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+  # PRODUCTION
+  gate_require r4_done || exit 1
+  [ -e ../data/review/p2a2_r5_dry_prod.json ] || save_once ../data/review/p2a2_r5_dry_prod.json ING r5 >/dev/null || exit 1
+  cmp ../data/review/p2a2_r5_dry_branch.json ../data/review/p2a2_r5_dry_prod.json || { echo "r5 dry run differs: STOP" >&2; exit 1; }
+  gate_pass r5_dry )
+```
+
+Only after `GATE OK: r5_dry`:
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+  # PRODUCTION
+  gate_require r5_dry || exit 1
+  bg_start ../data/review/logs/r5_apply1_prod.log ING r5 --apply --out ../data/review/duplicates_prod.csv )
+```
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+  bg_wait ../data/review/logs/r5_apply1_prod.log )
+```
+
+Gate: R5 round-1 pairs.
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+  # PRODUCTION
+  bg_wait ../data/review/logs/r5_apply1_prod.log 0 >/dev/null || { echo "R5 apply 1 has not finished ok: STOP" >&2; exit 1; }
+  same_ids ../data/review/duplicates.csv ../data/review/duplicates_prod.csv low_id high_id || exit 1
+  gate_pass r5_round1_pairs )
+```
+
+Only after `GATE OK: r5_round1_pairs`. The second apply gets its own `--out` (I4):
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+  # PRODUCTION
+  gate_require r5_round1_pairs || exit 1
+  ING r5-import --review-file ../data/review/duplicates.csv --apply || exit 1
+  bg_start ../data/review/logs/r5_apply2_prod.log ING r5 --apply --out ../data/review/duplicates_round2_prod.csv )
+```
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+  bg_wait ../data/review/logs/r5_apply2_prod.log )
+```
+
+**Round 2 (only if Step 9 ran one).** The apply above then reports `review_pending > 0` and wrote `duplicates_round2_prod.csv`. Gate: those pairs equal the branch's round 2.
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+  # PRODUCTION
+  bg_wait ../data/review/logs/r5_apply2_prod.log 0 >/dev/null || { echo "R5 apply 2 has not finished ok: STOP" >&2; exit 1; }
+  same_ids ../data/review/duplicates_round2.csv ../data/review/duplicates_round2_prod.csv low_id high_id || exit 1
+  gate_pass r5_round2_pairs )
+```
+
+Only after `GATE OK: r5_round2_pairs`:
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+  # PRODUCTION
+  gate_require r5_round2_pairs || exit 1
+  ING r5-import --review-file ../data/review/duplicates_round2.csv --apply || exit 1
+  bg_start ../data/review/logs/r5_apply3_prod.log ING r5 --apply --out ../data/review/duplicates_round3_prod.csv )
+```
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+  bg_wait ../data/review/logs/r5_apply3_prod.log )
+```
+
+Any further round follows the same pattern with the next numbers. Prod runs exactly as many rounds as the branch did.
+
+Gate: R5 done. `LAST` is the log of the last R5 apply: `r5_apply2_prod.log` after one round, `r5_apply3_prod.log` after round 2.
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+  # PRODUCTION
+  LAST=../data/review/logs/r5_apply2_prod.log
+  bg_wait "$LAST" 0 >/dev/null || { echo "the last R5 apply has not finished ok: STOP" >&2; exit 1; }
+  grep -Eq '"review_pending": 0[,}]' "$LAST" || { echo "review_pending is not 0: STOP" >&2; exit 1; }
+  gate_pass r5_done )
+```
+
+Expected: `GATE OK: r5_done`, with `review_pending: 0` and `path: null`, as on the branch. Record the R5 `RUNBOOK_ELAPSED` values.
+
+**12i. R12 and acceptance.** Gate: the R12 dry run equals the branch's.
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+  # PRODUCTION
+  gate_require r5_done || exit 1
+  [ -e ../data/review/p2a2_r12_dry_prod.json ] || save_once ../data/review/p2a2_r12_dry_prod.json ING r12 >/dev/null || exit 1
+  cmp ../data/review/p2a2_r12_dry_branch.json ../data/review/p2a2_r12_dry_prod.json || { echo "r12 dry run differs: STOP" >&2; exit 1; }
+  gate_pass r12_dry )
+```
+
+Only after `GATE OK: r12_dry`:
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+  # PRODUCTION
+  gate_require r12_dry || exit 1
+  bg_start ../data/review/logs/r12_apply_prod.log ING r12 --apply )
+```
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+  bg_wait ../data/review/logs/r12_apply_prod.log )
+```
+
+Then the full acceptance run (read-only), after R12 finished ok:
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production || exit 1
+  # PRODUCTION (read-only)
+  bg_wait ../data/review/logs/r12_apply_prod.log 0 >/dev/null || { echo "R12 apply has not finished ok: STOP" >&2; exit 1; }
+  bg_start ../data/review/logs/verify_prod.log VERIFY tests/verify -q -s )
+```
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+  bg_wait ../data/review/logs/verify_prod.log )
 ```
 
 Expected: every cell passes, with the same counts the owner signed off in Step 11 (including `clean_null_country`).
 
-**12j. Clean up.** Delete `p2a-2-rehearsal` only now. Keep `pre-2a-2` until the PR has merged and the owner says otherwise.
+**12j. Clean up.** Delete `p2a-2-rehearsal` only now, with the owner's consent. Keep `pre-2a-2` until the PR has merged and the owner says otherwise. Keep `data/review/gates_2a2_prod/` and `data/review/logs/` with the evidence. They are gitignored and carry counts only.
 
-- [ ] **Rollback.** As Task 12's rollback section, with `pre-2a-2` and the rule versions of this PR (`r3-*`, `r3-review-v1`, `r4-*`, `r5-v1+…`, `r12-*`). An apply or import that fails or is killed wrote nothing (one transaction each, run log included): fix the cause and rerun. Wrong data after 12c: restore `production` from `pre-2a-2` (confirm Neon's restore path in its docs first, list what the restore discards from `source_ingest_log`, then trigger the nightly once and re-run 12c's grants), or reverse single fields from `internal.accident_revisions` with a reviewed script, never a hand-written bulk UPDATE. A restore also discards the 0005/0006 migration, so `MIG current` reads `0004_phase2a_foundation` again.
+- [ ] **Rollback.** As Task 12's rollback section, with `pre-2a-2` and the rule versions of this PR (`r3-*`, `r3-review-v1`, `r4-*`, `r5-v1+…`, `r12-*`). An apply or import that fails or is killed wrote nothing (one transaction each, run log included): fix the cause and rerun (a backgrounded one: move its log to `logs/failed/` first, so `bg_start` accepts the rerun). Wrong data after 12c: restore `production` from `pre-2a-2` (confirm Neon's restore path in its docs first, list what the restore discards from `source_ingest_log`, then trigger the nightly once and re-run 12c's grants), or reverse single fields from `internal.accident_revisions` with a reviewed script, never a hand-written bulk UPDATE. A restore also discards the 0005/0006 migration, so `MIG current` reads `0004_phase2a_foundation` again.
 
 - [ ] **Step 13 (deferred to plan 6's runbook): R4/R5 re-run with objectives** — once `0011_objectives` is applied and objectives are loaded (plan 6), run `ING r4` (expect `terrain_version: r4-v2`), `ING r4 --apply`, `ING r5 --apply`, then `VERIFY tests/verify/test_phase2a_repair.py -q -k "r4 or r5"`. Spec R4 counts objectives in the ski-approach radius; until this step runs, ski rows near an objective with no MP alpine/ice/mixed route stay `non_climbing` (a known under-count, recorded in the PR). Plan 6 grants `ingest` SELECT on `objectives`.
 

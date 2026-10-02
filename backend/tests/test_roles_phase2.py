@@ -10,7 +10,7 @@ from datetime import date
 from alembic import command
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.data.repair import activity, dates, geocode, review, severity
+from app.data.repair import activity, dates, dedupe, experience, geocode, review, severity
 from app.data.repair.checks import record_check
 from app.data.repair.framework import LOCATION, Change, run_step
 from app.pipelines import gnis, mp_tick_aggregates, mp_ticks_quarantine
@@ -171,6 +171,23 @@ def _run_real_jobs_as_ingest(ingest_url: str, tmp_path, monkeypatch) -> None:
     r4_out, r4_review, r4_golden = asyncio.run(r4())
     # The seed's snapshot rows carry no activity: both wait for the owner, nothing is guessed.
     assert (r4_out["review_pending"], r4_review["exported"], sum(r4_golden["strata"].values())) == (2, 2, 0)
+
+    # R5 and R12 as ingest (final review 2a-2 minor; G15): R5's snapshot/label reads, its
+    # require_r3/require_r4 run-log reads and decisions upsert, R12's narrative read and writes.
+    async def r5_r12() -> tuple[dict[str, object], dict[str, object]]:
+        engine = create_async_engine(sa_ingest)
+        try:
+            async with engine.begin() as conn:
+                return (
+                    await dedupe.run_r5(conn, argparse.Namespace(apply=True, out=None, overwrite=False)),
+                    await experience.run_r12(conn, argparse.Namespace(apply=True)),
+                )
+        finally:
+            await engine.dispose()
+
+    r5_out, r12_out = asyncio.run(r5_r12())
+    assert (r5_out["mode"], r5_out["review_pending"], r5_out["path"]) == ("apply", 0, None)
+    assert r12_out["mode"] == "apply"
 
 
 # PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views; those belong to the
