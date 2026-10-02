@@ -49,7 +49,7 @@ YEARS = re.compile(
 # A party's pooled total is not any one person's experience.
 _POOLED_BEFORE = re.compile(r"\bcombined\s+(?:total\s+of\s+)?(?:over\s+|nearly\s+|about\s+)?$", re.I)
 _POOLED_AFTER = re.compile(r"^\W*(?:\w+\s+){0,2}(?:between|among)\s+them\b", re.I)
-# A guide named just before a years or level match, in the same clause, is the one it
+# A guide named just before a years, level or first-season match, in the same clause, is the one it
 # describes ("the guide had 20 years of climbing"): a guide's credentials are not the party's.
 _GUIDE_BEFORE = re.compile(
     r"\b(?:the|their|his|her|a|an|our|\w+'s)\s+(?:(?:mountain|ice|rock|alpine|lead)\s+)?guides?(?:'s|')?(?![\w-])"
@@ -152,7 +152,7 @@ def extract_experience(text: str | None) -> Experience:
         return NOTHING
     levels = {name for name, pattern in LEVELS.items() if _stated(pattern, text, skip_guide=True)}
     level = levels.pop() if len(levels) == 1 else "unknown"
-    first = True if _stated(FIRST, text) else None
+    first = True if _stated(FIRST, text, skip_guide=True) else None
     unguided, guided = _stated(UNGUIDED, text), _stated(GUIDED, text)
     guide = "unguided" if unguided and not guided else "guided" if guided and not unguided else "unknown"
     return Experience(_years(text), level, first, guide)

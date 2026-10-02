@@ -308,3 +308,8 @@ def test_the_partys_own_experience_still_counts_in_a_guided_narrative():
 
 def test_a_guide_dog_is_not_a_guide():
     assert extract_experience("She hiked with a guide dog.").guided == "unknown"
+
+
+def test_a_guides_first_season_is_not_the_partys():
+    assert extract_experience("The guide was in her first season of climbing in the range.").first_season is None
+    assert extract_experience("Their guide fixed the rope. It was the client's first season of climbing.").first_season is True
