@@ -4083,7 +4083,7 @@ Every connection is TLS verify-full (`verify_full_url` for psql, `connect_args_f
 
 **Long runs (I5).** An agent's tool call stops at 10 minutes, and the R3, R4, R5 and R12 applies, the GNIS load and the full `VERIFY` run make thousands of Neon round trips. They never run in the foreground:
 - `bg_start LOG CMD…` (from `backend/`) runs CMD under `nohup` with its output in LOG, with the exported `TARGET_HOST`, and ends LOG with `RUNBOOK_ELAPSED=<n>s` (the G14 wall time) and `RUNBOOK_EXIT=<rc>`. It refuses a LOG that exists, so a re-run block never starts a second apply.
-- `bg_wait LOG` polls in its own block for up to 9 minutes. It returns 0 when CMD exited 0 (prints the log tail with the counts), 2 while CMD is still running (run the same `bg_wait` block again; never start a second run), and 1 when CMD failed or its process is gone with no exit line. A failed or killed apply wrote nothing (one transaction): fix the cause, move the log to `../data/review/logs/failed/`, then run the `bg_start` block again.
+- `bg_wait LOG` polls in its own block for up to 9 minutes. It returns 0 when CMD exited 0 (prints the log tail with the counts). It returns 2 while any of the run may still be live — the process group is still there, or it is gone but a repair process is still found running (`pgrep -fl 'app[.]data[.]repair|app[.]pipelines'`): call the same `bg_wait` block again, never start a second run. Only when the process group is gone with no exit line **and** no repair process is found running does it return 1 (killed: its one transaction rolled back). Before any rerun in that case, confirm no repair process is running — `pgrep` prints nothing — then fix the cause, move the log to `../data/review/logs/failed/`, and run the `bg_start` block again.
 - `bg_wait LOG 0` checks without waiting; a block that chains `bg_wait LOG 0 && …` runs its next step only after LOG finished ok.
 - By hand: `tail -n 5 ../data/review/logs/<name>.log`; the run is done when the last line is `RUNBOOK_EXIT=0`. If `bg_wait` reports the process gone at once, the agent's tool kills background children when a call returns: move the log aside and run that `bg_start` line with the tool's own background mode (`run_in_background`) instead.
 
@@ -4126,6 +4126,7 @@ cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_hel
 Preconditions:
 - PR 2a-1 is merged and applied on prod (Task 12 Step 6 done).
 - `feat/phase2a-accident-repair-2` has been rebased onto the merged 2a-1. That is a reviewed step, as for any stacked PR.
+- **This session's own working directory is not inside `SafeAscent-2a2`.** `git worktree remove` refuses while any process has that directory as its cwd, and a session rooted there has no path to the main checkout to run the block below from. Start Step 0 from the main checkout (or a separate session/shell) — never from inside the worktree being removed.
 
 **C4.** The role env files exist only in the main checkout's `backend/`, and `VERIFY` reads the goldens (Steps 8b and 10) from the checkout it runs in. So the whole runbook runs from the main checkout, with this PR's branch checked out there.
 
@@ -4260,7 +4261,7 @@ Expected: the first apply `applied > 0`; the second `applied: 0` (everything `al
 ING r3a-export --out ../data/review/r3a_moves.csv
 ```
 
-Every row R3a moved to a GNIS summit (`gnis_summit`), not a sample; expected ~60. A `FileExistsError … pass --overwrite` means 5a already ran: go to 5b/5c. Never pass `--overwrite` unless the owner has said in writing that the filled file is to be discarded.
+Every row R3a moved to a GNIS summit (`gnis_summit`), not a sample; expected ~60. A `FileExistsError … pass --overwrite` means 5a already ran: go to 5b/5c. Never pass `--overwrite` unless the owner has said in writing that the filled file is to be discarded. If the branch export was empty, STOP and ask the owner.
 
 - [ ] **Step 5b (owner): Fill `correct`** — `yes` when the new point is the summit the record names (the `summit` column), else `no`. Save under the same name (a spreadsheet BOM is fine).
 
@@ -4285,7 +4286,7 @@ Expected:
 ING r3-ambiguous-export --out ../data/review/r3_ambiguous.csv
 ```
 
-The pool is every row R3 could not settle: `gnis_ambiguous`, `gnis_state_unmatched` and `gnis_rejected`. **Record `exported` in the PR** (the R3 ambiguous review size; it was not measured before this rehearsal).
+The pool is every row R3 could not settle: `gnis_ambiguous`, `gnis_state_unmatched` and `gnis_rejected`. **Record `exported` in the PR** (the R3 ambiguous review size; it was not measured before this rehearsal). If the branch export was empty, STOP and ask the owner.
 
 - [ ] **Step 6b (owner): Fill `gnis_id`** — read each report; set the candidate summit it names (state and point may both be wrong), or `none` if the report does not settle it.
 
@@ -4307,7 +4308,7 @@ A picked summit moves the row there as `area`/`owner_summit`, country US; `none`
 ING r3-plot-export --out ../data/review/r3_spot_check.csv
 ```
 
-Writes the CSV and `r3_spot_check.geojson`, stratified (GNIS moves, `region_fallback`, `unknown`, `area`, `crag`, `exact`, `park_centroid`).
+Writes the CSV and `r3_spot_check.geojson`, stratified (GNIS moves, `region_fallback`, `unknown`, `area`, `crag`, `exact`, `park_centroid`). If the branch export was empty, STOP and ask the owner.
 
 - [ ] **Step 7b (owner): Fill `plausible`** — open the GeoJSON in QGIS (local; never paste accident places into an online map) beside the CSV; `yes` when the point fits its label (a fallback label on a city centroid is plausible; an `area` label on a city centroid is not).
 
@@ -4353,6 +4354,8 @@ ING r4-review-export --out ../data/review/r4_activity_review.csv
 ING r4-golden-export --out ../data/review/activity_golden_candidates.csv
 ```
 
+If `r4_activity_review.csv` was exported empty, STOP and ask the owner.
+
 **8b (owner):** in `r4_activity_review.csv`, set `activity_class` to `climbing|climbing_approach|non_climbing` from the source report, or `none` if it does not settle it (the row stays pending). In the golden candidates, label each row by reading the source record (`strata` in the export output shows what was drawn), and copy **only** `accident_id,label` into `data/golden/activity_v1.csv`, committed on the PR branch.
 
 **8c (owner/agent):** the dry import, then (a separate block) the apply and the cells:
@@ -4390,7 +4393,7 @@ bg_start ../data/review/logs/r5_apply1_branch.log ING r5 --apply --out ../data/r
 bg_wait ../data/review/logs/r5_apply1_branch.log
 ```
 
-Writes the auto decisions and exports the review band. **Record `RUNBOOK_ELAPSED` (G14).** If `bg_start` says the log exists, 9a already ran: go to 9b.
+Writes the auto decisions and exports the review band. **Record `RUNBOOK_ELAPSED` (G14).** If `bg_start` says the log exists, 9a already ran: go to 9b. If `duplicates.csv` was exported empty (and `review_pairs` from Step 9's dry run was not also zero), STOP and ask the owner.
 
 **9b (owner):** fill `decision` (`merge|distinct`) for every row by comparing the two source records (`conflict_with` names the pair that withheld a `conflict` row).
 
@@ -4584,7 +4587,7 @@ Only after `GATE OK: gnis_file`:
 
 Expected: `finished ok`, with the same accepted, skipped and quarantined counts as Step 2 (compare with `gnis_branch.log`; any difference: STOP).
 
-**12e. Gate: states, pre-check and R3 dry run equal the branch's** byte for byte. A difference means prod changed after the branch was made: STOP, and recreate the rehearsal from current `production`. Each `save_once` runs only if its `_prod` file is not there yet, so a re-run of this gate compares the first pre-apply evidence.
+**12e. Gate: states, pre-check and R3 dry run equal the branch's** byte for byte. A difference means prod changed after the branch was made: STOP; the owner decides (no gated block here recreates the rehearsal — that is Steps 1–11 run again from scratch, under a fresh owner go-ahead, never an agent decision). Each `save_once` runs only if its `_prod` file is not there yet, so a re-run of this gate compares the first pre-apply evidence.
 
 ```bash
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
@@ -4602,7 +4605,7 @@ Expected: `finished ok`, with the same accepted, skipped and quarantined counts 
 
 Expected: `GATE OK: r3_dry`. The owner's Step 3 confirmation covers exactly these state values.
 
-**12f. R3 apply and the idempotency rerun, then the R3 reviews from the owner's branch files.** Each prod export goes to a `_prod` name and never touches a filled file. A `same_ids` mismatch is a STOP. In that case the owner fills the `_prod` file instead, and the agent imports that file in place of the branch one.
+**12f. R3 apply and the idempotency rerun, then the R3 reviews from the owner's branch files.** Each prod export goes to a `_prod` name and never touches a filled file. Every `same_ids` check below (`r3a_ids`, `r3_review_ids`, `r3_plot_ids`, and their counterparts in 12g/12h) fails closed: a missing file or column, or either export with no rows, is a mismatch, never a match. If the **branch** file is the empty one, STOP and ask the owner — that is a rehearsal evidence problem, not something to patch here. On any other mismatch: STOP; the owner decides (no gated block here re-points the import at the `_prod` file instead of the owner's filled branch one).
 
 ```bash
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
@@ -4720,7 +4723,7 @@ Only after `GATE OK: r4_dry`:
   bg_wait ../data/review/logs/r4_apply_prod.log )
 ```
 
-Gate: R4 review ids.
+Gate: R4 review ids. (Same `same_ids` fail-closed policy as 12f: if the branch export was empty, STOP and ask the owner; any other mismatch is also STOP; the owner decides.)
 
 ```bash
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
@@ -4768,7 +4771,7 @@ Only after `GATE OK: r5_dry`:
   bg_wait ../data/review/logs/r5_apply1_prod.log )
 ```
 
-Gate: R5 round-1 pairs.
+Gate: R5 round-1 pairs. (Same `same_ids` fail-closed policy as 12f: if the branch export was empty, STOP and ask the owner; any other mismatch is also STOP; the owner decides.)
 
 ```bash
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
@@ -4793,7 +4796,7 @@ Only after `GATE OK: r5_round1_pairs`. The second apply gets its own `--out` (I4
   bg_wait ../data/review/logs/r5_apply2_prod.log )
 ```
 
-**Round 2 (only if Step 9 ran one).** The apply above then reports `review_pending > 0` and wrote `duplicates_round2_prod.csv`. Gate: those pairs equal the branch's round 2.
+**Round 2 (only if Step 9 ran one).** The apply above then reports `review_pending > 0` and wrote `duplicates_round2_prod.csv`. Gate: those pairs equal the branch's round 2. (Same `same_ids` fail-closed policy as 12f: if the branch export was empty, STOP and ask the owner; any other mismatch is also STOP; the owner decides.)
 
 ```bash
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
@@ -4820,13 +4823,14 @@ Only after `GATE OK: r5_round2_pairs`:
 
 Any further round follows the same pattern with the next numbers. Prod runs exactly as many rounds as the branch did.
 
-Gate: R5 done. `LAST` is the log of the last R5 apply: `r5_apply2_prod.log` after one round, `r5_apply3_prod.log` after round 2.
+Gate: R5 done. Set `R5_ROUNDS` to the round count recorded in the PR from Step 9 (1 if only the initial review ran, 2 if Round 2 also ran, and so on). `LAST` is derived from it, never hard-coded — `r5_apply2_prod.log` for `R5_ROUNDS=1`, `r5_apply3_prod.log` for `R5_ROUNDS=2`. An unset or non-numeric `R5_ROUNDS` fails closed rather than guessing a log name.
 
 ```bash
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
   # PRODUCTION
-  LAST=../data/review/logs/r5_apply2_prod.log
-  bg_wait "$LAST" 0 >/dev/null || { echo "the last R5 apply has not finished ok: STOP" >&2; exit 1; }
+  case "${R5_ROUNDS:-}" in ''|*[!0-9]*) echo "R5_ROUNDS is unset or not a number: STOP, set it to the Step 9 PR round count" >&2; exit 1 ;; esac
+  LAST="../data/review/logs/r5_apply$((R5_ROUNDS + 1))_prod.log"
+  bg_wait "$LAST" 0 >/dev/null || { echo "the last R5 apply ($LAST) has not finished ok: STOP" >&2; exit 1; }
   grep -Eq '"review_pending": 0[,}]' "$LAST" || { echo "review_pending is not 0: STOP" >&2; exit 1; }
   gate_pass r5_done )
 ```
