@@ -103,6 +103,22 @@ def test_days_absent_from_the_response_count_as_missing():
     assert monthly_normals(sparse)[1].tmax_mean == 5.0
 
 
+def test_a_response_starting_after_1_january_does_not_count_that_january():
+    jan = monthly_normals(_response(date(2016, 1, 3), DECADE[1]))[0]
+    assert jan.n_years == 9
+
+
+@pytest.mark.parametrize("gap_days,usable", [(2, False), (1, True)])
+def test_a_doy_year_needs_ninety_percent_of_its_window_days(gap_days, usable):
+    # doy 100 pools doy 93-107 = 2-16 April. 13 of 15 days is under 90% (13.5), 14 is not;
+    # three years dropped leave seven, under MIN_YEARS.
+    gaps = {date(y, 4, d) for y in (2016, 2017, 2018) for d in range(2, 2 + gap_days)}
+    row = doy_climatology(_response(*DECADE, precip_gaps=gaps))[99]
+    assert (row["precip_mean"] is not None) is usable
+    if usable:
+        assert row["precip_mean"] == 1.0
+
+
 def test_calendar_doy_keys_every_date_to_one_row_in_leap_and_common_years():
     assert calendar_doy(date(2021, 3, 1)) == calendar_doy(date(2020, 3, 1)) == 61
     assert calendar_doy(date(2020, 2, 29)) == 60
@@ -257,19 +273,40 @@ def test_normals_due_takes_pending_and_out_of_period_buckets_and_the_longest_sto
         + f"INSERT INTO cell_climate_normals (grid_bucket, month, n_years, period_start_year, period_end_year, source, "
           f"normals_version) VALUES ({B1}, 1, 10, 2016, 2025, 'open_meteo_era5_seamless', 'n-v2'), "
           f"({b3}, 1, 10, 2015, 2024, 'open_meteo_era5_seamless', 'n-v2');"
+        + _climatology(B1, "c-v1")
     )
 
-    async def scenario(url: str):
-        engine = create_async_engine(url)
-        try:
-            async with engine.connect() as conn:
-                return await normals_due(conn, today=TODAY)
-        finally:
-            await engine.dispose()
-
     with migrated_db(seed_sql=seed) as name:
-        due = asyncio.run(scenario(sa_url(name)))
+        due = asyncio.run(_due(sa_url(name)))
     assert due == [(B2, "America/Los_Angeles"), (b3, TZ)]
+
+
+def _climatology(b: int, version: str) -> str:
+    return (f"INSERT INTO cell_climatology (grid_bucket, doy, n_years, period_start_year, period_end_year, "
+            f"climatology_version) VALUES ({b}, 1, 10, 2016, 2025, '{version}');")
+
+
+async def _due(url: str) -> list[tuple[int, str]]:
+    engine = create_async_engine(url)
+    try:
+        async with engine.connect() as conn:
+            return await normals_due(conn, today=TODAY)
+    finally:
+        await engine.dispose()
+
+
+@requires_pg
+@pytest.mark.parametrize("version,due", [("c-v1", False), ("c-v0", True)])
+def test_a_climatology_version_bump_alone_makes_a_bucket_due(version, due):
+    seed = (
+        _registered(B1)
+        + f"UPDATE cell_normals_status SET status = 'complete' WHERE grid_bucket = {B1};"
+        + f"INSERT INTO cell_climate_normals (grid_bucket, month, n_years, period_start_year, period_end_year, source, "
+          f"normals_version) VALUES ({B1}, 1, 10, 2016, 2025, 'open_meteo_era5_seamless', 'n-v2');"
+        + _climatology(B1, version)
+    )
+    with migrated_db(seed_sql=seed) as name:
+        assert asyncio.run(_due(sa_url(name))) == ([(B1, TZ)] if due else [])
 
 
 @requires_pg

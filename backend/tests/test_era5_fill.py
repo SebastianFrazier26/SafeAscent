@@ -694,3 +694,32 @@ def test_a_cancel_while_the_retry_is_being_recorded_never_sends_it(monkeypatch):
     with migrated_db(seed_sql=SERIES_SEED) as name:
         asyncio.run(scenario(sa_url(name)))
     assert sent["n"] == 1
+
+
+@requires_pg
+def test_a_cancel_during_a_rate_limit_backoff_never_sends_the_retry():
+    # A 429 retry records nothing, so only the pre-attempt stop check can catch the cancel.
+    sent = {"n": 0}
+    first_sent, release = threading.Event(), threading.Event()
+
+    def always_429(request: httpx.Request) -> httpx.Response:
+        sent["n"] += 1
+        first_sent.set()
+        return httpx.Response(429)
+
+    async def scenario(url: str) -> None:
+        client = ArchiveClient(None, transport=httpx.MockTransport(always_429), sleep=lambda s: release.wait(10))
+        task = asyncio.create_task(run(lambda: create_async_engine(url), client,
+                                       plan_chunks([GAP], batch=50, years_per_chunk=1)[:1], today=TODAY,
+                                       budget=Budget(max_units=100, spent=0), window=WIN))
+        while not first_sent.is_set():
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        release.set()
+        await asyncio.sleep(1.0)
+
+    with migrated_db(seed_sql=SERIES_SEED) as name:
+        asyncio.run(scenario(sa_url(name)))
+    assert sent["n"] == 1

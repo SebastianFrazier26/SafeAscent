@@ -315,7 +315,8 @@ STATUS_UPSERT = text(
 
 
 async def normals_due(conn: AsyncConnection, *, today: date) -> list[tuple[int, str]]:
-    """Buckets that are pending, or whose normals predate this period or version. A bucket on a
+    """Buckets that are pending, or whose normals or climatology predate this period or their
+    version (either version bump alone recomputes both). A bucket on a
     timezone line takes the series with the longest stored ERA5 history (then the alphabetically
     first zone), so the stored-row path applies whenever any of its zones allows it; month-scale
     values barely move with a one-hour day boundary."""
@@ -325,8 +326,10 @@ async def normals_due(conn: AsyncConnection, *, today: date) -> list[tuple[int, 
         "FROM cell_normals_status st JOIN grid_bucket_series s ON s.grid_bucket = st.grid_bucket "
         "WHERE st.status = 'pending' OR NOT EXISTS (SELECT 1 FROM cell_climate_normals n "
         "WHERE n.grid_bucket = st.grid_bucket AND n.period_end_year = :pe AND n.normals_version = :v) "
+        "OR NOT EXISTS (SELECT 1 FROM cell_climatology c "
+        "WHERE c.grid_bucket = st.grid_bucket AND c.period_end_year = :pe AND c.climatology_version = :cv) "
         "GROUP BY st.grid_bucket ORDER BY st.grid_bucket"
-    ), {"pe": end_year, "v": NORMALS_VERSION})).all()
+    ), {"pe": end_year, "v": NORMALS_VERSION, "cv": CLIMATOLOGY_VERSION})).all()
     return [(int(b), str(tz)) for b, tz in rows]
 
 
