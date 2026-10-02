@@ -100,19 +100,20 @@ def _raw(**kw):
     return _dup_row(base | kw)
 
 
-@pytest.mark.parametrize(
-    ("override", "clean"),
-    [
-        ({}, True),
-        ({"activity_class": "climbing_approach"}, True),
-        ({"activity_class": "non_climbing"}, False),
-        ({"activity_class": None}, False),
-        ({"excluded_reason": "year_unverified"}, False),
-        ({"country": None}, True),
-        ({"country": ""}, False),
-        ({"country": "CA"}, False),
-    ],
-)
+# test_migration_0006 runs the same cases through the accidents_clean view.
+CLEAN_CASES = [
+    ({}, True),
+    ({"activity_class": "climbing_approach"}, True),
+    ({"activity_class": "non_climbing"}, False),
+    ({"activity_class": None}, False),
+    ({"excluded_reason": "year_unverified"}, False),
+    ({"country": None}, True),
+    ({"country": ""}, False),
+    ({"country": "CA"}, False),
+]
+
+
+@pytest.mark.parametrize(("override", "clean"), CLEAN_CASES)
 def test_clean_flag_mirrors_what_accidents_clean_keeps(override, clean):
     assert _raw(**override).clean is clean
 

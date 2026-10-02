@@ -310,6 +310,15 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
     # trainer cannot log in and holds no table privilege anywhere until Phase 3 (D13).
     assert _fetch_row(fresh_db, TRAINER_STATE_SQL) == [False, False]
 
+    # 0006: app and analyst read the clean views (default privileges); ingest gets them in plan 3,
+    # trainer in Phase 3 (D13, TRAINER_STATE_SQL above covers views).
+    clean_views = "SELECT count(*) FROM accidents_clean; SELECT count(*) FROM accidents_clean_daily"
+    _as(app, clean_views)
+    _as(analyst, clean_views)
+    _denied(ingest, "SELECT count(*) FROM accidents_clean")
+    _denied(app, "UPDATE accidents_clean SET source_url = 'x' WHERE false")
+    _denied(analyst, "BEGIN READ WRITE; DELETE FROM accidents_clean_daily WHERE false; COMMIT")
+
     _denied(app, "SELECT count(*) FROM internal.mp_tick_aggregates")
     _denied(app, "SELECT count(*) FROM internal.accidents_raw")
     _as(app, "SELECT count(*) FROM source_ingest_log")
@@ -404,6 +413,10 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "GRANT USAGE ON SEQUENCE public.mp_ticks_tick_id_seq TO ingest;"
         "ALTER DEFAULT PRIVILEGES IN SCHEMA internal GRANT SELECT ON TABLES TO ingest;"
         "GRANT SELECT ON public.accidents TO trainer;"
+        "GRANT SELECT ON public.accidents_clean TO trainer;"
+        "GRANT SELECT ON public.accidents_clean_daily TO ingest;"
+        "GRANT UPDATE ON public.accidents_clean TO app;"
+        "REVOKE SELECT ON public.accidents_clean_daily FROM analyst;"
         "GRANT CREATE ON SCHEMA internal TO app;"
         "REVOKE SELECT ON internal.accident_revisions FROM analyst;",
     )
@@ -425,6 +438,10 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "ingest has nothing on sequence public.mp_ticks_tick_id_seq",
         "no default privileges grant ingest or trainer anything",
         "trainer holds no privilege on public.accidents",
+        "trainer holds no privilege on public.accidents_clean",
+        "ingest SELECT on public.accidents_clean_daily matches the expected set",
+        "app can SELECT public.accidents_clean and nothing else",
+        "analyst can SELECT public.accidents_clean_daily and nothing else",
         "app has no CREATE on schema internal",
         "analyst can SELECT internal.accident_revisions",
         "nobody can SET or INHERIT ingest",

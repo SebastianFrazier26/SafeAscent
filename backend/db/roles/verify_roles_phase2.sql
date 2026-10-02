@@ -188,6 +188,22 @@ FROM cols;
 INSERT INTO role_checks VALUES
   ('accidents_raw column checks ran', EXISTS (SELECT 1 FROM rels WHERE tbl = 'internal.accidents_raw'));
 
+-- Plan 2 (0006): app and analyst read the clean views through migrator's default privileges
+-- and hold nothing else on them (a simple view is auto-updatable, so writes are checked too).
+-- ingest and trainer hold nothing on them: the exact ingest set and the trainer check above
+-- cover views; plan 3 grants ingest, Phase 3 grants trainer (D13).
+INSERT INTO role_checks
+SELECT 'clean view exists: ' || v, EXISTS (SELECT 1 FROM rels WHERE tbl = v AND relkind = 'v')
+FROM unnest(ARRAY['public.accidents_clean', 'public.accidents_clean_daily']) AS v
+UNION ALL
+SELECT g || ' can SELECT ' || r.tbl || ' and nothing else',
+       has_table_privilege(g, r.oid, 'SELECT')
+       AND NOT (has_table_privilege(g, r.oid, 'INSERT') OR has_table_privilege(g, r.oid, 'UPDATE')
+                OR has_table_privilege(g, r.oid, 'DELETE') OR has_table_privilege(g, r.oid, 'TRUNCATE')
+                OR has_table_privilege(g, r.oid, 'REFERENCES') OR has_table_privilege(g, r.oid, 'TRIGGER'))
+FROM rels r CROSS JOIN unnest(ARRAY['app', 'analyst']) AS g
+WHERE r.tbl IN ('public.accidents_clean', 'public.accidents_clean_daily');
+
 SELECT check_name, ok FROM role_checks ORDER BY ok, check_name;
 
 DO $$

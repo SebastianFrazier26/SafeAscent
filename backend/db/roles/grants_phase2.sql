@@ -58,7 +58,10 @@ GRANT SELECT (accident_id, source, source_id, date, year, mountain, state, latit
 -- the DELETE's WHERE). R5 upserts its decisions and never deletes one: owner decisions stay.
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.gnis_summits TO ingest;
 GRANT SELECT, INSERT, UPDATE ON internal.duplicate_decisions TO ingest;
--- trainer: nothing until Phase 3 (D13).
+
+-- Plan 2 (0006): no grant here. app and analyst read accidents_clean[_daily] through
+-- migrator's default privileges (they cover views); ingest gets them in plan 3.
+-- trainer: nothing until Phase 3 (D13), which grants it the views together with LOGIN.
 
 RESET ROLE;
 COMMIT;

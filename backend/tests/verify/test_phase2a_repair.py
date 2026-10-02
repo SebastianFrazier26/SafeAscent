@@ -284,3 +284,47 @@ def test_r12_golden_precision_on_filled_values_and_recall_reported():
     # stratified toward rows where R12 fires, so zero filled values is a failure.
     assert filled > 0, "R12 filled no golden value"
     assert correct / filled >= 0.95
+
+
+def test_clean_set_has_no_unverified_or_known_non_us_rows():
+    # O3 (owner): only a known non-US country drops a row; NULL-country rows stay and are
+    # reported here. The base-table join (D2) catches a view whose WHERE drifted, which
+    # counting non-US rows inside the view could not.
+    [row] = fetch(
+        "SELECT (SELECT count(*) FROM accidents_clean WHERE date_precision = 'unknown') AS unknown, "
+        "(SELECT count(*) FROM accidents a JOIN accidents_clean c USING (accident_id) "
+        " WHERE a.country IS NOT NULL AND a.country <> 'US') AS non_us, "
+        "(SELECT count(*) FROM accidents a WHERE a.is_canonical AND a.excluded_reason IS NULL "
+        " AND a.activity_class IN ('climbing', 'climbing_approach') AND a.country IS NULL "
+        " AND NOT EXISTS (SELECT 1 FROM accidents_clean c WHERE c.accident_id = a.accident_id)) AS null_dropped"
+    )
+    assert (row["unknown"], row["non_us"], row["null_dropped"]) == (0, 0, 0)
+    flagged = fetch(
+        "SELECT a.geocode_method, count(*) AS n FROM accidents_clean c JOIN accidents a USING (accident_id) "
+        "WHERE c.country IS NULL GROUP BY 1 ORDER BY 1"
+    )
+    print({"clean_null_country": {r["geocode_method"]: r["n"] for r in flagged}})
+
+
+def test_cm_training_set_has_no_aac_placeholder_dates():
+    # The data check behind spec R2's CI rule: AAC day-15 (month) and Jul-1 (year)
+    # placeholders never reach the day-precision training set, whatever the precision
+    # labels say. A labelling bug in R1/R2 fails this; restating the view's WHERE would not.
+    [row] = fetch(
+        "SELECT count(*) AS n FROM accidents_clean_daily WHERE source ILIKE 'aac%' "
+        "AND (extract(day FROM date) = 15 OR (extract(month FROM date) = 7 AND extract(day FROM date) = 1))"
+    )
+    assert row["n"] == 0
+
+
+def test_clean_set_points_trusted_only_where_precision_allows():
+    from app.data.repair.geocode import TRUSTED_POINT_PRECISIONS
+
+    trusted = ", ".join(f"'{p}'" for p in sorted(TRUSTED_POINT_PRECISIONS))
+    [row] = fetch(
+        "SELECT count(*) FILTER (WHERE point_trusted AND geocode_precision IN ('region_fallback', 'unknown')) AS bad, "
+        f"count(*) FILTER (WHERE point_trusted <> coalesce(geocode_precision IN ({trusted}), false)) AS mislabelled, "
+        "count(*) FILTER (WHERE geocode_precision = 'region_fallback' AND latitude IS NULL) AS nulled_fallback "
+        "FROM accidents_clean"
+    )
+    assert (row["bad"], row["mislabelled"], row["nulled_fallback"]) == (0, 0, 0)
