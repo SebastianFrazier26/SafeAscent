@@ -18,6 +18,7 @@ dependencies = [
     "requests==2.34.2",
     "numpy==2.2.1",
     "python-dotenv==1.2.3",
+    "pydantic==2.13.5",
     "pydantic-settings==2.15.0",
     "python-multipart==0.0.32",
 ]
@@ -107,6 +108,7 @@ module = [
     "app.pipelines.textsim",
     "app.pipelines.geo",
     "app.pipelines.gnis",
+    "app.pipelines.open_meteo",
 ]
 ignore_errors = false
 disallow_any_generics = true
