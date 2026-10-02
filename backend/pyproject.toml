@@ -34,10 +34,19 @@ dev = [
     "pip-audit==2.10.1",
     "fakeredis==2.38.0",
 ]
+# Data-job dependencies (local days now; later plans append). Not in the API image: the
+# Dockerfile syncs with --no-group pipelines.
+pipelines = [
+    "timezonefinder==9.0.0",
+    "tzdata==2026.4",
+]
 
 [tool.uv]
 # An application, not a library: run from backend/ with `app` on the path.
 package = false
+# Exact `uv sync` removes groups it was not asked for, so a plain `uv sync && uv run pytest`
+# would drop the pipelines group the localday tests import.
+default-groups = ["dev", "pipelines"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -110,6 +119,7 @@ module = [
     "app.pipelines.gnis",
     "app.pipelines.open_meteo",
     "app.pipelines.cell_conditions",
+    "app.pipelines.localday",
 ]
 ignore_errors = false
 disallow_any_generics = true

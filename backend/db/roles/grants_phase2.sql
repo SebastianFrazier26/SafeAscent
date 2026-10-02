@@ -71,6 +71,11 @@ GRANT SELECT, INSERT, UPDATE ON public.grid_bucket_series, public.cell_normals_s
   public.cell_climate_normals, public.cell_climatology TO ingest;
 GRANT SELECT ON public.accidents_clean, public.accidents_clean_daily, public.accident_conditions TO ingest;
 
+-- Plan 3 (local days): localday writes each accident's crag timezone. It reads accidents (table
+-- SELECT, plan 2), mp_routes (plan 1) and mp_locations through the three-column grant above, so
+-- no SELECT is widened here.
+GRANT UPDATE (tz) ON public.accidents TO ingest;
+
 RESET ROLE;
 COMMIT;
 \echo 'phase 2 grants applied'

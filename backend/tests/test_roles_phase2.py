@@ -9,12 +9,13 @@ import uuid
 from datetime import date
 
 from alembic import command
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.data.repair import activity, dates, dedupe, experience, geocode, review, severity
 from app.data.repair.checks import record_check
 from app.data.repair.framework import LOCATION, Change, run_step
-from app.pipelines import cell_conditions, gnis, mp_tick_aggregates, mp_ticks_quarantine
+from app.pipelines import cell_conditions, gnis, localday, mp_tick_aggregates, mp_ticks_quarantine
 from app.pipelines.validate import ValidationReport
 from tests.pgtest import requires_pg
 from tests.test_gnis import HEADER as GNIS_HEADER
@@ -210,6 +211,23 @@ def _run_real_jobs_as_ingest(ingest_url: str, tmp_path, monkeypatch) -> None:
 
     assert asyncio.run(conditions()) == [1, 1, 0]
 
+    # Plan 3 Task 4: the register job as ingest — accidents.tz through its column grant, the clean
+    # views, mp_locations through its three-column grant, the registry and the ingest log.
+    async def register() -> dict[str, object]:
+        engine = create_async_engine(sa_ingest)
+        try:
+            async with engine.begin() as conn:
+                # The repairs above leave no clean trusted point; promote one, as R3/R4 would.
+                await conn.execute(text("UPDATE accidents SET activity_class = 'climbing', geocode_precision = 'crag' "
+                                        "WHERE accident_id = 900000002"))
+            return await localday.register_logged(engine)
+        finally:
+            await engine.dispose()
+
+    registered = asyncio.run(register())
+    assert registered["accident_tz_changed"] == registered["accident_tz_assigned"] == 1
+    assert (registered["incident_series"], registered["route_series"]) == (1, 0)
+
 
 # PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views; those belong to the
 # extension, not to any grant this project makes, so the check skips them as verify_roles.sql does.
@@ -329,6 +347,7 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
     _as(ingest, "INSERT INTO internal.accident_revisions (accident_id, field, method, rule_version, run_id) SELECT accident_id, 'f', 'm', 'v', gen_random_uuid() FROM accidents WHERE false")
     _denied(ingest, "UPDATE accidents SET description = 'x' WHERE false")
     _denied(ingest, "UPDATE accidents SET source_id = 'x' WHERE false")
+    _as(ingest, "UPDATE accidents SET tz = NULL WHERE tz IS NOT NULL AND false")
     _denied(ingest, "DELETE FROM accidents WHERE false")
     _denied(ingest, "UPDATE internal.accident_revisions SET method = 'x' WHERE false")
     _as(ingest, "INSERT INTO internal.duplicate_decisions (low_id, high_id, score, decision, decided_by, rule_version) "
@@ -481,7 +500,8 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "GRANT UPDATE ON public.accidents_clean TO app;"
         "REVOKE SELECT ON public.accidents_clean_daily FROM analyst;"
         "GRANT CREATE ON SCHEMA internal TO app;"
-        "REVOKE SELECT ON internal.accident_revisions FROM analyst;",
+        "REVOKE SELECT ON internal.accident_revisions FROM analyst;"
+        "REVOKE UPDATE (tz) ON public.accidents FROM ingest;",
     )
     _as(owner_url, "GRANT ingest TO analyst")
     # CREATE without USAGE is enough to create a table, which is why verify checks both.
@@ -497,6 +517,7 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "ingest SELECT on internal.accidents_raw matches the expected set",
         "ingest accidents_raw column privileges match the expected set: description",
         "ingest mp_locations column privileges match the expected set: name",
+        "ingest accidents column privileges match the expected set: tz",
         "ingest mp_ticks column privileges match the expected set: climber_name",
         "ingest has nothing on sequence public.mp_ticks_tick_id_seq",
         "no default privileges grant ingest or trainer anything",

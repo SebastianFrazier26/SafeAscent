@@ -150,14 +150,16 @@ SELECT 'ingest mp_ticks column privileges match the expected set: ' || attname,
 FROM cols;
 
 -- ingest's column grants from plan 2: UPDATE on accidents exactly the repair columns (never
--- description, source, source_id or accident_id); SELECT on accidents_raw only the R1-R4 inputs.
+-- description, source, source_id or accident_id), plus plan 3's tz; SELECT on accidents_raw only
+-- the R1-R4 inputs.
 WITH cols AS (
   SELECT a.attnum, a.attname,
          a.attname IN ('date', 'year', 'latitude', 'longitude', 'coordinates', 'country', 'date_precision',
                        'year_source', 'year_lo', 'year_hi', 'geocode_precision', 'geocode_method',
                        'activity_class', 'activity_rule_version', 'inclusion_flag', 'incident_group_id',
                        'is_canonical', 'severity_scale', 'excluded_reason', 'source_url', 'updated_at',
-                       'exp_years_climbing', 'exp_stated_level', 'exp_first_season', 'guided', 'exp_rule_version')
+                       'exp_years_climbing', 'exp_stated_level', 'exp_first_season', 'guided', 'exp_rule_version',
+                       'tz')
            AS may_update
   FROM pg_attribute a
   WHERE a.attrelid = 'public.accidents'::regclass AND a.attnum > 0 AND NOT a.attisdropped
