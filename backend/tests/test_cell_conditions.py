@@ -169,8 +169,39 @@ def test_large_batch_crosses_the_parameter_limit_and_rewrites_idempotently(monke
              "bool_and(NOT is_forecast) FROM cell_daily_conditions")
     with migrated_db() as name:
         counts, [summary] = asyncio.run(_run(sa_url(name), [rows, rows], query))
-    assert counts == [2500, 2500]
+    # The identical re-write touches nothing, so run_id stays the first run's.
+    assert counts == [2500, 0]
     assert summary == (2500, 2500 - 2 * 179, 0, 0, 1, True)
+
+
+@requires_pg
+def test_identical_equal_rank_rewrite_writes_nothing_but_a_changed_value_does():
+    async def scenario(url: str):
+        engine = create_async_engine(url)
+        first, second, third = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        try:
+            async with engine.begin() as conn:
+                base = [_row(10.0, "era5"), _row(None, "era5", day=date(2026, 9, 21))]
+                counts = [await upsert_rows(conn, base, run_id=first)]
+                stamp = text("SELECT date, tmax, run_id, fetched_at FROM cell_daily_conditions ORDER BY date")
+                before = [tuple(r) for r in (await conn.execute(stamp)).all()]
+                counts.append(await upsert_rows(conn, base, run_id=second))
+                unchanged = [tuple(r) for r in (await conn.execute(stamp)).all()]
+                changed = [DayRow(1, TZ, date(2026, 9, 21), None, -1.0, 0.0, 0.0, 5.0, 9.5, True, "era5", "m",
+                                  "open_meteo_archive"), base[0]]
+                counts.append(await upsert_rows(conn, changed, run_id=third))
+                after = [tuple(r) for r in (await conn.execute(stamp)).all()]
+                return counts, before, unchanged, after, (first, third)
+        finally:
+            await engine.dispose()
+
+    with migrated_db() as name:
+        counts, before, unchanged, after, (first, third) = asyncio.run(scenario(sa_url(name)))
+    # A NULL-to-NULL value counts as identical (IS DISTINCT FROM), not as a change.
+    assert counts == [2, 0, 1]
+    assert unchanged == before
+    assert [r[2] for r in after] == [first, third]
+    assert after[0] == before[0] and after[1][1:3] == (None, third)
 
 
 @requires_pg

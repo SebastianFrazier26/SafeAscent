@@ -118,20 +118,28 @@ _COLUMNS = (
 CHUNK_ROWS = 1000
 
 _RANK = "(CASE {t}.record_kind WHEN 'era5' THEN 3 WHEN 'stopgap' THEN 2 ELSE 1 END)"
-_UPDATE_SET = ", ".join(f"{c} = EXCLUDED.{c}" for c in _COLUMNS if c not in ("grid_bucket", "tz", "date"))
+_VALUE_COLUMNS = tuple(c for c in _COLUMNS if c not in ("grid_bucket", "tz", "date"))
+_UPDATE_SET = ", ".join(f"{c} = EXCLUDED.{c}" for c in _VALUE_COLUMNS)
+_STORED, _NEW = _RANK.format(t="cell_daily_conditions"), _RANK.format(t="EXCLUDED")
+_CHANGED = (
+    f"({', '.join(f'cell_daily_conditions.{c}' for c in _VALUE_COLUMNS)}) IS DISTINCT FROM "
+    f"({', '.join(f'EXCLUDED.{c}' for c in _VALUE_COLUMNS)})"
+)
 # Only the weather columns: plan 7's AQI, alerts, SWE and snow depth on the same row survive a replacement.
-# Equal ranks replace, so a newer forecast supersedes an older one.
+# Equal ranks replace only when a value differs, so a newer forecast supersedes an older one while
+# an identical re-fetch leaves the row (and its fetched_at/run_id) alone and is not counted.
 _UPSERT_TAIL = (
     "ON CONFLICT (grid_bucket, tz, date) DO UPDATE SET "
     f"{_UPDATE_SET}, fetched_at = now(), run_id = EXCLUDED.run_id "
-    f"WHERE {_RANK.format(t='cell_daily_conditions')} <= {_RANK.format(t='EXCLUDED')} "
+    f"WHERE {_STORED} < {_NEW} OR ({_STORED} = {_NEW} AND {_CHANGED}) "
     "RETURNING 1"
 )
 
 
 async def upsert_rows(conn: AsyncConnection, rows: Sequence[DayRow], *, run_id: uuid.UUID) -> int:
     """Writes on the caller's connection and transaction, so a batch lands whole or not at all.
-    Returns rows inserted or replaced; rows the precedence rule kept out are not counted."""
+    Returns rows inserted or replaced; rows the precedence rule kept out, and identical
+    equal-rank re-writes, are not counted."""
     if not rows:
         return 0
     keys = {(r.grid_bucket, r.tz, r.date) for r in rows}
