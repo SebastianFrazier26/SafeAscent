@@ -57,6 +57,11 @@ Worker notes for the relaunch:
 - Phase 2 roles and schema: `create_roles_phase2.sql` (owner, once), migrations as `migrator`, then `grants_phase2.sql` and `verify_roles_phase2.sql` after each Phase 2 migration. Runbook: `docs/superpowers/plans/2026-09-28-phase2a-foundations.md` Tasks 8–10. Owner/analyst `psql` URLs always use `sslmode=verify-full&sslrootcert=system`.
 - **Migrate before deploy** (owner decision 2026-09-29). Apply a migration to prod before any deploy of code that depends on it. `0004_phase2a_foundation`: the `Accident` model maps its 21 new columns and `/predict` selects them, so a deploy of the Phase 2a foundations merge before `0004` is on prod breaks `/predict` with `UndefinedColumnError`. **Before merging that PR**, confirm auto-deploy is off on every Railway service, and pause it if it is on: with auto-deploy on, the merge itself deploys. Deploys of `main` then stay off until the runbook's Task 9 Step 4 has succeeded (pre-merge gate at the top of Task 8). The old code ignores the added columns, so migrating first is always safe.
 - Known limitation, MP tick-aggregate reloads (open for the owner): `internal.mp_tick_aggregates` is INSERT-only and MP's totals only grow, so a later scrape's totals mostly come back `count_changed`, roughly 8–12% of the batch, above the loader's default `--max-quarantine-share 0.10`. A later-scrape reload is therefore likely rejected whole, and its newly closed months do not land. The first load is unaffected. Needs a decision (exclude `total` rows from the share, or key totals per scrape) before the second load.
+- `weather` (legacy, read-only) stays until the Phase 3 MVP-1 PR, which **must** drop it (hard gate: MVP-1 does not merge while `weather` exists). Until then the live kernel reads legacy weather that is mislinked for some accidents; the relaunch caveat lists this.
+
+## Open-Meteo
+
+The archive API needs Professional (Standard excludes it; pricing read 2026-09-28, re-check before buying). One Professional month per year, started on or after 10 January: run `era5_window run --window-start <day> --max-units <cap>` on prod until it reports no chunks and no normals due, then downgrade to Standard (which the nightly forecast and its `past_days` stopgap need). Between windows no ERA5 call is made.
 
 ## Nightly job
 

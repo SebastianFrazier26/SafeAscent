@@ -80,6 +80,11 @@ GRANT UPDATE (tz) ON public.accidents TO ingest;
 -- legacy weather table; never written.
 GRANT SELECT ON public.weather TO ingest;
 
+-- Plan 3 (R7): the one-time longitude sign fix reads and flips area_weekly_weather.longitude
+-- only; never any other column.
+GRANT SELECT ON public.area_weekly_weather TO ingest;
+GRANT UPDATE (longitude) ON public.area_weekly_weather TO ingest;
+
 RESET ROLE;
 COMMIT;
 \echo 'phase 2 grants applied'

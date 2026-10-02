@@ -399,6 +399,14 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
     _denied(ingest, "UPDATE weather SET temperature_max = 0 WHERE false")
     _denied(ingest, "DELETE FROM weather WHERE false")
     _denied(ingest, "INSERT INTO weather (date, latitude, longitude) VALUES ('2020-01-01', 0, 0)")
+
+    # Plan 3 (R7): ingest reads area_weekly_weather and can flip longitude only.
+    _as(ingest, "SELECT count(*) FROM area_weekly_weather")
+    _as(ingest, "UPDATE area_weekly_weather SET longitude = -longitude WHERE false")
+    _denied(ingest, "UPDATE area_weekly_weather SET temp_avg = 0 WHERE false")
+    _denied(ingest, "INSERT INTO area_weekly_weather (latitude, longitude, week_start, week_end) "
+        "VALUES (0, 0, '2020-01-06', '2020-01-12')")
+    _denied(ingest, "DELETE FROM area_weekly_weather WHERE false")
     _denied(analyst, "BEGIN READ WRITE; DELETE FROM grid_bucket_series WHERE false; COMMIT")
     _denied(app, "UPDATE accidents_clean SET source_url = 'x' WHERE false")
     _denied(analyst, "BEGIN READ WRITE; DELETE FROM accidents_clean_daily WHERE false; COMMIT")

@@ -35,8 +35,17 @@ def test_r6_new_temperatures_agree_with_correctly_linked_legacy_rows():
     [row] = fetch(R6_SQL)
     print(dict(row))
     assert row["n"] > 100
+    # Missing is never 0: a NULL correlation/percentile (too few or no era5 rows) must fail
+    # loudly here rather than compare false against the thresholds below.
+    assert row["r_tmax"] is not None
+    assert row["p99_gust"] is not None
     assert row["r_tmax"] > 0.95
     assert row["p99_gust"] < 60
+
+
+def test_r7_no_positive_longitudes():
+    [row] = fetch("SELECT count(*) AS n FROM area_weekly_weather WHERE longitude > 0")
+    assert row["n"] == 0
 
 
 def test_no_visibility_in_new_conditions():

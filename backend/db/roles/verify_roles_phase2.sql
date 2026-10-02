@@ -86,7 +86,10 @@ INSERT INTO ingest_privs VALUES
   ('public.accidents_clean', 'SELECT'), ('public.accidents_clean_daily', 'SELECT'),
   ('public.accident_conditions', 'SELECT'),
   -- Plan 3 (R6 verify): the legacy weather table is read-only input to r6_verify.
-  ('public.weather', 'SELECT');
+  ('public.weather', 'SELECT'),
+  -- Plan 3 (R7): area_weekly_weather SELECT is table-level; UPDATE is column-level (longitude
+  -- only), checked below.
+  ('public.area_weekly_weather', 'SELECT');
 
 -- PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views, so extension-owned
 -- relations are skipped throughout, as verify_roles.sql does.
@@ -184,6 +187,20 @@ SELECT 'ingest mp_locations column privileges match the expected set: ' || attna
        AND NOT has_column_privilege('ingest', 'public.mp_locations', attnum, 'UPDATE')
        AND NOT has_column_privilege('ingest', 'public.mp_locations', attnum, 'INSERT')
        AND NOT has_column_privilege('ingest', 'public.mp_locations', attnum, 'REFERENCES')
+FROM cols;
+
+-- Plan 3 (R7): ingest's only write on area_weekly_weather is UPDATE longitude; SELECT is
+-- table-level (checked in ingest_privs above), so every column already has it.
+WITH cols AS (
+  SELECT a.attnum, a.attname
+  FROM pg_attribute a
+  WHERE a.attrelid = 'public.area_weekly_weather'::regclass AND a.attnum > 0 AND NOT a.attisdropped
+)
+INSERT INTO role_checks
+SELECT 'ingest area_weekly_weather column privileges match the expected set: ' || attname,
+       has_column_privilege('ingest', 'public.area_weekly_weather', attnum, 'UPDATE') = (attname = 'longitude')
+       AND NOT has_column_privilege('ingest', 'public.area_weekly_weather', attnum, 'INSERT')
+       AND NOT has_column_privilege('ingest', 'public.area_weekly_weather', attnum, 'REFERENCES')
 FROM cols;
 
 -- By oid from rels, not 'internal.accidents_raw'::regclass: the name lookup needs USAGE on

@@ -114,6 +114,7 @@ module = [
     "app.data.repair.activity",
     "app.data.repair.dedupe",
     "app.data.repair.experience",
+    "app.data.repair.area_weekly",
     "app.pipelines.textsim",
     "app.pipelines.geo",
     "app.pipelines.gnis",

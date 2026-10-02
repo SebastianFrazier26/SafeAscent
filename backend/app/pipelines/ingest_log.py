@@ -23,9 +23,10 @@ RunStatus = Literal["ok", "rejected", "failed"]
 # (M7, Task 2 review). Enforced here rather than trusted to callers, so a future change to
 # ValidationReport.summary() that starts including raw issues fails loudly instead of leaking.
 _ALLOWED_SUMMARY_KEYS = frozenset({"source", "rows_in", "accepted", "quarantined", "problems", "rule_version"})
-# Run-level numbers a job may add (hand-check agreement, rows left for owner review). A new
-# metric joins this set in a reviewed change rather than riding a raw jsonb UPDATE (G13).
-_ALLOWED_METRICS = frozenset({"agreement", "review_pending"})
+# Run-level numbers a job may add (hand-check agreement, rows left for owner review, R6's
+# sample size/correlation/gust percentile). A new metric joins this set in a reviewed change
+# rather than riding a raw jsonb UPDATE (G13).
+_ALLOWED_METRICS = frozenset({"agreement", "review_pending", "n", "r_tmax", "p99_gust"})
 
 
 def sha256_rows(rows: Iterable[Sequence[object]]) -> str:

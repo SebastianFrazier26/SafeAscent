@@ -47,9 +47,12 @@ async def _main() -> dict[str, float | int | None]:
     try:
         async with engine.begin() as conn:
             result = await verify(conn)
+            # Missing is never 0: a None (no linked rows yet, or no era5 gust rows) is left out
+            # of the metrics rather than coerced to a number validate_summary would accept.
+            metrics = {k: v for k, v in result.items() if v is not None}
             run_id = await start_run(conn, source="r6_verify", window_start=None, window_end=None, content_sha256=None)
             await finish_run(conn, run_id, status="ok", report=ValidationReport("r6_verify"), rows_upserted=0,
-                             problems=[json.dumps(result)])
+                             metrics=metrics)
     finally:
         await engine.dispose()
     return result
