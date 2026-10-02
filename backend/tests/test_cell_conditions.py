@@ -204,6 +204,57 @@ def test_identical_equal_rank_rewrite_writes_nothing_but_a_changed_value_does():
     assert after[0] == before[0] and after[1][1:3] == (None, third)
 
 
+# One stored column is moved off the incoming row's value at equal rank; re-upserting the row must
+# see the difference and write it back. record_kind and is_forecast are tied to the rank by the CHECKs
+# (no CHECK-valid equal-rank change exists), so those two cases drop the tying CHECKs in the throwaway
+# DB: the guard's SQL is what is under test, and it must still list them.
+_CHANGE_CASES = [
+    ("tmax", "era5", "11.0", ()),
+    ("tmin", "era5", "-2.0", ()),
+    ("precip_mm", "era5", "1.5", ()),
+    ("snowfall_cm", "era5", "2.0", ()),
+    ("wind_max_ms", "era5", "6.0", ()),
+    ("gust_max_ms", "era5", "9.5", ()),
+    ("freeze_thaw", "era5", "false", ()),
+    ("model", "era5", "'m2'", ()),
+    ("source", "era5", "'open_meteo_forecast'", ()),
+    ("record_kind", "forecast", "'forecast_v0'",
+     ("cell_daily_conditions_record_kind_check", "cell_daily_conditions_is_forecast_check")),
+    ("is_forecast", "forecast", "false", ("cell_daily_conditions_is_forecast_check",)),
+]
+
+
+def test_change_cases_cover_every_value_column():
+    assert sorted(c for c, *_ in _CHANGE_CASES) == sorted(cell_conditions._VALUE_COLUMNS)
+
+
+@requires_pg
+@pytest.mark.parametrize("column,kind,stored,drop_checks", _CHANGE_CASES, ids=[c[0] for c in _CHANGE_CASES])
+def test_equal_rank_change_in_any_single_value_column_is_written(column, kind, stored, drop_checks):
+    async def scenario(url: str):
+        engine = create_async_engine(url)
+        base, rewrite = uuid.uuid4(), uuid.uuid4()
+        try:
+            async with engine.begin() as conn:
+                for check in drop_checks:
+                    await conn.execute(text(f"ALTER TABLE cell_daily_conditions DROP CONSTRAINT {check}"))
+                row = _row(10.0, kind)
+                counts = [await upsert_rows(conn, [row], run_id=base)]
+                await conn.execute(text(f"UPDATE cell_daily_conditions SET {column} = {stored}"))
+                counts.append(await upsert_rows(conn, [row], run_id=rewrite))
+                result = await conn.execute(text(f"SELECT {column}, run_id FROM cell_daily_conditions"))
+                expected = {"is_forecast": kind == "forecast", "record_kind": row.record_kind}.get(
+                    column, getattr(row, column, None))
+                return counts, [tuple(r) for r in result.all()], expected, rewrite
+        finally:
+            await engine.dispose()
+
+    with migrated_db() as name:
+        counts, rows, expected, rewrite = asyncio.run(scenario(sa_url(name)))
+    assert counts == [1, 1]
+    assert rows == [(expected, rewrite)]
+
+
 @requires_pg
 def test_duplicate_keys_in_one_call_are_rejected_before_writing():
     async def scenario(url: str):

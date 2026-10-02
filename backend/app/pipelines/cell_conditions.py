@@ -128,6 +128,7 @@ _CHANGED = (
 # Only the weather columns: plan 7's AQI, alerts, SWE and snow depth on the same row survive a replacement.
 # Equal ranks replace only when a value differs, so a newer forecast supersedes an older one while
 # an identical re-fetch leaves the row (and its fetched_at/run_id) alone and is not counted.
+# Race safety relies on Postgres's ON CONFLICT DO UPDATE locking the row and re-checking this WHERE on its latest version.
 _UPSERT_TAIL = (
     "ON CONFLICT (grid_bucket, tz, date) DO UPDATE SET "
     f"{_UPDATE_SET}, fetched_at = now(), run_id = EXCLUDED.run_id "
