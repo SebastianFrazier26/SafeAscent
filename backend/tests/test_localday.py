@@ -163,6 +163,28 @@ def test_register_all_assigns_clears_and_registers_incident_and_route_series():
 
 
 @requires_pg
+def test_a_half_null_route_point_takes_its_area_pair_never_a_mix():
+    seed = (
+        "INSERT INTO mp_locations (mp_id, name, latitude, longitude) VALUES (900, 'Area', 61.2, -149.9), "
+        "(901, 'Bare', NULL, NULL);"
+        "INSERT INTO mp_routes (mp_route_id, name, location_id, latitude, longitude) VALUES "
+        "(1, 'LatOnly', 900, 40.02, NULL), (2, 'LonOnly', 900, NULL, -105.28), (3, 'Own', 900, 40.02, -105.28), "
+        "(4, 'HalfNoArea', 901, 40.5, NULL), (5, 'HalfOrphan', NULL, NULL, -105.0);"
+    )
+
+    async def scenario(url: str):
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                return sorted(tuple(map(float, r)) for r in (await conn.execute(text(localday.ROUTE_POINTS_SQL))).all())
+        finally:
+            await engine.dispose()
+
+    with migrated_db(seed_sql=seed) as name:
+        assert asyncio.run(scenario(sa_url(name))) == [(40.02, -105.28), (61.2, -149.9)]
+
+
+@requires_pg
 def test_a_moved_point_gets_its_new_zone_on_the_next_register():
     # D2: a review that moves a point across a zone must not leave the old zone behind.
     move = "UPDATE accidents SET latitude = 21.3, longitude = -157.8 WHERE accident_id = 1"

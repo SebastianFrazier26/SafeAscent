@@ -42,12 +42,16 @@ INCIDENT_POINTS_SQL = (
     "AND a.year_lo IS NOT DISTINCT FROM a.year_hi "
     f"AND a.date >= DATE '{INCIDENT_START.isoformat()}'"
 )
-# Every route point (owner OQ4), falling back to its area's point. Only mp_locations' mp_id,
-# latitude and longitude: ingest's grant on that table is exactly those columns.
+# Every route point (owner OQ4), falling back to its area's point. The pair is taken whole from
+# one side (per-column COALESCE would mix a route's latitude with its area's longitude). Only
+# mp_locations' mp_id, latitude and longitude: ingest's grant on that table is exactly those columns.
+_ROUTE_HAS_POINT = "r.latitude IS NOT NULL AND r.longitude IS NOT NULL"
 ROUTE_POINTS_SQL = (
-    "SELECT DISTINCT COALESCE(r.latitude, l.latitude), COALESCE(r.longitude, l.longitude) "
-    "FROM mp_routes r LEFT JOIN mp_locations l ON l.mp_id = r.location_id "
-    "WHERE COALESCE(r.latitude, l.latitude) IS NOT NULL AND COALESCE(r.longitude, l.longitude) IS NOT NULL"
+    "SELECT DISTINCT p.lat, p.lon FROM ("
+    f"SELECT CASE WHEN {_ROUTE_HAS_POINT} THEN r.latitude ELSE l.latitude END AS lat, "
+    f"CASE WHEN {_ROUTE_HAS_POINT} THEN r.longitude ELSE l.longitude END AS lon "
+    "FROM mp_routes r LEFT JOIN mp_locations l ON l.mp_id = r.location_id) p "
+    "WHERE p.lat IS NOT NULL AND p.lon IS NOT NULL"
 )
 _TRUSTED_POINTS_SQL = (
     "SELECT c.accident_id, c.latitude, c.longitude, t.tz FROM accidents_clean c "
