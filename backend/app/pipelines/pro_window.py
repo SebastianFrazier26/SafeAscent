@@ -13,14 +13,17 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import threading
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+
+from app.pipelines.open_meteo import ArchiveClient, AttemptOutcome, Location, LocationResponse, OpenMeteoError
 
 PRO_WINDOW_DAYS = 30
 JANUARY_EARLIEST_DAY = 10
@@ -165,3 +168,78 @@ class Budget:
     def spend(self, units: float) -> None:
         self._check(units)
         self.spent += units
+
+
+class _BudgetExhausted(Exception):
+    pass
+
+
+class _Abandoned(Exception):
+    pass
+
+
+# Bounds the fetch thread's wait for its pre-send record; an unrecorded retry is never sent.
+RECORD_TIMEOUT_S = 60.0
+
+
+@dataclass(frozen=True)
+class PaidFetch:
+    responses: list[LocationResponse]
+    billed: float
+    problem: str | None
+    budget_exhausted: bool
+
+
+async def paid_fetch(
+    engine: AsyncEngine,
+    client: ArchiveClient,
+    locations: Sequence[Location],
+    start: date,
+    end: date,
+    *,
+    run_id: uuid.UUID,
+    units: float,
+    budget: Budget,
+    at: datetime | None,
+) -> PaidFetch:
+    """One archive request with every billable attempt recorded before it is sent. The caller has
+    already recorded the first attempt's `units` with start_run and spent them from `budget` (D5);
+    every paid job goes through here so the retry rules below hold for all of them."""
+    loop = asyncio.get_running_loop()
+    billed: float = units
+    stop = threading.Event()
+
+    async def _record(total: float) -> None:
+        async with engine.begin() as conn:
+            await record_spend(conn, run_id, total, at=at)
+
+    def on_attempt(attempt: int, previous: AttemptOutcome | None) -> None:
+        # I3: a 5xx or a timeout may have been computed and billed, so the retry is paid for (and
+        # recorded) before it is sent. A 429 was refused before any work: the attempt already
+        # counted for it carries over to its retry.
+        nonlocal billed
+        # N2: once the awaiting coroutine is gone (cancelled, Ctrl-C) the lock is released, so this
+        # orphaned thread must not send anything more.
+        if stop.is_set():
+            raise _Abandoned()
+        if attempt == 0 or previous == "rate_limited":
+            return
+        if not budget.fits(units):
+            raise _BudgetExhausted()
+        budget.spend(units)
+        billed += units
+        asyncio.run_coroutine_threadsafe(_record(billed), loop).result(RECORD_TIMEOUT_S)
+        # Recording waits on the loop; a cancel can land meanwhile.
+        if stop.is_set():
+            raise _Abandoned()
+
+    try:
+        # In a thread: the client is synchronous, and on_attempt's DB write needs the loop free.
+        responses = await asyncio.to_thread(client.fetch, list(locations), start, end, on_attempt=on_attempt)
+    except OpenMeteoError as exc:
+        return PaidFetch([], billed, str(exc), False)
+    except _BudgetExhausted:
+        return PaidFetch([], billed, "budget exhausted before a retry could be sent", True)
+    finally:
+        stop.set()
+    return PaidFetch(responses, billed, None, False)

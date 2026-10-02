@@ -661,11 +661,11 @@ def test_spend_logged_by_another_job_mid_run_stops_the_next_chunk():
 @requires_pg
 def test_a_cancel_while_the_retry_is_being_recorded_never_sends_it(monkeypatch):
     # The retry's record waits on the loop; a cancel landing in that wait must still stop the send.
-    from app.pipelines import era5_fill
+    from app.pipelines import pro_window
 
     sent = {"n": 0}
     recording = threading.Event()
-    real_record = era5_fill.record_spend
+    real_record = pro_window.record_spend
 
     async def slow_record(conn, run_id, units, *, at):
         if units > 1:
@@ -673,7 +673,7 @@ def test_a_cancel_while_the_retry_is_being_recorded_never_sends_it(monkeypatch):
             await asyncio.sleep(0.5)
         await real_record(conn, run_id, units, at=at)
 
-    monkeypatch.setattr(era5_fill, "record_spend", slow_record)
+    monkeypatch.setattr(pro_window, "record_spend", slow_record)
 
     def always_503(request: httpx.Request) -> httpx.Response:
         sent["n"] += 1

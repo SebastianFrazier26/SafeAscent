@@ -122,6 +122,7 @@ module = [
     "app.pipelines.localday",
     "app.pipelines.pro_window",
     "app.pipelines.era5_fill",
+    "app.pipelines.normals",
 ]
 ignore_errors = false
 disallow_any_generics = true

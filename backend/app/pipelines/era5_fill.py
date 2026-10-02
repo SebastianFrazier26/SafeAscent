@@ -12,13 +12,11 @@ whose incident point moved away is an ordinary 3-year series again (pruned, neve
 
 from __future__ import annotations
 
-import asyncio
-import threading
 import uuid
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Literal
 
 from sqlalchemy import text
@@ -28,17 +26,8 @@ from app.pipelines.cell_conditions import DayRow, day_rows, upsert_rows
 from app.pipelines.grid import bucket_center, grid_bucket_sql
 from app.pipelines.ingest_log import RunStatus, finish_run, last_ok_rows_in, sha256_rows, start_run, write_quarantine
 from app.pipelines.localday import INCIDENT_FROM_WHERE_SQL, INCIDENT_START
-from app.pipelines.open_meteo import (
-    ARCHIVE_MODEL,
-    DAILY_VARS,
-    ArchiveClient,
-    AttemptOutcome,
-    Location,
-    LocationResponse,
-    OpenMeteoError,
-    cost_units,
-)
-from app.pipelines.pro_window import Budget, Clock, ProWindow, record_spend, units_spent, window_lock
+from app.pipelines.open_meteo import ARCHIVE_MODEL, DAILY_VARS, ArchiveClient, Location, LocationResponse, cost_units
+from app.pipelines.pro_window import Budget, Clock, ProWindow, paid_fetch, record_spend, units_spent, window_lock
 from app.pipelines.validate import ValidationReport, batch_gate
 
 SOURCE = "era5_fill"
@@ -178,18 +167,6 @@ def _incomplete(responses: Sequence[LocationResponse], chunk: Chunk) -> bool:
     return any(len(r.daily.time) != want for r in responses)
 
 
-class _BudgetExhausted(Exception):
-    pass
-
-
-class _Abandoned(Exception):
-    pass
-
-
-# Bounds the fetch thread's wait for its pre-send record; an unrecorded retry is never sent.
-RECORD_TIMEOUT_S = 60.0
-
-
 async def _write_chunk(
     engine: AsyncEngine,
     chunk: Chunk,
@@ -252,7 +229,6 @@ async def run(
     and blocks the rest of its group. `clock` stamps the spend (see pro_window.record_spend);
     None keeps the DB's own time."""
     engine = engine_factory()
-    loop = asyncio.get_running_loop()
     done = failed = rejected = blocked = 0
     stopped = False
     failed_groups: set[str] = set()
@@ -281,48 +257,11 @@ async def run(
                                              content_sha256=sha)
                     await record_spend(conn, run_id, units, at=at)
                 budget.spend(units)
-                billed: float = units
-                stop = threading.Event()
-
-                async def _record(total: float, run_id: uuid.UUID = run_id, at: datetime | None = at) -> None:
-                    async with engine.begin() as conn:
-                        await record_spend(conn, run_id, total, at=at)
-
-                def on_attempt(attempt: int, previous: AttemptOutcome | None, units: float = units,
-                               stop: threading.Event = stop) -> None:
-                    # I3: a 5xx or a timeout may have been computed and billed, so the retry is paid for
-                    # (and recorded) before it is sent. A 429 was refused before any work: the attempt
-                    # already counted for it carries over to its retry.
-                    nonlocal billed
-                    # N2: once the awaiting coroutine is gone (cancelled, Ctrl-C) the lock is released, so
-                    # this orphaned thread must not send anything more.
-                    if stop.is_set():
-                        raise _Abandoned()
-                    if attempt == 0 or previous == "rate_limited":
-                        return
-                    if not budget.fits(units):
-                        raise _BudgetExhausted()
-                    budget.spend(units)
-                    billed += units
-                    asyncio.run_coroutine_threadsafe(_record(billed), loop).result(RECORD_TIMEOUT_S)
-                    # Recording waits on the loop; a cancel can land meanwhile.
-                    if stop.is_set():
-                        raise _Abandoned()
-
-                problem: str | None = None
-                responses: list[LocationResponse] = []
-                try:
-                    # In a thread: the client is synchronous, and on_attempt's DB write needs the loop free.
-                    responses = await asyncio.to_thread(
-                        client.fetch, [Location(b, *bucket_center(b), chunk.tz) for b in chunk.buckets],
-                        chunk.start, chunk.end, on_attempt=on_attempt,
-                    )
-                except OpenMeteoError as exc:
-                    problem = str(exc)
-                except _BudgetExhausted:
-                    problem, stopped = "budget exhausted before a retry could be sent", True
-                finally:
-                    stop.set()
+                locations = [Location(b, *bucket_center(b), chunk.tz) for b in chunk.buckets]
+                fetched = await paid_fetch(engine, client, locations, chunk.start, chunk.end, run_id=run_id,
+                                           units=units, budget=budget, at=at)
+                responses, billed, problem = fetched.responses, fetched.billed, fetched.problem
+                stopped = stopped or fetched.budget_exhausted
                 if problem is None and _incomplete(responses, chunk):
                     problem = f"response does not cover every day of {chunk.start}..{chunk.end}"
                 status = await _write_chunk(engine, chunk, run_id, responses, today=today, units=billed,
