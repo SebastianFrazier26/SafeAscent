@@ -16,6 +16,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date
 from types import TracebackType
+from typing import Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
@@ -32,6 +33,7 @@ ARCHIVE_MODEL = "era5_seamless"
 PUBLIC_URL = "https://archive-api.open-meteo.com/v1/archive"
 CUSTOMER_URL = "https://customer-archive-api.open-meteo.com/v1/archive"
 RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+AttemptOutcome = Literal["rate_limited", "server_error", "transport_error"]
 
 _APIKEY_IN_TEXT = re.compile(r"(apikey=)[^&\s\"']+")
 
@@ -139,7 +141,17 @@ class ArchiveClient:
     def close(self) -> None:
         self._client.close()
 
-    def fetch(self, locations: Sequence[Location], start: date, end: date) -> list[LocationResponse]:
+    def fetch(
+        self,
+        locations: Sequence[Location],
+        start: date,
+        end: date,
+        *,
+        on_attempt: Callable[[int, AttemptOutcome | None], None] | None = None,
+    ) -> list[LocationResponse]:
+        """`on_attempt(attempt, previous)` runs before every send, with the outcome that caused the
+        retry; whatever it raises propagates and the request is not sent. Paid callers use it to
+        record each billable attempt before it can be billed."""
         zones = {loc.tz for loc in locations}
         if len(zones) != 1:
             raise ValueError(f"one request covers exactly one timezone, got {sorted(zones)}")
@@ -159,18 +171,23 @@ class ArchiveClient:
             params["apikey"] = self._key
         if self._client.is_closed:
             raise OpenMeteoError("client is closed")
+        previous: AttemptOutcome | None = None
         for attempt in range(self._max_retries + 1):
             last_try = attempt == self._max_retries
+            if on_attempt is not None:
+                on_attempt(attempt, previous)
             try:
                 response = self._client.get(self._url, params=params)
             except httpx.TransportError as exc:
                 if last_try:
                     raise OpenMeteoError(f"transport error: {type(exc).__name__} after {attempt + 1} attempts") from None
+                previous = "transport_error"
                 self._sleep(5.0 * 2**attempt)
                 continue
             except httpx.HTTPError as exc:
                 raise OpenMeteoError(f"request error: {type(exc).__name__}") from None
             if response.status_code in RETRY_STATUSES and not last_try:
+                previous = "rate_limited" if response.status_code == 429 else "server_error"
                 self._sleep(5.0 * 2**attempt)
                 continue
             if response.status_code != 200:

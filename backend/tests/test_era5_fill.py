@@ -23,11 +23,14 @@ from app.pipelines.era5_fill import (
 from app.pipelines.grid import grid_bucket
 from app.pipelines.localday import INCIDENT_START
 from app.pipelines.open_meteo import DAILY_VARS, ArchiveClient
-from app.pipelines.pro_window import Budget, ProWindow, units_spent
+from app.pipelines.ingest_log import start_run
+from app.pipelines.pro_window import WINDOW_LOCK_KEY, Budget, ProWindow, record_spend, units_spent, window_lock
 from tests.pgtest import migrated_db, requires_pg, sa_url
 
 TODAY = date(2026, 9, 28)
 TZ = "America/Denver"
+# Around the DB's real clock: runs without an injected clock stamp spend at the DB's now().
+WIN = ProWindow(datetime.now(timezone.utc).date() - timedelta(days=1), initial=True)
 
 
 def test_incident_series_start_six_days_before_the_owner_1990_start():
@@ -148,11 +151,11 @@ def test_resume_fills_only_the_remaining_gap():
     async def scenario(url: str):
         client = ArchiveClient(None, transport=httpx.MockTransport(_handler))
         capped = await run(lambda: create_async_engine(url), client, plan_chunks([GAP], batch=50, years_per_chunk=1),
-                           today=TODAY, budget=Budget(max_units=1, spent=0))
+                           today=TODAY, budget=Budget(max_units=1, spent=0), window=WIN)
         cov_after_cap, _ = await _coverage_and_rows(url)
         remaining = Gap(B, TZ, cov_after_cap[0].last + timedelta(days=1), GAP.end, "forward")
         full = await run(lambda: create_async_engine(url), client, plan_chunks([remaining], batch=50, years_per_chunk=1),
-                         today=TODAY, budget=Budget(max_units=100, spent=0))
+                         today=TODAY, budget=Budget(max_units=100, spent=0), window=WIN)
         cov, rows = await _coverage_and_rows(url)
         return capped, cov_after_cap, full, cov, rows
 
@@ -173,7 +176,7 @@ def test_failed_chunk_blocks_later_chunks_of_its_group():
     async def scenario(url: str):
         client = ArchiveClient(None, transport=httpx.MockTransport(_failing))
         budget = Budget(max_units=100, spent=0)
-        result = await run(lambda: create_async_engine(url), client, chunks, today=TODAY, budget=budget)
+        result = await run(lambda: create_async_engine(url), client, chunks, today=TODAY, budget=budget, window=WIN)
         cov, rows = await _coverage_and_rows(url)
         return result, budget.spent, cov, rows
 
@@ -201,13 +204,13 @@ def test_a_run_killed_mid_chunk_keeps_every_billed_unit_in_the_window_total():
             raise _Killed()
         return _handler(request)
 
-    window = ProWindow(datetime.now(timezone.utc).date() - timedelta(days=1), initial=True)
+    window = WIN
 
     async def scenario(url: str):
         client = ArchiveClient(None, transport=httpx.MockTransport(dies_on_second))
         with pytest.raises(_Killed):
             await run(lambda: create_async_engine(url), client, plan_chunks([GAP], batch=50, years_per_chunk=1),
-                      today=TODAY, budget=Budget(max_units=100, spent=0))
+                      today=TODAY, budget=Budget(max_units=100, spent=0), window=WIN)
         engine = create_async_engine(url)
         try:
             async with engine.connect() as conn:
@@ -242,7 +245,8 @@ def test_a_january_run_under_a_frozen_clock_counts_in_its_window_and_a_rerun_buy
                     before = await units_spent(conn, window)
                     gaps = series_gaps(await load_coverage(conn), today=today, incident_start=INCIDENT_START_DEFAULT)
                 await run(lambda: create_async_engine(url), client, plan_chunks(gaps, batch=50, years_per_chunk=5),
-                          today=today, budget=Budget(max_units=1000, spent=before), clock=lambda: frozen)
+                          today=today, budget=Budget(max_units=1000, spent=before), window=window,
+                          clock=lambda: frozen)
                 async with engine.connect() as conn:
                     spent.append((before, await units_spent(conn, window)))
         finally:
@@ -263,7 +267,7 @@ def test_missing_values_are_stored_as_null_never_zero():
     async def scenario(url: str):
         client = ArchiveClient(None, transport=httpx.MockTransport(handler))
         await run(lambda: create_async_engine(url), client, plan_chunks([GAP], batch=50, years_per_chunk=1),
-                  today=TODAY, budget=Budget(max_units=100, spent=0))
+                  today=TODAY, budget=Budget(max_units=100, spent=0), window=WIN)
         engine = create_async_engine(url)
         try:
             async with engine.connect() as conn:
@@ -285,7 +289,7 @@ def test_a_chunk_over_the_quarantine_share_is_rejected_whole_and_blocks_its_grou
     async def scenario(url: str):
         client = ArchiveClient(None, transport=httpx.MockTransport(handler))
         result = await run(lambda: create_async_engine(url), client, plan_chunks([GAP], batch=50, years_per_chunk=1),
-                           today=TODAY, budget=Budget(max_units=100, spent=0))
+                           today=TODAY, budget=Budget(max_units=100, spent=0), window=WIN)
         cov, rows = await _coverage_and_rows(url)
         engine = create_async_engine(url)
         try:
@@ -312,7 +316,7 @@ def test_a_response_missing_days_fails_rather_than_claiming_them():
     async def scenario(url: str):
         client = ArchiveClient(None, transport=httpx.MockTransport(handler))
         result = await run(lambda: create_async_engine(url), client, plan_chunks([GAP], batch=50, years_per_chunk=1),
-                           today=TODAY, budget=Budget(max_units=100, spent=0))
+                           today=TODAY, budget=Budget(max_units=100, spent=0), window=WIN)
         return result, await _coverage_and_rows(url)
 
     with migrated_db(seed_sql=SERIES_SEED) as name:
@@ -424,3 +428,119 @@ def test_a_former_incident_series_is_pruned_to_three_years_and_never_back_filled
     assert (by_bucket[old_b].incident, by_bucket[old_b].first) == (False, date(2023, 1, 1))
     gaps = series_gaps(cov, today=TODAY, incident_start=INCIDENT_START_DEFAULT)
     assert [(g.grid_bucket, g.start, g.direction) for g in gaps] == [(new_b, INCIDENT_START_DEFAULT, "backward")]
+
+
+def _status_then_ok(*statuses: int):
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] <= len(statuses):
+            return httpx.Response(statuses[calls["n"] - 1])
+        return _handler(request)
+
+    return handler
+
+
+async def _one_chunk_run(url: str, handler, *, max_units: float = 100, gap: Gap = GAP, years: int = 1):
+    client = ArchiveClient(None, transport=httpx.MockTransport(handler), sleep=lambda s: None)
+    chunks = plan_chunks([gap], batch=50, years_per_chunk=years)[:1]
+    return await run(lambda: create_async_engine(url), client, chunks, today=TODAY,
+                     budget=Budget(max_units=max_units, spent=0), window=WIN)
+
+
+@requires_pg
+@pytest.mark.parametrize("statuses,cost", [((503,), 2.0), ((429,), 1.0), ((503, 429, 502), 3.0)])
+def test_each_billable_attempt_is_recorded_and_rate_limits_are_not(statuses, cost):
+    # I3: a 5xx (or a timeout) may have been computed and billed; a 429 was refused before any work.
+    with migrated_db(seed_sql=SERIES_SEED) as name:
+        result = asyncio.run(_one_chunk_run(sa_url(name), _status_then_ok(*statuses)))
+        log = asyncio.run(_log(sa_url(name)))
+    assert result["done"] == 1
+    assert log == [("ok", cost, 10, 0)]
+
+
+@requires_pg
+def test_a_retry_that_would_pass_the_cap_is_never_sent():
+    sent = {"n": 0}
+
+    def always_503(request: httpx.Request) -> httpx.Response:
+        sent["n"] += 1
+        return httpx.Response(503)
+
+    with migrated_db(seed_sql=SERIES_SEED) as name:
+        result = asyncio.run(_one_chunk_run(sa_url(name), always_503, max_units=2))
+        log = asyncio.run(_log(sa_url(name)))
+    assert sent["n"] == 2
+    assert (result["failed"], result["stopped_for_budget"]) == (1, True)
+    assert log[0][:2] == ("failed", 2.0)
+
+
+@requires_pg
+def test_a_second_window_run_is_refused_while_the_lock_is_held():
+    async def scenario(url: str):
+        holder = create_async_engine(url)
+        try:
+            async with holder.connect() as conn:
+                await conn.execute(text("SELECT pg_advisory_lock(:k)"), {"k": WINDOW_LOCK_KEY})
+                await conn.commit()
+                with pytest.raises(SystemExit, match="window lock"):
+                    await _one_chunk_run(url, _handler)
+                await conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": WINDOW_LOCK_KEY})
+                await conn.commit()
+            # A caller already holding the lock (Task 7's run_window) can run the fill inside it.
+            async with window_lock(holder):
+                return await _one_chunk_run(url, _handler)
+        finally:
+            await holder.dispose()
+
+    with migrated_db(seed_sql=SERIES_SEED) as name:
+        result = asyncio.run(scenario(sa_url(name)))
+        log = asyncio.run(_log(sa_url(name)))
+    assert result["done"] == 1
+    assert log == [("ok", 1.0, 10, 0)]
+
+
+@requires_pg
+def test_spend_is_re_read_after_the_lock_so_a_stale_budget_cannot_overspend():
+    async def scenario(url: str):
+        engine = create_async_engine(url)
+        try:
+            async with engine.begin() as conn:
+                run_id = await start_run(conn, source="era5_normals", window_start=None, window_end=None,
+                                         content_sha256=None)
+                await record_spend(conn, run_id, 99, at=None)
+        finally:
+            await engine.dispose()
+        client = ArchiveClient(None, transport=httpx.MockTransport(_handler))
+        return await run(lambda: create_async_engine(url), client, plan_chunks([GAP], batch=50, years_per_chunk=1),
+                         today=TODAY, budget=Budget(max_units=100, spent=0), window=WIN)
+
+    with migrated_db(seed_sql=SERIES_SEED) as name:
+        result = asyncio.run(scenario(sa_url(name)))
+    assert (result["done"], result["stopped_for_budget"]) == (1, True)
+
+
+@requires_pg
+def test_one_bad_location_rejects_the_chunk_even_when_the_pooled_share_is_low():
+    # M4: 1 bad day of 60 at one location (1.7%) is 0.8% of the chunk's 120 days.
+    other = grid_bucket(40.1, -105.3)
+    seed = SERIES_SEED + f"INSERT INTO grid_bucket_series (grid_bucket, tz) VALUES ({other}, '{TZ}');"
+
+    def one_bad(request: httpx.Request) -> httpx.Response:
+        body = _handler(request).json()
+        body[0]["daily"]["temperature_2m_max"][0] = 999.0
+        return httpx.Response(200, json=body)
+
+    async def scenario(url: str):
+        client = ArchiveClient(None, transport=httpx.MockTransport(one_bad))
+        chunks = plan_chunks([Gap(b, TZ, date(2019, 11, 2), date(2019, 12, 31), "forward") for b in (B, other)],
+                             batch=50, years_per_chunk=1)
+        return await run(lambda: create_async_engine(url), client, chunks, today=TODAY,
+                         budget=Budget(max_units=100, spent=0), window=WIN)
+
+    with migrated_db(seed_sql=seed) as name:
+        result = asyncio.run(scenario(sa_url(name)))
+        log = asyncio.run(_log(sa_url(name)))
+    assert (result["rejected"], result["done"]) == (1, 0)
+    assert log == [("rejected", 10.0, 0, 1)]

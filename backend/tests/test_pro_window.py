@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -11,8 +12,10 @@ from app.pipelines.pro_window import (
     Budget,
     ProWindow,
     record_spend,
+    require_initial_allowed,
     require_open,
     units_spent,
+    window_lock,
 )
 from app.pipelines.validate import ValidationReport
 from tests.pgtest import migrated_db, requires_pg, sa_url
@@ -126,3 +129,108 @@ def test_a_frozen_clock_places_spend_in_its_january_window_not_the_db_clock():
 def test_record_spend_refuses_a_naive_timestamp():
     with pytest.raises(ValueError, match="timezone-aware"):
         asyncio.run(record_spend(None, None, 1, at=datetime(2027, 1, 15)))  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("kwargs", [dict(max_units=-1, spent=0), dict(max_units=10, spent=-1)])
+def test_budget_rejects_negative_values(kwargs):
+    with pytest.raises(ValueError, match="negative"):
+        Budget(**kwargs)
+
+
+def test_budget_rejects_negative_units():
+    budget = Budget(max_units=10, spent=0)
+    with pytest.raises(ValueError, match="negative"):
+        budget.fits(-1)
+    with pytest.raises(ValueError, match="negative"):
+        budget.spend(-1)
+
+
+async def _spend_at(conn, source: str, units: float, at: datetime | None) -> None:
+    run_id = await start_run(conn, source=source, window_start=None, window_end=None, content_sha256=None)
+    await record_spend(conn, run_id, units, at=at)
+
+
+@requires_pg
+def test_a_window_whose_start_moved_later_still_sees_the_month_already_spent():
+    # I2: one paid month bought on 10 Jan; a run declaring the window from 25 Jan must not get a fresh 5M.
+    async def scenario(url: str) -> tuple[float, float, float]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.begin() as conn:
+                await _spend_at(conn, "era5_fill", 100, datetime(2027, 1, 12, tzinfo=timezone.utc))
+                await _spend_at(conn, "era5_normals", 7, datetime(2026, 12, 11, 23, tzinfo=timezone.utc))
+                await _spend_at(conn, "era5_fill", 3, datetime(2026, 12, 12, tzinfo=timezone.utc))
+            async with engine.connect() as conn:
+                return (await units_spent(conn, ProWindow(date(2027, 1, 25))),
+                        await units_spent(conn, ProWindow(date(2027, 1, 10))),
+                        await units_spent(conn, ProWindow(date(2027, 3, 11), initial=True)))
+        finally:
+            await engine.dispose()
+
+    with migrated_db() as name:
+        # 2027-01-10 minus 29 days is 2026-12-12: the 11 December row is outside, the 12th inside.
+        assert asyncio.run(scenario(sa_url(name))) == (100.0, 103.0, 0.0)
+
+
+@requires_pg
+def test_initial_window_is_refused_once_any_paid_spend_exists():
+    async def scenario(url: str) -> list[str]:
+        engine = create_async_engine(url)
+        refused = []
+        try:
+            async with engine.begin() as conn:
+                await require_initial_allowed(conn)
+                await _spend_at(conn, "openbeta", 5, None)
+                await require_initial_allowed(conn)
+                await _spend_at(conn, "era5_normals", 1, None)
+                try:
+                    await require_initial_allowed(conn)
+                except SystemExit as exc:
+                    refused.append(str(exc))
+        finally:
+            await engine.dispose()
+        return refused
+
+    with migrated_db() as name:
+        refused = asyncio.run(scenario(sa_url(name)))
+    assert len(refused) == 1 and "initial" in refused[0]
+
+
+@requires_pg
+def test_window_lock_refuses_a_second_holder_and_is_reentrant_for_its_own():
+    def other_process(url: str, out: list[str]) -> None:
+        # A plain thread starts with an empty context and its own loop and connection: to the
+        # lock it looks like another process.
+        async def go() -> None:
+            engine = create_async_engine(url)
+            try:
+                async with window_lock(engine):
+                    out.append("acquired")
+            finally:
+                await engine.dispose()
+
+        try:
+            asyncio.run(go())
+        except SystemExit as exc:
+            out.append(str(exc))
+
+    async def scenario(url: str) -> list[str]:
+        engine = create_async_engine(url)
+        held: list[str] = []
+        try:
+            async with window_lock(engine):
+                async with window_lock(engine):
+                    pass
+                thread = threading.Thread(target=other_process, args=(url, held))
+                thread.start()
+                await asyncio.to_thread(thread.join)
+        finally:
+            await engine.dispose()
+        return held
+
+    with migrated_db() as name:
+        held = asyncio.run(scenario(sa_url(name)))
+        after: list[str] = []
+        other_process(sa_url(name), after)
+    assert len(held) == 1 and "window lock" in held[0]
+    assert after == ["acquired"]

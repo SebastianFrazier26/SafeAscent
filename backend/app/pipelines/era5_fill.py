@@ -12,10 +12,12 @@ whose incident point moved away is an ordinary 3-year series again (pruned, neve
 
 from __future__ import annotations
 
+import asyncio
+import uuid
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Literal
 
 from sqlalchemy import text
@@ -29,19 +31,20 @@ from app.pipelines.open_meteo import (
     ARCHIVE_MODEL,
     DAILY_VARS,
     ArchiveClient,
+    AttemptOutcome,
     Location,
     LocationResponse,
     OpenMeteoError,
     cost_units,
 )
-from app.pipelines.pro_window import Budget, Clock, record_spend
+from app.pipelines.pro_window import Budget, Clock, ProWindow, record_spend, units_spent, window_lock
 from app.pipelines.validate import ValidationReport, batch_gate
 
 SOURCE = "era5_fill"
 PRUNE_SOURCE = "era5_prune"
 MAX_INCIDENT_DROP = 0.10
-# The range checks are physical limits, so more than 1% of a chunk's days failing them points at
-# a broken response rather than weather: the whole chunk is written nowhere.
+# The range checks are physical limits, so more than 1% of one location's days in a chunk failing
+# them points at a broken response rather than weather: the whole chunk is written nowhere.
 MAX_QUARANTINE_SHARE = 0.01
 ERA5_START = date(1940, 1, 1)
 # Owner OQ2 (2026-10-01): incidents from 1990, and day offsets -6..0 make the first 1990
@@ -174,6 +177,56 @@ def _incomplete(responses: Sequence[LocationResponse], chunk: Chunk) -> bool:
     return any(len(r.daily.time) != want for r in responses)
 
 
+class _BudgetExhausted(Exception):
+    pass
+
+
+async def _write_chunk(
+    engine: AsyncEngine,
+    chunk: Chunk,
+    run_id: uuid.UUID,
+    responses: Sequence[LocationResponse],
+    *,
+    today: date,
+    units: float,
+    problem: str | None,
+) -> RunStatus:
+    report = ValidationReport(SOURCE)
+    rows: list[DayRow] = []
+    failed = problem is not None
+    problems: list[str] = [problem] if problem else []
+    if problem is None:
+        for b, response in zip(chunk.buckets, responses):
+            location = ValidationReport(SOURCE)
+            rows.extend(day_rows(b, chunk.tz, response, today=today, origin="archive", model=ARCHIVE_MODEL,
+                                 source="open_meteo_archive", report=location))
+            if location.quarantined.get("timezone_mismatch"):
+                failed = True
+                problems.append(f"bucket {b}: response timezone differs from the series timezone")
+            else:
+                # M4: per location, so one broken series cannot hide inside a large batch. Chunk
+                # sizes vary with the gap, so there is no row-count baseline to compare against.
+                problems.extend(f"bucket {b}: {p}" for p in batch_gate(
+                    location, previous_rows_in=None, count_tolerance=0.0, max_quarantine_share=MAX_QUARANTINE_SHARE))
+            report.rows_in += location.rows_in
+            report.accepted += location.accepted
+            report.quarantined.update(location.quarantined)
+            report.issues.extend(location.issues)
+    status: RunStatus = "failed" if failed else "rejected" if problems else "ok"
+    async with engine.begin() as conn:
+        await write_quarantine(conn, run_id, report)
+        n = 0
+        if status == "ok":
+            n = await upsert_rows(conn, rows, run_id=run_id)
+            # Quarantined days (at most 1% per location) stay inside the span: they are missing for
+            # good, never zero and never re-bought, which the quarantine rows record.
+            await conn.execute(COVERAGE_UPDATE, {"s": chunk.start, "e": chunk.end, "tz": chunk.tz,
+                                                 "buckets": list(chunk.buckets)})
+        await finish_run(conn, run_id, status=status, report=report, rows_upserted=n,
+                         problems=problems or None, cost_units=units)
+    return status
+
+
 async def run(
     engine_factory: Callable[[], AsyncEngine],
     client: ArchiveClient,
@@ -181,79 +234,85 @@ async def run(
     *,
     today: date,
     budget: Budget,
+    window: ProWindow,
     clock: Clock | None = None,
 ) -> dict[str, object]:
-    """Buy chunks in order until the budget would be exceeded. Each chunk's writes, quarantine
-    rows and final log status commit in one transaction; a failed or rejected chunk writes no
-    conditions rows and blocks the rest of its group. `clock` stamps the spend (see
-    pro_window.record_spend); None keeps the DB's own time."""
+    """Buy chunks in order until the budget would be exceeded, under the window lock with the
+    window's spend re-read once the lock is held. Each chunk's writes, quarantine rows and final
+    log status commit in one transaction; a failed or rejected chunk writes no conditions rows
+    and blocks the rest of its group. `clock` stamps the spend (see pro_window.record_spend);
+    None keeps the DB's own time."""
     engine = engine_factory()
+    loop = asyncio.get_running_loop()
     done = failed = rejected = blocked = 0
     stopped = False
     failed_groups: set[str] = set()
     try:
-        for chunk in chunks:
-            if chunk.group in failed_groups:
-                blocked += 1
-                continue
-            units = chunk.units()
-            if not budget.fits(units):
-                stopped = True
-                break
-            report = ValidationReport(SOURCE)
-            sha = sha256_rows([(chunk.tz,)] + [(b,) for b in chunk.buckets])
-            # Deliberately not one transaction with finish_run (plan 1's contract): the run row and
-            # its cost commit before the billed request, so a kill mid-chunk still counts (D5).
-            async with engine.begin() as conn:
-                run_id = await start_run(conn, source=SOURCE, window_start=chunk.start, window_end=chunk.end,
-                                         content_sha256=sha)
-                await record_spend(conn, run_id, units, at=clock() if clock else None)
-            # A failed request counts as spent: it may have been billed after reaching the server.
-            budget.spend(units)
-            problem: str | None = None
-            try:
-                responses = client.fetch(
-                    [Location(b, *bucket_center(b), chunk.tz) for b in chunk.buckets], chunk.start, chunk.end
-                )
-            except OpenMeteoError as exc:
-                responses, problem = [], str(exc)
-            if problem is None and _incomplete(responses, chunk):
-                problem = f"response does not cover every day of {chunk.start}..{chunk.end}"
-            rows: list[DayRow] = []
-            if problem is None:
-                rows = [
-                    row
-                    for b, response in zip(chunk.buckets, responses)
-                    for row in day_rows(b, chunk.tz, response, today=today, origin="archive", model=ARCHIVE_MODEL,
-                                        source="open_meteo_archive", report=report)
-                ]
-                if report.quarantined.get("timezone_mismatch"):
-                    problem = "response timezone differs from the series timezone"
-            status: RunStatus
-            if problem is not None:
-                status, problems = "failed", [problem]
-            else:
-                # Chunk sizes vary with the gap, so there is no row-count baseline to compare against.
-                problems = batch_gate(report, previous_rows_in=None, count_tolerance=0.0,
-                                      max_quarantine_share=MAX_QUARANTINE_SHARE)
-                status = "rejected" if problems else "ok"
-            async with engine.begin() as conn:
-                await write_quarantine(conn, run_id, report)
-                n = 0
+        async with window_lock(engine):
+            async with engine.connect() as conn:
+                budget.spent = max(budget.spent, await units_spent(conn, window))
+            for chunk in chunks:
+                if chunk.group in failed_groups:
+                    blocked += 1
+                    continue
+                units = chunk.units()
+                if not budget.fits(units):
+                    stopped = True
+                    break
+                at = clock() if clock else None
+                sha = sha256_rows([(chunk.tz,)] + [(b,) for b in chunk.buckets])
+                # Deliberately not one transaction with finish_run (plan 1's contract): the run row and
+                # its cost commit before the billed request, so a kill mid-chunk still counts (D5).
+                async with engine.begin() as conn:
+                    run_id = await start_run(conn, source=SOURCE, window_start=chunk.start, window_end=chunk.end,
+                                             content_sha256=sha)
+                    await record_spend(conn, run_id, units, at=at)
+                budget.spend(units)
+                billed: float = units
+
+                async def _record(total: float, run_id: uuid.UUID = run_id, at: datetime | None = at) -> None:
+                    async with engine.begin() as conn:
+                        await record_spend(conn, run_id, total, at=at)
+
+                def on_attempt(attempt: int, previous: AttemptOutcome | None, units: float = units) -> None:
+                    # I3: a 5xx or a timeout may have been computed and billed, so the retry is paid for
+                    # (and recorded) before it is sent. A 429 was refused before any work: the attempt
+                    # already counted for it carries over to its retry.
+                    nonlocal billed
+                    if attempt == 0 or previous == "rate_limited":
+                        return
+                    if not budget.fits(units):
+                        raise _BudgetExhausted()
+                    budget.spend(units)
+                    billed += units
+                    asyncio.run_coroutine_threadsafe(_record(billed), loop).result()
+
+                problem: str | None = None
+                responses: list[LocationResponse] = []
+                try:
+                    # In a thread: the client is synchronous, and on_attempt's DB write needs the loop free.
+                    responses = await asyncio.to_thread(
+                        client.fetch, [Location(b, *bucket_center(b), chunk.tz) for b in chunk.buckets],
+                        chunk.start, chunk.end, on_attempt=on_attempt,
+                    )
+                except OpenMeteoError as exc:
+                    problem = str(exc)
+                except _BudgetExhausted:
+                    problem, stopped = "budget exhausted before a retry could be sent", True
+                if problem is None and _incomplete(responses, chunk):
+                    problem = f"response does not cover every day of {chunk.start}..{chunk.end}"
+                status = await _write_chunk(engine, chunk, run_id, responses, today=today, units=billed,
+                                            problem=problem)
                 if status == "ok":
-                    n = await upsert_rows(conn, rows, run_id=run_id)
-                    await conn.execute(COVERAGE_UPDATE, {"s": chunk.start, "e": chunk.end, "tz": chunk.tz,
-                                                         "buckets": list(chunk.buckets)})
-                await finish_run(conn, run_id, status=status, report=report, rows_upserted=n,
-                                 problems=problems or None, cost_units=units)
-            if status == "ok":
-                done += 1
-            else:
-                failed_groups.add(chunk.group)
-                if status == "failed":
-                    failed += 1
+                    done += 1
                 else:
-                    rejected += 1
+                    failed_groups.add(chunk.group)
+                    if status == "failed":
+                        failed += 1
+                    else:
+                        rejected += 1
+                if stopped:
+                    break
     finally:
         await engine.dispose()
     return {"chunks": len(chunks), "done": done, "failed": failed, "rejected": rejected,

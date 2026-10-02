@@ -273,3 +273,40 @@ def test_httpx_request_log_line_never_carries_the_key(caplog):
     lines = [r.getMessage() for r in caplog.records if r.name == "httpx"]
     assert lines and all("secret-key" not in line for line in lines)
     assert any("apikey=***" in line for line in lines)
+
+
+def test_on_attempt_runs_before_every_send_with_the_previous_outcome():
+    calls: list[str] = []
+    script = iter([httpx.Response(503), httpx.Response(429), "timeout", None])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append("sent")
+        step = next(script)
+        if step == "timeout":
+            raise httpx.ReadTimeout("slow", request=request)
+        return step if isinstance(step, httpx.Response) else _ok(request)
+
+    def on_attempt(attempt: int, previous: str | None) -> None:
+        calls.append(f"attempt {attempt} after {previous}")
+
+    client = ArchiveClient("k", transport=httpx.MockTransport(handler), sleep=lambda s: None)
+    assert len(client.fetch(LOC[:1], D1, D1, on_attempt=on_attempt)) == 1
+    assert calls == ["attempt 0 after None", "sent", "attempt 1 after server_error", "sent",
+                     "attempt 2 after rate_limited", "sent", "attempt 3 after transport_error", "sent"]
+
+
+def test_an_on_attempt_refusal_stops_the_request_unsent():
+    sent = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent["n"] += 1
+        return httpx.Response(503)
+
+    def refuse_retries(attempt: int, previous: str | None) -> None:
+        if attempt:
+            raise RuntimeError("no budget")
+
+    with pytest.raises(RuntimeError, match="no budget"):
+        ArchiveClient("k", transport=httpx.MockTransport(handler), sleep=lambda s: None).fetch(
+            LOC[:1], D1, D1, on_attempt=refuse_retries)
+    assert sent["n"] == 1
