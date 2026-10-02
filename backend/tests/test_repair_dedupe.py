@@ -11,12 +11,14 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from app.data.repair import dedupe, review
 from app.data.repair.__main__ import STEPS
 from app.data.repair.dedupe import (
+    _dup_row,
     DupRow,
     band,
     candidate_pairs,
     canonical,
     date_interval,
     decide,
+    decide_all,
     exact_groups,
     group_changes,
     groups,
@@ -24,6 +26,7 @@ from app.data.repair.dedupe import (
     next_version,
     owned_by_r5,
     pair_score,
+    places_agree,
     resolve_merges,
     row_interval,
     rule_version,
@@ -61,14 +64,62 @@ def test_area_and_centroid_points_get_half_distance_credit():
 
 
 def test_auto_merge_needs_matching_place_names():
-    same_crag = (r(1, place="longs kieners", peaks=frozenset({"longs", "kieners"})),
-                 r(2, fam="nps", place="longs", peaks=frozenset({"longs"})))
+    same_crag = (r(1, place="longs kieners", mountain_key="longs", route_key="kieners"),
+                 r(2, fam="nps", place="longs", mountain_key="longs"))
     assert decide(*same_crag, pair_score(*same_crag), "distance") == "merge"
     unnamed = (r(1, place=""), r(2, fam="nps", place=""))
     assert pair_score(*unnamed) >= 0.90 and decide(*unnamed, pair_score(*unnamed), "distance") == "review"
-    shared_summit = (r(1, place="sneffels east", peaks=frozenset({"sneffels"})),
-                     r(2, place="lavender couloir", peaks=frozenset({"sneffels", "lavender couloir"})))
+    shared_summit = (r(1, place="sneffels east", mountain_key="sneffels", route_key="east"),
+                     r(2, place="sneffels lavender couloir", mountain_key="sneffels", route_key="lavender couloir"))
     assert decide(*shared_summit, 0.95, "distance") == "merge"
+
+
+def test_a_shared_generic_route_name_does_not_join_two_mountains():
+    # N1: "Standard Route" on Whitney and on Russell, same day, under 5 km apart.
+    whitney = r(1, lat=36.5785, lon=-118.2923, place="whitney standard route", mountain_key="whitney",
+                route_key="standard route")
+    russell = r(2, lat=36.5875, lon=-118.2923, place="russell standard route", mountain_key="russell",
+                route_key="standard route")
+    [(_, _, score)] = candidate_pairs([whitney, russell])
+    assert band(score) == "merge" and decide(whitney, russell, score, "distance") == "review"
+    same = r(3, place="whitney standard route", mountain_key="whitney", route_key="standard route")
+    assert places_agree(whitney, same)
+    # A blank mountain on one side does not conflict, so the shared route counts.
+    unnamed_mountain = r(4, place="standard route", route_key="standard route")
+    assert places_agree(whitney, unnamed_mountain)
+
+
+def _raw(**kw):
+    base = {
+        "accident_id": 1, "source": "AAC", "date": date(2010, 7, 1), "latitude": 40.0, "longitude": -105.0,
+        "accident_type": "fall", "activity": "rock_climbing", "injury_severity": "serious", "mountain": "Longs Peak",
+        "route": "Kieners", "location": None, "state": "CO", "description": "x", "date_precision": "day",
+        "geocode_precision": "exact", "year_lo": None, "year_hi": None, "year_source": None,
+        "activity_class": "climbing", "country": "US", "excluded_reason": None,
+    }
+    return _dup_row(base | kw)
+
+
+@pytest.mark.parametrize(
+    ("override", "clean"),
+    [
+        ({}, True),
+        ({"activity_class": "climbing_approach"}, True),
+        ({"activity_class": "non_climbing"}, False),
+        ({"activity_class": None}, False),
+        ({"excluded_reason": "year_unverified"}, False),
+        ({"country": None}, True),
+        ({"country": ""}, False),
+        ({"country": "CA"}, False),
+    ],
+)
+def test_clean_flag_mirrors_what_accidents_clean_keeps(override, clean):
+    assert _raw(**override).clean is clean
+
+
+def test_dup_row_keys_mountain_and_route_separately():
+    row = _raw()
+    assert (row.mountain_key, row.route_key, row.place) == ("longs", "kieners", "longs kieners")
 
 
 def test_two_park_centroid_falls_on_one_day_go_to_review_not_merge():
@@ -238,6 +289,17 @@ def test_a_pending_review_pair_inside_a_merged_group_withholds_its_auto_merges()
     assert resolve_merges([1, 2, 3], owner, pending=[(1, 3)]) == ([(1, 2), (2, 3)], {})
 
 
+def test_planning_passes_pending_review_pairs_to_the_merge_resolver():
+    # 1.5 km steps: A-B and B-C score 0.925 (merge), A-C at 3 km scores 0.85 (review).
+    a, b, c = r(1, lat=40.0), r(2, lat=40.0135), r(3, lat=40.027)
+    plan = decide_all({x.accident_id: x for x in (a, b, c)}, {})
+    assert plan.merges == []
+    assert sorted((lo, hi, basis) for lo, hi, _, basis in plan.review) == [
+        (1, 2, "conflict"), (1, 3, "distance"), (2, 3, "conflict")
+    ]
+    assert plan.conflict_with == {(1, 2): (1, 3), (2, 3): (1, 3)}
+
+
 def test_owner_merges_override_an_auto_distinct():
     decided = {(1, 2): ("merge", "owner"), (2, 3): ("merge", "owner"), (1, 3): ("distinct", "auto")}
     assert resolve_merges([1, 2, 3], decided) == ([(1, 2), (2, 3)], {})
@@ -309,7 +371,8 @@ INSERT INTO accidents (accident_id, source, source_id, date, latitude, longitude
   (10, 'avalanche.org', NULL, '2013-05-05', 39.7, -105.0, 'avalanche', 'fatal', 'Grays Peak', NULL, 'CO', 'hotel text', 'day', 'region_fallback', 'backcountry_skiing'),
   (11, 'AAC', '11', '2013-05-04', 40.7, -111.9, 'fall', 'serious', 'Sneffels', NULL, 'UT', 'india text', 'day', 'region_fallback', 'mountaineering');
 UPDATE accidents SET is_canonical = false WHERE accident_id = 9;
-INSERT INTO source_ingest_log (run_id, source, status) VALUES (gen_random_uuid(), 'repair:r3', 'ok');
+INSERT INTO source_ingest_log (run_id, source, status) VALUES
+  (gen_random_uuid(), 'repair:r3', 'ok'), (gen_random_uuid(), 'repair:r4', 'ok');
 """
 
 GROUPS_SQL = "SELECT accident_id, incident_group_id, is_canonical FROM accidents ORDER BY accident_id"
@@ -452,6 +515,10 @@ def test_r5_refuses_before_r3_and_import_refuses_blank_or_unscored_pairs(tmp_pat
             async with engine.connect() as conn:
                 with pytest.raises(ValueError, match="not a pair R5 scores"):
                     await dedupe.run_r5_import(conn, _args(review_file=str(unscored)))
+                # N4: canonical choice reads R4's activity classes.
+                await conn.execute(text("DELETE FROM source_ingest_log WHERE source = 'repair:r4'"))
+                with pytest.raises(SystemExit, match="apply r4 first"):
+                    await dedupe.run_r5(conn, _args())
                 await conn.execute(text("DELETE FROM source_ingest_log"))
                 with pytest.raises(SystemExit, match="apply r3 first"):
                     await dedupe.run_r5(conn, _args())

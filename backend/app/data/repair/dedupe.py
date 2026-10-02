@@ -91,8 +91,9 @@ class DupRow:
     names: tuple[str, ...] = ()
     # Normalised narrative, held in memory only for O2; never exported, logged or printed.
     narrative: str = field(default="", repr=False, compare=False)
-    # place_key of mountain and of route, each on its own: a shared one names the same summit or route.
-    peaks: frozenset[str] = frozenset()
+    # place_key of mountain and of route, each on its own, for places_agree.
+    mountain_key: str = ""
+    route_key: str = ""
     # Would accidents_clean keep this row (activity class, country, no exclusion)?
     clean: bool = True
 
@@ -172,7 +173,14 @@ def band(score: float) -> Literal["merge", "distinct", "review"]:
 
 
 def places_agree(a: DupRow, b: DupRow) -> bool:
-    return bool(a.peaks & b.peaks) or bool(a.place and b.place and jaro_winkler(a.place, b.place) >= PLACE_MATCH_AT)
+    """Mountain and route are matched together (review round 2, N1): a generic route name such
+    as "Standard Route" is shared by many mountains, so two different named mountains never
+    agree, whatever the routes say. A blank mountain on one side is no conflict."""
+    if a.mountain_key and b.mountain_key:
+        return jaro_winkler(a.mountain_key, b.mountain_key) >= PLACE_MATCH_AT
+    if a.route_key and a.route_key == b.route_key:
+        return True
+    return bool(a.place and b.place and jaro_winkler(a.place, b.place) >= PLACE_MATCH_AT)
 
 
 def decide(a: DupRow, b: DupRow, score: float, basis: Basis) -> Literal["merge", "distinct", "review"]:
@@ -429,7 +437,8 @@ def _dup_row(r: Mapping[str, object]) -> DupRow:
         state=state_code(_str(r["state"])),
         names=names,
         narrative=normalize_text(_str(r["description"])),
-        peaks=frozenset(k for k in (place_key(_str(r[c])) for c in ("mountain", "route")) if k),
+        mountain_key=place_key(_str(r["mountain"])),
+        route_key=place_key(_str(r["route"])),
         clean=(
             _str(r["activity_class"]) in CLEAN_ACTIVITY
             and _str(r["country"]) in (None, "US")
@@ -462,8 +471,19 @@ async def _group_history(conn: AsyncConnection) -> dict[int, list[str]]:
     return history
 
 
+async def require_r4(conn: AsyncConnection, step: str) -> None:
+    """The group head prefers rows accidents_clean keeps (I3), which reads R4's activity
+    classes. The run log, as geocode.require_r3: an r4 apply that changed nothing still ran."""
+    ran = await conn.execute(
+        text("SELECT EXISTS (SELECT 1 FROM source_ingest_log WHERE source = 'repair:r4' AND status = 'ok')")
+    )
+    if not ran.scalar_one():
+        raise SystemExit(f"{step} reads R4's activity classes: apply r4 first")
+
+
 async def _plan(conn: AsyncConnection) -> Plan:
     await require_r3(conn, "r5")
+    await require_r4(conn, "r5")
     raw = await fetch_accidents(conn, [
         "source", "source_id", "date", "latitude", "longitude", "accident_type", "activity", "injury_severity",
         "mountain", "route", "location", "state", "description", "date_precision", "geocode_precision",
@@ -494,7 +514,14 @@ async def _plan(conn: AsyncConnection) -> Plan:
     kept_owner = {p: d for p, d in owner.items() if p[0] in rows and p[1] in rows}
     if len(kept_owner) < len(owner):
         skipped["owner_decision_lapsed"] = len(owner) - len(kept_owner)
-    owner = kept_owner
+    plan = decide_all(rows, kept_owner)
+    plan.locators, plan.skipped = locators, skipped
+    return plan
+
+
+def decide_all(rows: dict[int, DupRow], owner: dict[Pair, str]) -> Plan:
+    """Every pair R5 scores among rows it owns, decided: owner first, then the exact and
+    distance rules, O2 pairs to review, then the transitive-merge guard."""
     decided: dict[Pair, tuple[str, float, str]] = {p: (d, 1.0, "owner") for p, d in owner.items()}
     review: list[tuple[int, int, float, Basis]] = []
     scored: set[Pair] = set()
@@ -525,7 +552,7 @@ async def _plan(conn: AsyncConnection) -> Plan:
     for pair in withheld:
         _, score, _ = decided.pop(pair)
         review.append((pair[0], pair[1], score, "conflict"))
-    return Plan(rows, locators, decided, sorted(review), merges, withheld, scored, owner, skipped)
+    return Plan(rows, {}, decided, sorted(review), merges, withheld, scored, owner, Counter())
 
 
 REVIEW_SIDE = ["source", "source_id", "date", "date_precision", "state", "mountain", "route", "accident_type",
