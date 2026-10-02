@@ -148,3 +148,125 @@ save_once() {
     rm -f "$_tmp"; echo "save_once: command failed or printed nothing; $_dest not written" >&2; return 1
   fi
 }
+
+# Task 13 prod gates (final review 2a-2 C1/C2). A gate block checks one thing and, only if it
+# holds, leaves a marker; the apply block after it refuses without that marker. So an agent
+# that runs every block regardless still cannot apply past a failed gate, and a helper that
+# is missing in a fresh shell fails (command not found) instead of passing vacuously.
+GATE_DIR="${GATE_DIR:-../data/review/gates}"
+
+_gate_name_ok() {
+  case "${1:-}" in
+    "" | *[!A-Za-z0-9_-]*) echo "gate name must be [A-Za-z0-9_-]+" >&2; return 1 ;;
+  esac
+}
+
+gate_pass() {
+  _gate_name_ok "${1:-}" || return 1
+  mkdir -p "$GATE_DIR" && : > "$GATE_DIR/$1.ok" || return 1
+  echo "GATE OK: $1"
+}
+
+gate_require() {
+  _gate_name_ok "${1:-}" || return 1
+  [ -f "$GATE_DIR/$1.ok" ] || { echo "gate $1 has not passed: STOP" >&2; return 1; }
+  echo "gate $1 passed"
+}
+
+# same_ids BRANCH_CSV PROD_CSV COLUMN...: the two exports list the same keys (the COLUMNs
+# joined by "-"), as multisets. A missing file or column, or an export with no rows, is a
+# failure, never a match: two empty lists would otherwise compare equal (C2).
+same_ids() {
+  [ "$#" -ge 3 ] || { echo "usage: same_ids BRANCH_CSV PROD_CSV COLUMN..." >&2; return 1; }
+  python3 -c '
+import csv, sys
+from collections import Counter
+paths, cols = sys.argv[1:3], sys.argv[3:]
+keys = []
+for p in paths:
+    try:
+        with open(p, newline="", encoding="utf-8-sig") as fh:
+            reader = csv.DictReader(fh)
+            missing = [c for c in cols if c not in (reader.fieldnames or [])]
+            if missing:
+                sys.exit(f"same_ids: {p} has no column {missing[0]}")
+            k = Counter()
+            for n, r in enumerate(reader, start=2):
+                vals = [(r[c] or "").strip() for c in cols]
+                blank = [c for c, v in zip(cols, vals) if not v]
+                if blank:
+                    sys.exit(f"same_ids: {p} line {n} has a blank {blank[0]}")
+                k["-".join(vals)] += 1
+    except OSError as e:
+        sys.exit(f"same_ids: cannot read {p}: {e.strerror}")
+    if not k:
+        sys.exit(f"same_ids: {p} has no rows (an empty export is never a match: stop and ask the owner)")
+    keys.append(k)
+a, b = keys
+if a != b:
+    only_a, only_b = sorted((a - b).elements()), sorted((b - a).elements())
+    sys.exit(f"same_ids: MISMATCH {sum(a.values())} vs {sum(b.values())} rows; only in {paths[0]}: "
+             f"{len(only_a)} {only_a[:5]}; only in {paths[1]}: {len(only_b)} {only_b[:5]}")
+print(f"{sum(a.values())} ids match")' "$@"
+}
+
+# Long applies (I5): an agent tool call is capped at 10 minutes, and R3/R5/R12 on Neon run
+# longer. bg_start runs CMD (a helper such as ING) under nohup with its output in LOG, from
+# backend/, inheriting the exported TARGET_HOST; bg_wait polls LOG for the exit line.
+# A kill rolls the apply back (one transaction), so a run is never retried while one lives.
+# The job leads its own process group (setsid via python3: macOS has no setsid(1)), so
+# bg_wait can tell a dead nohup wrapper from a dead apply: uv and python stay in the group.
+bg_start() {
+  [ -n "${1:-}" ] && [ "$#" -ge 2 ] || { echo "usage: bg_start LOG CMD..." >&2; return 1; }
+  _need_target || return 1
+  local _log="$1"
+  shift
+  [ -f scripts/runbook_helpers.sh ] || { echo "bg_start: run from backend/" >&2; return 1; }
+  [ ! -e "$_log" ] || { echo "$_log exists: that run already started; bg_wait it (delete the log deliberately to redo)" >&2; return 1; }
+  mkdir -p "$(dirname "$_log")" && : > "$_log" || return 1
+  nohup python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' bash -c '. scripts/runbook_helpers.sh || exit 1
+SECONDS=0; "$@"; rc=$?
+echo "RUNBOOK_ELAPSED=${SECONDS}s"; echo "RUNBOOK_EXIT=$rc"' bg_start "$@" >> "$_log" 2>&1 < /dev/null &
+  echo "$!" > "$_log.pid"
+  echo "started pid $!; log $_log; poll with: bg_wait $_log"
+}
+
+# Any repair or pipeline process on this machine, whichever log started it. BG_GUARD_PATTERN
+# exists for the tests; the bracket keeps pgrep from matching its own command line.
+_bg_live_repairs() {
+  pgrep -fl "${BG_GUARD_PATTERN:-app[.]data[.]repair|app[.]pipelines}" 2>/dev/null
+}
+
+# bg_wait LOG [SECONDS]: polls (every BG_POLL seconds, default 10) up to SECONDS (default
+# 540, under the tool cap). Returns 0 when CMD exited 0; 1 when it failed, or when its whole
+# process group is gone with no exit line and no repair process is running (killed: rolled
+# back); 2 while anything of the run may still be live (call bg_wait again, never rerun).
+bg_wait() {
+  [ -n "${1:-}" ] || { echo "usage: bg_wait LOG [SECONDS]" >&2; return 1; }
+  local _log="$1" _limit="${2:-540}" _waited=0 _pid _live
+  [ -f "$_log" ] || { echo "bg_wait: no $_log (bg_start never ran)" >&2; return 1; }
+  _pid="$(cat "$_log.pid" 2>/dev/null)"
+  while :; do
+    if grep -q '^RUNBOOK_EXIT=' "$_log"; then
+      tail -n 25 "$_log"
+      grep -qx 'RUNBOOK_EXIT=0' "$_log" && { echo "bg_wait: $_log finished ok"; return 0; }
+      echo "bg_wait: $_log FAILED" >&2
+      return 1
+    fi
+    # kill -0 covers the moment before the wrapper's setsid, when the group does not exist yet.
+    if [ -z "$_pid" ] || { ! kill -0 "$_pid" 2>/dev/null && ! pgrep -g "$_pid" >/dev/null 2>&1; }; then
+      grep -q '^RUNBOOK_EXIT=' "$_log" && continue
+      if _live="$(_bg_live_repairs)"; then
+        printf '%s\n' "$_live" >&2
+        echo "bg_wait: the run for $_log left no exit line, but a repair process above is still running: do not rerun; wait for it to exit, then bg_wait again" >&2
+        return 2
+      fi
+      tail -n 25 "$_log"
+      echo "bg_wait: process group ${_pid:-?} is gone with no exit line (killed): its transaction rolled back. Before any rerun, confirm no repair is running: pgrep -fl 'app[.]data[.]repair|app[.]pipelines' prints nothing" >&2
+      return 1
+    fi
+    [ "$_waited" -lt "$_limit" ] || { echo "bg_wait: still running after ${_waited}s: run bg_wait $_log again" >&2; return 2; }
+    sleep "${BG_POLL:-10}"
+    _waited=$((_waited + ${BG_POLL:-10}))
+  done
+}

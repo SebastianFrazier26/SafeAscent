@@ -1,7 +1,7 @@
 import asyncio
 import json
 import uuid
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from sqlalchemy import text
@@ -81,6 +81,19 @@ def test_dry_run_touches_nothing():
     )
     assert summary["mode"] == "dry_run" and "run_id" not in summary
     assert summary["proposed"] == {"date=2003-05-02": 1}
+    assert summary["proposed_total"] == 1 and summary["proposed_by_field"] == {"date": 1}
+
+
+def test_dry_run_totals_cover_every_change_beyond_the_top_40():
+    changes = [Change(i, "date", date(2000, 1, 1) + timedelta(days=i), "r1") for i in range(50)]
+    changes += [Change(i, "date_precision", "month", "r1") for i in range(7)]
+    summary = asyncio.run(
+        run_step(None, step="r1", rule_version="r1-v1", changes=changes,  # type: ignore[arg-type]
+                 report=ValidationReport(source="repair:r1"), apply=False)
+    )
+    assert len(summary["proposed"]) == 40  # type: ignore[arg-type]
+    assert summary["proposed_total"] == 57
+    assert summary["proposed_by_field"] == {"date": 50, "date_precision": 7}
 
 
 @requires_pg

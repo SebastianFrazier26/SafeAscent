@@ -157,3 +157,174 @@ def test_save_once_leaves_nothing_after_a_failed_or_empty_run(shell, tmp_path, c
 def test_save_once_runs_a_helper_function(shell, tmp_path):
     out = _run(shell, "greet() { echo \"hi $1\"; }; save_once g.txt greet there; echo rc=$?", tmp_path)
     assert out.stdout.splitlines() == ["hi there", "rc=0"]
+
+
+def _csv(path: Path, header: str, *rows: str) -> None:
+    path.write_text("\n".join([header, *rows]) + "\n", encoding="utf-8")
+
+
+def test_same_ids_passes_on_the_same_keys_in_any_order(shell, tmp_path):
+    _csv(tmp_path / "a.csv", "accident_id,correct", "2,yes", "1,no")
+    _csv(tmp_path / "b.csv", "﻿accident_id,correct", "1,", "2,")
+    out = _run(shell, "same_ids a.csv b.csv accident_id && echo PASS", tmp_path)
+    assert out.stdout.splitlines() == ["2 ids match", "PASS"], out.stderr
+
+
+def test_same_ids_compares_pairs_on_several_columns(shell, tmp_path):
+    _csv(tmp_path / "a.csv", "low_id,high_id,decision", "1,2,merge")
+    _csv(tmp_path / "b.csv", "low_id,high_id,decision", "1,3,")
+    out = _run(shell, "same_ids a.csv b.csv low_id high_id && echo PASS", tmp_path)
+    assert "MISMATCH" in out.stderr and "PASS" not in out.stdout
+
+
+@pytest.mark.parametrize(
+    "a_rows, b_rows, message",
+    [
+        ((), (), "has no rows"),
+        (("1",), (), "has no rows"),
+        (("1", "2"), ("1",), "MISMATCH 2 vs 1"),
+        (("1", "1"), ("1", "2"), "MISMATCH"),
+    ],
+)
+def test_same_ids_fails_closed(shell, tmp_path, a_rows, b_rows, message):
+    _csv(tmp_path / "a.csv", "accident_id", *a_rows)
+    _csv(tmp_path / "b.csv", "accident_id", *b_rows)
+    out = _run(shell, "same_ids a.csv b.csv accident_id && echo PASS", tmp_path)
+    assert message in out.stderr and "PASS" not in out.stdout
+
+
+@pytest.mark.parametrize("rows", [("1", '""'), ("1", "   "), ("1", "\t")])
+def test_same_ids_refuses_a_blank_key(shell, tmp_path, rows):
+    _csv(tmp_path / "a.csv", "accident_id", *rows)
+    out = _run(shell, "same_ids a.csv a.csv accident_id && echo PASS; echo rc=$?", tmp_path)
+    assert "blank accident_id" in out.stderr and "PASS" not in out.stdout and out.stdout.strip() == "rc=1"
+
+
+def test_same_ids_refuses_a_blank_column_of_a_pair(shell, tmp_path):
+    _csv(tmp_path / "a.csv", "low_id,high_id", "1,2", "3, ")
+    out = _run(shell, "same_ids a.csv a.csv low_id high_id && echo PASS", tmp_path)
+    assert "line 3 has a blank high_id" in out.stderr and "PASS" not in out.stdout
+
+
+@pytest.mark.parametrize("script", ["same_ids a.csv missing.csv accident_id", "same_ids a.csv a.csv nope", "same_ids a.csv a.csv"])
+def test_same_ids_refuses_a_missing_file_column_or_argument(shell, tmp_path, script):
+    _csv(tmp_path / "a.csv", "accident_id", "1")
+    out = _run(shell, f"{script} && echo PASS", tmp_path)
+    assert out.returncode != 0 and "PASS" not in out.stdout and out.stderr
+
+
+def test_a_gate_block_without_the_helpers_fails_instead_of_matching(shell, tmp_path):
+    # The C2 failure: a fresh shell where the comparison helper was never defined.
+    _csv(tmp_path / "a.csv", "accident_id", "1")
+    script = "( same_ids a.csv a.csv accident_id || exit 1; echo 'GATE OK' ); echo rc=$?"
+    out = subprocess.run([shell, "-c", script], cwd=tmp_path, capture_output=True, text=True,
+                         env={"PATH": "/usr/bin:/bin:/opt/homebrew/bin", "HOME": str(tmp_path)})
+    assert out.stdout.strip() == "rc=1"
+
+
+def test_gate_require_refuses_until_gate_pass_ran(shell, tmp_path):
+    env = {"GATE_DIR": str(tmp_path / "gates")}
+    before = _run(shell, "gate_require r4_dry; echo rc=$?", tmp_path, env)
+    assert "has not passed: STOP" in before.stderr and before.stdout.strip() == "rc=1"
+    passed = _run(shell, "gate_pass r4_dry && gate_require r4_dry", tmp_path, env)
+    assert passed.stdout.splitlines() == ["GATE OK: r4_dry", "gate r4_dry passed"]
+
+
+@pytest.mark.parametrize("name", ["", "../x", "a b"])
+def test_gate_names_are_plain(shell, tmp_path, name):
+    out = _run(shell, f"gate_pass '{name}'; echo rc=$?", tmp_path, {"GATE_DIR": str(tmp_path / "g")})
+    assert out.stdout.strip() == "rc=1" and not (tmp_path / "g").exists()
+
+
+def _backend(tmp_path: Path) -> Path:
+    """A backend/-shaped cwd: bg_start re-sources the helpers from scripts/ in its child."""
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "runbook_helpers.sh").write_text(HELPERS.read_text(encoding="utf-8"), encoding="utf-8")
+    return tmp_path
+
+
+# A pattern no real process carries, so a repair running on this machine cannot change a result.
+BG_ENV = {"TARGET_HOST": "ep-branch.example", "BG_POLL": "1", "BG_GUARD_PATTERN": "no-such-runbook-process-[x]"}
+
+
+def test_bg_start_runs_in_the_background_and_bg_wait_reports_success(shell, tmp_path):
+    cwd = _backend(tmp_path)
+    script = "bg_start logs/a.log echo hi && bg_wait logs/a.log 30; echo rc=$?"
+    out = _run(shell, script, cwd, BG_ENV)
+    log = (cwd / "logs" / "a.log").read_text()
+    assert "hi\n" in log and "RUNBOOK_EXIT=0" in log and "RUNBOOK_ELAPSED=" in log
+    assert out.stdout.strip().endswith("rc=0") and "finished ok" in out.stdout
+
+
+def test_bg_wait_reports_a_failed_command(shell, tmp_path):
+    cwd = _backend(tmp_path)
+    out = _run(shell, "bg_start f.log false && bg_wait f.log 30; echo rc=$?", cwd, BG_ENV)
+    assert "FAILED" in out.stderr and out.stdout.strip().endswith("rc=1")
+
+
+def test_bg_child_inherits_the_target_and_runs_helpers(shell, tmp_path):
+    cwd = _backend(tmp_path)
+    out = _run(shell, "bg_start t.log _retarget postgresql://u:p@h.example/db && bg_wait t.log 30; echo rc=$?", cwd, BG_ENV)
+    assert "postgresql://u:p@ep-branch.example/db" in (cwd / "t.log").read_text()
+    assert out.stdout.strip().endswith("rc=0")
+
+
+def test_bg_wait_returns_2_while_running_then_the_run_can_be_awaited_again(shell, tmp_path):
+    cwd = _backend(tmp_path)
+    out = _run(shell, "bg_start s.log sleep 3 && { bg_wait s.log 0; echo first=$?; bg_wait s.log 30; echo second=$?; }", cwd, BG_ENV)
+    assert "first=2" in out.stdout and "second=0" in out.stdout
+    assert "still running" in out.stderr
+
+
+def test_bg_wait_reports_a_killed_run(shell, tmp_path):
+    (tmp_path / "k.log").write_text("partial output\n")
+    (tmp_path / "k.log.pid").write_text("999999\n")
+    out = _run(shell, "bg_wait k.log 5; echo rc=$?", tmp_path, BG_ENV)
+    assert "killed" in out.stderr and out.stdout.strip().endswith("rc=1")
+
+
+@pytest.mark.parametrize(
+    "script, env, message",
+    [
+        ("bg_start x.log echo hi", {}, "TARGET_HOST is unset"),
+        ("bg_start x.log", BG_ENV, "usage"),
+        ("bg_wait nothing.log", BG_ENV, "bg_start never ran"),
+    ],
+)
+def test_bg_helpers_refuse(shell, tmp_path, script, env, message):
+    out = _run(shell, f"{script}; echo rc=$?", _backend(tmp_path), env)
+    assert message in out.stderr and out.stdout.strip().endswith("rc=1")
+    assert not (tmp_path / "x.log").exists()
+
+
+def test_bg_start_never_starts_a_second_run_on_the_same_log(shell, tmp_path):
+    cwd = _backend(tmp_path)
+    (cwd / "r.log").write_text("RUNBOOK_EXIT=0\n")
+    out = _run(shell, "bg_start r.log echo again; echo rc=$?", cwd, BG_ENV)
+    assert "already started" in out.stderr and out.stdout.strip() == "rc=1"
+    assert (cwd / "r.log").read_text() == "RUNBOOK_EXIT=0\n"
+
+
+def test_bg_wait_does_not_call_a_killed_wrapper_rolled_back_while_its_job_runs(shell, tmp_path):
+    # Only the nohup wrapper dies; the job it started (the apply, here `sleep`) lives on in the
+    # wrapper's process group, so bg_wait must say "still running", not "rolled back".
+    cwd = _backend(tmp_path)
+    script = (
+        "bg_start w.log sh -c 'sleep 3; echo job-done' && sleep 1 && kill -9 \"$(cat w.log.pid)\" && sleep 0.3"
+        " && { bg_wait w.log 0; echo first=$?; sleep 3; bg_wait w.log 0; echo second=$?; }"
+    )
+    out = _run(shell, script, cwd, BG_ENV)
+    assert "first=2" in out.stdout and "second=1" in out.stdout, (out.stdout, out.stderr)
+    first_err = out.stderr.split("still running", 1)[0]
+    assert "rolled back" not in first_err
+    assert "job-done" in (cwd / "w.log").read_text()
+    assert "confirm no repair is running" in out.stderr
+
+
+def test_bg_wait_refuses_rolled_back_while_a_repair_process_lives(shell, tmp_path):
+    (tmp_path / "k.log").write_text("partial output\n")
+    (tmp_path / "k.log.pid").write_text("999999\n")
+    marker = f"runbook-guard-{tmp_path.name}"
+    script = f"sh -c 'sleep 5; : {marker}' & sleep 0.3; bg_wait k.log 0; echo rc=$?; kill $! 2>/dev/null"
+    out = _run(shell, script, tmp_path, BG_ENV | {"BG_GUARD_PATTERN": marker})
+    assert out.stdout.strip().endswith("rc=2") and "do not rerun" in out.stderr and "rolled back" not in out.stderr

@@ -164,10 +164,14 @@ async def run_step(
 ) -> dict[str, object]:
     """Dry run by default: the summary is returned, never logged. On apply, start_run,
     the writes and finish_run share `conn`, so the caller's one commit lands them together."""
+    # `proposed` is the top 40 only; a rehearsal read it as the whole run (2026-10-01), so
+    # the totals ride alongside it.
     summary: dict[str, object] = {
         "step": step,
         "rule_version": rule_version,
         "proposed": dict(Counter(_proposal(c) for c in changes).most_common(40)),
+        "proposed_total": len(changes),
+        "proposed_by_field": dict(sorted(Counter(c.field for c in changes).items())),
         "report": report.summary(),
     }
     if not apply:

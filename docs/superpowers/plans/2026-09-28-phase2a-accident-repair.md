@@ -3602,7 +3602,7 @@ Final review 2a-1 (2026-09-30) rewrote this runbook (C1–C4, I1–I5, M1, M2, M
 
 Every connection is TLS verify-full (`verify_full_url` for psql, `connect_args_for` via `tests/verify/_db.fetch` and `db.ingest_engine` for Python). Every repair runs as `ingest` and prints counts only. Neon branch creation and the snapshot can be run by an agent under the owner's CLI authorization. Three things need the owner: the hand checks (Step 4b), the sign-off on the unverified counts (Step 5), and authorizing prod (Step 6).
 
-**Shell state.** `TARGET_HOST`, `B`, `BRANCH_HOST` and the helper functions live only in the shell that set them. An agent whose tool starts a fresh shell per command is in a new shell on every block. A `${VAR:?}` inside `$(…)` stops only the command substitution, not the block, so each guard below sits on its own line or opens its subshell. The helpers refuse while `TARGET_HOST` is unset, and it never defaults to prod. In a new shell, run one of these re-entry blocks first, then only the block you are on. Never re-run an export (Step 4a) or a creation (Step 1's `neonctl branches create`, 6d).
+**Shell state.** `TARGET_HOST`, `B`, `BRANCH_HOST` and the helper functions live only in the shell that set them. An agent whose tool starts a fresh shell per command is in a new shell on every block. A `${VAR:?}` inside `$(…)` stops only the command substitution, not the block, so each guard below sits on its own line or opens its subshell. The helpers refuse while `TARGET_HOST` is unset, and it never defaults to prod. In a new shell, run the branch re-entry block first (Steps 1–5), then only the block you are on; every Step 6 block carries its own prod preamble instead. Never re-run an export (Step 4a) or a creation (Step 1's `neonctl branches create`, 6d).
 
 **Re-enter the rehearsal branch (Steps 1–5).** This repeats Step 1's prod-host guard; it never creates anything.
 
@@ -3621,14 +3621,21 @@ BRANCH_HOST="$(branch_host "${B:?}")"
 
 Expected: `branch host ok` and `target is the rehearsal branch`. Anything else: stop; `TARGET_HOST` stays unset.
 
-**Re-enter prod (Step 6 only, after the owner's go-ahead).**
+**Prod preamble (Step 6 only, after the owner's go-ahead).** There is no separate prod re-entry block. Every Step 6 block repeats this first line itself, inside its own subshell, so each block works in a fresh shell and nothing it sets outlives it:
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
-. scripts/runbook_helpers.sh
-# PRODUCTION
-export TARGET_HOST=production
+cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
 ```
+
+**Gates (Step 6; Task 12 audit C1/C2, 2026-10-01).** Every prod write runs in its own block, after a gate block that checks what it depends on. Every check in a gate block ends in `|| exit 1`, and only when all of them hold does the block call `gate_pass NAME`, which prints `GATE OK: NAME` and leaves a marker in `$GATE_DIR`. The write block opens with `gate_require NAME || exit 1`, so it refuses unless that gate passed, even when an agent runs every block blindly. **A block that does not end with its expected `GATE OK` or `finished ok` line means STOP:** run nothing further and report to the owner. No block defines a function for a later block: `save_once`, `same_ids`, `gate_pass`, `gate_require`, `bg_start` and `bg_wait` all come from `scripts/runbook_helpers.sh`, so a helper missing in a fresh shell fails with "command not found", never a pass. `same_ids` fails, and never matches, when a file or column is missing or when either export has no rows. Re-run only a block that failed; a gate that already passed is not re-run.
+
+**Long runs (I5).** An agent's tool call stops at 10 minutes, and each prod `--apply` makes thousands of Neon round trips (Step 3's estimate: 10–25 minutes each). They never run in the foreground:
+- `bg_start LOG CMD…` (from `backend/`) runs CMD under `nohup` with its output in LOG, with the exported `TARGET_HOST`, and ends LOG with `RUNBOOK_ELAPSED=<n>s` and `RUNBOOK_EXIT=<rc>`. It refuses a LOG that exists, so a re-run block never starts a second apply.
+- The job leads its own process group, so the `uv`/`python` processes of an apply are tracked even if the `nohup` wrapper dies.
+- `bg_wait LOG` polls in its own block for up to 9 minutes. It returns 0 when CMD exited 0 (and prints the log tail with the counts); 2 while any process of the run, or any `app.data.repair`/`app.pipelines` process on the machine, is still running (run the same `bg_wait` block again; never start a second run); and 1 when CMD failed, or when the whole run is gone with no exit line and no repair process is running (killed: rolled back).
+- After a 1: before any rerun, confirm `pgrep -fl 'app[.]data[.]repair|app[.]pipelines'` prints nothing. Then STOP and report; the owner decides whether to rerun. On the owner's go, the agent moves the log to `../data/review/logs/failed/` and runs the `bg_start` block again. A failed or killed apply wrote nothing (one transaction).
+- `bg_wait LOG 0` checks without waiting; a block that opens with `bg_wait LOG 0 … || exit 1` runs only after LOG finished ok.
+- If `bg_wait` reports the run gone at once, the agent's tool probably killed background children when its call returned: STOP and report; the owner decides whether to rerun that `bg_start` block with the tool's own background mode (`run_in_background`).
 
 - [ ] **Step 0 (owner/agent): Tools and helpers**
 
@@ -3749,14 +3756,24 @@ Save both files **under the same names**. A spreadsheet's "CSV UTF-8" byte-order
 
 - [ ] **Step 4c (owner/agent): Import the filled CSVs** — the only half to re-run in a new shell
 
+Run the branch re-entry block first. Each import runs only if its `_branch` evidence file is not there yet, so a re-run never logs a second check, and 6g compares prod's imports against these exact outputs.
+
 ```bash
-ING r1-import --review-file ../data/review/r1_year_check.csv
-ING r9-import --review-file ../data/review/severity_check.csv
+( . scripts/runbook_helpers.sh || exit 1
+  [ -n "${TARGET_HOST-}" ] && [ "$TARGET_HOST" != production ] || { echo "not on the rehearsal branch: run the branch re-entry block first" >&2; exit 1; }
+  R=../data/review
+  [ -e $R/p2a1_r1_import_branch.json ] || save_once $R/p2a1_r1_import_branch.json ING r1-import --review-file $R/r1_year_check.csv || exit 1
+  [ -e $R/p2a1_r9_import_branch.json ] || save_once $R/p2a1_r9_import_branch.json ING r9-import --review-file $R/severity_check.csv || exit 1
+  python3 -c 'import json,sys
+for name, path in (("r1", sys.argv[1]), ("r9", sys.argv[2])):
+    print(name, json.load(open(path))["agreement"])
+sys.exit(0 if json.load(open(sys.argv[1]))["agreement"] >= 0.90 else "r1 agreement is below 0.90: STOP")' $R/p2a1_r1_import_branch.json $R/p2a1_r9_import_branch.json )
 ```
 
-Expected: `{"agreement": …}` for each.
-- R1 must be ≥0.90. If not, stop: a rule change is needed.
+Expected: `r1 <agreement>` and `r9 <agreement>`, and the block exits 0.
+- R1 must be ≥0.90. If not (the block prints `STOP`), stop: a rule change is needed.
 - If R9 is <0.90, open a follow-up issue for a rule-based re-extraction (spec R9). It does not block.
+- An import that refuses (a blank or unknown decision, an id outside the pool) writes nothing and leaves no `_branch` file: fix the CSV and re-run the block. To redo an import that did write its file (the owner corrected a decision), delete that `_branch` file deliberately first.
 
 - [ ] **Step 5 (owner/agent): Acceptance cells on the branch, then owner sign-off**
 
@@ -3777,111 +3794,267 @@ This is an accuracy call. By ruling, the 8-digit 2019NNNN scheme (68 rows, dated
 
 - [ ] **Step 6 (owner authorizes): Prod**
 
-Do not repeat Steps 1–5. They create a branch and re-target the shell, and Step 4a's exports belong to the branch only. Run only the blocks below, in order. Pick a time well clear of the 02:00 UTC nightly, which writes `historical_predictions`.
+Do not repeat Steps 1–5. They create a branch and re-target the shell, and Step 4a's exports belong to the branch only. Run only the blocks below, one at a time, in order, well clear of the 02:00 UTC nightly, which writes `historical_predictions`.
+
+- Every block is a subshell that opens with the prod preamble (see the top of this task).
+- Every write block refuses unless its gate passed (`gate_require`).
+- The applies run in the background (`bg_start`) and are awaited in their own blocks (`bg_wait`).
+- A block that does not end with its expected `GATE OK` or `finished ok` line is a STOP.
 
 **STOP — agent: wait for the owner's written go-ahead for prod in this session before running anything below.** The Step 5 sign-off in the PR is not that go-ahead; it is a separate, explicit message ("go ahead with prod"). Without it, end here and report.
 
-**6a. Target prod and check the schema, then apply the grants.**
+**6a. Gate: prod is at 0004, the helpers are this commit's, and no earlier prod attempt left gates.**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
-# PRODUCTION
-export TARGET_HOST=production
-MIG current
-OWNER_PSQL -q -f db/roles/grants_phase2.sql
-OWNER_PSQL -q -f db/roles/verify_roles_phase2.sql
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+  # PRODUCTION
+  type same_ids gate_pass gate_require bg_start bg_wait >/dev/null || { echo "runbook helpers predate the Task 12 gates: STOP" >&2; exit 1; }
+  [ ! -e "$GATE_DIR" ] || { echo "$GATE_DIR exists: an earlier prod attempt; STOP, ask the owner" >&2; exit 1; }
+  cur="$(MIG current)" || exit 1
+  printf '%s\n' "$cur"
+  [ "$cur" = "0004_phase2a_foundation (head)" ] || { echo "prod is not at 0004_phase2a_foundation (head): STOP" >&2; exit 1; }
+  gate_pass prod_at_0004 )
 ```
 
-Expected: the same as Step 1, starting with `0004_phase2a_foundation (head)`.
+Expected: `0004_phase2a_foundation (head)` (correct under the 2a-1 code, whose head is 0004), then `GATE OK: prod_at_0004`.
 
-**6b. Pre-checks, diffed against the branch.**
+Only after `GATE OK: prod_at_0004`, the grants:
 
 ```bash
-# PRODUCTION
-save_once ../data/review/p2a1_step2_prod.txt ANALYST_PSQL -v ON_ERROR_STOP=1 -At -f db/checks/p2a1_precheck.sql
-diff ../data/review/p2a1_step2_branch.txt ../data/review/p2a1_step2_prod.txt && echo "pre-checks match the branch"
-ANALYST_PSQL -At -c "SELECT source, count(*) FROM accidents WHERE date > (now() AT TIME ZONE 'UTC')::date GROUP BY 1 ORDER BY 1"
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+  # PRODUCTION
+  gate_require prod_at_0004 || exit 1
+  OWNER_PSQL -q -f db/roles/grants_phase2.sql || exit 1
+  OWNER_PSQL -q -f db/roles/verify_roles_phase2.sql || exit 1
+  gate_pass grants )
 ```
 
-Expected: `pre-checks match the branch`, and the future-date query returns no rows. Otherwise stop.
+Expected: `phase 2 grants applied`, `ALL PHASE 2 ROLE CHECKS PASSED`, `GATE OK: grants`. Both files set `ON_ERROR_STOP`, so a failed check exits non-zero. A membership refusal: see Step 1's note.
 
-**6c. Dry runs.** Each must match the branch byte for byte, or stop.
+**6b/6c. Gate: pre-checks, future dates and dry runs equal the branch's.** A difference means prod `accidents` changed after the branch was made: STOP; the owner decides (for example, a new rehearsal from current `production`, which is not written out here). Each `save_once` runs only if its `_prod` file is not there yet, so a re-run of this gate compares the first pre-apply evidence and never a post-apply read.
 
 ```bash
-# PRODUCTION
-save_once ../data/review/p2a1_r9_dry_prod.json ING r9 >/dev/null && cmp ../data/review/p2a1_r9_dry_branch.json ../data/review/p2a1_r9_dry_prod.json && echo "r9 dry run matches the branch"
-save_once ../data/review/p2a1_r2r1_dry_prod.json ING r2r1 >/dev/null && cmp ../data/review/p2a1_r2r1_dry_branch.json ../data/review/p2a1_r2r1_dry_prod.json && echo "r2r1 dry run matches the branch"
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+  # PRODUCTION
+  gate_require grants || exit 1
+  R=../data/review
+  [ -e $R/p2a1_step2_prod.txt ] || save_once $R/p2a1_step2_prod.txt ANALYST_PSQL -v ON_ERROR_STOP=1 -At -f db/checks/p2a1_precheck.sql >/dev/null || exit 1
+  diff $R/p2a1_step2_branch.txt $R/p2a1_step2_prod.txt || { echo "pre-checks differ: STOP" >&2; exit 1; }
+  fut="$(ANALYST_PSQL -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM accidents WHERE date > (now() AT TIME ZONE 'UTC')::date")" || exit 1
+  [ "$fut" = 0 ] || { echo "$fut future-dated rows: STOP, raise with the owner" >&2; exit 1; }
+  [ -e $R/p2a1_r9_dry_prod.json ] || save_once $R/p2a1_r9_dry_prod.json ING r9 >/dev/null || exit 1
+  [ -e $R/p2a1_r2r1_dry_prod.json ] || save_once $R/p2a1_r2r1_dry_prod.json ING r2r1 >/dev/null || exit 1
+  python3 - $R/p2a1_r9_dry_branch.json $R/p2a1_r9_dry_prod.json $R/p2a1_r2r1_dry_branch.json $R/p2a1_r2r1_dry_prod.json <<'PY' || exit 1
+import json, sys
+NEW = {"proposed_total", "proposed_by_field"}
+def known(prod, branch):
+    # Drop only the two count keys the branch evidence predates; everything else must match.
+    if isinstance(prod, dict) and isinstance(branch, dict):
+        return {k: known(v, branch.get(k)) for k, v in prod.items() if k in branch or k not in NEW}
+    return prod
+args = sys.argv[1:]
+for b_path, p_path in zip(args[::2], args[1::2]):
+    branch, prod = (json.load(open(p, encoding="utf-8")) for p in (b_path, p_path))
+    if not branch or known(prod, branch) != branch:
+        sys.exit(f"{p_path} differs from {b_path}: STOP")
+    print(f"{p_path} matches the branch")
+PY
+  gate_pass dry_runs )
 ```
 
-A difference means prod `accidents` changed after the branch was made. Stop, then recreate the rehearsal from current `production` and redo Steps 1–5.
+Expected: no diff output, two `… matches the branch` lines, `GATE OK: dry_runs`.
 
-**6d. Snapshot `pre-2a-1` immediately before the apply.**
+What the dry-run comparison checks, exactly. The branch files were saved (2026-10-01) before `run_step` printed `proposed_total` and `proposed_by_field`, so the prod files carry those two keys inside each step summary (top level of the r9 file; under `r1` and `r2` in the r2r1 file) and the branch files do not. The comparison drops a key from the prod JSON only if it is one of those two names and the branch has no key of that name at that place, then requires the rest to equal the branch JSON exactly (as parsed values: every key on both sides, every count, the top-40 `proposed` map, `report`, `crosstab`, `aac_schemes`, `year_unverified` and the other r2r1 counts). A key missing from prod, any other extra key, or an empty branch file fails. If the rehearsal is ever redone, the new branch files carry the totals and the comparison covers them too, with no edit. The prod totals have no branch counterpart this time; 6e checks them against the apply's own accounting.
+
+**6d. Snapshot `pre-2a-1` immediately before the apply.** Run once; if neonctl says the branch exists, stop and ask the owner (never recreate it).
 
 ```bash
-# PRODUCTION snapshot
-neonctl branches create --project-id still-morning-74008008 --name pre-2a-1 --parent production --no-secrets --output json \
-  | python3 -c 'import json,sys; b=json.load(sys.stdin)["branch"]; print(b["id"], b["name"], b["parent_id"], b["created_at"])'
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+  # PRODUCTION snapshot
+  gate_require dry_runs || exit 1
+  snap="$(neonctl branches create --project-id still-morning-74008008 --name pre-2a-1 --parent production --no-secrets --output json \
+    | python3 -c 'import json,sys; b=json.load(sys.stdin)["branch"]; print(b["id"], b["name"], b["parent_id"], b["created_at"])')" || exit 1
+  printf '%s\n' "$snap"
+  case "$snap" in *" pre-2a-1 br-restless-bar-ajw5zy4b "*) gate_pass snapshot ;; *) echo "snapshot parent is not production: STOP" >&2; exit 1 ;; esac )
 ```
 
-Expected: parent `br-restless-bar-ajw5zy4b` (`production`). Record the id and `created_at` in the PR.
+Expected: parent `br-restless-bar-ajw5zy4b` (`production`) and `GATE OK: snapshot`. Record the id and `created_at` in the PR.
 
-**6e. Apply.** Same runtime note as Step 3.
+**6e. Apply, in the background.** R2/R1 twice (the second run is the idempotency check), then R9. Record each `RUNBOOK_ELAPSED`.
 
 ```bash
-# PRODUCTION
-ING r2r1 --apply
-ING r2r1 --apply
-ING r9 --apply
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+  # PRODUCTION
+  gate_require snapshot || exit 1
+  bg_start ../data/review/logs/r2r1_apply1_prod.log ING r2r1 --apply )
 ```
 
-Expected: the same as Step 3. The second `r2r1 --apply` shows `applied: 0`, and everything else is `already_recorded` or `unchanged`.
-
-**6f. Confirm the prod hand-check samples are the branch's.** These exports go to new `_prod` filenames and never touch the owner's filled files.
-
 ```bash
-# PRODUCTION
-ING r1-export --out ../data/review/r1_year_check_prod.csv
-ING r9-export --out ../data/review/severity_check_prod.csv
-ids() { python3 -c 'import csv,sys; print("\n".join(sorted(r["accident_id"] for r in csv.DictReader(open(sys.argv[1], newline="", encoding="utf-8-sig")))))' "$1"; }
-diff <(ids ../data/review/r1_year_check.csv) <(ids ../data/review/r1_year_check_prod.csv) && echo "r1 ids match"
-diff <(ids ../data/review/severity_check.csv) <(ids ../data/review/severity_check_prod.csv) && echo "r9 ids match"
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+  bg_wait ../data/review/logs/r2r1_apply1_prod.log )
 ```
 
-Expected: `r1 ids match` and `r9 ids match`. The seeds and the data are identical, so the samples are too.
-- On any diff, stop. Do not import the branch CSVs.
-- Instead, the owner hand-checks the `_prod` files, and 6g imports those (the commented lines).
-- This diff is the real guard: the import's `refuse_ineligible` checks the whole re-dated pool, not the sample, so a branch CSV would still import after a mismatch.
-
-**6g. Import the owner's filled CSVs from Step 4b, then run acceptance.**
+Expected: `finished ok`. Exit 2: run the same `bg_wait` block again.
 
 ```bash
-# PRODUCTION
-R1_CSV=../data/review/r1_year_check.csv
-R9_CSV=../data/review/severity_check.csv
-# Only after a 6f mismatch and the owner's re-check of the _prod files:
-# R1_CSV=../data/review/r1_year_check_prod.csv; R9_CSV=../data/review/severity_check_prod.csv
-ING r1-import --review-file "${R1_CSV:?}"
-ING r9-import --review-file "${R9_CSV:?}"
-VERIFY tests/verify/test_phase2a_repair.py -q -k "r1 or r2 or r9 or every_row" -s
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+  # PRODUCTION
+  bg_wait ../data/review/logs/r2r1_apply1_prod.log 0 >/dev/null || { echo "r2r1 apply 1 has not finished ok: STOP" >&2; exit 1; }
+  bg_start ../data/review/logs/r2r1_apply2_prod.log ING r2r1 --apply )
+```
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+  bg_wait ../data/review/logs/r2r1_apply2_prod.log )
+```
+
+Gate: each R2/R1 run accounts for every change it proposed, apply 1 proposed exactly what 6c's prod dry run did, and apply 2 applied nothing.
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+  # PRODUCTION
+  bg_wait ../data/review/logs/r2r1_apply2_prod.log 0 >/dev/null || { echo "r2r1 apply 2 has not finished ok: STOP" >&2; exit 1; }
+  R=../data/review
+  python3 - $R/p2a1_r2r1_dry_prod.json $R/logs/r2r1_apply1_prod.log $R/logs/r2r1_apply2_prod.log <<'PY' || exit 1
+import json, sys
+def result(log):
+    lines = [x for x in open(log, encoding="utf-8") if x.startswith("{")]
+    if not lines:
+        sys.exit(f"{log} has no JSON summary: STOP")
+    return json.loads(lines[-1])
+dry, first, second = json.load(open(sys.argv[1], encoding="utf-8")), result(sys.argv[2]), result(sys.argv[3])
+for step in ("r2", "r1"):
+    for name, run in (("apply 1", first[step]), ("apply 2", second[step])):
+        counted = run["applied"] + run["unchanged"] + run["already_recorded"]
+        print(step, name, {k: run[k] for k in ("applied", "unchanged", "already_recorded", "proposed_total")})
+        if run["mode"] != "apply" or counted != run["proposed_total"]:
+            sys.exit(f"{step} {name}: {counted} counted of {run['proposed_total']} proposed: STOP")
+    # Apply 2 proposes against apply 1's result (re-dated rows propose no date change), so
+    # only apply 1 must equal the pre-apply dry run.
+    if first[step]["proposed_total"] != dry[step]["proposed_total"]:
+        sys.exit(f"{step} apply 1 proposed {first[step]['proposed_total']}, dry run {dry[step]['proposed_total']}: STOP")
+    if second[step]["applied"] != 0:
+        sys.exit(f"{step} apply 2 applied {second[step]['applied']}: not idempotent, STOP")
+PY
+  gate_pass r2r1_applied )
+```
+
+Expected: four count lines, then `GATE OK: r2r1_applied`. Apply 1 shows `applied > 0`; apply 2 `applied: 0`, with everything else `already_recorded` or `unchanged` (`unchanged > 0` is expected, as in Step 3).
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+  # PRODUCTION
+  gate_require r2r1_applied || exit 1
+  bg_start ../data/review/logs/r9_apply_prod.log ING r9 --apply )
+```
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+  bg_wait ../data/review/logs/r9_apply_prod.log )
+```
+
+Gate: R9 proposed exactly what 6c's prod dry run did, and accounted for every change.
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+  # PRODUCTION
+  bg_wait ../data/review/logs/r9_apply_prod.log 0 >/dev/null || { echo "r9 apply has not finished ok: STOP" >&2; exit 1; }
+  R=../data/review
+  python3 - $R/p2a1_r9_dry_prod.json $R/logs/r9_apply_prod.log <<'PY' || exit 1
+import json, sys
+lines = [x for x in open(sys.argv[2], encoding="utf-8") if x.startswith("{")]
+if not lines:
+    sys.exit(f"{sys.argv[2]} has no JSON summary: STOP")
+dry, run = json.load(open(sys.argv[1], encoding="utf-8")), json.loads(lines[-1])
+counted = run["applied"] + run["unchanged"] + run["already_recorded"]
+print({k: run[k] for k in ("applied", "unchanged", "already_recorded", "proposed_total")})
+if run["mode"] != "apply" or run["proposed_total"] != dry["proposed_total"] or counted != dry["proposed_total"]:
+    sys.exit(f"r9: {counted} counted, {run['proposed_total']} proposed, dry run {dry['proposed_total']}: STOP")
+PY
+  gate_pass r9_applied )
+```
+
+Expected: one count line, `GATE OK: r9_applied`.
+
+**6f. Gate: the prod hand-check samples are the branch's.** These exports go to new `_prod` filenames and never touch the owner's filled files; each runs only if its file is not there yet.
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+  # PRODUCTION
+  gate_require r9_applied || exit 1
+  R=../data/review
+  [ -e $R/r1_year_check_prod.csv ] || ING r1-export --out $R/r1_year_check_prod.csv || exit 1
+  [ -e $R/severity_check_prod.csv ] || ING r9-export --out $R/severity_check_prod.csv || exit 1
+  same_ids $R/r1_year_check.csv $R/r1_year_check_prod.csv accident_id || { echo "r1 sample differs: STOP" >&2; exit 1; }
+  same_ids $R/severity_check.csv $R/severity_check_prod.csv accident_id || { echo "r9 sample differs: STOP" >&2; exit 1; }
+  gate_pass sample_ids )
+```
+
+Expected: `40 ids match`, `50 ids match` (or the pool sizes), `GATE OK: sample_ids`. The seeds and the data are identical, so the samples are too.
+- If a branch or prod export is empty (`same_ids … has no rows`), STOP and ask the owner.
+- On a mismatch, stop. Do not import the branch CSVs, and report to the owner.
+- This gate is the real guard: the import's `refuse_ineligible` checks the whole re-dated pool, not the sample, so a branch CSV would still import after a mismatch.
+- **Mismatch path (owner only).** The owner hand-checks the `_prod` files (as Step 4b), then, in writing, tells the agent to import them. The owner (not the agent) runs `( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && GATE_DIR=../data/review/gates_2a1_prod gate_pass owner_filled_prod_samples )`, and the agent runs the commented alternative in 6g.
+
+**6g. Import the owner's filled CSVs from Step 4b; they must reproduce the branch's agreements.** Each import runs only if its `_prod` evidence file is not there yet, so a re-run never logs a second check.
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+  # PRODUCTION
+  gate_require sample_ids || exit 1
+  R=../data/review
+  [ -e $R/p2a1_r1_import_prod.json ] || save_once $R/p2a1_r1_import_prod.json ING r1-import --review-file $R/r1_year_check.csv || exit 1
+  [ -e $R/p2a1_r9_import_prod.json ] || save_once $R/p2a1_r9_import_prod.json ING r9-import --review-file $R/severity_check.csv || exit 1
+  cmp $R/p2a1_r1_import_branch.json $R/p2a1_r1_import_prod.json || { echo "r1 agreement differs from the branch: STOP" >&2; exit 1; }
+  cmp $R/p2a1_r9_import_branch.json $R/p2a1_r9_import_prod.json || { echo "r9 agreement differs from the branch: STOP" >&2; exit 1; }
+  gate_pass imported )
+```
+
+Expected: the two import summaries, byte-equal to Step 4c's, then `GATE OK: imported`. The imports also refuse any id outside the prod pool, a second guard on 6f.
+
+Mismatch path only (after the owner's `owner_filled_prod_samples` marker and written instruction), in place of the block above. There is no branch agreement to compare, so R1 must clear 0.90 on its own:
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+  # PRODUCTION
+  gate_require r9_applied || exit 1
+  gate_require owner_filled_prod_samples || exit 1
+  R=../data/review
+  [ -e $R/p2a1_r1_import_prod.json ] || save_once $R/p2a1_r1_import_prod.json ING r1-import --review-file $R/r1_year_check_prod.csv || exit 1
+  [ -e $R/p2a1_r9_import_prod.json ] || save_once $R/p2a1_r9_import_prod.json ING r9-import --review-file $R/severity_check_prod.csv || exit 1
+  python3 -c 'import json,sys; a=json.load(open(sys.argv[1]))["agreement"]; sys.exit(0 if a >= 0.90 else "r1 agreement is below 0.90: STOP")' $R/p2a1_r1_import_prod.json || exit 1
+  gate_pass imported )
+```
+
+Then acceptance, read-only, in the background like the applies:
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+  # PRODUCTION (read-only)
+  gate_require imported || exit 1
+  bg_start ../data/review/logs/verify_prod.log VERIFY tests/verify/test_phase2a_repair.py -q -k "r1 or r2 or r9 or every_row" -s )
+```
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+  bg_wait ../data/review/logs/verify_prod.log )
 ```
 
 Expected:
-- The agreements equal the branch's.
-- Every cell passes.
-- The printed unverified counts equal the ones the owner signed off in Step 5.
-- The imports refuse any id outside the prod pool, which is a second guard on 6f.
+- `finished ok`: every cell passes.
+- The unverified counts printed in `verify_prod.log` equal the ones the owner signed off in Step 5.
 
 **6h. Clean up.** Delete `p2a-1-rehearsal` only now. Keep `pre-2a-1` until the PR has merged and the owner says otherwise.
 
 - [ ] **Rollback.** What to do when something fails partway:
-  - **An apply fails or is killed** (6e: timeout, error, Ctrl-C): nothing from that invocation was written. Each `ING … --apply` commits once, and its `source_ingest_log` row is in the same transaction. Fix the cause and rerun. A rerun records only what is missing (`already_recorded` covers the rest).
-  - **A hand-check import fails** (6g): it only writes a `source_ingest_log` row, in one transaction. Fix the CSV or the cause and rerun.
-  - **The data is wrong after 6e.** Two options:
+  - **An apply fails or is killed** (6e: `bg_wait` returns 1 — an error, or the run gone with no exit line and no repair process running): nothing from that invocation was written. Each `ING … --apply` commits once, and its `source_ingest_log` row is in the same transaction. Confirm `pgrep -fl 'app[.]data[.]repair|app[.]pipelines'` prints nothing, then STOP; the owner decides. On the owner's go: fix the cause, move that log to `../data/review/logs/failed/`, and run its `bg_start` block again. A rerun records only what is missing (`already_recorded` covers the rest). `bg_wait` returning 2 is not a failure: the apply may still be running, so never start a second one.
+  - **A hand-check import fails** (6g): it only writes a `source_ingest_log` row, in one transaction, and `save_once` leaves no `_prod` file. Fix the CSV or the cause and rerun the 6g block.
+  - **The data is wrong after 6e.** STOP; the owner decides between two options:
     - **Restore `production` from `pre-2a-1`** with Neon's branch restore (or restore to a timestamp just before 6e). This is the full fallback. The exact Console/`neonctl` path was not checked while writing this; confirm it in Neon's docs before relying on it. First list what the restore would discard: `ANALYST_PSQL -At -c "SELECT source, started_at FROM source_ingest_log WHERE started_at > '<pre-2a-1 created_at>' ORDER BY 2"` (with `TARGET_HOST=production`).
     - **Reverse single fields from `internal.accident_revisions`**, using `old_value` for rule versions `r1-v1`/`r2-v1`/`r9-v1`. This needs a reviewed script. Do not improvise it: `ingest` cannot delete revisions, and a hand-written bulk UPDATE would bypass the audit trail.
   - **The `historical_predictions` caveat.** A branch or point-in-time restore of `production` discards every write made after the snapshot. That includes the nightly's `historical_predictions` rows, any Phase 2 runs, and any role or grant change. After such a restore:
     - trigger the nightly once (`DEPLOYMENT.md`, Insufficient-data rollout step 3) to rebuild today and the next 2 days; the rows for the days in between are lost, not recomputed;
-    - re-run 6a's grants.
+    - re-run 6a's grants. The gate markers in `../data/review/gates_2a1_prod` describe the discarded state: on the owner's instruction move that directory aside (never delete it), then run 6a's gate and grants blocks again.
   - **After a restore**, the `r1-v1`/`r2-v1`/`r9-v1` revisions are gone as well, so the corrected rule can be applied as the same or a new rule version.
 
 ---
