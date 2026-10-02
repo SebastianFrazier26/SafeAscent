@@ -622,3 +622,75 @@ def test_no_attempt_is_sent_after_the_run_is_cancelled():
     with migrated_db(seed_sql=SERIES_SEED) as name:
         asyncio.run(scenario(sa_url(name)))
     assert sent["n"] == 1
+
+
+async def _log_spend(url: str, units: float) -> None:
+    engine = create_async_engine(url)
+    try:
+        async with engine.begin() as conn:
+            run_id = await start_run(conn, source="era5_normals", window_start=None, window_end=None,
+                                     content_sha256=None)
+            await record_spend(conn, run_id, units, at=None)
+    finally:
+        await engine.dispose()
+
+
+@requires_pg
+def test_spend_logged_by_another_job_mid_run_stops_the_next_chunk():
+    # A lost lock session lets a second job in; the per-chunk re-read still sees its spend.
+    calls = {"n": 0}
+
+    async def scenario(url: str):
+        def other_job_spends_after_first(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # The fetch runs in a worker thread, which has no loop of its own.
+                asyncio.run(_log_spend(url, 99))
+            return _handler(request)
+
+        client = ArchiveClient(None, transport=httpx.MockTransport(other_job_spends_after_first))
+        return await run(lambda: create_async_engine(url), client, plan_chunks([GAP], batch=50, years_per_chunk=1),
+                         today=TODAY, budget=Budget(max_units=100, spent=0), window=WIN)
+
+    with migrated_db(seed_sql=SERIES_SEED) as name:
+        result = asyncio.run(scenario(sa_url(name)))
+    assert calls["n"] == 1
+    assert (result["done"], result["stopped_for_budget"]) == (1, True)
+
+
+@requires_pg
+def test_a_cancel_while_the_retry_is_being_recorded_never_sends_it(monkeypatch):
+    # The retry's record waits on the loop; a cancel landing in that wait must still stop the send.
+    from app.pipelines import era5_fill
+
+    sent = {"n": 0}
+    recording = threading.Event()
+    real_record = era5_fill.record_spend
+
+    async def slow_record(conn, run_id, units, *, at):
+        if units > 1:
+            recording.set()
+            await asyncio.sleep(0.5)
+        await real_record(conn, run_id, units, at=at)
+
+    monkeypatch.setattr(era5_fill, "record_spend", slow_record)
+
+    def always_503(request: httpx.Request) -> httpx.Response:
+        sent["n"] += 1
+        return httpx.Response(503)
+
+    async def scenario(url: str) -> None:
+        client = ArchiveClient(None, transport=httpx.MockTransport(always_503), sleep=lambda s: None)
+        task = asyncio.create_task(run(lambda: create_async_engine(url), client,
+                                       plan_chunks([GAP], batch=50, years_per_chunk=1)[:1], today=TODAY,
+                                       budget=Budget(max_units=100, spent=0), window=WIN))
+        while not recording.is_set():
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(1.0)
+
+    with migrated_db(seed_sql=SERIES_SEED) as name:
+        asyncio.run(scenario(sa_url(name)))
+    assert sent["n"] == 1

@@ -264,6 +264,10 @@ async def run(
                 if chunk.group in failed_groups:
                     blocked += 1
                     continue
+                # The lock's session can drop silently mid-run, releasing it to another job; re-reading
+                # the logged spend before every chunk still holds both jobs to the one cap.
+                async with engine.connect() as conn:
+                    budget.spent = max(budget.spent, await units_spent(conn, window))
                 units = chunk.units()
                 if not budget.fits(units):
                     stopped = True
