@@ -1,12 +1,16 @@
 """No scoring or API path may depend on the R12 experience columns: they are NULL or
 'unknown' for most rows and must never gate a score. Only the repair rules, the model
-declaration and the clean-view migration may name them."""
+declaration, the clean-view migration and the R11 facts loader (which writes them as given,
+never reads them to score) may name them."""
 
 import re
 from pathlib import Path
 
 APP = Path(__file__).resolve().parents[1] / "app"
-ALLOWED = {APP / "data" / "repair" / "experience.py", APP / "data" / "repair" / "framework.py", APP / "models" / "accident.py"}
+ALLOWED = {
+    APP / "data" / "repair" / "experience.py", APP / "data" / "repair" / "framework.py", APP / "models" / "accident.py",
+    APP / "pipelines" / "accident_facts.py",
+}
 COLUMNS = re.compile(r"\b(?:exp_years_climbing|exp_stated_level|exp_first_season|exp_rule_version)\b")
 
 

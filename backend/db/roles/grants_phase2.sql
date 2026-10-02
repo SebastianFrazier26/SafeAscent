@@ -85,6 +85,25 @@ GRANT SELECT ON public.weather TO ingest;
 GRANT SELECT ON public.area_weekly_weather TO ingest;
 GRANT UPDATE (longitude) ON public.area_weekly_weather TO ingest;
 
+-- Plan 3 (R11, PR 2a-4): the facts-only loader inserts new incidents, column by column, exactly
+-- the columns accident_facts.INSERT_COLUMNS names (never accident_id, location, tags or
+-- elevation_meters). description takes only the loader's own one-line summary (<= 200
+-- characters, enforced by FactRow), never report text. The REVOKE first narrows a stray
+-- table-level INSERT, as for mp_ticks above. UPDATE (mp_route_id) is --apply-route-ids: the
+-- owner's later route link, only where it is NULL on an R11 row. No DELETE: incidents are never
+-- deleted.
+REVOKE INSERT ON public.accidents FROM ingest;
+GRANT INSERT (source, source_id, date, year, date_precision, state, mountain, route, mp_route_id, latitude,
+              longitude, geocode_precision, geocode_method, country, tz, activity, activity_class,
+              activity_rule_version, inclusion_flag, accident_type, injury_severity, severity_scale,
+              exp_years_climbing, exp_stated_level, exp_first_season, guided, exp_rule_version, source_url,
+              description, updated_at)
+  ON public.accidents TO ingest;
+GRANT UPDATE (mp_route_id) ON public.accidents TO ingest;
+-- accident_id comes from its column default; nextval() there needs USAGE (verified: the INSERT
+-- fails "permission denied for sequence" without it). USAGE only: no SELECT/UPDATE (setval).
+GRANT USAGE ON SEQUENCE public.accidents_accident_id_seq TO ingest;
+
 RESET ROLE;
 COMMIT;
 \echo 'phase 2 grants applied'

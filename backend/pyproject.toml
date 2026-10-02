@@ -126,6 +126,7 @@ module = [
     "app.pipelines.normals",
     "app.pipelines.era5_window",
     "app.pipelines.r6_verify",
+    "app.pipelines.accident_facts",
 ]
 ignore_errors = false
 disallow_any_generics = true

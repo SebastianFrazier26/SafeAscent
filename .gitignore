@@ -125,6 +125,10 @@ data/mp_*.csv
 data/.*progress*.json
 data/.*cache*.json
 !data/.gitkeep
+# R11 facts CSVs: filled files live in ~/Developer/safeascent-private/, never here; only the
+# header template is committable.
+data/manual/*.csv
+!data/manual/accident_facts.template.csv
 
 # =============================================================================
 # Logs

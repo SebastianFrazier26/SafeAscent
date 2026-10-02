@@ -110,11 +110,15 @@ SELECT 'ingest ' || priv || ' on ' || tbl || ' matches the expected set',
        held = EXISTS (SELECT 1 FROM ingest_privs e WHERE e.tbl = privs.tbl AND e.priv = privs.priv)
 FROM privs;
 
+-- R11 inserts accidents through accident_id's nextval() default, which needs USAGE on its
+-- sequence: that one sequence is exempt for USAGE only, never SELECT or UPDATE (setval).
 INSERT INTO role_checks
 SELECT 'ingest has nothing on sequence ' || tbl,
-       NOT (has_sequence_privilege('ingest', oid, 'USAGE') OR has_sequence_privilege('ingest', oid, 'SELECT')
-            OR has_sequence_privilege('ingest', oid, 'UPDATE'))
+       has_sequence_privilege('ingest', oid, 'USAGE') = (tbl = 'public.accidents_accident_id_seq')
+       AND NOT (has_sequence_privilege('ingest', oid, 'SELECT') OR has_sequence_privilege('ingest', oid, 'UPDATE'))
 FROM rels WHERE relkind = 'S'
+UNION ALL
+SELECT 'accidents id sequence check ran', EXISTS (SELECT 1 FROM rels WHERE tbl = 'public.accidents_accident_id_seq')
 UNION ALL
 SELECT 'app holds nothing on internal relation ' || tbl,
        NOT (has_table_privilege('app', oid, 'SELECT') OR has_table_privilege('app', oid, 'INSERT')
@@ -155,8 +159,9 @@ SELECT 'ingest mp_ticks column privileges match the expected set: ' || attname,
 FROM cols;
 
 -- ingest's column grants from plan 2: UPDATE on accidents exactly the repair columns (never
--- description, source, source_id or accident_id), plus plan 3's tz; SELECT on accidents_raw only
--- the R1-R4 inputs.
+-- description, source, source_id or accident_id), plus plan 3's tz and R11's mp_route_id; SELECT
+-- on accidents_raw only the R1-R4 inputs. INSERT (R11) is exactly accident_facts.INSERT_COLUMNS:
+-- never accident_id, location, tags or elevation_meters.
 WITH cols AS (
   SELECT a.attnum, a.attname,
          a.attname IN ('date', 'year', 'latitude', 'longitude', 'coordinates', 'country', 'date_precision',
@@ -164,15 +169,22 @@ WITH cols AS (
                        'activity_class', 'activity_rule_version', 'inclusion_flag', 'incident_group_id',
                        'is_canonical', 'severity_scale', 'excluded_reason', 'source_url', 'updated_at',
                        'exp_years_climbing', 'exp_stated_level', 'exp_first_season', 'guided', 'exp_rule_version',
-                       'tz')
-           AS may_update
+                       'tz', 'mp_route_id')
+           AS may_update,
+         a.attname IN ('source', 'source_id', 'date', 'year', 'date_precision', 'state', 'mountain', 'route',
+                       'mp_route_id', 'latitude', 'longitude', 'geocode_precision', 'geocode_method', 'country',
+                       'tz', 'activity', 'activity_class', 'activity_rule_version', 'inclusion_flag',
+                       'accident_type', 'injury_severity', 'severity_scale', 'exp_years_climbing',
+                       'exp_stated_level', 'exp_first_season', 'guided', 'exp_rule_version', 'source_url',
+                       'description', 'updated_at')
+           AS may_insert
   FROM pg_attribute a
   WHERE a.attrelid = 'public.accidents'::regclass AND a.attnum > 0 AND NOT a.attisdropped
 )
 INSERT INTO role_checks
 SELECT 'ingest accidents column privileges match the expected set: ' || attname,
        has_column_privilege('ingest', 'public.accidents', attnum, 'UPDATE') = may_update
-       AND NOT has_column_privilege('ingest', 'public.accidents', attnum, 'INSERT')
+       AND has_column_privilege('ingest', 'public.accidents', attnum, 'INSERT') = may_insert
        AND NOT has_column_privilege('ingest', 'public.accidents', attnum, 'REFERENCES')
 FROM cols;
 
