@@ -60,8 +60,16 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON public.gnis_summits TO ingest;
 GRANT SELECT, INSERT, UPDATE ON internal.duplicate_decisions TO ingest;
 
 -- Plan 2 (0006): no grant here. app and analyst read accidents_clean[_daily] through
--- migrator's default privileges (they cover views); ingest gets them in plan 3.
+-- migrator's default privileges (they cover views); ingest gets them in plan 3 (below).
 -- trainer: nothing until Phase 3 (D13), which grants it the views together with LOGIN.
+
+-- Plan 3 (0007). DELETE on cell_daily_conditions is only for the 3-year prune of non-incident
+-- series (era5_window); the registry and normals are upserted, never deleted. app and analyst
+-- read the new tables and view through migrator's default privileges; trainer gets nothing.
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.cell_daily_conditions TO ingest;
+GRANT SELECT, INSERT, UPDATE ON public.grid_bucket_series, public.cell_normals_status,
+  public.cell_climate_normals, public.cell_climatology TO ingest;
+GRANT SELECT ON public.accidents_clean, public.accidents_clean_daily, public.accident_conditions TO ingest;
 
 RESET ROLE;
 COMMIT;

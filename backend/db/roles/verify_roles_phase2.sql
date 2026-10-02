@@ -71,7 +71,20 @@ INSERT INTO ingest_privs VALUES
   ('public.gnis_summits', 'SELECT'), ('public.gnis_summits', 'INSERT'), ('public.gnis_summits', 'UPDATE'),
   ('public.gnis_summits', 'DELETE'),
   ('internal.duplicate_decisions', 'SELECT'), ('internal.duplicate_decisions', 'INSERT'),
-  ('internal.duplicate_decisions', 'UPDATE');
+  ('internal.duplicate_decisions', 'UPDATE'),
+  -- Plan 3 (0007): conditions (DELETE for the prune), series registry, normals, read views.
+  ('public.cell_daily_conditions', 'SELECT'), ('public.cell_daily_conditions', 'INSERT'),
+  ('public.cell_daily_conditions', 'UPDATE'), ('public.cell_daily_conditions', 'DELETE'),
+  ('public.grid_bucket_series', 'SELECT'), ('public.grid_bucket_series', 'INSERT'),
+  ('public.grid_bucket_series', 'UPDATE'),
+  ('public.cell_normals_status', 'SELECT'), ('public.cell_normals_status', 'INSERT'),
+  ('public.cell_normals_status', 'UPDATE'),
+  ('public.cell_climate_normals', 'SELECT'), ('public.cell_climate_normals', 'INSERT'),
+  ('public.cell_climate_normals', 'UPDATE'),
+  ('public.cell_climatology', 'SELECT'), ('public.cell_climatology', 'INSERT'),
+  ('public.cell_climatology', 'UPDATE'),
+  ('public.accidents_clean', 'SELECT'), ('public.accidents_clean_daily', 'SELECT'),
+  ('public.accident_conditions', 'SELECT');
 
 -- PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views, so extension-owned
 -- relations are skipped throughout, as verify_roles.sql does.
@@ -188,13 +201,17 @@ FROM cols;
 INSERT INTO role_checks VALUES
   ('accidents_raw column checks ran', EXISTS (SELECT 1 FROM rels WHERE tbl = 'internal.accidents_raw'));
 
--- Plan 2 (0006): app and analyst read the clean views through migrator's default privileges
--- and hold nothing else on them (a simple view is auto-updatable, so writes are checked too).
--- ingest and trainer hold nothing on them: the exact ingest set and the trainer check above
--- cover views; plan 3 grants ingest, Phase 3 grants trainer (D13).
+-- Plan 2 (0006) and plan 3 (0007): app and analyst read the clean views, the conditions tables
+-- and accident_conditions through migrator's default privileges and hold nothing else on them
+-- (a simple view is auto-updatable, so writes are checked too). ingest's SELECT is in the exact
+-- set above; trainer holds nothing until Phase 3 (D13), per the trainer check above.
 INSERT INTO role_checks
 SELECT 'clean view exists: ' || v, EXISTS (SELECT 1 FROM rels WHERE tbl = v AND relkind = 'v')
-FROM unnest(ARRAY['public.accidents_clean', 'public.accidents_clean_daily']) AS v
+FROM unnest(ARRAY['public.accidents_clean', 'public.accidents_clean_daily', 'public.accident_conditions']) AS v
+UNION ALL
+SELECT 'conditions table exists: ' || t, EXISTS (SELECT 1 FROM rels WHERE tbl = t AND relkind = 'r')
+FROM unnest(ARRAY['public.cell_daily_conditions', 'public.grid_bucket_series', 'public.cell_normals_status',
+                  'public.cell_climate_normals', 'public.cell_climatology']) AS t
 UNION ALL
 SELECT g || ' can SELECT ' || r.tbl || ' and nothing else',
        has_table_privilege(g, r.oid, 'SELECT')
@@ -202,7 +219,9 @@ SELECT g || ' can SELECT ' || r.tbl || ' and nothing else',
                 OR has_table_privilege(g, r.oid, 'DELETE') OR has_table_privilege(g, r.oid, 'TRUNCATE')
                 OR has_table_privilege(g, r.oid, 'REFERENCES') OR has_table_privilege(g, r.oid, 'TRIGGER'))
 FROM rels r CROSS JOIN unnest(ARRAY['app', 'analyst']) AS g
-WHERE r.tbl IN ('public.accidents_clean', 'public.accidents_clean_daily');
+WHERE r.tbl IN ('public.accidents_clean', 'public.accidents_clean_daily', 'public.accident_conditions',
+                'public.cell_daily_conditions', 'public.grid_bucket_series', 'public.cell_normals_status',
+                'public.cell_climate_normals', 'public.cell_climatology');
 
 SELECT check_name, ok FROM role_checks ORDER BY ok, check_name;
 

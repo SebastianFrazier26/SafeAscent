@@ -143,7 +143,7 @@ strict_equality = true
 # SQLAlchemy models: declarative_base() is typed Any, so subclassing Base always trips
 # disallow_subclassing_any; everything else strict still applies.
 [[tool.mypy.overrides]]
-module = ["app.models.pipeline", "app.models.reference"]
+module = ["app.models.pipeline", "app.models.reference", "app.models.conditions"]
 ignore_errors = false
 disallow_any_generics = true
 disallow_untyped_calls = true

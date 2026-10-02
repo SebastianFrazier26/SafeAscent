@@ -327,12 +327,33 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
     # trainer cannot log in and holds no table privilege anywhere until Phase 3 (D13).
     assert _fetch_row(fresh_db, TRAINER_STATE_SQL) == [False, False]
 
-    # 0006: app and analyst read the clean views (default privileges); ingest gets them in plan 3,
+    # 0006: app and analyst read the clean views (default privileges); ingest since plan 3 (0007),
     # trainer in Phase 3 (D13, TRAINER_STATE_SQL above covers views).
     clean_views = "SELECT count(*) FROM accidents_clean; SELECT count(*) FROM accidents_clean_daily"
     _as(app, clean_views)
     _as(analyst, clean_views)
-    _denied(ingest, "SELECT count(*) FROM accidents_clean")
+    _as(ingest, clean_views)
+    _as(ingest, "SELECT count(*) FROM accident_conditions")
+    _denied(ingest, "DELETE FROM accidents_clean WHERE false")
+
+    # Plan 3 (0007): ingest writes conditions (DELETE only for the 3-year prune) and upserts the
+    # series registry and normals, which it never deletes; app and analyst only read.
+    _as(ingest, "INSERT INTO cell_daily_conditions (grid_bucket, tz, date, record_kind, source) "
+        "VALUES (1, 'UTC', '2020-01-01', 'era5', 'open_meteo_archive') "
+        "ON CONFLICT (grid_bucket, tz, date) DO UPDATE SET tmax = EXCLUDED.tmax")
+    _as(ingest, "DELETE FROM cell_daily_conditions WHERE grid_bucket = 1")
+    _as(ingest, "INSERT INTO grid_bucket_series (grid_bucket, tz) VALUES (1, 'UTC') "
+        "ON CONFLICT (grid_bucket, tz) DO UPDATE SET first_era5_date = NULL")
+    _as(ingest, "INSERT INTO cell_normals_status (grid_bucket, status) VALUES (1, 'pending') "
+        "ON CONFLICT (grid_bucket) DO UPDATE SET status = EXCLUDED.status")
+    _as(ingest, "UPDATE cell_climate_normals SET n_years = 1 WHERE false; "
+        "UPDATE cell_climatology SET n_years = 1 WHERE false")
+    for table in ("grid_bucket_series", "cell_normals_status", "cell_climate_normals", "cell_climatology"):
+        _denied(ingest, f"DELETE FROM {table} WHERE false")
+    _denied(ingest, "TRUNCATE cell_daily_conditions")
+    _as(app, "SELECT count(*) FROM cell_daily_conditions; SELECT count(*) FROM accident_conditions")
+    _denied(app, "DELETE FROM cell_daily_conditions WHERE false")
+    _denied(analyst, "BEGIN READ WRITE; DELETE FROM grid_bucket_series WHERE false; COMMIT")
     _denied(app, "UPDATE accidents_clean SET source_url = 'x' WHERE false")
     _denied(analyst, "BEGIN READ WRITE; DELETE FROM accidents_clean_daily WHERE false; COMMIT")
 
@@ -431,7 +452,11 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "ALTER DEFAULT PRIVILEGES IN SCHEMA internal GRANT SELECT ON TABLES TO ingest;"
         "GRANT SELECT ON public.accidents TO trainer;"
         "GRANT SELECT ON public.accidents_clean TO trainer;"
-        "GRANT SELECT ON public.accidents_clean_daily TO ingest;"
+        "REVOKE SELECT ON public.accidents_clean_daily FROM ingest;"
+        "GRANT DELETE ON public.grid_bucket_series TO ingest;"
+        "GRANT TRUNCATE ON public.cell_daily_conditions TO ingest;"
+        "GRANT INSERT ON public.cell_daily_conditions TO app;"
+        "GRANT SELECT ON public.accident_conditions TO trainer;"
         "GRANT UPDATE ON public.accidents_clean TO app;"
         "REVOKE SELECT ON public.accidents_clean_daily FROM analyst;"
         "GRANT CREATE ON SCHEMA internal TO app;"
@@ -457,6 +482,10 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "trainer holds no privilege on public.accidents",
         "trainer holds no privilege on public.accidents_clean",
         "ingest SELECT on public.accidents_clean_daily matches the expected set",
+        "ingest DELETE on public.grid_bucket_series matches the expected set",
+        "ingest TRUNCATE on public.cell_daily_conditions matches the expected set",
+        "app can SELECT public.cell_daily_conditions and nothing else",
+        "trainer holds no privilege on public.accident_conditions",
         "app can SELECT public.accidents_clean and nothing else",
         "analyst can SELECT public.accidents_clean_daily and nothing else",
         "app has no CREATE on schema internal",
