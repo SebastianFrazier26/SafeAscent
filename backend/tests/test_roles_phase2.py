@@ -393,6 +393,12 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
     _denied(ingest, "TRUNCATE cell_daily_conditions")
     _as(app, "SELECT count(*) FROM cell_daily_conditions; SELECT count(*) FROM accident_conditions")
     _denied(app, "DELETE FROM cell_daily_conditions WHERE false")
+
+    # Plan 3 (R6 verify): ingest reads the legacy weather table, never writes it.
+    _as(ingest, "SELECT count(*) FROM weather")
+    _denied(ingest, "UPDATE weather SET temperature_max = 0 WHERE false")
+    _denied(ingest, "DELETE FROM weather WHERE false")
+    _denied(ingest, "INSERT INTO weather (date, latitude, longitude) VALUES ('2020-01-01', 0, 0)")
     _denied(analyst, "BEGIN READ WRITE; DELETE FROM grid_bucket_series WHERE false; COMMIT")
     _denied(app, "UPDATE accidents_clean SET source_url = 'x' WHERE false")
     _denied(analyst, "BEGIN READ WRITE; DELETE FROM accidents_clean_daily WHERE false; COMMIT")
@@ -501,7 +507,8 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "REVOKE SELECT ON public.accidents_clean_daily FROM analyst;"
         "GRANT CREATE ON SCHEMA internal TO app;"
         "REVOKE SELECT ON internal.accident_revisions FROM analyst;"
-        "REVOKE UPDATE (tz) ON public.accidents FROM ingest;",
+        "REVOKE UPDATE (tz) ON public.accidents FROM ingest;"
+        "REVOKE SELECT ON public.weather FROM ingest;",
     )
     _as(owner_url, "GRANT ingest TO analyst")
     # CREATE without USAGE is enough to create a table, which is why verify checks both.
@@ -534,5 +541,6 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "analyst can SELECT internal.accident_revisions",
         "nobody can SET or INHERIT ingest",
         "nobody but CURRENT_USER holds ADMIN on ingest",
+        "ingest SELECT on public.weather matches the expected set",
     ):
         assert check in stray.stderr, check

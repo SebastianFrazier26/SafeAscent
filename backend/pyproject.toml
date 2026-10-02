@@ -124,6 +124,7 @@ module = [
     "app.pipelines.era5_fill",
     "app.pipelines.normals",
     "app.pipelines.era5_window",
+    "app.pipelines.r6_verify",
 ]
 ignore_errors = false
 disallow_any_generics = true

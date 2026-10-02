@@ -76,6 +76,10 @@ GRANT SELECT ON public.accidents_clean, public.accidents_clean_daily, public.acc
 -- no SELECT is widened here.
 GRANT UPDATE (tz) ON public.accidents TO ingest;
 
+-- Plan 3 (R6 verify): r6_verify's CLI logs the ERA5-vs-legacy agreement as ingest, reading the
+-- legacy weather table; never written.
+GRANT SELECT ON public.weather TO ingest;
+
 RESET ROLE;
 COMMIT;
 \echo 'phase 2 grants applied'

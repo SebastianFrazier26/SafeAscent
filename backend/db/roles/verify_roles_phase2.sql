@@ -84,7 +84,9 @@ INSERT INTO ingest_privs VALUES
   ('public.cell_climatology', 'SELECT'), ('public.cell_climatology', 'INSERT'),
   ('public.cell_climatology', 'UPDATE'),
   ('public.accidents_clean', 'SELECT'), ('public.accidents_clean_daily', 'SELECT'),
-  ('public.accident_conditions', 'SELECT');
+  ('public.accident_conditions', 'SELECT'),
+  -- Plan 3 (R6 verify): the legacy weather table is read-only input to r6_verify.
+  ('public.weather', 'SELECT');
 
 -- PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views, so extension-owned
 -- relations are skipped throughout, as verify_roles.sql does.
