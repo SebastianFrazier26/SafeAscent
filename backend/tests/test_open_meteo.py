@@ -211,6 +211,22 @@ def test_no_key_fails_closed_instead_of_using_the_public_host(key):
         ArchiveClient(key)
 
 
+def test_a_real_custom_transport_without_a_key_is_refused():
+    with pytest.raises(OpenMeteoError, match="OPEN_METEO_API_KEY"):
+        ArchiveClient(None, transport=httpx.HTTPTransport())
+
+
+def test_a_mock_transport_without_a_key_stays_offline():
+    hosts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        hosts.append(request.url.host)
+        return _ok(request)
+
+    ArchiveClient(None, transport=httpx.MockTransport(handler)).fetch(LOC[:1], D1, D1)
+    assert hosts == ["archive-api.open-meteo.com"]
+
+
 def test_public_host_only_on_explicit_opt_in():
     hosts: list[str] = []
 

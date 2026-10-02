@@ -107,7 +107,8 @@ def kmh_to_ms(kmh: float) -> float:
 class ArchiveClient:
     """With no key the client refuses to start unless `allow_public=True`: the public host is
     non-commercial and rate-limited, so a missing key must stop a paid run, not reroute it.
-    An injected transport (tests) never leaves the process, so it needs no key either."""
+    Only an httpx.MockTransport (tests) is exempt: it never leaves the process, whereas any
+    other injected transport can still reach the public host."""
 
     def __init__(
         self,
@@ -119,7 +120,7 @@ class ArchiveClient:
         allow_public: bool = False,
     ) -> None:
         key = (api_key or "").strip() or None
-        if key is None and not allow_public and transport is None:
+        if key is None and not allow_public and not isinstance(transport, httpx.MockTransport):
             raise OpenMeteoError("OPEN_METEO_API_KEY is not set; refusing to use the public non-commercial archive host")
         self._key = key
         self._url = CUSTOMER_URL if key else PUBLIC_URL
