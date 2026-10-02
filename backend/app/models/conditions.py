@@ -16,6 +16,7 @@ from app.db.session import Base
 class GridBucketSeries(Base):
     __tablename__ = "grid_bucket_series"
     __table_args__ = (
+        CheckConstraint("tz <> ''", name="grid_bucket_series_tz_check"),
         CheckConstraint("(first_era5_date IS NULL) = (last_era5_date IS NULL)", name="grid_bucket_series_span_pair_check"),
         CheckConstraint(
             "first_era5_date IS NULL OR first_era5_date <= last_era5_date", name="grid_bucket_series_span_order_check"
@@ -34,6 +35,10 @@ class CellDailyConditions(Base):
     __table_args__ = (
         CheckConstraint("record_kind IN ('era5', 'stopgap', 'forecast')", name="cell_daily_conditions_record_kind_check"),
         CheckConstraint("is_forecast = (record_kind = 'forecast')", name="cell_daily_conditions_is_forecast_check"),
+        CheckConstraint(
+            "source IN ('open_meteo_archive', 'open_meteo_forecast')", name="cell_daily_conditions_source_check"
+        ),
+        CheckConstraint("tz <> ''", name="cell_daily_conditions_tz_check"),
     )
 
     grid_bucket: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
@@ -74,7 +79,13 @@ class CellNormalsStatus(Base):
 
 class CellClimateNormals(Base):
     __tablename__ = "cell_climate_normals"
-    __table_args__ = (CheckConstraint("month BETWEEN 1 AND 12", name="cell_climate_normals_month_check"),)
+    __table_args__ = (
+        CheckConstraint("month BETWEEN 1 AND 12", name="cell_climate_normals_month_check"),
+        CheckConstraint(
+            "source IN ('open_meteo_era5_seamless', 'derived_cell_daily_conditions')",
+            name="cell_climate_normals_source_check",
+        ),
+    )
 
     grid_bucket: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
     month: Mapped[int] = mapped_column(SmallInteger, primary_key=True, autoincrement=False)

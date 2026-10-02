@@ -216,7 +216,8 @@ def test_a_real_custom_transport_without_a_key_is_refused():
         ArchiveClient(None, transport=httpx.HTTPTransport())
 
 
-def test_a_mock_transport_without_a_key_stays_offline():
+def test_mock_transport_is_exempt_from_the_key_check():
+    # MockTransport answers in-process, so the public URL it is handed is never contacted.
     hosts: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -227,16 +228,24 @@ def test_a_mock_transport_without_a_key_stays_offline():
     assert hosts == ["archive-api.open-meteo.com"]
 
 
-def test_public_host_only_on_explicit_opt_in():
-    hosts: list[str] = []
+class _RecordingTransport(httpx.BaseTransport):
+    """Not a MockTransport, so the key check treats it like a real network transport."""
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        hosts.append(request.url.host)
+    def __init__(self) -> None:
+        self.hosts: list[str] = []
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        self.hosts.append(request.url.host)
         assert "apikey" not in request.url.params
         return _ok(request)
 
-    ArchiveClient(None, allow_public=True, transport=httpx.MockTransport(handler)).fetch(LOC[:1], D1, D1)
-    assert hosts == ["archive-api.open-meteo.com"]
+
+def test_public_host_only_on_explicit_opt_in():
+    with pytest.raises(OpenMeteoError, match="OPEN_METEO_API_KEY"):
+        ArchiveClient(None, transport=_RecordingTransport())
+    transport = _RecordingTransport()
+    ArchiveClient(None, allow_public=True, transport=transport).fetch(LOC[:1], D1, D1)
+    assert transport.hosts == ["archive-api.open-meteo.com"]
 
 
 def test_key_is_sent_to_the_customer_host_only():

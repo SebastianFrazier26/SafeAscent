@@ -4,6 +4,7 @@ Accident model with foreign keys and PostGIS geography.
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Column,
     Date,
     DateTime,
@@ -35,6 +36,7 @@ class Accident(Base):
         Index("idx_accidents_severity", "injury_severity"),
         Index("idx_accidents_state", "state"),
         Index("idx_accidents_type", "accident_type"),
+        CheckConstraint("tz <> ''", name="accidents_tz_check"),
     )
 
     accident_id = Column(Integer, primary_key=True)

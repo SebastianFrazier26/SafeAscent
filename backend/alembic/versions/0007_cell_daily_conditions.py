@@ -17,9 +17,10 @@ branch_labels = None
 depends_on = None
 
 
-# Must equal app.data.repair.dates.YEAR_SOURCE; test_migration_0007 pins the pair (a literal, as
-# 0006 does: a migration must not change when app code does).
-RANGE_YEAR_SOURCE = "aac_source_id_neighbours"
+# Task 6 (OQ6 ruling) writes 'derived_cell_daily_conditions' for normals computed from rows already
+# in cell_daily_conditions, and 'open_meteo_era5_seamless' for normals bought from the archive.
+CONDITIONS_SOURCES = ("open_meteo_archive", "open_meteo_forecast")
+NORMALS_SOURCES = ("open_meteo_era5_seamless", "derived_cell_daily_conditions")
 PAID_TABLES = ("cell_daily_conditions", "cell_climate_normals", "cell_climatology")
 
 
@@ -28,6 +29,8 @@ def upgrade() -> None:
     # standalone 0007 gets the same fail-fast bound on its ALTER of accidents.
     op.execute("SET LOCAL lock_timeout = '5s'")
     op.add_column("accidents", sa.Column("tz", sa.Text(), nullable=True))
+    # accidents holds a few thousand rows, so validating this CHECK's scan under the 5s bound is cheap.
+    op.create_check_constraint("accidents_tz_check", "accidents", "tz <> ''")
     op.create_table(
         "grid_bucket_series",
         sa.Column("grid_bucket", sa.Integer(), nullable=False),
@@ -36,6 +39,7 @@ def upgrade() -> None:
         sa.Column("first_era5_date", sa.Date(), nullable=True),
         sa.Column("last_era5_date", sa.Date(), nullable=True),
         sa.PrimaryKeyConstraint("grid_bucket", "tz"),
+        sa.CheckConstraint("tz <> ''", name="grid_bucket_series_tz_check"),
         sa.CheckConstraint("(first_era5_date IS NULL) = (last_era5_date IS NULL)", name="grid_bucket_series_span_pair_check"),
         sa.CheckConstraint("first_era5_date IS NULL OR first_era5_date <= last_era5_date", name="grid_bucket_series_span_order_check"),
     )
@@ -64,6 +68,10 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("grid_bucket", "tz", "date"),
         sa.CheckConstraint("record_kind IN ('era5', 'stopgap', 'forecast')", name="cell_daily_conditions_record_kind_check"),
         sa.CheckConstraint("is_forecast = (record_kind = 'forecast')", name="cell_daily_conditions_is_forecast_check"),
+        sa.CheckConstraint(
+            f"source IN ({', '.join(repr(v) for v in CONDITIONS_SOURCES)})", name="cell_daily_conditions_source_check"
+        ),
+        sa.CheckConstraint("tz <> ''", name="cell_daily_conditions_tz_check"),
     )
     op.create_table(
         "cell_normals_status",
@@ -93,6 +101,9 @@ def upgrade() -> None:
         sa.Column("run_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.PrimaryKeyConstraint("grid_bucket", "month"),
         sa.CheckConstraint("month BETWEEN 1 AND 12", name="cell_climate_normals_month_check"),
+        sa.CheckConstraint(
+            f"source IN ({', '.join(repr(v) for v in NORMALS_SOURCES)})", name="cell_climate_normals_source_check"
+        ),
     )
     clim_cols = [
         sa.Column(name, sa.REAL(), nullable=True)
@@ -115,7 +126,7 @@ def upgrade() -> None:
     # tz comes from accidents itself: changing 0006's views would change the Phase 3 column
     # interface test_migration_0006 pins. Only trusted points (point_trusted) get a point-level
     # join; region_fallback/unknown points keep coordinates for pooling only. A missing day is an
-    # absent row, never a zero. D13: an R1 neighbour-interpolated year range is not a known day.
+    # absent row, never a zero. D13: a year range (year_lo < year_hi, from any rule) is not a known day.
     op.execute(
         "CREATE VIEW accident_conditions AS "
         "SELECT a.accident_id, o.day_offset, c.grid_bucket, c.tz, c.date, c.tmax, c.tmin, c.precip_mm, c.snowfall_cm, "
@@ -125,11 +136,13 @@ def upgrade() -> None:
         "JOIN cell_daily_conditions c ON c.grid_bucket = grid_bucket_key(a.latitude, a.longitude) "
         "AND c.tz = t.tz AND c.date = a.date + o.day_offset "
         "WHERE a.point_trusted AND a.latitude IS NOT NULL AND a.longitude IS NOT NULL "
-        f"AND (a.year_source IS DISTINCT FROM '{RANGE_YEAR_SOURCE}' OR a.year_lo = a.year_hi)"
+        "AND a.year_lo IS NOT DISTINCT FROM a.year_hi"
     )
 
 
 def downgrade() -> None:
+    # Same fail-fast bound as upgrade: dropping accidents.tz takes an exclusive lock on accidents.
+    op.execute("SET LOCAL lock_timeout = '5s'")
     bind = op.get_bind()
     for table in PAID_TABLES:
         rows = bind.exec_driver_sql(f"SELECT count(*) FROM {table}").scalar_one()
