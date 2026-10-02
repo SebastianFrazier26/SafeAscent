@@ -13,6 +13,7 @@ whose incident point moved away is an ordinary 3-year series again (pruned, neve
 from __future__ import annotations
 
 import asyncio
+import threading
 import uuid
 from collections import defaultdict
 from collections.abc import Callable, Sequence
@@ -181,6 +182,14 @@ class _BudgetExhausted(Exception):
     pass
 
 
+class _Abandoned(Exception):
+    pass
+
+
+# Bounds the fetch thread's wait for its pre-send record; an unrecorded retry is never sent.
+RECORD_TIMEOUT_S = 60.0
+
+
 async def _write_chunk(
     engine: AsyncEngine,
     chunk: Chunk,
@@ -269,23 +278,32 @@ async def run(
                     await record_spend(conn, run_id, units, at=at)
                 budget.spend(units)
                 billed: float = units
+                stop = threading.Event()
 
                 async def _record(total: float, run_id: uuid.UUID = run_id, at: datetime | None = at) -> None:
                     async with engine.begin() as conn:
                         await record_spend(conn, run_id, total, at=at)
 
-                def on_attempt(attempt: int, previous: AttemptOutcome | None, units: float = units) -> None:
+                def on_attempt(attempt: int, previous: AttemptOutcome | None, units: float = units,
+                               stop: threading.Event = stop) -> None:
                     # I3: a 5xx or a timeout may have been computed and billed, so the retry is paid for
                     # (and recorded) before it is sent. A 429 was refused before any work: the attempt
                     # already counted for it carries over to its retry.
                     nonlocal billed
+                    # N2: once the awaiting coroutine is gone (cancelled, Ctrl-C) the lock is released, so
+                    # this orphaned thread must not send anything more.
+                    if stop.is_set():
+                        raise _Abandoned()
                     if attempt == 0 or previous == "rate_limited":
                         return
                     if not budget.fits(units):
                         raise _BudgetExhausted()
                     budget.spend(units)
                     billed += units
-                    asyncio.run_coroutine_threadsafe(_record(billed), loop).result()
+                    asyncio.run_coroutine_threadsafe(_record(billed), loop).result(RECORD_TIMEOUT_S)
+                    # Recording waits on the loop; a cancel can land meanwhile.
+                    if stop.is_set():
+                        raise _Abandoned()
 
                 problem: str | None = None
                 responses: list[LocationResponse] = []
@@ -299,6 +317,8 @@ async def run(
                     problem = str(exc)
                 except _BudgetExhausted:
                     problem, stopped = "budget exhausted before a retry could be sent", True
+                finally:
+                    stop.set()
                 if problem is None and _incomplete(responses, chunk):
                     problem = f"response does not cover every day of {chunk.start}..{chunk.end}"
                 status = await _write_chunk(engine, chunk, run_id, responses, today=today, units=billed,

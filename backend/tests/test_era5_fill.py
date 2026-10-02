@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
 
@@ -544,3 +545,80 @@ def test_one_bad_location_rejects_the_chunk_even_when_the_pooled_share_is_low():
         log = asyncio.run(_log(sa_url(name)))
     assert (result["rejected"], result["done"]) == (1, 0)
     assert log == [("rejected", 10.0, 0, 1)]
+
+
+@requires_pg
+def test_a_killed_retry_keeps_its_pre_send_record():
+    # I3: the retry's units are durable before it goes out, whatever happens to the process next.
+    calls = {"n": 0}
+
+    def fail_then_die(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(503)
+        raise _Killed()
+
+    async def scenario(url: str) -> float:
+        with pytest.raises(_Killed):
+            await _one_chunk_run(url, fail_then_die)
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                return await units_spent(conn, WIN)
+        finally:
+            await engine.dispose()
+
+    with migrated_db(seed_sql=SERIES_SEED) as name:
+        assert asyncio.run(scenario(sa_url(name))) == 2.0
+
+
+@requires_pg
+def test_two_gathered_fills_under_one_lock_cannot_both_spend():
+    # N1: the second fill is a child task; it must contend for the real lock, not inherit it.
+    async def scenario(url: str) -> None:
+        engine = create_async_engine(url)
+        try:
+            async with window_lock(engine):
+                await asyncio.gather(_one_chunk_run(url, _handler, max_units=1),
+                                     _one_chunk_run(url, _handler, max_units=1))
+        finally:
+            await engine.dispose()
+
+    with migrated_db(seed_sql=SERIES_SEED) as name:
+        with pytest.raises(SystemExit, match="window lock"):
+            asyncio.run(scenario(sa_url(name)))
+        log = asyncio.run(_log(sa_url(name)))
+    assert sum(cost for _, cost, _, _ in log) == 0.0
+
+
+@requires_pg
+def test_no_attempt_is_sent_after_the_run_is_cancelled():
+    # N2: cancelling (Ctrl-C) releases the lock, but the fetch thread lives on until its next attempt.
+    sent = {"n": 0}
+    first_sent, release = threading.Event(), threading.Event()
+
+    def always_503(request: httpx.Request) -> httpx.Response:
+        sent["n"] += 1
+        first_sent.set()
+        return httpx.Response(503)
+
+    def backoff(seconds: float) -> None:
+        release.wait(10)
+
+    async def scenario(url: str) -> None:
+        client = ArchiveClient(None, transport=httpx.MockTransport(always_503), sleep=backoff)
+        task = asyncio.create_task(run(lambda: create_async_engine(url), client,
+                                       plan_chunks([GAP], batch=50, years_per_chunk=1)[:1], today=TODAY,
+                                       budget=Budget(max_units=100, spent=0), window=WIN))
+        while not first_sent.is_set():
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        release.set()
+        # Leave the loop running so an unguarded hook could still record and send its retry.
+        await asyncio.sleep(1.0)
+
+    with migrated_db(seed_sql=SERIES_SEED) as name:
+        asyncio.run(scenario(sa_url(name)))
+    assert sent["n"] == 1

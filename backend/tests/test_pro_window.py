@@ -173,64 +173,117 @@ def test_a_window_whose_start_moved_later_still_sees_the_month_already_spent():
 
 
 @requires_pg
-def test_initial_window_is_refused_once_any_paid_spend_exists():
+def test_initial_window_is_refused_only_after_spend_from_an_earlier_month():
+    # Reruns and slices of the same initial window are fine; a later initial window is a fresh cap.
+    window = ProWindow(date(2026, 10, 5), initial=True)
+    earliest_same_month = datetime(2026, 9, 6, tzinfo=timezone.utc)  # window.start - 29 days
+
     async def scenario(url: str) -> list[str]:
         engine = create_async_engine(url)
-        refused = []
+        outcomes = []
         try:
             async with engine.begin() as conn:
-                await require_initial_allowed(conn)
-                await _spend_at(conn, "openbeta", 5, None)
-                await require_initial_allowed(conn)
-                await _spend_at(conn, "era5_normals", 1, None)
-                try:
-                    await require_initial_allowed(conn)
-                except SystemExit as exc:
-                    refused.append(str(exc))
+                for source, at in [(None, None), ("era5_fill", datetime(2026, 10, 6, tzinfo=timezone.utc)),
+                                   ("era5_normals", earliest_same_month),
+                                   ("openbeta", datetime(2026, 1, 1, tzinfo=timezone.utc)),
+                                   ("era5_fill", earliest_same_month - timedelta(microseconds=1))]:
+                    if source:
+                        await _spend_at(conn, source, 5, at)
+                    try:
+                        await require_initial_allowed(conn, window)
+                        outcomes.append("allowed")
+                    except SystemExit as exc:
+                        outcomes.append(str(exc))
         finally:
             await engine.dispose()
-        return refused
+        return outcomes
 
     with migrated_db() as name:
-        refused = asyncio.run(scenario(sa_url(name)))
-    assert len(refused) == 1 and "initial" in refused[0]
+        outcomes = asyncio.run(scenario(sa_url(name)))
+    assert outcomes[:4] == ["allowed"] * 4
+    assert "initial" in outcomes[4]
 
 
-@requires_pg
-def test_window_lock_refuses_a_second_holder_and_is_reentrant_for_its_own():
-    def other_process(url: str, out: list[str]) -> None:
-        # A plain thread starts with an empty context and its own loop and connection: to the
-        # lock it looks like another process.
-        async def go() -> None:
-            engine = create_async_engine(url)
-            try:
-                async with window_lock(engine):
-                    out.append("acquired")
-            finally:
-                await engine.dispose()
+def _other_process(url: str) -> str:
+    """Try the window lock from a plain thread: an empty context, its own loop and connection, so
+    to the lock it looks like another process."""
+    out: list[str] = []
 
+    async def go() -> None:
+        engine = create_async_engine(url)
+        try:
+            async with window_lock(engine):
+                out.append("acquired")
+        finally:
+            await engine.dispose()
+
+    def target() -> None:
         try:
             asyncio.run(go())
         except SystemExit as exc:
             out.append(str(exc))
 
-    async def scenario(url: str) -> list[str]:
+    thread = threading.Thread(target=target)
+    thread.start()
+    thread.join()
+    return out[0]
+
+
+@requires_pg
+def test_window_lock_refuses_a_second_holder_and_is_reentrant_for_its_own():
+    async def scenario(url: str) -> str:
         engine = create_async_engine(url)
-        held: list[str] = []
         try:
             async with window_lock(engine):
                 async with window_lock(engine):
                     pass
-                thread = threading.Thread(target=other_process, args=(url, held))
-                thread.start()
-                await asyncio.to_thread(thread.join)
+                return await asyncio.to_thread(_other_process, url)
         finally:
             await engine.dispose()
-        return held
 
     with migrated_db() as name:
         held = asyncio.run(scenario(sa_url(name)))
-        after: list[str] = []
-        other_process(sa_url(name), after)
-    assert len(held) == 1 and "window lock" in held[0]
-    assert after == ["acquired"]
+        after = _other_process(sa_url(name))
+    assert "window lock" in held
+    assert after == "acquired"
+
+
+@requires_pg
+def test_leaving_the_lock_releases_it_and_a_later_entry_in_the_same_task_really_locks():
+    async def scenario(url: str) -> tuple[str, str]:
+        engine = create_async_engine(url)
+        try:
+            async with window_lock(engine):
+                pass
+            between = await asyncio.to_thread(_other_process, url)
+            async with window_lock(engine):
+                during_second = await asyncio.to_thread(_other_process, url)
+            return between, during_second
+        finally:
+            await engine.dispose()
+
+    with migrated_db() as name:
+        between, during_second = asyncio.run(scenario(sa_url(name)))
+    assert between == "acquired"
+    assert "window lock" in during_second
+
+
+@requires_pg
+def test_a_child_task_does_not_inherit_the_lock():
+    # N1: gathered children copy the owner's context; only the owning task may re-enter.
+    async def scenario(url: str) -> None:
+        engine = create_async_engine(url)
+        try:
+            async with window_lock(engine):
+                async def child() -> None:
+                    async with window_lock(engine):
+                        pass
+
+                await asyncio.gather(child())
+        finally:
+            await engine.dispose()
+
+    with migrated_db() as name:
+        # asyncio re-raises a task's SystemExit out of the loop rather than into gather.
+        with pytest.raises(SystemExit, match="window lock"):
+            asyncio.run(scenario(sa_url(name)))

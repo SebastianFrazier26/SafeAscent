@@ -11,6 +11,7 @@ runbook records it and the prod cap is 4.8M minus that number.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import uuid
 from collections.abc import AsyncIterator, Callable
@@ -32,7 +33,9 @@ WINDOW_LOCK_KEY = 7_202_609_280_005
 
 Clock = Callable[[], datetime]
 
-_lock_held: ContextVar[bool] = ContextVar("pro_window_lock_held", default=False)
+# The task holding the lock, not a bool: child tasks copy the context, and a gathered child that
+# saw "held" would buy against the same cap concurrently (N1).
+_lock_owner: ContextVar[asyncio.Task[object] | None] = ContextVar("pro_window_lock_owner", default=None)
 
 
 @dataclass(frozen=True)
@@ -63,12 +66,14 @@ async def window_lock(engine: AsyncEngine) -> AsyncIterator[None]:
     """One paid-window job per database at a time (I1): two runs that each read the spend and
     then buy would together pass the cap. Every paid job takes this lock — era5_fill.run does,
     and normals.run and era5_window.run_window must too — and re-reads units_spent only after
-    holding it. Re-entrant within one task context, so run_window can hold it around the fill.
+    holding it. Re-entrant only for the task that took it, so run_window can hold it around the
+    fill; any other task, child tasks included, contends for the real lock and is refused.
 
     A session-level advisory lock on a dedicated connection kept for the whole run: it needs a
     direct (or session-pooled) connection, not a transaction-mode pooler, which would hand the
     session to someone else between statements."""
-    if _lock_held.get():
+    me = asyncio.current_task()
+    if me is not None and _lock_owner.get() is me:
         yield
         return
     async with engine.connect() as conn:
@@ -78,23 +83,30 @@ async def window_lock(engine: AsyncEngine) -> AsyncIterator[None]:
         if not got:
             raise SystemExit("another paid-window job holds the window lock on this database; "
                              "wait for it to finish rather than run two against one cap")
-        token = _lock_held.set(True)
+        token = _lock_owner.set(me)
         try:
             yield
         finally:
-            _lock_held.reset(token)
+            _lock_owner.reset(token)
             # A dropped connection has already released the lock with its session.
             with contextlib.suppress(Exception):
                 await conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": WINDOW_LOCK_KEY})
                 await conn.commit()
 
 
-async def require_initial_allowed(conn: AsyncConnection) -> None:
-    """The initial window is a one-off (owner OQ1: now, then January only). Once anything has
-    been spent, a second initial=True window is a mistake that would open a fresh cap."""
+def _month_floor(window: ProWindow) -> datetime:
+    return datetime.combine(window.start - timedelta(days=PRO_WINDOW_DAYS - 1), time.min, tzinfo=timezone.utc)
+
+
+async def require_initial_allowed(conn: AsyncConnection, window: ProWindow) -> None:
+    """The initial window is a one-off (owner OQ1: now, then January only). Reruns and slices of
+    the same window are fine (units_spent already counts their spend); paid spend older than
+    the window's reach means an earlier month was bought, and a second initial window would
+    open a fresh cap."""
     spent = (await conn.execute(
-        text("SELECT EXISTS (SELECT 1 FROM source_ingest_log WHERE source = ANY(:sources) AND cost_units > 0)"),
-        {"sources": list(PAID_SOURCES)},
+        text("SELECT EXISTS (SELECT 1 FROM source_ingest_log WHERE source = ANY(:sources) AND cost_units > 0 "
+             "AND started_at < :floor)"),
+        {"sources": list(PAID_SOURCES), "floor": _month_floor(window)},
     )).scalar_one()
     if spent:
         raise SystemExit("an initial window was already used (paid spend is logged); "
@@ -120,7 +132,7 @@ async def units_spent(conn: AsyncConnection, window: ProWindow) -> float:
     a run that died after its request went out. The sum also reaches PRO_WINDOW_DAYS - 1 days
     before window.start (I2): a window re-declared with a later start in the same paid month
     must still see what that month has already spent."""
-    start = datetime.combine(window.start - timedelta(days=PRO_WINDOW_DAYS - 1), time.min, tzinfo=timezone.utc)
+    start = _month_floor(window)
     stop = datetime.combine(window.end + timedelta(days=1), time.min, tzinfo=timezone.utc)
     value = (await conn.execute(
         text("SELECT COALESCE(sum(cost_units), 0) FROM source_ingest_log WHERE source = ANY(:sources) "
