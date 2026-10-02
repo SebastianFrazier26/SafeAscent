@@ -74,13 +74,13 @@ Everything in the foundations plan's Global Constraints applies. In particular:
 | `backend/app/data/repair/dedupe.py` | Create | R5 scoring, bands, groups, canonical choice. |
 | `backend/app/data/repair/experience.py` | Create | R12. |
 | `backend/app/data/repair/__main__.py` | Create | CLI orchestrator. |
-| `backend/alembic/versions/0005_gnis_and_duplicate_decisions.py` | Create | `gnis_summits`, `internal.duplicate_decisions`. |
+| `backend/alembic/versions/0005_gnis_duplicate_decisions.py` | Create | `gnis_summits`, `internal.duplicate_decisions`. |
 | `backend/alembic/versions/0006_accidents_clean.py` | Create | `accidents_clean`, `accidents_clean_daily` views. |
 | `backend/app/models/reference.py` | Create | `GnisSummit`, `DuplicateDecision` models. |
 | `backend/db/roles/grants_phase2.sql`, `verify_roles_phase2.sql` | Modify | Repair grants and expected writes. |
 | `data/golden/README.md`, `data/golden/activity_v1.csv`, `data/golden/experience_v1.csv` | Create (runbook fills rows) | Golden labels, ids only. |
 | `.gitignore` | Modify | `data/review/`. |
-| `backend/tests/test_repair_*.py`, `test_textsim.py`, `test_geo.py`, `test_gnis.py`, `test_migration_0005_0006.py`, `test_migration_0006.py`, `test_experience_not_required.py` | Create | Tests. |
+| `backend/tests/test_repair_*.py`, `test_textsim.py`, `test_geo.py`, `test_gnis.py`, `test_migration_0005.py`, `test_migration_0006.py`, `test_experience_not_required.py` | Create | Tests. |
 | `backend/tests/verify/test_phase2a_repair.py` | Create | `-m db` acceptance cells. |
 | `backend/pyproject.toml`, `CHANGELOG.md`, `data/DATABASE_STRUCTURE.md` | Modify | mypy allowlist, docs. |
 
@@ -1565,7 +1565,7 @@ Append `"app.pipelines.textsim", "app.pipelines.geo"` to the strict mypy block.
 ### Task 6: Migration `0005`, GNIS summits loader
 
 **Files:**
-- Create: `backend/alembic/versions/0005_gnis_and_duplicate_decisions.py`, `backend/app/models/reference.py`, `backend/app/pipelines/gnis.py`, `backend/tests/test_gnis.py`, `backend/tests/test_migration_0005_0006.py`
+- Create: `backend/alembic/versions/0005_gnis_duplicate_decisions.py`, `backend/app/models/reference.py`, `backend/app/pipelines/gnis.py`, `backend/tests/test_gnis.py`, `backend/tests/test_migration_0005.py`
 - Modify: `backend/app/models/__init__.py`, `backend/pyproject.toml`, `backend/db/roles/grants_phase2.sql`, `backend/db/roles/verify_roles_phase2.sql`
 
 **Interfaces:**
@@ -1619,7 +1619,7 @@ def test_open_gnis_reads_the_national_member_of_a_zip(tmp_path):
     assert list(open_gnis(path))[0].startswith("feature_id|")
 ```
 
-`backend/tests/test_migration_0005_0006.py`:
+`backend/tests/test_migration_0005.py`:
 
 ```python
 import asyncpg
@@ -1632,7 +1632,7 @@ from tests.test_migrations import _alembic_cfg
 pytestmark = requires_pg
 
 
-REV_0005 = "0005_gnis_and_duplicate_decisions"
+REV_0005 = "0005_gnis_duplicate_decisions"
 DECISION = ("INSERT INTO internal.duplicate_decisions (low_id, high_id, score, decision, decided_by, rule_version) "
             "VALUES ({lo}, {hi}, 0.95, '{d}', '{by}', 'r5-v1')")
 
@@ -1672,7 +1672,7 @@ def test_0005_downgrade_refuses_to_lose_owner_decisions():
 
 - [ ] **Step 3: Implement the migration and models**
 
-`backend/alembic/versions/0005_gnis_and_duplicate_decisions.py`:
+`backend/alembic/versions/0005_gnis_duplicate_decisions.py`:
 
 ```python
 """USGS GNIS summits (public domain reference data) and R5 duplicate decisions."""
@@ -1681,7 +1681,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "0005_gnis_and_duplicate_decisions"
+revision = "0005_gnis_duplicate_decisions"
 down_revision = "0004_phase2a_foundation"
 branch_labels = None
 depends_on = None
@@ -1929,13 +1929,13 @@ GRANT SELECT, INSERT, UPDATE ON internal.duplicate_decisions TO ingest;
 
 `verify_roles_phase2.sql` `ingest_writes`: add `('public.gnis_summits','INSERT'), ('public.gnis_summits','UPDATE'), ('public.gnis_summits','DELETE'), ('internal.duplicate_decisions','INSERT'), ('internal.duplicate_decisions','UPDATE')`.
 
-- [ ] **Step 5: Run** — `cd backend && uv run pytest tests/test_gnis.py tests/test_migration_0005_0006.py tests/test_roles_phase2.py tests/test_migrations.py -q && uv run mypy && uv run ruff check . ../scripts/` → PASS.
+- [ ] **Step 5: Run** — `cd backend && uv run pytest tests/test_gnis.py tests/test_migration_0005.py tests/test_roles_phase2.py tests/test_migrations.py -q && uv run mypy && uv run ruff check . ../scripts/` → PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add backend/alembic/versions/0005_gnis_and_duplicate_decisions.py backend/app/models/ backend/app/pipelines/gnis.py \
-  backend/tests/test_gnis.py backend/tests/test_migration_0005_0006.py backend/pyproject.toml backend/db/roles/
+git add backend/alembic/versions/0005_gnis_duplicate_decisions.py backend/app/models/ backend/app/pipelines/gnis.py \
+  backend/tests/test_gnis.py backend/tests/test_migration_0005.py backend/pyproject.toml backend/db/roles/
 git commit -m "feat(pipelines): 0005 GNIS summits + duplicate decisions; GNIS DomesticNames loader"
 ```
 
@@ -3445,7 +3445,9 @@ def test_r12_golden_precision_on_filled_values_and_recall_reported():
 
 **Files:**
 - Create: `backend/alembic/versions/0006_accidents_clean.py`, `backend/tests/test_migration_0006.py`
-- Modify: `backend/db/roles/grants_phase2.sql`, `backend/tests/verify/test_phase2a_repair.py`, `CHANGELOG.md`, `data/DATABASE_STRUCTURE.md`, `CLAUDE.md`
+- Modify: `backend/db/roles/grants_phase2.sql` (comment only), `backend/db/roles/verify_roles_phase2.sql`, `backend/tests/test_roles_phase2.py`, `backend/tests/verify/test_phase2a_repair.py`, `CHANGELOG.md`, `data/DATABASE_STRUCTURE.md`, `CLAUDE.md`, `DATA_LICENSE.md` (GNIS note)
+
+**Rulings applied at implementation (2026-10-01).** O3 (owner): the view keeps a row unless its country is known non-US, `(country = 'US' OR country IS NULL)`, the same rule as `dedupe.DupRow.clean` (I3), and `test_migration_0006` runs `test_repair_dedupe.CLEAN_CASES` through the view to pin the pair. G5: no trainer grant (D13); `app`/`analyst` read the views through `migrator`'s default privileges, pinned in `verify_roles_phase2.sql` and `test_roles_phase2.py`. D2: the clean-set cell checks the base table, not a restatement of the view's WHERE. G1/G12: `down_revision = "0005_gnis_duplicate_decisions"` and `SET LOCAL lock_timeout`. The `point_trusted` list is a literal tuple `TRUSTED_POINT_PRECISIONS` in the migration, pinned to `geocode.TRUSTED_POINT_PRECISIONS` by a test (no string parsing). The code blocks below are the original plan text, kept for the record.
 
 **Interfaces:**
 - Produces: views `public.accidents_clean` (columns: `accident_id, source, source_id, date, year, date_precision, year_lo, year_hi, state, country, mountain, route, latitude, longitude, coordinates, elevation_meters, geocode_precision, accident_type, activity, activity_class, inclusion_flag, injury_severity, severity_scale, incident_group_id, mp_route_id, exp_years_climbing, exp_stated_level, exp_first_season, guided, source_url, point_trusted`) and `public.accidents_clean_daily` (same, `date_precision = 'day'`). `point_trusted = geocode_precision IN ('exact','crag','area','park_centroid')`: `region_fallback`/`unknown` rows keep coordinates for state/region pooling but no point-level join (plan 3's `accident_conditions`, Phase 3 spatial features) may use them. Phase 3 reads these; later plans' loaders (plan 3 R11) fill the same columns.
@@ -3512,7 +3514,7 @@ day-precision set CM trains on). No narrative columns: the views are what traine
 from alembic import op
 
 revision = "0006_accidents_clean"
-down_revision = "0005_gnis_and_duplicate_decisions"
+down_revision = "0005_gnis_duplicate_decisions"
 branch_labels = None
 depends_on = None
 
@@ -3530,7 +3532,7 @@ def upgrade() -> None:
     op.execute(
         f"CREATE VIEW accidents_clean AS SELECT {COLUMNS} FROM accidents "
         "WHERE is_canonical AND activity_class IN ('climbing', 'climbing_approach') "
-        "AND country = 'US' AND excluded_reason IS NULL"
+        "AND (country = 'US' OR country IS NULL) AND excluded_reason IS NULL"  # O3
     )
     op.execute("CREATE VIEW accidents_clean_daily AS SELECT * FROM accidents_clean WHERE date_precision = 'day'")
 
@@ -3540,17 +3542,17 @@ def downgrade() -> None:
     op.execute("DROP VIEW accidents_clean")
 ```
 
-`grants_phase2.sql`: `GRANT SELECT ON public.accidents_clean, public.accidents_clean_daily TO trainer;` (the `app` role already gets SELECT through `migrator`'s default privileges).
+`grants_phase2.sql`: no grant (G5, D13: `trainer` gets the views with LOGIN in Phase 3; `app` and `analyst` already get SELECT through `migrator`'s default privileges, which cover views). `verify_roles_phase2.sql` checks that both views exist and that `app` and `analyst` hold SELECT and nothing else on them; the exact `ingest` set and the trainer check already cover views.
 
 Append to the verify file:
 
 ```python
-def test_clean_set_has_no_unverified_or_non_us_rows():
-    [row] = fetch(
-        "SELECT count(*) FILTER (WHERE date_precision = 'unknown') AS unknown, "
-        "count(*) FILTER (WHERE country IS DISTINCT FROM 'US') AS foreign FROM accidents_clean"
-    )
-    assert (row["unknown"], row["foreign"]) == (0, 0)
+def test_clean_set_has_no_unverified_or_known_non_us_rows():
+    # O3 (owner): only a known non-US country drops a row; NULL-country rows stay and their
+    # count is printed by geocode_method. D2: the non-US half joins the base table, so a
+    # drifted view WHERE fails it. (The original text counted country IS DISTINCT FROM 'US'
+    # inside the view, which O3 makes wrong and D2 called tautological.)
+    ...  # see backend/tests/verify/test_phase2a_repair.py
 
 
 def test_cm_training_set_has_no_aac_placeholder_dates():
@@ -3591,7 +3593,7 @@ def test_view_point_trusted_matches_the_python_set():
 
 Docs: `CHANGELOG.md` entry (heading from `printf '### Phase 2a accident repair, part 2 (PR 2a-2) — %s\n' "$(date -u +%F)"`) listing GNIS summits, R3a/R3, R4, R5 (auto bands + owner review), R12, `accidents_clean`/`accidents_clean_daily`, migrations `0005`/`0006`. `data/DATABASE_STRUCTURE.md`: `gnis_summits`, `internal.duplicate_decisions`, the two views and their rule, and `point_trusted` (fallback rows keep coordinates; only trusted points join spatially). `CLAUDE.md` "Database and migrations": revisions list gains `0004`–`0006`; add "Repairs: `uv run python -m app.data.repair <step>` (dry run; `--apply` writes, as `ingest`)."
 
-- [ ] **Step 4: Run** — `cd backend && uv run pytest -q && uv run mypy && uv run ruff check . ../scripts/ && cd .. && python scripts/check_no_scrapers.py` → green.
+- [ ] **Step 4: Run** — `cd backend && uv run pytest -q && uv run mypy && uv run ruff check . ../scripts/ && cd .. && python3 scripts/check_no_scrapers.py` → green.
 - [ ] **Step 5: Commit** — `git add backend/alembic/versions/0006_accidents_clean.py backend/tests/ backend/db/roles/grants_phase2.sql CHANGELOG.md data/DATABASE_STRUCTURE.md CLAUDE.md && git commit -m "feat(db): 0006 accidents_clean and accidents_clean_daily views"`
 
 ---
@@ -4073,82 +4075,419 @@ Expected:
 
 ### Task 13: OWNER/AGENT RUNBOOK — apply PR 2a-2 (GNIS, R3a/R3, R4, R5, R12, views)
 
-Same shell setup as Task 12 Step 0 (`. scripts/runbook_helpers.sh`, `psql` 16+ resolvable, `TARGET_HOST` set explicitly per step).
+Rewritten in the Task 11 docs pass (2026-10-01) to the Task 12 pattern (final review 2a-1 C1–C4, I1–I5; re-review N1–N3, m1–m6), plus the 2a-2 carries: the `r3-states` stop (Task 7 I1/N3), export-once/fill/import halves and `save_once` evidence for every hand check and review CSV, measured review sizes (Task 9 O2 thresholds, R4 O1), timed R3/R5 applies (G14), the `require_r3`/`require_r4` order, and the GNIS quarantine margin (G20).
 
-- [ ] **Step 1 (owner/agent): Branch `p2a-2-rehearsal`, migrate, grants** — `export TARGET_HOST='<p2a-2-rehearsal direct host>'`; then as foundations Task 9 Step 2 (migrator `alembic upgrade head` → `0006_accidents_clean (head)`, `alembic check` clean), then `OWNER_PSQL -q -f db/roles/grants_phase2.sql` and both verify scripts.
+Every connection is TLS verify-full (`verify_full_url` for psql, `connect_args_for` via `tests/verify/_db.fetch` and `db.ingest_engine` for Python). Every repair runs as `ingest` and prints counts only; no CSV carries a narrative. Neon branch creation and snapshots can be run by an agent under the owner's CLI authorization. The owner does: the `r3-states` confirmation (Step 3), the cluster review and every hand check or review CSV (Steps 4–10), the sign-off (Step 11) and authorizing prod (Step 12).
 
-- [ ] **Step 2 (owner/agent): Download and load GNIS** (open public-domain file; not scraping)
+**Shell state.** As Task 12: `TARGET_HOST`, `B`, `BRANCH_HOST` and the helper functions live only in the shell that set them; each guard sits on its own line or opens its subshell; the helpers refuse while `TARGET_HOST` is unset, and it never defaults to prod. In a new shell, run a re-entry block first, then only the block you are on. Never re-run an export (the `*a` steps), a `save_once` line that already wrote its file, or a creation (Step 1's `neonctl branches create`, 12c).
+
+**Order.** R4 reads R3's labels (`require_r3`), R5 reads R3 and R4 (`require_r3`, `require_r4`), and R5's group heads prefer rows `accidents_clean` keeps, which reads R4's classes and R3's countries. So every R3 review (Steps 5–7) and the R4 review (Step 8) is imported before R5 runs (Step 9). R12 is independent.
+
+**Re-enter the rehearsal branch (Steps 1–11).** Never creates anything.
 
 ```bash
-curl -fL -o /tmp/gnis_national.zip \
-  https://prd-tnm.s3.amazonaws.com/StagedProducts/GeographicNames/DomesticNames/DomesticNames_National_Text.zip
-unzip -l /tmp/gnis_national.zip | grep -i DomesticNames_National
-INGMOD app.pipelines.gnis --file /tmp/gnis_national.zip
+cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+. scripts/runbook_helpers.sh
+unset TARGET_HOST
+B=p2a-2-rehearsal
+BRANCH_HOST="$(branch_host "${B:?}")"
+( set -a; . ./.env.owner; set +a
+  [ -n "${BRANCH_HOST-}" ] || { echo 'BRANCH_HOST is not set: re-run the line that sets it' >&2; exit 1; }
+  case "$OWNER_DATABASE_URL" in *"@${BRANCH_HOST}/"* | *"@${BRANCH_HOST}?"* | *"@${BRANCH_HOST}:"*) echo 'BRANCH_HOST is production: stop' >&2; exit 1 ;; esac
+  echo "branch host ok" ) && export TARGET_HOST="$BRANCH_HOST"
+[ -n "${TARGET_HOST-}" ] && [ "$TARGET_HOST" != production ] && echo "target is the rehearsal branch"
 ```
 
-If `curl` returns 404, take the current "National … Text" link from https://www.usgs.gov/us-board-on-geographic-names/download-gnis-data. Expected: `"status": "ok"` with roughly 60–80K summits accepted. A header error means the file format changed: stop and update `REQUIRED`. Quarantine-share headroom: on the 2026-09-29 file the loader quarantined 471 of 69,180 in-scope summits (~0.68%; 465 blank-state rows at 0,0) against the 1% gate, about 220 rows of headroom (territory summits are skipped, not quarantined). A GNIS release that crosses 1% is rejected by design: read the quarantine reasons before changing the gate. Record `skipped.territory` and the quarantine counts in the PR.
+Expected: `branch host ok` and `target is the rehearsal branch`. Anything else: stop; `TARGET_HOST` stays unset.
 
-- [ ] **Step 3 (owner): Review fallback clusters, then R3a/R3**
+**Re-enter prod (Step 12 only, after the owner's go-ahead).**
+
+```bash
+cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+. scripts/runbook_helpers.sh
+# PRODUCTION
+export TARGET_HOST=production
+```
+
+- [ ] **Step 0 (owner/agent): Tools and helpers** — exactly Task 12 Step 0 (`uv sync --frozen`, helpers sourced, `unset TARGET_HOST`, `psql` 16+, `neonctl` resolves). Precondition: PR 2a-1 is applied on prod (Task 12 Step 6 done), and this PR's branch is checked out.
+
+- [ ] **Step 1 (owner/agent): New Neon branch `p2a-2-rehearsal` from `production`; migrate; grants**
+
+```bash
+B=p2a-2-rehearsal
+neonctl branches create --project-id still-morning-74008008 --name "${B:?}" --parent production --no-secrets --output json \
+  | python3 -c 'import json,sys; b=json.load(sys.stdin)["branch"]; print(b["id"], b["name"], b["parent_id"])'
+BRANCH_HOST="$(branch_host "${B:?}")"
+( set -a; . ./.env.owner; set +a
+  [ -n "${BRANCH_HOST-}" ] || { echo 'BRANCH_HOST is not set: re-run the line that sets it' >&2; exit 1; }
+  case "$OWNER_DATABASE_URL" in *"@${BRANCH_HOST}/"* | *"@${BRANCH_HOST}?"* | *"@${BRANCH_HOST}:"*) echo 'BRANCH_HOST is production: stop' >&2; exit 1 ;; esac
+  echo "branch host ok" ) && export TARGET_HOST="$BRANCH_HOST"
+[ -n "${TARGET_HOST-}" ] && [ "$TARGET_HOST" != production ] && echo "target is the rehearsal branch"
+```
+
+Expected: parent `br-restless-bar-ajw5zy4b` (`production`), then `branch host ok` and `target is the rehearsal branch`. `--no-secrets` keeps the owner password out of the JSON (as Task 12 Step 1). Run once; if the branch exists, use the re-entry block.
+
+```bash
+MIG current
+MIG upgrade head
+MIG current
+MIG check
+OWNER_PSQL -q -f db/roles/grants_phase2.sql
+OWNER_PSQL -q -f db/roles/verify_roles.sql
+OWNER_PSQL -q -f db/roles/verify_roles_phase2.sql
+```
+
+Expected: `0004_phase2a_foundation (head)` before (anything else: stop, Task 12 has not reached prod), `0006_accidents_clean (head)` after, `No new upgrade operations detected.`, `phase 2 grants applied`, `ALL ROLE CHECKS PASSED`, `ALL PHASE 2 ROLE CHECKS PASSED`. The 0005/0006 upgrade runs in one transaction under `lock_timeout = '5s'`; a lock timeout rolls back both and is safe to rerun.
+
+- [ ] **Step 2 (owner/agent): Download GNIS once, load it** (open public-domain USGS file; not scraping)
+
+The branch and prod load the same file, so it is kept (gitignored `data/review/`), not in `/tmp`.
+
+```bash
+GNIS_ZIP=../data/review/gnis_national.zip
+[ -e "$GNIS_ZIP" ] || curl -fL -o "$GNIS_ZIP" \
+  https://prd-tnm.s3.amazonaws.com/StagedProducts/GeographicNames/DomesticNames/DomesticNames_National_Text.zip
+save_once ../data/review/gnis_national.sha256 shasum -a 256 "$GNIS_ZIP"
+unzip -l "$GNIS_ZIP" | grep -i DomesticNames_National
+INGMOD app.pipelines.gnis --file "$GNIS_ZIP"
+```
+
+If `curl` returns 404, take the current "National … Text" link from https://www.usgs.gov/us-board-on-geographic-names/download-gnis-data. Expected: `"status": "ok"` with roughly 60–80K summits accepted. A header error means the format changed: stop and update `REQUIRED`.
+
+**Quarantine gate (G20).** On the 2026-09-29 file the loader quarantined 471 of 69,180 in-scope summits (~0.68%; 465 blank-state rows at 0,0) against the 1% gate: about 220 rows of headroom. Territory summits are skipped, not quarantined. A release that crosses 1% is rejected by design: read the quarantine reasons before changing the gate. Record `skipped.territory`, the quarantine count and share, and the sha256 in the PR.
+
+- [ ] **Step 3 (owner/agent, then STOP for the owner): State values and Denali pre-check**
+
+```bash
+save_once ../data/review/p2a2_precheck_branch.txt ANALYST_PSQL -v ON_ERROR_STOP=1 -At -f db/checks/p2a2_precheck.sql
+save_once ../data/review/p2a2_r3_states_branch.json ING r3-states
+```
+
+`r3-states` classifies every raw `state` value as blank, `us:XX`, `foreign:XX` or `unmapped` (the rule R3 uses), and lists `unmapped` and `foreign` separately.
+
+Expected:
+- The `gnis_denali` rows include `1414314` (Mount McKinley, AK). If not, stop: the reviewed alias table in `geocode.py` points at a feature this GNIS file lacks.
+- **STOP — owner confirmation.** The agent pastes the `foreign` and `unmapped` lists to the owner and waits for a written answer before Step 4:
+  - Every `foreign` value: R3 nulls those rows' points and sets their country, which drops them from `accidents_clean`. The owner confirms each, or the agent fixes the list in a reviewed commit.
+  - Every `unmapped` value (e.g. "USA", "Wash."): R3 never moves such a row by name, and its country stays NULL (kept by `accidents_clean`, O3). The owner either accepts that or asks for a mapping in `state_code` (reviewed commit, new tests), and this step is redone on a fresh file name.
+
+- [ ] **Step 4 (owner/agent): Fallback clusters, then R3a/R3**
 
 ```bash
 ING r3-clusters
-ING r3
+save_once ../data/review/p2a2_r3_dry_branch.json ING r3
+time ING r3 --apply
+time ING r3 --apply
 ```
 
-Look at the cluster list (coordinates and row counts only): each point should be a city/park centroid, not a real crag. If a real crag appears (e.g. a popular cliff with many distinct route names), tell the agent; `min_names` or an explicit exclusion list changes in a reviewed commit. Then `ING r3 --apply` twice (second: `applied: 0`).
+The owner looks at the cluster list (coordinates and row counts only): each point should be a city or park centroid, not a real crag. A real crag (e.g. a popular cliff with many distinct route names) means stop: the agent changes `min_names` or an exclusion list in a reviewed commit, and the dry run is redone under a new file name.
 
-- [ ] **Step 4 (owner): R3a hand check (spec: the ~60-row list) and R3 50-row plotted spot check**
+Expected: the first apply `applied > 0`; the second `applied: 0` (everything `already_recorded` or `unchanged`). **Time both (G14)** and record the wall time in the PR; each apply is one transaction, so killing one is safe but it must be rerun. Run without a short tool timeout.
+
+- [ ] **Step 5a (agent): Export the R3a move list — run once, never again**
 
 ```bash
 ING r3a-export --out ../data/review/r3a_moves.csv
-ING r3-plot-export --out ../data/review/r3_spot_check.csv
 ```
 
-R3a: every row R3a moved (`gnis_summit` and `gnis_summit_state_mismatch`), expected ~60. For each, set `correct=yes` when the new point is the summit the record names, else `no`. R3: open `../data/review/r3_spot_check.geojson` in QGIS (local; never paste accident places into an online map) beside the CSV; for each of the 50 points (stratified: GNIS moves, `region_fallback`, `unknown`, `area`, `crag`, `exact`, `park_centroid`) set `plausible=yes` when the point matches its label (a fallback label on a city centroid is plausible; an `area` label on a city centroid is not). Then:
+Every row R3a moved to a GNIS summit (`gnis_summit`), not a sample; expected ~60. A `FileExistsError … pass --overwrite` means 5a already ran: go to 5b/5c. Never pass `--overwrite` unless the owner has said in writing that the filled file is to be discarded.
+
+- [ ] **Step 5b (owner): Fill `correct`** — `yes` when the new point is the summit the record names (the `summit` column), else `no`. Save under the same name (a spreadsheet BOM is fine).
+
+- [ ] **Step 5c (owner/agent): Import** — the only half to re-run in a new shell
 
 ```bash
 ING r3a-import --review-file ../data/review/r3a_moves.csv
+ING r3a-import --review-file ../data/review/r3a_moves.csv --apply
+```
+
+Expected: the dry run prints the agreement and how many `no` rows it would send back; the apply records the agreement (≥0.95, or stop: a wrong move is a rule fix in a reviewed commit and a new rule version, never a hand edit) and sends every `no` row back to its snapshot point as `unknown`/`gnis_rejected` under `r3-review-v1`, which puts it in Step 6's review pool.
+
+- [ ] **Step 6a (agent): Export the R3 review pool — run once**
+
+```bash
+ING r3-ambiguous-export --out ../data/review/r3_ambiguous.csv
+```
+
+The pool is every row R3 could not settle: `gnis_ambiguous`, `gnis_state_unmatched` and `gnis_rejected`. **Record `exported` in the PR** (the R3 ambiguous review size; it was not measured before this rehearsal).
+
+- [ ] **Step 6b (owner): Fill `gnis_id`** — read each report; set the candidate summit it names (state and point may both be wrong), or `none` if the report does not settle it.
+
+- [ ] **Step 6c (owner/agent): Import**
+
+```bash
+ING r3-ambiguous-import --review-file ../data/review/r3_ambiguous.csv
+ING r3-ambiguous-import --review-file ../data/review/r3_ambiguous.csv --apply
+```
+
+A picked summit moves the row there as `area`/`owner_summit`, country US; `none` leaves it untrusted. A `gnis_id` that is not one of the row's candidates refuses the whole file.
+
+- [ ] **Step 7a (agent): Export the 50-point plotted spot check — run once** (after Step 6, so the sample reflects the final labels)
+
+```bash
+ING r3-plot-export --out ../data/review/r3_spot_check.csv
+```
+
+Writes the CSV and `r3_spot_check.geojson`, stratified (GNIS moves, `region_fallback`, `unknown`, `area`, `crag`, `exact`, `park_centroid`).
+
+- [ ] **Step 7b (owner): Fill `plausible`** — open the GeoJSON in QGIS (local; never paste accident places into an online map) beside the CSV; `yes` when the point fits its label (a fallback label on a city centroid is plausible; an `area` label on a city centroid is not).
+
+- [ ] **Step 7c (owner/agent): Import and R3 acceptance**
+
+```bash
 ING r3-plot-import --review-file ../data/review/r3_spot_check.csv
 VERIFY tests/verify/test_phase2a_repair.py -q -k r3 -s
 ```
 
-Expected: both agreements ≥0.95 and the R3 cells pass. Give every `no` row's `accident_id` to the agent: a wrong move is a rule fix (reviewed commit, new rule version, re-run from Step 3), never a hand edit.
+Expected: agreement ≥0.95 and the R3 cells pass. Give every `no` row's `accident_id` to the agent (rule fix, never a hand edit). The R3 pending-review count printed by the cells goes in the PR.
 
-- [ ] **Step 5 (owner): R4 vocabulary and golden set**
-
-`ING r4` — if `unmapped` is non-empty, the agent extends the vocabularies in `activity.py` (reviewed commit, new test rows), and you repeat. Then `ING r4-golden-export --out ../data/review/activity_golden_candidates.csv` (stratified: `strata` in the output shows how many ski-approach, other ski, NPS, climbing and non-climbing rows were drawn); label each row `climbing|climbing_approach|non_climbing` by reading the source record; copy **only** `accident_id,label` into `data/golden/activity_v1.csv` (commit it on the PR branch). `ING r4 --apply` (output `terrain_version: r4-v1`), then `VERIFY tests/verify/test_phase2a_repair.py -q -k r4`.
-
-- [ ] **Step 6 (owner): R5 with review**
-
-`ING r5 --apply --out ../data/review/duplicates.csv` → writes auto decisions and exports the uncertain band (it now includes AAC month/year-precision rows paired with NPS/CAIC day records). Fill `decision` (`merge|distinct`) for every row, then `ING r5-import --review-file ../data/review/duplicates.csv` and `ING r5 --apply` again (new rule version because the decision set changed; rows that left a group are reset). Spot-check 30 auto-merged pairs:
+- [ ] **Step 8 (owner/agent): R4 classes, owner review, golden set**
 
 ```bash
-ANALYST_PSQL -At -c "SELECT low_id, high_id, score FROM internal.duplicate_decisions WHERE decided_by='auto' AND decision='merge' ORDER BY random() LIMIT 30"
+save_once ../data/review/p2a2_r4_dry_branch.json ING r4
 ```
 
-Compare the two source records; all 30 must be real duplicates (spec: 100%). Then `VERIFY tests/verify/test_phase2a_repair.py -q -k r5 -s` (includes `review_pending == 0` on the latest applied run).
+If `unmapped` is non-empty, stop: the agent extends the vocabularies in `activity.py` (reviewed commit, new test rows), and the dry run is redone under a new file name. `--apply` refuses while anything is unmapped. Then:
 
-- [ ] **Step 7 (owner): R12 golden set and apply** — `ING r12-golden-export --out ../data/review/experience_golden_candidates.csv` (60 rows where R12 fires, 20 where it does not); fill the four columns by reading each record (blank or `unknown` where the record states nothing); copy ids + labels into `data/golden/experience_v1.csv`, commit; `ING r12 --apply`; `VERIFY tests/verify/test_phase2a_repair.py -q -k r12 -s` (precision ≥0.95, `filled > 0`, recall printed — record it in the PR). `uv run pytest tests/test_experience_not_required.py -q` is the spec's "scoring never requires them" check.
+```bash
+ING r4 --apply
+ING r4 --apply
+```
 
-- [ ] **Step 8 (owner/agent): Full acceptance and the 2a-2 audit re-run, then prod**
+Expected: `terrain_version: r4-v1`; the second apply `applied: 0`. **Record `review_pending` in the PR** (the R4 review size: blank or placeholder activities such as `unknown`/`other`, and AAC ski mountaineering; O1 says these are never guessed).
+
+**8a (agent), run once:**
+
+```bash
+ING r4-review-export --out ../data/review/r4_activity_review.csv
+ING r4-golden-export --out ../data/review/activity_golden_candidates.csv
+```
+
+**8b (owner):** in `r4_activity_review.csv`, set `activity_class` to `climbing|climbing_approach|non_climbing` from the source report, or `none` if it does not settle it (the row stays pending). In the golden candidates, label each row by reading the source record (`strata` in the export output shows what was drawn), and copy **only** `accident_id,label` into `data/golden/activity_v1.csv`, committed on the PR branch.
+
+**8c (owner/agent):**
+
+```bash
+ING r4-review-import --review-file ../data/review/r4_activity_review.csv
+ING r4-review-import --review-file ../data/review/r4_activity_review.csv --apply
+VERIFY tests/verify/test_phase2a_repair.py -q -k r4 -s
+```
+
+Expected: golden ≥0.95; the remaining `review_pending` is printed and recorded. A different answer for an already-decided row refuses (it needs a new review version).
+
+- [ ] **Step 9 (owner/agent): R5 duplicates with owner review**
+
+```bash
+save_once ../data/review/p2a2_r5_dry_branch.json ING r5
+```
+
+**Measure before writing anything.** Record `review_pairs` and `review_basis` (`distance`, `place_name`, `place_mention`, `narrative`, `conflict`) in the PR. The O2 thresholds (place 0.85, narrative 0.35) are first guesses: if the owner judges the review too large, stop; the agent tightens `narrative` first (reviewed commit), and the dry run is redone under a new file name. Only day–day pairs can reach the auto-merge band, so AAC month/year rows paired with NPS/CAIC day records land in review by design.
+
+**9a (agent), run once:**
+
+```bash
+time ING r5 --apply --out ../data/review/duplicates.csv
+```
+
+Writes the auto decisions and exports the review band. **Time it (G14).** If `duplicates.csv` exists the step refuses and rolls back everything: 9a already ran, go to 9b.
+
+**9b (owner):** fill `decision` (`merge|distinct`) for every row by comparing the two source records (`conflict_with` names the pair that withheld a `conflict` row).
+
+**9c (owner/agent):**
+
+```bash
+ING r5-import --review-file ../data/review/duplicates.csv
+ING r5-import --review-file ../data/review/duplicates.csv --apply
+time ING r5 --apply
+```
+
+Expected: the dry import lists `imported` and an empty `overwritten`; the second `r5 --apply` (a new rule version, since the decision set changed; rows that left a group are reset) reports `review_pending: 0` and `path: null`. If owner merges surface new review pairs (`review_pending > 0`), export them to a **new** file (`--out ../data/review/duplicates_round2.csv`), never `--overwrite` the filled one, and repeat 9b–9c on it.
+
+**9d (owner): spot-check 30 auto merges from the latest run only** (D13: stale auto rows from earlier runs are not sampled):
+
+```bash
+ANALYST_PSQL -At -c "SELECT low_id, high_id, score FROM internal.duplicate_decisions WHERE decided_by = 'auto' AND decision = 'merge' AND run_id = (SELECT run_id FROM source_ingest_log WHERE source = 'repair:r5' AND status = 'ok' ORDER BY finished_at DESC LIMIT 1) ORDER BY random() LIMIT 30"
+VERIFY tests/verify/test_phase2a_repair.py -q -k r5 -s
+```
+
+All 30 must be real duplicates (spec: 100%); any miss is a rule fix. The cells include `review_pending == 0` on the latest applied run and one canonical head per group.
+
+- [ ] **Step 10 (owner/agent): R12 experience facts**
+
+```bash
+save_once ../data/review/p2a2_r12_dry_branch.json ING r12
+ING r12-golden-export --out ../data/review/experience_golden_candidates.csv
+```
+
+The export runs once (60 rows where R12 fires, 20 where it does not). The owner fills the four columns by reading each record (blank or `unknown` where it states nothing; `exp_first_season` is `true`, `false` or blank) and copies ids and labels into `data/golden/experience_v1.csv`, committed. Then:
+
+```bash
+ING r12 --apply
+ING r12 --apply
+VERIFY tests/verify/test_phase2a_repair.py -q -k r12 -s
+uv run pytest tests/test_experience_not_required.py -q
+```
+
+Expected: second apply `applied: 0`; precision ≥0.95 on filled values, `filled > 0`, recall printed and recorded. Low recall is by design (a guide's credentials, pooled-party and bare "the guide" mentions fill nothing).
+
+- [ ] **Step 11 (owner/agent): Full acceptance, the 2a-2 audit re-run, the clean views; owner sign-off**
 
 ```bash
 VERIFY tests/verify -q -s
-VERIFY tests/verify/test_phase2a_repair.py -q -s -k "r1_2023 or r3a_named or r3_no_precise or r5_no_exact or clean_set or cm_training"
+VERIFY tests/verify/test_phase2a_repair.py -q -s -k "r1_2023 or r3a_named or r3_no_trusted or r5_no_exact or clean_set or cm_training"
 ```
 
-The second command is the spec 2a-2 "re-running the audit clears red flags 1–4" gate as this plan reads the audit's accident flags: (1) AAC year corruption, (2) misgeocoded named peaks / Alaska text below 55°N, (3) exact duplicates among canonical rows, (4) non-climbing, foreign or unverified rows in the clean set. The owner also re-runs the original 2026-09-27 audit queries from the private notes and confirms flags 1–4 clear; if the audit's flag list differs from this reading, the agent adds the missing cell before prod.
+The second command is the spec 2a-2 "re-running the audit clears red flags 1–4" gate as this plan reads the audit's accident flags: (1) AAC year corruption, (2) misgeocoded named peaks / Alaska text below 55°N, (3) exact duplicates among canonical rows, (4) non-climbing, known-foreign or unverified rows in the clean set. The owner also re-runs the original 2026-09-27 audit queries from the private notes and confirms flags 1–4 clear; if the audit's flag list differs from this reading, the agent adds the missing cell before prod.
 
-Then `unset TARGET_HOST` and repeat Steps 1–7 on prod (the review CSV imports and golden files are reused, no relabelling; re-export and compare ids first, stop on any difference). Delete the branch. Record in the PR: counts per step, R3a/R3 check agreements, R4/R12 golden scores and R12 recall, R5 review size, and that the 2023 AAC check passes.
+**Owner sign-off (blocks prod).** The PR carries: GNIS counts and sha256; the `r3-states` confirmation; R3/R5 apply times; R3a, R3-plot agreements; review sizes (R3 ambiguous `exported`, R4 `review_pending`, R5 `review_pairs` with `review_basis`) and what is still pending after import; R4/R12 golden scores and R12 recall; the 30-pair spot check; `clean_null_country` (O3: rows the clean set keeps with no country, by `geocode_method`); D8 (a real southern-panhandle AK point below 55°N, e.g. Dall Island, is labelled `region_fallback`). No sign-off means no Step 12.
 
-- [ ] **Step 9 (deferred to plan 6's runbook): R4/R5 re-run with objectives** — once `0011_objectives` is applied and objectives are loaded (plan 6), run `ING r4` (expect `terrain_version: r4-v2`), `ING r4 --apply`, `ING r5 --apply`, then `VERIFY tests/verify/test_phase2a_repair.py -q -k "r4 or r5"`. Spec R4 counts objectives in the ski-approach radius; until this step runs, ski rows near an objective with no MP alpine/ice/mixed route stay `non_climbing` (a known under-count, recorded in the PR). Plan 6 grants `ingest` SELECT on `objectives`.
+- [ ] **Step 12 (owner authorizes): Prod**
+
+Do not repeat Steps 1–11: they create a branch, re-target the shell, and their exports belong to the branch. Run only the blocks below, in order, well clear of the 02:00 UTC nightly. Deploy order: this PR's code reads `gnis_summits`/`duplicate_decisions`, so it is not deployed before 12d.
+
+**STOP — agent: wait for the owner's written go-ahead for prod in this session before running anything below.** The Step 11 sign-off is not that go-ahead; it is a separate, explicit message ("go ahead with prod"). Without it, end here and report.
+
+**12a. Target prod; schema and pre-checks diffed against the branch.**
+
+```bash
+cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+# PRODUCTION
+export TARGET_HOST=production
+MIG current
+save_once ../data/review/p2a2_r3_states_prod.json ING r3-states >/dev/null && cmp ../data/review/p2a2_r3_states_branch.json ../data/review/p2a2_r3_states_prod.json && echo "states match the branch"
+```
+
+Expected: `0004_phase2a_foundation (head)` and `states match the branch` (the owner's Step 3 confirmation covers exactly these values). Otherwise stop. The precheck SQL's GNIS half needs 0005, so its diff waits for 12e.
+
+**12b. Snapshot `pre-2a-2` immediately before the migration.**
+
+```bash
+# PRODUCTION snapshot
+neonctl branches create --project-id still-morning-74008008 --name pre-2a-2 --parent production --no-secrets --output json \
+  | python3 -c 'import json,sys; b=json.load(sys.stdin)["branch"]; print(b["id"], b["name"], b["parent_id"], b["created_at"])'
+```
+
+Expected: parent `br-restless-bar-ajw5zy4b` (`production`). Record the id and `created_at` in the PR.
+
+**12c. Migrate, check, grants, verify.**
+
+```bash
+# PRODUCTION
+MIG upgrade head
+MIG current
+MIG check
+OWNER_PSQL -q -f db/roles/grants_phase2.sql
+OWNER_PSQL -q -f db/roles/verify_roles.sql
+OWNER_PSQL -q -f db/roles/verify_roles_phase2.sql
+```
+
+Expected: the same as Step 1, ending at `0006_accidents_clean (head)`.
+
+**12d. Load the same GNIS file.**
+
+```bash
+# PRODUCTION
+shasum -a 256 ../data/review/gnis_national.zip | cmp - ../data/review/gnis_national.sha256 && echo "same GNIS file"
+INGMOD app.pipelines.gnis --file ../data/review/gnis_national.zip
+```
+
+Expected: `same GNIS file`, and the same accepted, skipped and quarantined counts as Step 2.
+
+**12e. Pre-check and dry-run diffs.** Each must match the branch byte for byte, or stop (prod changed after the branch was made: recreate the rehearsal from current `production`).
+
+```bash
+# PRODUCTION
+save_once ../data/review/p2a2_precheck_prod.txt ANALYST_PSQL -v ON_ERROR_STOP=1 -At -f db/checks/p2a2_precheck.sql >/dev/null && diff ../data/review/p2a2_precheck_branch.txt ../data/review/p2a2_precheck_prod.txt && echo "pre-checks match the branch"
+save_once ../data/review/p2a2_r3_dry_prod.json ING r3 >/dev/null && cmp ../data/review/p2a2_r3_dry_branch.json ../data/review/p2a2_r3_dry_prod.json && echo "r3 dry run matches the branch"
+```
+
+**12f. R3 apply (timed), then the R3 reviews from the owner's branch files.** Each export goes to a `_prod` name, never touching the filled files; an id diff means stop: the owner fills the `_prod` file instead, and that one is imported.
+
+```bash
+# PRODUCTION
+ids() { python3 -c 'import csv,sys; print("\n".join(sorted(r["accident_id"] for r in csv.DictReader(open(sys.argv[1], newline="", encoding="utf-8-sig")))))' "$1"; }
+time ING r3 --apply
+time ING r3 --apply
+ING r3a-export --out ../data/review/r3a_moves_prod.csv
+diff <(ids ../data/review/r3a_moves.csv) <(ids ../data/review/r3a_moves_prod.csv) && echo "r3a ids match"
+```
+
+Only after `r3a ids match`:
+
+```bash
+# PRODUCTION
+ING r3a-import --review-file ../data/review/r3a_moves.csv --apply
+ING r3-ambiguous-export --out ../data/review/r3_ambiguous_prod.csv
+diff <(ids ../data/review/r3_ambiguous.csv) <(ids ../data/review/r3_ambiguous_prod.csv) && echo "r3 review ids match"
+```
+
+Only after `r3 review ids match`:
+
+```bash
+# PRODUCTION
+ING r3-ambiguous-import --review-file ../data/review/r3_ambiguous.csv --apply
+ING r3-plot-export --out ../data/review/r3_spot_check_prod.csv
+diff <(ids ../data/review/r3_spot_check.csv) <(ids ../data/review/r3_spot_check_prod.csv) && echo "r3 plot ids match"
+ING r3-plot-import --review-file ../data/review/r3_spot_check.csv
+```
+
+Expected: agreements equal the branch's.
+
+**12g. R4.**
+
+```bash
+# PRODUCTION
+save_once ../data/review/p2a2_r4_dry_prod.json ING r4 >/dev/null && cmp ../data/review/p2a2_r4_dry_branch.json ../data/review/p2a2_r4_dry_prod.json && echo "r4 dry run matches the branch"
+ING r4 --apply
+ING r4-review-export --out ../data/review/r4_activity_review_prod.csv
+diff <(ids ../data/review/r4_activity_review.csv) <(ids ../data/review/r4_activity_review_prod.csv) && echo "r4 review ids match"
+```
+
+Only after both matches: `ING r4-review-import --review-file ../data/review/r4_activity_review.csv --apply`.
+
+**12h. R5 (timed).** The dry run must equal the branch's pre-apply one; the prod review export goes to its own file and must list the same pairs before the owner's branch file is imported.
+
+```bash
+# PRODUCTION
+pairs() { python3 -c 'import csv,sys; print("\n".join(sorted(r["low_id"]+"-"+r["high_id"] for r in csv.DictReader(open(sys.argv[1], newline="", encoding="utf-8-sig")))))' "$1"; }
+save_once ../data/review/p2a2_r5_dry_prod.json ING r5 >/dev/null && cmp ../data/review/p2a2_r5_dry_branch.json ../data/review/p2a2_r5_dry_prod.json && echo "r5 dry run matches the branch"
+time ING r5 --apply --out ../data/review/duplicates_prod.csv
+diff <(pairs ../data/review/duplicates.csv) <(pairs ../data/review/duplicates_prod.csv) && echo "r5 pairs match"
+```
+
+Only after `r5 pairs match` (and, if Step 9 needed a second round, the same for `duplicates_round2.csv`):
+
+```bash
+# PRODUCTION
+ING r5-import --review-file ../data/review/duplicates.csv --apply
+time ING r5 --apply
+```
+
+Expected: `review_pending: 0`, as on the branch.
+
+**12i. R12 and acceptance.**
+
+```bash
+# PRODUCTION
+save_once ../data/review/p2a2_r12_dry_prod.json ING r12 >/dev/null && cmp ../data/review/p2a2_r12_dry_branch.json ../data/review/p2a2_r12_dry_prod.json && echo "r12 dry run matches the branch"
+ING r12 --apply
+VERIFY tests/verify -q -s
+```
+
+Expected: every cell passes, with the same counts the owner signed off in Step 11 (including `clean_null_country`).
+
+**12j. Clean up.** Delete `p2a-2-rehearsal` only now. Keep `pre-2a-2` until the PR has merged and the owner says otherwise.
+
+- [ ] **Rollback.** As Task 12's rollback section, with `pre-2a-2` and the rule versions of this PR (`r3-*`, `r3-review-v1`, `r4-*`, `r5-v1+…`, `r12-*`). An apply or import that fails or is killed wrote nothing (one transaction each, run log included): fix the cause and rerun. Wrong data after 12c: restore `production` from `pre-2a-2` (confirm Neon's restore path in its docs first, list what the restore discards from `source_ingest_log`, then trigger the nightly once and re-run 12c's grants), or reverse single fields from `internal.accident_revisions` with a reviewed script, never a hand-written bulk UPDATE. A restore also discards the 0005/0006 migration, so `MIG current` reads `0004_phase2a_foundation` again.
+
+- [ ] **Step 13 (deferred to plan 6's runbook): R4/R5 re-run with objectives** — once `0011_objectives` is applied and objectives are loaded (plan 6), run `ING r4` (expect `terrain_version: r4-v2`), `ING r4 --apply`, `ING r5 --apply`, then `VERIFY tests/verify/test_phase2a_repair.py -q -k "r4 or r5"`. Spec R4 counts objectives in the ski-approach radius; until this step runs, ski rows near an objective with no MP alpine/ice/mixed route stay `non_climbing` (a known under-count, recorded in the PR). Plan 6 grants `ingest` SELECT on `objectives`.
 
 ---
 
 ## Self-review
 
-- Spec coverage: R1 (T3, T12), R2 (T2–T3), R9 (T4), R3a/R3 (T6–T7, hand check and 50-row plot in T13 Step 4), R4 (T8, objectives re-run T13 Step 9), R5 (T9), R12 (T10, NULL-scoring test `test_experience_not_required.py`), `accidents_clean` (T11), every verification cell as `-m db` (T4, T7–T11), milestones 2a-1/2a-2 (runbooks T12–T13, 2a-2 audit re-run T13 Step 8). R6–R8, R10, R11 are in plans 1, 3, 5.
-- Review fixes carried here: A1 (T9 `group_changes`, DB flip test), A2 (T3 raw-snapshot restriction, DB test), A6 (T7 state fallback), A7/D10 (T7 fallback rows keep coordinates; `point_trusted` in T11), A8 (T4 locators, unverified rows excluded), A9 (T1 `export_stratified`, T8/T10 quotas, R12 `filled > 0` + recall), A10 (T10 regex), A11 (T9 precision-aware window), P3 (T13 Steps 4, 7, 8), P5 (T4 `runbook_helpers.sh`, `TARGET_HOST`), P6/R4 objectives (T8 `r4-v2`, T13 Step 9), SEC1 (verify-full helpers; verify cells use `connect_args_for`), minors (dated CHANGELOG headings, Washington→NH cell, stronger 0005 tests, day-only cell replaced by a data check, review-band cell replaced by `review_pending`).
+- Spec coverage: R1 (T3, T12), R2 (T2–T3), R9 (T4), R3a/R3 (T6–T7, hand check and 50-row plot in T13 Steps 5 and 7), R4 (T8, objectives re-run T13 Step 13), R5 (T9), R12 (T10, NULL-scoring test `test_experience_not_required.py`), `accidents_clean` (T11), every verification cell as `-m db` (T4, T7–T11), milestones 2a-1/2a-2 (runbooks T12–T13, 2a-2 audit re-run T13 Step 11). R6–R8, R10, R11 are in plans 1, 3, 5.
+- Review fixes carried here: A1 (T9 `group_changes`, DB flip test), A2 (T3 raw-snapshot restriction, DB test), A6 (T7 state fallback), A7/D10 (T7 fallback rows keep coordinates; `point_trusted` in T11), A8 (T4 locators, unverified rows excluded), A9 (T1 `export_stratified`, T8/T10 quotas, R12 `filled > 0` + recall), A10 (T10 regex), A11 (T9 precision-aware window), P3 (T13 Steps 5–7, 10, 11), P5 (T4 `runbook_helpers.sh`, `TARGET_HOST`), P6/R4 objectives (T8 `r4-v2`, T13 Step 13), SEC1 (verify-full helpers; verify cells use `connect_args_for`), minors (dated CHANGELOG headings, Washington→NH cell, stronger 0005 tests, day-only cell replaced by a data check, review-band cell replaced by `review_pending`).
 - Placeholders: the runbook's angle-bracket hosts come from the Console. Golden CSVs are created header-only on purpose; filling them is an owner step whose output is committed. CHANGELOG headings are dated by `date -u +%F` at write time.
 - Type consistency: `Change`/`apply_changes`/`run_step`/`fetch_accidents` used identically everywhere; `run_step` returns `run_id` in apply mode (R5 uses it); CLI steps all have the `Step` signature; `activity._rows` returns `(rows, version)` everywhere it is called; `TRUSTED_POINT_PRECISIONS` (geocode, imported by `dedupe` and `activity`) and the `0006` `point_trusted` list are the same four values (pinned by `test_view_point_trusted_matches_the_python_set`).
 - The R9 hand-check agreement is stored in `validation_report.agreement`, which the verify cells read; R3a and R3-plot checks use the same mechanism.
