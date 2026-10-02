@@ -35,13 +35,15 @@ INCIDENT_START = date(1990, 1, 1)
 
 # accidents.tz is the zone the incident series was registered under (the view joins on it), so
 # only incidents that got a zone register one. A year range (R1) is not a known day: no window.
-INCIDENT_POINTS_SQL = (
-    "SELECT DISTINCT a.latitude, a.longitude FROM accidents_clean_daily a "
-    "JOIN accidents t ON t.accident_id = a.accident_id "
+# era5_fill's incident keys use this same FROM/WHERE, so registration and the paid back-fill and
+# prune can never disagree on which series are incident series.
+INCIDENT_FROM_WHERE_SQL = (
+    "FROM accidents_clean_daily a JOIN accidents t ON t.accident_id = a.accident_id "
     "WHERE a.point_trusted AND a.latitude IS NOT NULL AND a.longitude IS NOT NULL AND t.tz IS NOT NULL "
     "AND a.year_lo IS NOT DISTINCT FROM a.year_hi "
     f"AND a.date >= DATE '{INCIDENT_START.isoformat()}'"
 )
+INCIDENT_POINTS_SQL = f"SELECT DISTINCT a.latitude, a.longitude {INCIDENT_FROM_WHERE_SQL}"
 # Every route point (owner OQ4), falling back to its area's point. The pair is taken whole from
 # one side (per-column COALESCE would mix a route's latitude with its area's longitude). Only
 # mp_locations' mp_id, latitude and longitude: ingest's grant on that table is exactly those columns.
