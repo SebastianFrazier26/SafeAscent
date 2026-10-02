@@ -125,6 +125,12 @@ _CHANGED = (
     f"({', '.join(f'cell_daily_conditions.{c}' for c in _VALUE_COLUMNS)}) IS DISTINCT FROM "
     f"({', '.join(f'EXCLUDED.{c}' for c in _VALUE_COLUMNS)})"
 )
+_WEATHER_COLUMNS = ("tmax", "tmin", "precip_mm", "snowfall_cm", "wind_max_ms", "gust_max_ms")
+# An equal-rank re-fetch never erases a stored measurement (I1): a re-bought ERA5 day with a NULL where a
+# value is stored keeps the whole stored row rather than mixing fetches within one row. A higher rank
+# still replaces even with NULLs, so a stopgap value never survives as if ERA5 measured it.
+_LOSES_VALUE = "(" + " OR ".join(
+    f"(cell_daily_conditions.{c} IS NOT NULL AND EXCLUDED.{c} IS NULL)" for c in _WEATHER_COLUMNS) + ")"
 # Only the weather columns: plan 7's AQI, alerts, SWE and snow depth on the same row survive a replacement.
 # Equal ranks replace only when a value differs, so a newer forecast supersedes an older one while
 # an identical re-fetch leaves the row (and its fetched_at/run_id) alone and is not counted.
@@ -132,7 +138,7 @@ _CHANGED = (
 _UPSERT_TAIL = (
     "ON CONFLICT (grid_bucket, tz, date) DO UPDATE SET "
     f"{_UPDATE_SET}, fetched_at = now(), run_id = EXCLUDED.run_id "
-    f"WHERE {_STORED} < {_NEW} OR ({_STORED} = {_NEW} AND {_CHANGED}) "
+    f"WHERE {_STORED} < {_NEW} OR ({_STORED} = {_NEW} AND {_CHANGED} AND NOT {_LOSES_VALUE}) "
     "RETURNING 1"
 )
 

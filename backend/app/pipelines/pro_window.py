@@ -64,6 +64,12 @@ def require_open(window: ProWindow, today: date) -> None:
                          "the archive API needs Professional, so nothing is fetched")
 
 
+def window_closed(window: ProWindow, now: datetime | None) -> bool:
+    """Checked before every paid request: a run started inside the window must not keep buying
+    after it ends (the archive is Professional-only). `now` is the injected clock, or None for UTC."""
+    return not window.contains((now or datetime.now(timezone.utc)).date())
+
+
 @contextlib.asynccontextmanager
 async def window_lock(engine: AsyncEngine) -> AsyncIterator[None]:
     """One paid-window job per database at a time (I1): two runs that each read the spend and

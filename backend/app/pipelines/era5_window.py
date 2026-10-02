@@ -22,11 +22,22 @@ import sys
 from collections.abc import Callable, Sequence
 from datetime import date, timedelta
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from app.pipelines import era5_fill, normals
-from app.pipelines.era5_fill import Chunk, Gap, SeriesCoverage, load_coverage, plan_chunks, series_gaps
-from app.pipelines.localday import register_logged
+from app.pipelines.era5_fill import (
+    Chunk,
+    Gap,
+    SeriesCoverage,
+    history_start,
+    last_era5_day,
+    load_coverage,
+    plan_chunks,
+    series_gaps,
+)
+from app.pipelines.grid import grid_bucket_sql
+from app.pipelines.localday import INCIDENT_FROM_WHERE_SQL, ROUTE_POINTS_SQL, register_logged
 from app.pipelines.open_meteo import DAILY_VARS, ArchiveClient, cost_units
 from app.pipelines.pro_window import (
     PLAN_STOP_UNITS,
@@ -40,23 +51,33 @@ from app.pipelines.pro_window import (
 )
 
 # R7 (unverified): the archive's latest months are preliminary ERA5T, replaced later by final
-# ERA5. Cheap to re-buy; unchanged values are not rewritten (cell_conditions' IS DISTINCT FROM guard).
+# ERA5. Cheap to re-buy; unchanged values are not rewritten, and a NULL never erases a stored value
+# (cell_conditions' equal-rank guards).
 REFRESH_DAYS = 90
 # M3: consecutive failed or rejected chunks/batches before the window stops. Each failed request
 # may already have been billed for every retry, so a long outage must not run down the budget.
 FAILURE_BREAKER = 3
 
+_TZ_CONDITION = "AND t.tz IS NOT NULL "
+if _TZ_CONDITION not in INCIDENT_FROM_WHERE_SQL:
+    raise RuntimeError("localday's incident filter changed; update the unregistered-point estimate")
+_INCIDENT_POINTS_ANY_TZ_SQL = (
+    f"SELECT DISTINCT a.latitude, a.longitude {INCIDENT_FROM_WHERE_SQL.replace(_TZ_CONDITION, '')}"
+)
 
-def _with_refresh(coverage: Sequence[SeriesCoverage], gaps: Sequence[Gap]) -> list[Gap]:
+
+def _with_refresh(coverage: Sequence[SeriesCoverage], gaps: Sequence[Gap], window: ProWindow | None) -> list[Gap]:
     """Start each forward gap that continues a span REFRESH_DAYS back inside it (never before its
-    first day). Only a forward gap carries it, so a rerun inside the window, which finds the span
-    already at the lag edge, buys nothing again."""
+    first day), once per window (I2): only a span that ends before the window's first lag edge was
+    last filled in an earlier window. A later-day rerun inside this window buys just its new days.
+    No window (a plan without --window-start) refreshes every continued span, an upper bound."""
     spans = {(s.grid_bucket, s.tz): s for s in coverage}
+    fresh_from = last_era5_day(window.start) if window is not None else None
     out: list[Gap] = []
     for g in gaps:
         s = spans[(g.grid_bucket, g.tz)]
         if (g.direction == "forward" and s.first is not None and s.last is not None
-                and g.start == s.last + timedelta(days=1)):
+                and g.start == s.last + timedelta(days=1) and (fresh_from is None or s.last < fresh_from)):
             g = dataclasses.replace(g, start=max(s.first, s.last - timedelta(days=REFRESH_DAYS - 1)))
         out.append(g)
     return out
@@ -69,19 +90,26 @@ def plan_fill(
     incident_start: date,
     batch: int,
     years_per_chunk: int,
+    window: ProWindow | None,
     refresh: bool = True,
 ) -> list[Chunk]:
     gaps = series_gaps(coverage, today=today, incident_start=incident_start)
     if refresh:
-        gaps = _with_refresh(coverage, gaps)
+        gaps = _with_refresh(coverage, gaps, window)
     return plan_chunks(gaps, batch=batch, years_per_chunk=years_per_chunk)
 
 
 async def plan(
-    conn: AsyncConnection, *, today: date, incident_start: date, batch: int, years_per_chunk: int
+    conn: AsyncConnection,
+    *,
+    today: date,
+    incident_start: date,
+    batch: int,
+    years_per_chunk: int,
+    window: ProWindow | None,
 ) -> tuple[list[Chunk], list[tuple[int, str]]]:
     chunks = plan_fill(await load_coverage(conn), today=today, incident_start=incident_start, batch=batch,
-                       years_per_chunk=years_per_chunk)
+                       years_per_chunk=years_per_chunk, window=window)
     return chunks, await normals.normals_due(conn, today=today)
 
 
@@ -107,16 +135,46 @@ async def plan_report(
         await require_initial_allowed(conn, window)
     coverage = await load_coverage(conn)
     chunks, plain = (plan_fill(coverage, today=today, incident_start=incident_start, batch=batch,
-                               years_per_chunk=years_per_chunk, refresh=r) for r in (True, False))
+                               years_per_chunk=years_per_chunk, window=window, refresh=r) for r in (True, False))
     due = await normals.normals_due(conn, today=today)
     spent = await units_spent(conn, window) if window is not None else None
     fill_units = sum(c.units() for c in chunks)
     normals_units = _normals_units(len(due), today)
-    total = fill_units + normals_units + (spent or 0)
-    return {"mode": "plan", "chunks": len(chunks), "fill_units": fill_units,
-            "refresh_units": fill_units - sum(c.units() for c in plain), "normals_buckets": len(due),
-            "normals_units": normals_units, "window_units_spent": spent, "total_units": total,
-            "plan_stop_units": PLAN_STOP_UNITS, "over_plan_stop": total > PLAN_STOP_UNITS}
+    incident_new, route_new = await _unregistered_buckets(conn)
+    end = last_era5_day(today)
+    unregistered_units = (
+        cost_units(incident_new, len(DAILY_VARS), max(0, (end - min(incident_start, history_start(today))).days + 1))
+        + cost_units(route_new, len(DAILY_VARS), max(0, (end - history_start(today)).days + 1))
+        + _normals_units(incident_new + route_new, today)
+    )
+    total = fill_units + normals_units + unregistered_units + (spent or 0)
+    report: dict[str, object] = {
+        "mode": "plan", "chunks": len(chunks), "fill_units": fill_units,
+        "refresh_units": fill_units - sum(c.units() for c in plain), "normals_buckets": len(due),
+        "normals_units": normals_units, "unregistered_incident_buckets": incident_new,
+        "unregistered_route_buckets": route_new, "unregistered_units_estimate": unregistered_units,
+        "window_units_spent": spent, "total_units": total, "plan_stop_units": PLAN_STOP_UNITS,
+        "over_plan_stop": total > PLAN_STOP_UNITS,
+    }
+    if incident_new or route_new:
+        report["warning"] = (f"{incident_new + route_new} point buckets are not registered; run `register` first. "
+                             "total_units includes an upper-bound estimate for them")
+    return report
+
+
+async def _unregistered_buckets(conn: AsyncConnection) -> tuple[int, int]:
+    """(incident, route-only) buckets with no series yet. Counted before register has assigned
+    accident zones, so the incident side drops the tz condition; points register will quarantine
+    (no zone, outside the US) are counted too, which only over-estimates."""
+    grid = grid_bucket_sql("p.lat", "p.lon")
+    row = (await conn.execute(text(
+        f"WITH inc AS (SELECT DISTINCT {grid} AS b FROM ({_INCIDENT_POINTS_ANY_TZ_SQL}) p(lat, lon)), "
+        f"rte AS (SELECT DISTINCT {grid} AS b FROM ({ROUTE_POINTS_SQL}) p(lat, lon)), "
+        "reg AS (SELECT DISTINCT grid_bucket AS b FROM grid_bucket_series) "
+        "SELECT (SELECT count(*) FROM inc WHERE b NOT IN (SELECT b FROM reg)), "
+        "(SELECT count(*) FROM rte WHERE b NOT IN (SELECT b FROM reg) AND b NOT IN (SELECT b FROM inc))"
+    ))).one()
+    return int(row[0]), int(row[1])
 
 
 def _check_incident_start(incident_start: date) -> None:
@@ -181,7 +239,7 @@ async def run_window(
                 return result
             async with engine.connect() as conn:
                 chunks, due = await plan(conn, today=today, incident_start=incident_start, batch=batch,
-                                         years_per_chunk=years_per_chunk)
+                                         years_per_chunk=years_per_chunk, window=window)
             # Awaited here, never gathered: window_lock re-enters only for this task, and a child's
             # SystemExit would escape gather. Fill first, so normals derive from fresh ERA5.
             fill = await era5_fill.run(engine_factory, client, chunks, today=today, budget=budget, window=window,
@@ -200,12 +258,12 @@ async def run_window(
 
 
 def exit_status(result: dict[str, object]) -> int:
-    """1 when any chunk or batch failed or was rejected, a breaker stopped the window, or the
-    prune refused."""
+    """1 when any chunk or batch failed or was rejected, a breaker stopped the window, the window
+    closed mid-run, or the prune refused."""
     for part in ("fill", "normals"):
         value = result.get(part)
         if isinstance(value, dict) and (value.get("failed") or value.get("rejected")
-                                        or value.get("stopped_after_failures")):
+                                        or value.get("stopped_after_failures") or value.get("stopped_window_closed")):
             return 1
     pruned = result.get("prune")
     return 1 if isinstance(pruned, dict) and "refused" in pruned else 0
@@ -217,8 +275,8 @@ async def _main(args: argparse.Namespace) -> tuple[dict[str, object], int]:
     from app.services.temporal_weighting import utc_today
 
     today = utc_today()
-    incident_start = date.fromisoformat(args.incident_start)
     try:
+        incident_start = date.fromisoformat(args.incident_start)
         window = ProWindow(date.fromisoformat(args.window_start), initial=args.initial_window) if args.window_start else None
     except ValueError as exc:
         raise SystemExit(str(exc)) from None

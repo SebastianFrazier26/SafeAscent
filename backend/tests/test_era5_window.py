@@ -80,8 +80,6 @@ def _kwargs(**over: object) -> dict[str, object]:
     return base | over
 
 
-
-
 def test_run_refuses_outside_the_window():
     rec = _Recorder()
     with pytest.raises(SystemExit, match="outside"):
@@ -136,17 +134,16 @@ def test_trailing_90_days_are_re_fetched_with_each_forward_gap():
         # A span shorter than 90 days is re-fetched from its first day, never before it.
         SeriesCoverage(3, TZ, date(2025, 12, 1), date(2026, 1, 10), incident=False),
     ]
-    chunks = plan_fill(coverage, today=TODAY, incident_start=date(2025, 1, 1), batch=1, years_per_chunk=5)
+    chunks = plan_fill(coverage, today=TODAY, incident_start=date(2025, 1, 1), batch=1, years_per_chunk=5,
+                       window=WINDOW)
     assert [(c.buckets, c.start, c.end) for c in chunks] == [
         ((1,), date(2025, 10, 13), date(2027, 1, 10)),
         ((3,), date(2025, 12, 1), date(2027, 1, 10)),
         ((3,), date(2024, 1, 1), date(2025, 11, 30)),
     ]
     plain = plan_fill(coverage, today=TODAY, incident_start=date(2025, 1, 1), batch=1, years_per_chunk=5,
-                      refresh=False)
+                      window=WINDOW, refresh=False)
     assert [c.start for c in plain] == [date(2026, 1, 11), date(2026, 1, 11), date(2024, 1, 1)]
-
-
 
 
 async def _one(url: str, sql: str) -> object:
@@ -293,21 +290,24 @@ def test_next_window_re_fetches_the_trailing_90_days_without_rewriting_unchanged
         rec = _Recorder()
         result = asyncio.run(run_window(lambda: create_async_engine(url), rec.client(), **_kwargs(window=second_window)))  # type: ignore[arg-type]
         after = asyncio.run(_one(url, q))
-        report = asyncio.run(_plan_report(url, today=date(2027, 1, 20)))
+        same_window = asyncio.run(_plan_report(url, today=date(2027, 1, 20)))
+        no_window = asyncio.run(_plan_report(url, today=date(2027, 1, 20), window=None))
     assert any(r[1:] == ("2025-10-13", "2027-01-10") for r in rec.requests)
     assert result["fill"]["done"] == 1  # type: ignore[index]
     # Identical values: the IS DISTINCT FROM guard leaves the first window's rows (and run_id) alone.
     assert tuple(before) == tuple(after) == (90, 1)  # type: ignore[arg-type]
-    # Five days later the lag edge has moved: the plan shows the forward gap and its 90-day re-fetch.
-    assert report["chunks"] == 1 and report["refresh_units"] > 0
+    # Five days later in the same window only the new days are planned; without a window the plan
+    # counts the re-fetch as an upper bound.
+    assert same_window["chunks"] == 1 and same_window["refresh_units"] == 0
+    assert no_window["chunks"] == 1 and no_window["refresh_units"] > 0  # type: ignore[operator]
 
 
-async def _plan_report(url: str, *, today: date) -> dict[str, object]:
+async def _plan_report(url: str, *, today: date, window: ProWindow | None = WINDOW) -> dict[str, object]:
     engine = create_async_engine(url)
     try:
         async with engine.connect() as conn:
             return await plan_report(conn, today=today, incident_start=date(2025, 1, 1), batch=50,
-                                     years_per_chunk=5, window=WINDOW)
+                                     years_per_chunk=5, window=window)
     finally:
         await engine.dispose()
 
@@ -384,3 +384,83 @@ def test_the_whole_window_waits_for_the_lock_not_just_the_fill():
         touched = asyncio.run(_one(url, "SELECT (SELECT count(*) FROM grid_bucket_series), "
                                         "(SELECT count(*) FROM source_ingest_log)"))
     assert tuple(touched) == (0, 0)  # type: ignore[arg-type]
+
+
+def test_the_refresh_is_bought_once_per_window():
+    # Filled on 2027-01-15 (lag edge 2027-01-10): a rerun on the 16th inside the same window buys one day.
+    this_window = [SeriesCoverage(1, TZ, date(2024, 1, 1), date(2027, 1, 10), incident=False)]
+    rerun = plan_fill(this_window, today=TODAY + timedelta(days=1), incident_start=date(2025, 1, 1), batch=1,
+                      years_per_chunk=5, window=WINDOW)
+    assert [(c.start, c.end) for c in rerun] == [(date(2027, 1, 11), date(2027, 1, 11))]
+    # Last filled in the previous window (before this window's first lag edge, 2027-01-05): refreshed.
+    earlier = [SeriesCoverage(1, TZ, date(2024, 1, 1), date(2027, 1, 4), incident=False)]
+    chunks = plan_fill(earlier, today=TODAY, incident_start=date(2025, 1, 1), batch=1, years_per_chunk=5,
+                       window=WINDOW)
+    assert [(c.start, c.end) for c in chunks] == [(date(2026, 10, 7), date(2027, 1, 10))]
+    # No window given (plan without --window-start): the refresh is counted as an upper bound.
+    bound = plan_fill(this_window, today=TODAY + timedelta(days=1), incident_start=date(2025, 1, 1), batch=1,
+                      years_per_chunk=5, window=None)
+    assert bound[0].start == date(2026, 10, 13)
+
+
+@requires_pg
+def test_a_next_day_rerun_requests_one_new_day_not_ninety():
+    rec = _Recorder()
+    with migrated_db(seed_sql=SEED) as name:
+        url = sa_url(name)
+        asyncio.run(run_window(lambda: create_async_engine(url), _Recorder().client(), **_kwargs()))  # type: ignore[arg-type]
+        nxt = TODAY + timedelta(days=1)
+        result = asyncio.run(run_window(lambda: create_async_engine(url), rec.client(),
+                                        **_kwargs(today=nxt, clock=_clock(nxt))))  # type: ignore[arg-type]
+    assert [r[1:] for r in rec.requests] == [("2027-01-11", "2027-01-11")]
+    assert result["fill"]["done"] == 1  # type: ignore[index]
+
+
+@requires_pg
+def test_the_window_closing_mid_run_stops_buying_cleanly():
+    # The run starts on the window's last day; after the first request the clock passes its end.
+    closed = {"after": False}
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        closed["after"] = True
+        return _respond(request)
+
+    last_day = WINDOW.end
+    later = _clock(last_day + timedelta(days=1))
+    rec = _Recorder(respond)
+    with migrated_db(seed_sql=_routes_seed([40.15, 40.25])) as name:
+        url = sa_url(name)
+        result = asyncio.run(run_window(
+            lambda: create_async_engine(url), rec.client(),
+            **_kwargs(batch=1, today=last_day,
+                      clock=lambda: later() if closed["after"] else _clock(last_day)())))  # type: ignore[arg-type]
+        logged = asyncio.run(_one(url, "SELECT count(*), count(*) FILTER (WHERE status = 'running') "
+                                       "FROM source_ingest_log WHERE source IN ('era5_fill', 'era5_normals')"))
+    assert len(rec.requests) == 1
+    assert result["fill"]["stopped_window_closed"] is True and result["fill"]["done"] == 1  # type: ignore[index]
+    assert result["normals"]["stopped_window_closed"] is True  # type: ignore[index]
+    # Nothing was left half-written: the one paid run finished and no further run row was opened.
+    assert tuple(logged) == (1, 0)  # type: ignore[arg-type]
+    assert exit_status(result) == 1
+
+
+@requires_pg
+def test_plan_counts_unregistered_points_and_warns():
+    with migrated_db(seed_sql=_routes_seed([40.15])) as name:
+        url = sa_url(name)
+        before = asyncio.run(_plan_report(url, today=TODAY))
+        asyncio.run(run_window(lambda: create_async_engine(url), _Recorder().client(), **_kwargs()))  # type: ignore[arg-type]
+        after = asyncio.run(_plan_report(url, today=TODAY))
+    assert (before["unregistered_incident_buckets"], before["unregistered_route_buckets"]) == (1, 1)
+    assert before["unregistered_units_estimate"] > 0 and "register" in str(before["warning"])
+    assert before["total_units"] >= before["unregistered_units_estimate"]  # type: ignore[operator]
+    assert (after["unregistered_incident_buckets"], after["unregistered_route_buckets"]) == (0, 0)
+    assert "warning" not in after
+
+
+def test_a_bad_incident_start_is_a_clean_exit(monkeypatch):
+    from app.pipelines import era5_window
+
+    args = build_parser().parse_args(["plan", "--incident-start", "1990-13-01"])
+    with pytest.raises(SystemExit):
+        asyncio.run(era5_window._main(args))

@@ -46,6 +46,7 @@ from app.pipelines.pro_window import (
     paid_fetch,
     record_spend,
     units_spent,
+    window_closed,
     window_lock,
 )
 from app.pipelines.validate import ValidationReport, batch_gate
@@ -452,7 +453,7 @@ async def run(
     engine = engine_factory()
     derived = bought = failed = rejected = batches = consecutive = 0
     billed_total = 0.0
-    stopped = tripped = False
+    stopped = tripped = closed = False
     try:
         async with window_lock(engine):
             async with engine.connect() as conn:
@@ -482,8 +483,11 @@ async def run(
                     if not budget.fits(units):
                         stopped = True
                         break
-                    batches += 1
                     at = clock() if clock else None
+                    if window_closed(pro_window, at):
+                        closed = True
+                        break
+                    batches += 1
                     # Deliberately committed before the request, apart from finish_run (D5).
                     async with engine.begin() as conn:
                         run_id = await start_run(
@@ -513,10 +517,11 @@ async def run(
                     if fetched.budget_exhausted:
                         stopped = True
                         break
-                if stopped or tripped:
+                if stopped or tripped or closed:
                     break
     finally:
         await engine.dispose()
     return {"period": list(period), "due": len(due), "batches": batches, "derived_buckets": derived,
             "bought_buckets": bought, "done": derived + bought, "failed": failed, "rejected": rejected,
-            "units_billed": billed_total, "stopped_for_budget": stopped, "stopped_after_failures": tripped}
+            "units_billed": billed_total, "stopped_for_budget": stopped, "stopped_after_failures": tripped,
+            "stopped_window_closed": closed}

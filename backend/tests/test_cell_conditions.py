@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import uuid
 from datetime import date, timedelta
 
@@ -277,3 +278,32 @@ def test_empty_upsert_touches_nothing():
             raise AssertionError("no statement for an empty batch")
 
     assert asyncio.run(upsert_rows(NoConn(), [], run_id=uuid.uuid4())) == 0
+
+
+@requires_pg
+@pytest.mark.parametrize("column", cell_conditions._WEATHER_COLUMNS)
+def test_an_equal_rank_re_fetch_never_erases_a_stored_value(column):
+    async def scenario(url: str):
+        engine = create_async_engine(url)
+        first, nulled, changed = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        other, value = ("tmax", 12.0) if column == "tmin" else ("tmin", -4.0)
+        try:
+            async with engine.begin() as conn:
+                row = _row(10.0, "era5")
+                await upsert_rows(conn, [row], run_id=first)
+                stamp = text(f"SELECT {column}, {other}, run_id FROM cell_daily_conditions")
+                before = tuple((await conn.execute(stamp)).one())
+                n_null = await upsert_rows(conn, [dataclasses.replace(row, **{column: None, other: value})],
+                                           run_id=nulled)
+                kept = tuple((await conn.execute(stamp)).one())
+                n_changed = await upsert_rows(conn, [dataclasses.replace(row, **{other: value})], run_id=changed)
+                after = tuple((await conn.execute(stamp)).one())
+                return before, (n_null, kept), (n_changed, after), (first, changed, value)
+        finally:
+            await engine.dispose()
+
+    with migrated_db() as name:
+        before, (n_null, kept), (n_changed, after), (first, changed, value) = asyncio.run(scenario(sa_url(name)))
+    # The whole row is kept, the other column's real change included: no mixing of fetches in one row.
+    assert (n_null, kept) == (0, before) and before[2] == first
+    assert n_changed == 1 and after[1:] == (value, changed)

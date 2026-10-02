@@ -27,7 +27,16 @@ from app.pipelines.grid import bucket_center, grid_bucket_sql
 from app.pipelines.ingest_log import RunStatus, finish_run, last_ok_rows_in, sha256_rows, start_run, write_quarantine
 from app.pipelines.localday import INCIDENT_FROM_WHERE_SQL, INCIDENT_START
 from app.pipelines.open_meteo import ARCHIVE_MODEL, DAILY_VARS, ArchiveClient, Location, LocationResponse, cost_units
-from app.pipelines.pro_window import Budget, Clock, ProWindow, paid_fetch, record_spend, units_spent, window_lock
+from app.pipelines.pro_window import (
+    Budget,
+    Clock,
+    ProWindow,
+    paid_fetch,
+    record_spend,
+    units_spent,
+    window_closed,
+    window_lock,
+)
 from app.pipelines.validate import ValidationReport, batch_gate
 
 SOURCE = "era5_fill"
@@ -232,7 +241,7 @@ async def run(
     rejected chunks, so an upstream outage cannot spend the window on doomed requests."""
     engine = engine_factory()
     done = failed = rejected = blocked = consecutive = 0
-    stopped = tripped = False
+    stopped = tripped = closed = False
     failed_groups: set[str] = set()
     try:
         async with window_lock(engine):
@@ -251,6 +260,9 @@ async def run(
                     stopped = True
                     break
                 at = clock() if clock else None
+                if window_closed(window, at):
+                    closed = True
+                    break
                 sha = sha256_rows([(chunk.tz,)] + [(b,) for b in chunk.buckets])
                 # Deliberately not one transaction with finish_run (plan 1's contract): the run row and
                 # its cost commit before the billed request, so a kill mid-chunk still counts (D5).
@@ -286,7 +298,8 @@ async def run(
     finally:
         await engine.dispose()
     return {"chunks": len(chunks), "done": done, "failed": failed, "rejected": rejected,
-            "blocked_after_failure": blocked, "stopped_for_budget": stopped, "stopped_after_failures": tripped}
+            "blocked_after_failure": blocked, "stopped_for_budget": stopped, "stopped_after_failures": tripped,
+            "stopped_window_closed": closed}
 
 
 class PruneRefused(Exception):
