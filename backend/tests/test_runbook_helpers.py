@@ -1,6 +1,8 @@
 """scripts/runbook_helpers.sh, sourced in both shells the runbooks are run from, with fake
 URLs only. No helper here reaches a database: every case refuses or stops before psql/uv."""
 
+import os
+import pty
 import shutil
 import subprocess
 from pathlib import Path
@@ -267,6 +269,35 @@ def test_bg_child_inherits_the_target_and_runs_helpers(shell, tmp_path):
     out = _run(shell, "bg_start t.log _retarget postgresql://u:p@h.example/db && bg_wait t.log 30; echo rc=$?", cwd, BG_ENV)
     assert "postgresql://u:p@ep-branch.example/db" in (cwd / "t.log").read_text()
     assert out.stdout.strip().endswith("rc=0")
+
+
+def _run_under_job_control(shell: str, script: str, cwd: Path, env: dict[str, str]) -> str:
+    """Runs SCRIPT with job control forced on (`set -m`) and a controlling terminal (a pty;
+    zsh refuses to enable monitor mode without one). Under job control, bash/zsh assign a
+    background job's leading process its own new pgid (pgid == its own pid) before it runs
+    at all — the same state a real interactive top-level shell leaves bg_start's nohup
+    wrapper in, and the condition os.setsid() must tolerate (EPERM otherwise, Task 2)."""
+    out_path = cwd / "_job_control_out.txt"
+    wrapped = f"set -m\n. {HELPERS}\n{{ {script}\n}} > {out_path} 2>&1\n"
+    base = {"PATH": "/usr/bin:/bin:/opt/homebrew/bin", "HOME": str(cwd)}
+    master, slave = pty.openpty()
+    try:
+        proc = subprocess.Popen([shell, "-c", wrapped], stdin=slave, stdout=slave, stderr=slave,
+                                 cwd=cwd, env=base | env)
+        os.close(slave)
+        proc.wait(timeout=30)
+    finally:
+        os.close(master)
+    return out_path.read_text() if out_path.exists() else ""
+
+
+def test_bg_start_works_when_the_caller_is_a_process_group_leader(shell, tmp_path):
+    cwd = _backend(tmp_path)
+    out = _run_under_job_control(shell, "bg_start logs/a.log echo hi && bg_wait logs/a.log 30; echo rc=$?", cwd, BG_ENV)
+    assert "EPERM" not in out and "Operation not permitted" not in out, out
+    log = (cwd / "logs" / "a.log").read_text()
+    assert "hi\n" in log and "RUNBOOK_EXIT=0" in log and "RUNBOOK_ELAPSED=" in log
+    assert "rc=0" in out and "finished ok" in out
 
 
 def test_bg_wait_returns_2_while_running_then_the_run_can_be_awaited_again(shell, tmp_path):

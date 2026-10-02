@@ -3808,7 +3808,7 @@ Do not repeat Steps 1–5. They create a branch and re-target the shell, and Ste
 ```bash
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
   # PRODUCTION
-  type same_ids gate_pass gate_require bg_start bg_wait >/dev/null || { echo "runbook helpers predate the Task 12 gates: STOP" >&2; exit 1; }
+  for f in same_ids gate_pass gate_require bg_start bg_wait; do type "$f" >/dev/null 2>&1 || { echo "runbook helpers predate the Task 12 gates: STOP" >&2; exit 1; }; done
   [ ! -e "$GATE_DIR" ] || { echo "$GATE_DIR exists: an earlier prod attempt; STOP, ask the owner" >&2; exit 1; }
   cur="$(MIG current)" || exit 1
   printf '%s\n' "$cur"
@@ -3852,11 +3852,22 @@ def known(prod, branch):
     if isinstance(prod, dict) and isinstance(branch, dict):
         return {k: known(v, branch.get(k)) for k, v in prod.items() if k in branch or k not in NEW}
     return prod
+def require_new(d, p_path, where):
+    # 6e's accounting gate reads these two keys out of the prod files; a schema that
+    # silently dropped them must fail here, not surface as a KeyError three steps later.
+    missing = sorted(NEW - d.keys()) if isinstance(d, dict) else sorted(NEW)
+    if missing:
+        sys.exit(f"{p_path}: missing {missing} in {where}: STOP")
 args = sys.argv[1:]
-for b_path, p_path in zip(args[::2], args[1::2]):
+for i, (b_path, p_path) in enumerate(zip(args[::2], args[1::2])):
     branch, prod = (json.load(open(p, encoding="utf-8")) for p in (b_path, p_path))
     if not branch or known(prod, branch) != branch:
         sys.exit(f"{p_path} differs from {b_path}: STOP")
+    if i == 0:
+        require_new(prod, p_path, "the top level")
+    else:
+        for step in ("r1", "r2"):
+            require_new(prod.get(step) if isinstance(prod, dict) else None, p_path, f"the {step!r} entry")
     print(f"{p_path} matches the branch")
 PY
   gate_pass dry_runs )
@@ -3899,6 +3910,7 @@ Expected: `finished ok`. Exit 2: run the same `bg_wait` block again.
 ```bash
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
   # PRODUCTION
+  gate_require snapshot || exit 1
   bg_wait ../data/review/logs/r2r1_apply1_prod.log 0 >/dev/null || { echo "r2r1 apply 1 has not finished ok: STOP" >&2; exit 1; }
   bg_start ../data/review/logs/r2r1_apply2_prod.log ING r2r1 --apply )
 ```
@@ -4054,7 +4066,7 @@ Expected:
     - **Reverse single fields from `internal.accident_revisions`**, using `old_value` for rule versions `r1-v1`/`r2-v1`/`r9-v1`. This needs a reviewed script. Do not improvise it: `ingest` cannot delete revisions, and a hand-written bulk UPDATE would bypass the audit trail.
   - **The `historical_predictions` caveat.** A branch or point-in-time restore of `production` discards every write made after the snapshot. That includes the nightly's `historical_predictions` rows, any Phase 2 runs, and any role or grant change. After such a restore:
     - trigger the nightly once (`DEPLOYMENT.md`, Insufficient-data rollout step 3) to rebuild today and the next 2 days; the rows for the days in between are lost, not recomputed;
-    - re-run 6a's grants. The gate markers in `../data/review/gates_2a1_prod` describe the discarded state: on the owner's instruction move that directory aside (never delete it), then run 6a's gate and grants blocks again.
+    - re-run 6a's grants. The gate markers in `../data/review/gates_2a1_prod` describe the discarded state: on the owner's instruction move that directory aside (never delete it), then run 6a's gate and grants blocks again. If a re-apply (6b onward) is intended after the restore, also move aside every `_prod` evidence file under `../data/review/` (`p2a1_step2_prod.txt`, `p2a1_r9_dry_prod.json`, `p2a1_r2r1_dry_prod.json`, `r1_year_check_prod.csv`, `severity_check_prod.csv`, `p2a1_r1_import_prod.json`, `p2a1_r9_import_prod.json`) and `../data/review/logs/` — the restore discarded what they describe, but `save_once` and `bg_start` refuse to touch a file that already exists, so stale pre-restore evidence would otherwise be mistaken for current and no apply log could be started.
   - **After a restore**, the `r1-v1`/`r2-v1`/`r9-v1` revisions are gone as well, so the corrected rule can be applied as the same or a new rule version.
 
 ---

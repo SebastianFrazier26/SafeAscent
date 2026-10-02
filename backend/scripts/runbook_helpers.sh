@@ -216,6 +216,9 @@ print(f"{sum(a.values())} ids match")' "$@"
 # A kill rolls the apply back (one transaction), so a run is never retried while one lives.
 # The job leads its own process group (setsid via python3: macOS has no setsid(1)), so
 # bg_wait can tell a dead nohup wrapper from a dead apply: uv and python stay in the group.
+# setsid() is skipped when the wrapper is already a group leader (EPERM otherwise): a
+# backgrounded job run from an interactive top-level shell (job control on) already gets
+# its own pgid from the shell before this code runs.
 bg_start() {
   [ -n "${1:-}" ] && [ "$#" -ge 2 ] || { echo "usage: bg_start LOG CMD..." >&2; return 1; }
   _need_target || return 1
@@ -224,7 +227,10 @@ bg_start() {
   [ -f scripts/runbook_helpers.sh ] || { echo "bg_start: run from backend/" >&2; return 1; }
   [ ! -e "$_log" ] || { echo "$_log exists: that run already started; bg_wait it (delete the log deliberately to redo)" >&2; return 1; }
   mkdir -p "$(dirname "$_log")" && : > "$_log" || return 1
-  nohup python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' bash -c '. scripts/runbook_helpers.sh || exit 1
+  nohup python3 -c 'import os, sys
+if os.getpgrp() != os.getpid():
+    os.setsid()
+os.execvp(sys.argv[1], sys.argv[1:])' bash -c '. scripts/runbook_helpers.sh || exit 1
 SECONDS=0; "$@"; rc=$?
 echo "RUNBOOK_ELAPSED=${SECONDS}s"; echo "RUNBOOK_EXIT=$rc"' bg_start "$@" >> "$_log" 2>&1 < /dev/null &
   echo "$!" > "$_log.pid"
