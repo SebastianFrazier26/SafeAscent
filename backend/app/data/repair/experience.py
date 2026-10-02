@@ -49,6 +49,13 @@ YEARS = re.compile(
 # A party's pooled total is not any one person's experience.
 _POOLED_BEFORE = re.compile(r"\bcombined\s+(?:total\s+of\s+)?(?:over\s+|nearly\s+|about\s+)?$", re.I)
 _POOLED_AFTER = re.compile(r"^\W*(?:\w+\s+){0,2}(?:between|among)\s+them\b", re.I)
+# A guide named just before a years or level match, in the same clause, is the one it
+# describes ("the guide had 20 years of climbing"): a guide's credentials are not the party's.
+_GUIDE_BEFORE = re.compile(
+    r"\b(?:the|their|his|her|a|an|our|\w+'s)\s+(?:(?:mountain|ice|rock|alpine|lead)\s+)?guides?(?:'s|')?(?![\w-])"
+    r"[^.;!?]{0,20}$",
+    re.I,
+)
 _PEOPLE = (
     r"(?:climbers?|leaders?|mountaineers?|alpinists?|partners?|part(?:y|ies)|teams?|pairs?|groups?|skiers?)"
 )
@@ -86,7 +93,7 @@ UNGUIDED = re.compile(
 GUIDED = re.compile(
     r"(?<![\w-])guided\s+(?:\w+\s+)?(?:part(?:y|ies)|climbs?|trips?|ascents?|groups?|expeditions?|clients?|tours?|teams?)\b"
     r"|\bclients?\b"
-    r"|\b(?:their|his|her|with\s+(?:a|their|his|her)|hired\s+an?)\s+(?:(?:mountain|ice|rock|alpine)\s+)?guides?\b(?!\s*book)",
+    r"|\b(?:their|his|her|with\s+(?:a|their|his|her)|hired\s+an?)\s+(?:(?:mountain|ice|rock|alpine)\s+)?guides?\b(?!\s*(?:book|dog))",
     re.I,
 )
 
@@ -115,14 +122,23 @@ def parse_number(word: str) -> int | None:
     return None
 
 
-def _stated(pattern: re.Pattern[str], text: str) -> bool:
-    return any(not _QUALIFIED_BEFORE.search(text[max(0, m.start() - 30):m.start()]) for m in pattern.finditer(text))
+def _about_guide(text: str, start: int) -> bool:
+    return _GUIDE_BEFORE.search(text[max(0, start - 60):start]) is not None
+
+
+def _stated(pattern: re.Pattern[str], text: str, *, skip_guide: bool = False) -> bool:
+    return any(
+        not _QUALIFIED_BEFORE.search(text[max(0, m.start() - 30):m.start()])
+        and not (skip_guide and _about_guide(text, m.start()))
+        for m in pattern.finditer(text)
+    )
 
 
 def _years(text: str) -> int | None:
     numbers: set[int] = set()
     for m in YEARS.finditer(text):
-        if _POOLED_BEFORE.search(text[max(0, m.start() - 40):m.start()]) or _POOLED_AFTER.search(text[m.end():m.end() + 40]):
+        pooled = _POOLED_BEFORE.search(text[max(0, m.start() - 40):m.start()]) or _POOLED_AFTER.search(text[m.end():m.end() + 40])
+        if pooled or _about_guide(text, m.start()):
             continue
         n = parse_number(m.group(1) or m.group(2) or "")
         if n is not None:
@@ -134,7 +150,7 @@ def _years(text: str) -> int | None:
 def extract_experience(text: str | None) -> Experience:
     if not text:
         return NOTHING
-    levels = {name for name, pattern in LEVELS.items() if _stated(pattern, text)}
+    levels = {name for name, pattern in LEVELS.items() if _stated(pattern, text, skip_guide=True)}
     level = levels.pop() if len(levels) == 1 else "unknown"
     first = True if _stated(FIRST, text) else None
     unguided, guided = _stated(UNGUIDED, text), _stated(GUIDED, text)

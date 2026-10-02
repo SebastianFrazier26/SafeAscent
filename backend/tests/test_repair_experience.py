@@ -284,3 +284,27 @@ def test_golden_export_hides_the_rule_and_the_narrative(tmp_path, monkeypatch):
 
 def test_nothing_constant():
     assert NOTHING == Experience(None, "unknown", None, "unknown")
+
+
+# Review round 1: a guide's credentials are not the party's experience.
+@pytest.mark.parametrize(
+    "narrative",
+    [
+        "The guide had 20 years of climbing experience.",
+        "Their guide, with 15 years of climbing experience, led the group",
+        "The group's guide was an expert climber.",
+        "His guide was a very experienced mountaineer.",
+    ],
+)
+def test_a_guides_credentials_fill_no_party_fact(narrative):
+    e = extract_experience(narrative)
+    assert (e.years, e.level) == (None, "unknown")
+
+
+def test_the_partys_own_experience_still_counts_in_a_guided_narrative():
+    e = extract_experience("Their guide fixed the rope. The client, an experienced climber, had 10 years of climbing.")
+    assert (e.years, e.level, e.guided) == (10, "experienced", "guided")
+
+
+def test_a_guide_dog_is_not_a_guide():
+    assert extract_experience("She hiked with a guide dog.").guided == "unknown"
