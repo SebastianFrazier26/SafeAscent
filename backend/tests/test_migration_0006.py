@@ -15,8 +15,8 @@ REV_0005 = "0005_gnis_duplicate_decisions"
 REV_0006 = "0006_accidents_clean"
 # The Phase 3 interface (plan 3 and the trainer read exactly these, in this order).
 CLEAN_COLUMNS = [
-    "accident_id", "source", "source_id", "date", "year", "date_precision", "year_lo", "year_hi", "state", "country",
-    "mountain", "route", "latitude", "longitude", "coordinates", "elevation_meters", "geocode_precision",
+    "accident_id", "source", "source_id", "date", "year", "date_precision", "year_source", "year_lo", "year_hi", "state",
+    "country", "mountain", "route", "latitude", "longitude", "coordinates", "elevation_meters", "geocode_precision",
     "accident_type", "activity", "activity_class", "inclusion_flag", "injury_severity", "severity_scale",
     "incident_group_id", "mp_route_id", "exp_years_climbing", "exp_stated_level", "exp_first_season", "guided",
     "source_url", "point_trusted",

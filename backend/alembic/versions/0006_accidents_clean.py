@@ -18,8 +18,8 @@ depends_on = None
 TRUSTED_POINT_PRECISIONS = ("exact", "crag", "area", "park_centroid")
 
 COLUMNS = (
-    "accident_id, source, source_id, date, year, date_precision, year_lo, year_hi, state, country, mountain, "
-    "route, latitude, longitude, coordinates, elevation_meters, geocode_precision, accident_type, activity, "
+    "accident_id, source, source_id, date, year, date_precision, year_source, year_lo, year_hi, state, country, "
+    "mountain, route, latitude, longitude, coordinates, elevation_meters, geocode_precision, accident_type, activity, "
     "activity_class, inclusion_flag, injury_severity, severity_scale, incident_group_id, mp_route_id, "
     "exp_years_climbing, exp_stated_level, exp_first_season, guided, source_url, "
     "coalesce(geocode_precision IN ({}), false) AS point_trusted".format(
