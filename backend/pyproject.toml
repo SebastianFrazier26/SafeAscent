@@ -123,6 +123,7 @@ module = [
     "app.pipelines.pro_window",
     "app.pipelines.era5_fill",
     "app.pipelines.normals",
+    "app.pipelines.era5_window",
 ]
 ignore_errors = false
 disallow_any_generics = true

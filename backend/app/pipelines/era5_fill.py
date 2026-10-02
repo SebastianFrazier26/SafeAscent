@@ -222,15 +222,17 @@ async def run(
     budget: Budget,
     window: ProWindow,
     clock: Clock | None = None,
+    breaker: int | None = None,
 ) -> dict[str, object]:
     """Buy chunks in order until the budget would be exceeded, under the window lock with the
     window's spend re-read once the lock is held. Each chunk's writes, quarantine rows and final
     log status commit in one transaction; a failed or rejected chunk writes no conditions rows
     and blocks the rest of its group. `clock` stamps the spend (see pro_window.record_spend);
-    None keeps the DB's own time."""
+    None keeps the DB's own time. `breaker` stops the run after that many consecutive failed or
+    rejected chunks, so an upstream outage cannot spend the window on doomed requests."""
     engine = engine_factory()
-    done = failed = rejected = blocked = 0
-    stopped = False
+    done = failed = rejected = blocked = consecutive = 0
+    stopped = tripped = False
     failed_groups: set[str] = set()
     try:
         async with window_lock(engine):
@@ -268,18 +270,23 @@ async def run(
                                             problem=problem)
                 if status == "ok":
                     done += 1
+                    consecutive = 0
                 else:
                     failed_groups.add(chunk.group)
+                    consecutive += 1
                     if status == "failed":
                         failed += 1
                     else:
                         rejected += 1
+                if breaker is not None and consecutive >= breaker:
+                    tripped = True
+                    break
                 if stopped:
                     break
     finally:
         await engine.dispose()
     return {"chunks": len(chunks), "done": done, "failed": failed, "rejected": rejected,
-            "blocked_after_failure": blocked, "stopped_for_budget": stopped}
+            "blocked_after_failure": blocked, "stopped_for_budget": stopped, "stopped_after_failures": tripped}
 
 
 class PruneRefused(Exception):

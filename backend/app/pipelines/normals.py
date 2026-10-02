@@ -438,19 +438,21 @@ async def run(
     budget: Budget,
     pro_window: ProWindow,
     clock: Clock | None = None,
+    breaker: int | None = None,
 ) -> dict[str, object]:
     """Recompute the due buckets under the window lock: stored-row buckets first (free), then
     the paid batches in order until the cap would be passed. Each paid request's units are
     recorded before it is sent and re-read from the log before every batch, exactly as
     era5_fill does; batches run one after another, never gathered. A failed or rejected batch
-    writes no normals, so its buckets stay due for the next run."""
+    writes no normals, so its buckets stay due for the next run. `breaker` stops the run after
+    that many consecutive failed or rejected paid batches, as in era5_fill."""
     if batch < 1:
         raise ValueError(f"batch must be at least 1, got {batch}")
     period = window(today)
     engine = engine_factory()
-    derived = bought = failed = rejected = batches = 0
+    derived = bought = failed = rejected = batches = consecutive = 0
     billed_total = 0.0
-    stopped = False
+    stopped = tripped = False
     try:
         async with window_lock(engine):
             async with engine.connect() as conn:
@@ -498,17 +500,23 @@ async def run(
                                                 period=period, today=today, units=fetched.billed)
                     if status == "ok":
                         bought += len(group)
-                    elif status == "failed":
-                        failed += 1
+                        consecutive = 0
                     else:
-                        rejected += 1
+                        consecutive += 1
+                        if status == "failed":
+                            failed += 1
+                        else:
+                            rejected += 1
+                    if breaker is not None and consecutive >= breaker:
+                        tripped = True
+                        break
                     if fetched.budget_exhausted:
                         stopped = True
                         break
-                if stopped:
+                if stopped or tripped:
                     break
     finally:
         await engine.dispose()
     return {"period": list(period), "due": len(due), "batches": batches, "derived_buckets": derived,
             "bought_buckets": bought, "done": derived + bought, "failed": failed, "rejected": rejected,
-            "units_billed": billed_total, "stopped_for_budget": stopped}
+            "units_billed": billed_total, "stopped_for_budget": stopped, "stopped_after_failures": tripped}
