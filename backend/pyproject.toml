@@ -109,6 +109,7 @@ module = [
     "app.pipelines.geo",
     "app.pipelines.gnis",
     "app.pipelines.open_meteo",
+    "app.pipelines.cell_conditions",
 ]
 ignore_errors = false
 disallow_any_generics = true

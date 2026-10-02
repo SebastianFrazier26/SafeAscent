@@ -5,6 +5,7 @@ import argparse
 import asyncio
 import os
 import subprocess
+import uuid
 from datetime import date
 
 from alembic import command
@@ -13,7 +14,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from app.data.repair import activity, dates, dedupe, experience, geocode, review, severity
 from app.data.repair.checks import record_check
 from app.data.repair.framework import LOCATION, Change, run_step
-from app.pipelines import gnis, mp_tick_aggregates, mp_ticks_quarantine
+from app.pipelines import cell_conditions, gnis, mp_tick_aggregates, mp_ticks_quarantine
 from app.pipelines.validate import ValidationReport
 from tests.pgtest import requires_pg
 from tests.test_gnis import HEADER as GNIS_HEADER
@@ -188,6 +189,26 @@ def _run_real_jobs_as_ingest(ingest_url: str, tmp_path, monkeypatch) -> None:
     r5_out, r12_out = asyncio.run(r5_r12())
     assert (r5_out["mode"], r5_out["review_pending"], r5_out["path"]) == ("apply", 0, None)
     assert r12_out["mode"] == "apply"
+
+    # Plan 3 Task 3: the conditions upsert as ingest — INSERT, then the ON CONFLICT UPDATE whose
+    # precedence WHERE reads the stored row.
+    async def conditions() -> list[int]:
+        def row(kind: cell_conditions.RecordKind, source: str) -> cell_conditions.DayRow:
+            return cell_conditions.DayRow(1, "America/Denver", date(2026, 9, 20), 5.0, -1.0, 0.0, 0.0, 4.0, 9.0,
+                                          True, kind, "m", source)
+
+        engine = create_async_engine(sa_ingest)
+        try:
+            async with engine.begin() as conn:
+                return [
+                    await cell_conditions.upsert_rows(conn, [row(kind, source)], run_id=uuid.uuid4())
+                    for kind, source in [("stopgap", "open_meteo_forecast"), ("era5", "open_meteo_archive"),
+                                         ("forecast", "open_meteo_forecast")]
+                ]
+        finally:
+            await engine.dispose()
+
+    assert asyncio.run(conditions()) == [1, 1, 0]
 
 
 # PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views; those belong to the
