@@ -3301,7 +3301,7 @@ Expected:
 
 ```bash
 save_once ../data/review/p2a3_r7_dry_branch.json ING r7
-ING r7 --apply
+save_once ../data/review/p2a3_r7_apply_branch.json ING r7 --apply
 ING r7
 VERIFY tests/verify/test_phase2a_conditions.py -q -k "r7 or visibility"
 ```
