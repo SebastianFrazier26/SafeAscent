@@ -18,11 +18,11 @@ import argparse
 import asyncio
 import dataclasses
 import json
-import os
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date, timedelta
 
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -189,12 +189,18 @@ def _check_incident_start(incident_start: date) -> None:
                          "the earliest day an incident series needs")
 
 
+class _ExportedKey(BaseSettings):
+    # No env_file, unlike app.config.Settings: only the process environment is read (B8).
+    model_config = SettingsConfigDict(env_file=None, extra="ignore")
+    OPEN_METEO_API_KEY: str = ""
+
+
 def archive_client(environ: Mapping[str, str] | None = None) -> ArchiveClient:
     """Owner ruling B8 (fail closed): the paid key must be exported into the process environment
     for this run. app.config.settings would also read it from backend/.env, so a key left in that
     file could start a billed run unnoticed; settings is deliberately not consulted. ArchiveClient's
     own refusal is an OpenMeteoError; a paid CLI run must stop cleanly before touching the database."""
-    api_key = (os.environ if environ is None else environ).get("OPEN_METEO_API_KEY", "")
+    api_key = _ExportedKey().OPEN_METEO_API_KEY if environ is None else environ.get("OPEN_METEO_API_KEY", "")
     if not api_key.strip():
         raise SystemExit("OPEN_METEO_API_KEY is not set in the process environment; the archive needs the "
                          "Professional key exported for this run (a value only in backend/.env is refused), "

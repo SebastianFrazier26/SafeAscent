@@ -492,3 +492,12 @@ def test_the_cli_refuses_any_incident_start_but_the_owner_start(command, start):
     args = build_parser().parse_args([*command, "--incident-start", start])
     with pytest.raises(SystemExit, match="must be 1989-12-26"):
         asyncio.run(era5_window._main(args))
+
+
+def test_a_dotenv_file_in_the_working_directory_is_never_read_for_the_key(monkeypatch, tmp_path):
+    (tmp_path / ".env").write_text("OPEN_METEO_API_KEY=from-dotenv\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("OPEN_METEO_API_KEY", raising=False)
+    with pytest.raises(SystemExit, match="process environment") as refused:
+        archive_client()
+    assert "from-dotenv" not in str(refused.value)
