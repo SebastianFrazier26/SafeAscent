@@ -4114,7 +4114,7 @@ A multi-hour slice returns 2 from `bg_wait` many times: run the same block again
   bg_wait ../data/review/logs/era5w1_prod_s2.log )
 ```
 
-**4f. The final slice (cap 4,500,000 minus the branch spend).** If slice 2 already shows `fill.chunks == fill.pending_lag_edge + fill.edge_trimmed` (every chunk left reached only the lag edge: nothing published yet, or stopped short of unpublished days) and `normals.due: 0`, skip to 4g.
+**4f. The final slice (cap 4,500,000 minus the branch spend).** If slice 2 already shows `fill.chunks == fill.pending_lag_edge + fill.edge_trimmed` (every chunk left reached only the lag edge: nothing published yet, or stopped short of unpublished days) and `normals.due: 0`, skip to 4g. Early-January runs re-buy the short chunk after the 31-December split (and its pending days) until ERA5 publishes through 31 December; that is bounded at about 14 days per bucket per run, so it is expected spend, not a fault.
 
 ```bash
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1

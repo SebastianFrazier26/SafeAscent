@@ -581,6 +581,54 @@ def test_a_quarantined_trailing_edge_day_stays_uncovered_and_keeps_its_stopgap_r
     assert [d for d in days if d[0] == date(2020, 4, 30)] == [(date(2020, 4, 30), 5.0, "stopgap")]
 
 
+SPRING = Gap(B, TZ, date(2020, 1, 1), date(2020, 4, 30), "forward")  # 121 days; index 118 is 28 April
+SPRING_TODAY = date(2020, 5, 5)
+SPRING_STOPGAP = "".join(
+    f"INSERT INTO cell_daily_conditions (grid_bucket, tz, date, tmax, record_kind, source) "
+    f"VALUES ({B}, '{TZ}', '2020-04-{d}', 5.0, 'stopgap', 'open_meteo_forecast');" for d in (27, 28, 29, 30))
+
+
+@requires_pg
+@pytest.mark.parametrize("partial_118,last", [(False, date(2020, 4, 28)), (True, date(2020, 4, 27))])
+def test_an_edge_span_ends_at_the_last_validated_core_complete_day(partial_118, last):
+    # I1: day 119 is out of range (quarantined), day 120 unpublished; with day 118 missing tmin
+    # the span must stop at 117, so 118 and 119 keep their stopgap rows.
+    def value(lat: float, d: date, var: str) -> float | None:
+        i = (d - SPRING.start).days
+        if i >= 120 or (i == 118 and partial_118 and var == "temperature_2m_min"):
+            return None
+        return 999.0 if i == 119 else 1.0
+
+    async def scenario(url: str):
+        result = await _fill(url, _by_date(value), SPRING, today=SPRING_TODAY)
+        cov, _ = await _coverage_and_rows(url)
+        return result, cov, await _days(url)
+
+    with migrated_db(seed_sql=SERIES_SEED + SPRING_STOPGAP) as name:
+        result, cov, days = asyncio.run(scenario(sa_url(name)))
+    assert (result["done"], result["edge_trimmed"], result["rejected"]) == (1, 1, 0)
+    assert cov[0].last == last
+    assert [d[0] for d in days if d[2] == "stopgap"] == [day for day in (date(2020, 4, n) for n in (27, 28, 29, 30))
+                                                         if day > last]
+
+
+@requires_pg
+def test_an_edge_chunk_stopping_far_before_the_lag_edge_is_rejected_and_counts_for_the_breaker():
+    # I2: a 90-day refresh whose last 60 days are NULL is a broken response, not lag.
+    gap = Gap(B, TZ, date(2020, 1, 1), date(2020, 3, 30), "forward")
+
+    async def scenario(url: str):
+        result = await _fill(url, _handler_with(lambda i: 1.0 if i < 30 else None), gap, today=date(2020, 4, 4),
+                             breaker=1)
+        return result, await _coverage_and_rows(url)
+
+    with migrated_db(seed_sql=SERIES_SEED) as name:
+        result, (cov, rows) = asyncio.run(scenario(sa_url(name)))
+    assert (result["chunks"], result["rejected"], result["edge_trimmed"], result["done"]) == (1, 1, 0, 0)
+    assert result["stopped_after_failures"] is True
+    assert (cov[0].first, cov[0].last, rows) == (None, None, 0)
+
+
 @requires_pg
 def test_a_mixed_edge_chunk_is_done_and_its_unpublished_bucket_keeps_its_span_and_stopgap_rows():
     from app.pipelines.grid import bucket_center

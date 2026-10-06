@@ -180,22 +180,20 @@ PENDING_MAX_DAYS = 14
 @dataclass(frozen=True)
 class _Trim:
     ends: dict[int, date]
-    pending: tuple[int, ...]
     problems: list[str]
 
 
-def _last_days(response: LocationResponse) -> tuple[date | None, date | None]:
-    """Read from the raw response, before day_rows drops quarantined days: (last day with any
-    value, last day with every core value: tmax, tmin and precipitation)."""
+def _last_observed(response: LocationResponse) -> date | None:
+    """The last day with any value, read from the raw response before day_rows drops
+    quarantined days."""
     d = response.daily
-    any_last = core_last = None
+    last = None
     for i, day in enumerate(d.time):
-        core = (d.temperature_2m_max[i], d.temperature_2m_min[i], d.precipitation_sum[i])
-        if any(v is not None for v in (*core, d.snowfall_sum[i], d.wind_speed_10m_max[i], d.wind_gusts_10m_max[i])):
-            any_last = day
-        if all(v is not None for v in core):
-            core_last = day
-    return any_last, core_last
+        values = (d.temperature_2m_max[i], d.temperature_2m_min[i], d.precipitation_sum[i],
+                  d.snowfall_sum[i], d.wind_speed_10m_max[i], d.wind_gusts_10m_max[i])
+        if any(v is not None for v in values):
+            last = day
+    return last
 
 
 def is_edge(chunk: Chunk, today: date) -> bool:
@@ -206,37 +204,37 @@ def is_edge(chunk: Chunk, today: date) -> bool:
 
 
 def _trim_lag_edge(
-    chunk: Chunk, responses: Sequence[LocationResponse], survived: dict[int, date], *, today: date
+    chunk: Chunk, responses: Sequence[LocationResponse], core_kept: dict[int, date], *, today: date
 ) -> _Trim:
     """Open-Meteo returns NULL (or partly NULL) days for ERA5 days not yet final. An era5 row
     (rank 3) would replace a good stopgap row and the span would claim the day for good, so an
-    edge chunk keeps each bucket's days only up to its last day with every core value that also
-    survived validation (M1): a trailing quarantined edge day stays uncovered, keeps its stopgap
-    row and is asked for again. A short edge chunk with no such day is pending: nothing published
-    yet. Any other chunk is not trimmed, since trailing unobserved days there would leave a hole
+    edge chunk keeps each bucket's days only up to `core_kept`: its last day that survived
+    validation with tmax, tmin and precipitation all present (M1). Trailing partial or
+    quarantined edge days stay uncovered, keep their stopgap rows and are asked for again. A short
+    edge chunk with no such day is pending: nothing published yet. A kept end more than
+    PENDING_MAX_DAYS before the lag edge is not lag but a broken response, and rejects the chunk.
+    Any other chunk is not trimmed, since trailing unobserved days there would leave a hole
     inside the span (a later chunk of the group extends past them), so they reject the chunk, as
     does a bucket with no observed day. There a quarantined day counts as observed (I2): it stays
     inside the span, missing for good, so it must not reject the chunk every run."""
     edge = is_edge(chunk, today)
     short = (chunk.end - chunk.start).days < PENDING_MAX_DAYS
+    oldest_lag = last_era5_day(today) - timedelta(days=PENDING_MAX_DAYS)
     ends: dict[int, date] = {}
-    pending: list[int] = []
     problems: list[str] = []
     for b, response in zip(chunk.buckets, responses):
-        any_last, core_last = _last_days(response)
-        last = any_last
-        if edge:
-            last = None if core_last is None or b not in survived else min(core_last, survived[b])
+        last = core_kept.get(b) if edge else _last_observed(response)
         if last is None:
-            if edge and short:
-                pending.append(b)
-            else:
+            if not (edge and short):
                 problems.append(f"bucket {b}: no day in {chunk.start}..{chunk.end} has an observed value")
+        elif edge and last < oldest_lag:
+            problems.append(f"bucket {b}: edge chunk stops at {last}, more than {PENDING_MAX_DAYS} days "
+                            f"before the lag edge")
         elif last < chunk.end and not edge:
             problems.append(f"bucket {b}: {chunk.direction} chunk ends in unobserved days after {last}")
         else:
             ends[b] = last
-    return _Trim(ends, tuple(pending), problems)
+    return _Trim(ends, problems)
 
 
 _SPAN_ENDS = text(
@@ -286,10 +284,11 @@ async def _write_chunk(
             report.quarantined.update(location.quarantined)
             report.issues.extend(location.issues)
         if not failed:
-            survived: dict[int, date] = {}
+            core_kept: dict[int, date] = {}
             for r in rows:
-                survived[r.grid_bucket] = max(r.date, survived.get(r.grid_bucket, date.min))
-            trim = _trim_lag_edge(chunk, responses, survived, today=today)
+                if r.tmax is not None and r.tmin is not None and r.precip_mm is not None:
+                    core_kept[r.grid_bucket] = max(r.date, core_kept.get(r.grid_bucket, date.min))
+            trim = _trim_lag_edge(chunk, responses, core_kept, today=today)
             ends, problems = trim.ends, problems + trim.problems
     status: RunStatus = "failed" if failed else "rejected" if problems else "ok"
     outcome: Outcome = "full"
