@@ -3933,7 +3933,7 @@ Rewritten 2026-10-06 (pre-flight G6, G19, R1, R9, D20; OQ1; Task 5–7 carries).
 
 **The key.** `backend/.env.openmeteo` holds `OPEN_METEO_API_KEY=<key>`, mode 0600, matched by `.gitignore`'s `.env.*`. A paid block sources it inside its own subshell (`set -a; . ./.env.openmeteo; set +a`) just before `bg_start`, so the key reaches the job through its environment, never argv, and never outlives the block. No block prints it. Owner ruling (fail closed): every paid block checks `[ -n "${OPEN_METEO_API_KEY:-}" ]` right after sourcing the file and refuses with no network call if it is empty, then `export OPEN_METEO_API_KEY` so the key reaches `bg_start`'s child process — the code requires the key in the process environment and rejects one read only from `backend/.env`.
 
-**Doc sync.** Monthly normals and day-of-year climatology are one series per bucket, keyed on the bucket's **alphabetically first** timezone (`min(tz)`) when a bucket straddles a zone boundary (Decisions section #5; `normals.py`'s `stored_complete_years` groups by bucket only). Separately, `era5_fill` never stores a series' trailing all-NULL ERA5 days at the archive's lag edge: a series' `last_era5_date` is its last **observed** day, so the unfinalised tail is asked for again next run rather than recorded as missing.
+**Doc sync.** Monthly normals and day-of-year climatology are one series per bucket, keyed on the bucket's **alphabetically first** timezone (`min(tz)`) when a bucket straddles a zone boundary (Decisions section #5; `normals.py`'s `stored_complete_years` groups by (bucket, tz), and `normals.run` refuses a due list that repeats a bucket). Separately, `era5_fill` never stores a series' trailing all-NULL ERA5 days at the archive's lag edge: on the edge chunk a series' `last_era5_date` is its last day with every core value (tmax, tmin, precipitation), so the unfinalised tail is asked for again next run rather than recorded as missing; a short edge chunk with nothing published yet is counted in `fill.pending_lag_edge` (logged ok, 0 rows, breaker untouched).
 
 **Re-enter the rehearsal branch (Steps 2–3).** Task 13's re-entry block with `B=p2a-4-rehearsal`.
 
@@ -4114,7 +4114,7 @@ A multi-hour slice returns 2 from `bg_wait` many times: run the same block again
   bg_wait ../data/review/logs/era5w1_prod_s2.log )
 ```
 
-**4f. The final slice (cap 4,500,000 minus the branch spend).** If slice 2 already shows `fill.chunks: 0` and `normals.due: 0`, skip to 4g.
+**4f. The final slice (cap 4,500,000 minus the branch spend).** If slice 2 already shows `fill.chunks == fill.pending_lag_edge` (every chunk left is a short lag-edge refresh whose days are not published yet) and `normals.due: 0`, skip to 4g.
 
 ```bash
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1
@@ -4136,7 +4136,7 @@ A multi-hour slice returns 2 from `bg_wait` many times: run the same block again
   bg_wait ../data/review/logs/era5w1_prod_s3.log )
 ```
 
-Done when the last run's JSON shows `fill.chunks: 0` and `normals.due: 0` with exit 0. `fill.stopped_for_budget: true` at the final cap means the window is spent: the rest waits for a second paid month or the next January (OQ4). A rerun of the final slice (after a STOP and the owner's go) uses the same cap and the next log name (`era5w1_prod_s3_r2.log`); the cumulative cap means it never spends past it.
+Done when the last run's JSON shows `fill.chunks == fill.pending_lag_edge` (0 == 0 counts) and `normals.due: 0` with exit 0. `fill.stopped_for_budget: true` at the final cap means the window is spent: the rest waits for a second paid month or the next January (OQ4). A rerun of the final slice (after a STOP and the owner's go) uses the same cap and the next log name (`era5w1_prod_s3_r2.log`); the cumulative cap means it never spends past it.
 
 **4g. Verify on prod (read-only), in the background.**
 
