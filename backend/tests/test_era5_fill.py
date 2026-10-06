@@ -326,6 +326,83 @@ def test_a_response_missing_days_fails_rather_than_claiming_them():
     assert (cov[0].first, cov[0].last, rows) == (None, None, 0)
 
 
+EDGE = Gap(B, TZ, date(2020, 1, 1), date(2020, 1, 10), "forward")
+EDGE_STOPGAP = "".join(
+    f"INSERT INTO cell_daily_conditions (grid_bucket, tz, date, tmax, record_kind, source) "
+    f"VALUES ({B}, '{TZ}', '2020-01-{d:02d}', 5.0, 'stopgap', 'open_meteo_forecast');" for d in (8, 9, 10))
+
+
+async def _fill(url: str, handler, gap: Gap) -> dict[str, object]:
+    client = ArchiveClient(None, transport=httpx.MockTransport(handler))
+    return await run(lambda: create_async_engine(url), client, plan_chunks([gap], batch=50, years_per_chunk=1),
+                     today=TODAY, budget=Budget(max_units=100, spent=0), window=WIN)
+
+
+async def _days(url: str) -> list[tuple[object, ...]]:
+    engine = create_async_engine(url)
+    try:
+        async with engine.connect() as conn:
+            return [tuple(r) for r in (await conn.execute(text(
+                "SELECT date, tmax, record_kind FROM cell_daily_conditions ORDER BY date"))).all()]
+    finally:
+        await engine.dispose()
+
+
+@requires_pg
+def test_trailing_all_null_lag_edge_days_are_neither_written_nor_covered():
+    # Open-Meteo returns NULL for ERA5 days not yet final; the last three days here are that edge.
+    handler = _handler_with(lambda i: None if i >= 7 else 1.0)
+
+    async def scenario(url: str):
+        result = await _fill(url, handler, EDGE)
+        cov, _ = await _coverage_and_rows(url)
+        return result, cov, await _days(url)
+
+    with migrated_db(seed_sql=SERIES_SEED + EDGE_STOPGAP) as name:
+        result, cov, days = asyncio.run(scenario(sa_url(name)))
+        log = asyncio.run(_log(sa_url(name)))
+    assert result["done"] == 1
+    assert (cov[0].first, cov[0].last) == (date(2020, 1, 1), date(2020, 1, 7))
+    assert [d for d in days if d[2] == "era5"] == [(date(2020, 1, d), 1.0, "era5") for d in range(1, 8)]
+    # The good stopgap rows on the edge days survive instead of being replaced by NULL era5 rows.
+    assert [d for d in days if d[2] == "stopgap"] == [(date(2020, 1, d), 5.0, "stopgap") for d in (8, 9, 10)]
+    assert log == [("ok", 1.0, 7, 0)]
+    # The next plan asks for the edge days again.
+    gaps = series_gaps(cov, today=date(2020, 1, 15), incident_start=INCIDENT_START_DEFAULT)
+    assert Gap(B, TZ, date(2020, 1, 8), date(2020, 1, 10), "forward") in gaps
+
+
+@requires_pg
+def test_a_chunk_with_no_observed_day_is_rejected_and_never_covered():
+    async def scenario(url: str):
+        result = await _fill(url, _handler_with(lambda i: None), EDGE)
+        cov, _ = await _coverage_and_rows(url)
+        return result, cov, await _days(url)
+
+    with migrated_db(seed_sql=SERIES_SEED + EDGE_STOPGAP) as name:
+        result, cov, days = asyncio.run(scenario(sa_url(name)))
+        log = asyncio.run(_log(sa_url(name)))
+    assert (result["done"], result["rejected"]) == (0, 1)
+    assert (cov[0].first, cov[0].last) == (None, None)
+    assert days == [(date(2020, 1, d), 5.0, "stopgap") for d in (8, 9, 10)]
+    assert log == [("rejected", 1.0, 0, 0)]
+
+
+@requires_pg
+def test_a_backward_chunk_ending_in_unobserved_days_is_rejected_rather_than_leaving_a_hole():
+    gap = Gap(B, TZ, date(2020, 1, 1), date(2020, 1, 10), "backward")
+
+    async def scenario(url: str):
+        result = await _fill(url, _handler_with(lambda i: None if i >= 7 else 1.0), gap)
+        cov, rows = await _coverage_and_rows(url)
+        return result, cov, rows
+
+    with migrated_db(seed_sql=SERIES_SEED) as name:
+        result, cov, rows = asyncio.run(scenario(sa_url(name)))
+    assert (result["done"], result["rejected"]) == (0, 1)
+    assert (cov[0].first, cov[0].last, rows) == (None, None, 0)
+
+
 _ACCIDENT_COLS = ("accident_id, source, date, latitude, longitude, is_canonical, activity_class, country, "
                   "date_precision, geocode_precision, tz, year_source, year_lo, year_hi")
 

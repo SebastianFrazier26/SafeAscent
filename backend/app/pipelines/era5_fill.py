@@ -80,6 +80,7 @@ class Chunk:
     start: date
     end: date
     group: str
+    direction: Direction = "forward"
 
     def units(self) -> int:
         return cost_units(len(self.buckets), len(DAILY_VARS), (self.end - self.start).days + 1)
@@ -145,7 +146,7 @@ def plan_chunks(gaps: Sequence[Gap], *, batch: int, years_per_chunk: int) -> lis
         for i in range(0, len(ordered), batch):
             buckets = tuple(ordered[i : i + batch])
             group = f"{tz}|{start}|{end}|{direction}|{buckets[0]}"
-            chunks.extend(Chunk(tz, buckets, s, e, group) for s, e in _blocks(start, end, direction, years_per_chunk))
+            chunks.extend(Chunk(tz, buckets, s, e, group, direction) for s, e in _blocks(start, end, direction, years_per_chunk))
     return chunks
 
 
@@ -170,6 +171,29 @@ COVERAGE_UPDATE = text(
 )
 
 
+def _observed(r: DayRow) -> bool:
+    return any(v is not None for v in (r.tmax, r.tmin, r.precip_mm, r.snowfall_cm, r.wind_max_ms, r.gust_max_ms))
+
+
+def _trim_lag_edge(chunk: Chunk, rows: Sequence[DayRow]) -> tuple[list[DayRow], dict[int, date], list[str]]:
+    """Open-Meteo returns all-NULL days for ERA5 days not yet final. An era5 row (rank 3) would
+    replace a good stopgap row with NULLs and the span would claim the day for good, so each
+    bucket keeps only the days up to its last observed one; the trailing days are neither written
+    nor covered, and the next run asks for them again. A bucket with no observed day at all, or
+    trailing NULLs in a backward chunk (the span would get a hole), rejects the chunk."""
+    ends: dict[int, date] = {}
+    for r in rows:
+        if _observed(r) and r.date > ends.get(r.grid_bucket, date.min):
+            ends[r.grid_bucket] = r.date
+    problems: list[str] = []
+    for b in chunk.buckets:
+        if b not in ends:
+            problems.append(f"bucket {b}: no day in {chunk.start}..{chunk.end} has an observed value")
+        elif ends[b] < chunk.end and chunk.direction == "backward":
+            problems.append(f"bucket {b}: backward chunk ends in unobserved days after {ends[b]}")
+    return [r for r in rows if r.grid_bucket in ends and r.date <= ends[r.grid_bucket]], ends, problems
+
+
 def _incomplete(responses: Sequence[LocationResponse], chunk: Chunk) -> bool:
     # The span is extended to chunk.end, so a day the response left out would never be bought.
     want = (chunk.end - chunk.start).days + 1
@@ -188,6 +212,7 @@ async def _write_chunk(
 ) -> RunStatus:
     report = ValidationReport(SOURCE)
     rows: list[DayRow] = []
+    ends: dict[int, date] = {}
     failed = problem is not None
     problems: list[str] = [problem] if problem else []
     if problem is None:
@@ -207,6 +232,9 @@ async def _write_chunk(
             report.accepted += location.accepted
             report.quarantined.update(location.quarantined)
             report.issues.extend(location.issues)
+        if not failed:
+            rows, ends, edge = _trim_lag_edge(chunk, rows)
+            problems.extend(edge)
     status: RunStatus = "failed" if failed else "rejected" if problems else "ok"
     async with engine.begin() as conn:
         await write_quarantine(conn, run_id, report)
@@ -215,8 +243,11 @@ async def _write_chunk(
             n = await upsert_rows(conn, rows, run_id=run_id)
             # Quarantined days (at most 1% per location) stay inside the span: they are missing for
             # good, never zero and never re-bought, which the quarantine rows record.
-            await conn.execute(COVERAGE_UPDATE, {"s": chunk.start, "e": chunk.end, "tz": chunk.tz,
-                                                 "buckets": list(chunk.buckets)})
+            by_end: dict[date, list[int]] = defaultdict(list)
+            for b, e in ends.items():
+                by_end[e].append(b)
+            for e, buckets in sorted(by_end.items()):
+                await conn.execute(COVERAGE_UPDATE, {"s": chunk.start, "e": e, "tz": chunk.tz, "buckets": buckets})
         await finish_run(conn, run_id, status=status, report=report, rows_upserted=n,
                          problems=problems or None, cost_units=units)
     return status
