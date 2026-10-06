@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the mislinked per-accident `weather` rows with daily conditions per 0.1° cell and **local calendar day** (`cell_daily_conditions`, keyed by `(grid_bucket, tz, date)`, m/s, no visibility), filled from the ERA5 archive for every incident series back to 1940 and for every route series over the trailing 3 years, plus the monthly climate normals and day-of-year climatology every later plan reads. All ERA5 work happens inside one Open-Meteo Professional window per year (the first one here, then every January). Verify against the legacy table (R6), fix the `area_weekly_weather` sign error (R7), and load the 2024-08-to-now accident refresh from facts-only CSVs (R11) so Phase 3 MVP-0 is unblocked.
+**Goal:** Replace the mislinked per-accident `weather` rows with daily conditions per 0.1° cell and **local calendar day** (`cell_daily_conditions`, keyed by `(grid_bucket, tz, date)`, m/s, no visibility), filled from the ERA5 archive for every incident series back to 1940 (superseded by the owner's DP1 decision: 1990, see the Decisions section) and for every route series over the trailing 3 years, plus the monthly climate normals and day-of-year climatology every later plan reads. All ERA5 work happens inside one Open-Meteo Professional window per year (the first one here, then every January). Verify against the legacy table (R6), fix the `area_weekly_weather` sign error (R7), and load the 2024-08-to-now accident refresh from facts-only CSVs (R11) so Phase 3 MVP-0 is unblocked.
 
 **Architecture:** A typed Open-Meteo archive client (`app/pipelines/open_meteo.py`, pydantic-validated responses, recorded-response tests, API key never logged, one IANA timezone per request) feeds a validating writer (`cell_conditions.py`) whose upsert enforces `era5` > `stopgap` > `forecast` precedence. `localday.py` resolves each point's IANA timezone and registers `(grid_bucket, tz)` series. `era5_fill.py` keeps one contiguous ERA5 span per series and fills its gaps in order; `normals.py` builds monthly normals and day-of-year climatology per bucket; `era5_window.py` is the only ERA5 entry point: it refuses to run outside a declared Professional window and caps the window's **cumulative** spend from `source_ingest_log`. A view `accident_conditions` joins accidents to conditions on (cell, crag timezone, local date), never on `accident_id`. The R11 loader reads facts-only CSVs (manual AAC, private CAIC/NPS exports) and inserts new rows through the same validation as every other boundary.
 
@@ -19,7 +19,7 @@
 - Prices and limits read 2026-09-28 from open-meteo.com/en/pricing; **re-check before every purchase**. Professional $99/month (5M calls); Standard $29/month (1M calls). The pricing FAQ states: "Historical, climate, ensemble, and satellite radiation APIs require the Professional API Plan or higher." Spec P2-5 ("one month of Professional for the backfill, then Standard", "weekly append after that") is therefore wrong: Standard cannot call the archive at all. The spec is not edited here; this section and the foundations plan's cadence table supersede it.
 - Owner decision 2026-09-28: **one Professional month per year, in January**, started on or after 10 January (ERA5's ~5-day lag plus margin, so the whole previous year is final). The first window is the initial backfill (Task 14); `[default pending: DP5]` it is bought when this plan's runbook is ready rather than waiting for January 2027.
 - Between windows, recent days come from the Forecast API `past_days` (plan 7's nightly job, on the Standard plan the spec already budgets for the forecast), written as `record_kind = 'stopgap'`: a clearly flagged, non-ERA5 stopgap. The January window replaces every stopgap row with ERA5. There is **no weekly ERA5 append** anywhere.
-- Estimated spend (ceiling formula, which over-estimates because Open-Meteo counts fractionally): first window ≈ 1.6M units (incident series from 1940, `[default pending: DP1]`) + ≈ 0.36M (3-year history, ~4.5K series) + ≈ 1.2M (10-year normals) ≈ **3.2M of 5M**. Each later January ≈ 0.12M (prior year for every series) + ≈ 1.2M (normals rebuild) + new-series history.
+- Estimated spend (ceiling formula, which over-estimates because Open-Meteo counts fractionally): first window ≈ 1.6M units (incident series from 1940, `[default pending: DP1]`; DP1 resolved to 1990, ~0.67M per the spec's own figure — see Task 12 Step 3's plan numbers for the actual total) + ≈ 0.36M (3-year history, ~4.5K series) + ≈ 1.2M (10-year normals) ≈ **3.2M of 5M**. Each later January ≈ 0.12M (prior year for every series) + ≈ 1.2M (normals rebuild) + new-series history.
 
 ## Global Constraints
 
@@ -43,7 +43,7 @@ The foundations plan's Global Constraints apply. Also:
 4. R11 inserts new accidents only; a row whose `(source, source_id)` already exists is quarantined `already_present`, never overwritten. The own one-line summary goes into `description` (capped at 200 characters), since the table has no separate summary column and new rows carry no narrative.
 5. A bucket that straddles a timezone boundary gets one series per timezone. Monthly normals and day-of-year climatology are per bucket and use the bucket's alphabetically first timezone: a one-hour shift of the day boundary does not move a monthly mean or a ±7-day pooled percentile measurably.
 6. ERA5 coverage is one contiguous span `[first_era5_date, last_era5_date]` per series. Gaps before it are filled newest-first and gaps after it oldest-first; a failed chunk blocks the rest of its group, so the span never has a hole and resume needs no log lookup.
-7. `[default pending: DP1]` Incident series are filled from 1940-01-01 (the start of ERA5 in the Open-Meteo archive), so every clean day-precision incident from 1940-01-07 on has a 7-day window. Days before 1979 are pre-satellite ERA5 (lower quality); Phase 3 can see this from the date. Incidents before 1940-01-07 are reported as `conditions_missing`, never given values. Alternative: start 1990 (the spec's figure, ~0.67M units) and report pre-1990 incidents as `conditions_missing`.
+7. `[default pending: DP1]` Incident series are filled from 1940-01-01 (the start of ERA5 in the Open-Meteo archive), so every clean day-precision incident from 1940-01-07 on has a 7-day window. Days before 1979 are pre-satellite ERA5 (lower quality); Phase 3 can see this from the date. Incidents before 1940-01-07 are reported as `conditions_missing`, never given values. Alternative: start 1990 (the spec's figure, ~0.67M units) and report pre-1990 incidents as `conditions_missing`. **DP1 resolved (owner decision):** the alternative above, not the 1940 default — incident series fill from 1990-01-01 (series reach back to 1989-12-26 for the first 7-day window), pre-1990 incidents `conditions_missing`. Every later `1940`/`1940-01-01`/`1940-01-07` figure in this plan is this superseded default, kept for history; Task 12 onward already implement 1990.
 8. R11 `country` comes from the data: `US` when the coordinates pass the US check, or, for a row without coordinates, when `state` is a US state or DC; any other blank-coordinate row is quarantined `unknown_country` (never assumed US).
 
 ## Review Focus
@@ -1294,7 +1294,7 @@ GRANT UPDATE (tz) ON public.accidents TO ingest;
 **Interfaces:**
 - Consumes: Tasks 1–4; `grid.bucket_center`, `grid.grid_bucket_sql`; `ingest_log.*`.
 - Produces (`pro_window.py`): `PRO_WINDOW_DAYS = 30`, `JANUARY_EARLIEST_DAY = 10`, `PAID_SOURCES = ("era5_fill", "era5_normals")`, `@dataclass(frozen=True) ProWindow(start: date, initial: bool = False)` with `.end` and `.contains(today) -> bool` (a non-initial window must start in January on or after the 10th), `require_open(window: ProWindow, today: date) -> None` (`SystemExit` outside), `async units_spent(conn, window: ProWindow) -> float`, `@dataclass Budget(max_units: float, spent: float)` with `fits(units) -> bool`, `spend(units) -> None`.
-- Produces (`era5_fill.py`): `SOURCE = "era5_fill"`, `ERA5_START = date(1940, 1, 1)`, `INCIDENT_START_DEFAULT = ERA5_START` `[default pending: DP1]`, `ERA5_LAG_DAYS = 5`, `HISTORY_YEARS = 3`, `SeriesCoverage`, `Gap`, `Chunk` (`.units()`), `last_era5_day(today)`, `history_start(today, history_years=3)`, `series_gaps(coverage, *, today, incident_start, history_years=3) -> list[Gap]`, `plan_chunks(gaps, *, batch, years_per_chunk) -> list[Chunk]`, `async load_coverage(conn) -> list[SeriesCoverage]`, `async run(engine_factory, client, chunks, *, today, budget) -> dict[str, object]`, `PRUNE_SOURCE = "era5_prune"`, `MAX_INCIDENT_DROP = 0.10`, `class PruneRefused(Exception)` (`.kept`), `async prune(conn, *, today, history_years=3) -> tuple[int, int]` (incident series kept, rows deleted), `async log_prune(conn, *, status, kept, deleted, problem) -> None`.
+- Produces (`era5_fill.py`): `SOURCE = "era5_fill"`, `ERA5_START = date(1940, 1, 1)`, `INCIDENT_START_DEFAULT = ERA5_START` `[default pending: DP1, resolved to 1990-01-01]`, `ERA5_LAG_DAYS = 5`, `HISTORY_YEARS = 3`, `SeriesCoverage`, `Gap`, `Chunk` (`.units()`), `last_era5_day(today)`, `history_start(today, history_years=3)`, `series_gaps(coverage, *, today, incident_start, history_years=3) -> list[Gap]`, `plan_chunks(gaps, *, batch, years_per_chunk) -> list[Chunk]`, `async load_coverage(conn) -> list[SeriesCoverage]`, `async run(engine_factory, client, chunks, *, today, budget) -> dict[str, object]`, `PRUNE_SOURCE = "era5_prune"`, `MAX_INCIDENT_DROP = 0.10`, `class PruneRefused(Exception)` (`.kept`), `async prune(conn, *, today, history_years=3) -> tuple[int, int]` (incident series kept, rows deleted), `async log_prune(conn, *, status, kept, deleted, problem) -> None`.
 - Rules: an incident series needs ERA5 from `min(incident_start, history_start)`; any other series from `history_start` (1 January, three years back); both end at `today − 5`. A failed chunk counts as spent and blocks the rest of its group. Non-incident rows older than `history_start` are pruned (spec: 3-year window); incident series are never pruned. This is the only 3-year prune in Phase 2 (plan 7 has none). It refuses (`PruneRefused`, logged `rejected`, `era5_window` exits 1) when the incident set is empty or has shrunk by more than 10% since the last successful prune (`last_ok_rows_in('era5_prune')`).
 
 - [ ] **Step 1: Failing tests** — `backend/tests/test_pro_window.py`:
@@ -1657,7 +1657,7 @@ SOURCE = "era5_fill"
 PRUNE_SOURCE = "era5_prune"
 MAX_INCIDENT_DROP = 0.10
 ERA5_START = date(1940, 1, 1)
-INCIDENT_START_DEFAULT = ERA5_START
+INCIDENT_START_DEFAULT = ERA5_START  # DP1 resolved: 1990-01-01, not this draft default; see the Decisions section
 ERA5_LAG_DAYS = 5
 HISTORY_YEARS = 3
 
@@ -2264,7 +2264,7 @@ async def run(
 - Produces: `async plan(conn, *, today: date, incident_start: date, batch: int, years_per_chunk: int) -> tuple[list[Chunk], list[tuple[int, str]]]`, `async run_window(engine_factory, client, *, window: ProWindow, today: date, max_units: int, batch: int, years_per_chunk: int, incident_start: date) -> dict[str, object]`, CLI:
   - `python -m app.pipelines.era5_window register` (same as `localday register`),
   - `python -m app.pipelines.era5_window plan [--incident-start 1940-01-01] [--window-start YYYY-MM-DD [--initial-window]]` (read-only: chunks, units, buckets due, units already spent in the window),
-  - `python -m app.pipelines.era5_window run --window-start YYYY-MM-DD [--initial-window] --max-units N [--batch 50] [--years-per-chunk 5] [--incident-start 1940-01-01]` (register → fill gaps → normals due → 3-year prune). Exit status 1 when any chunk or batch failed or the prune refused.
+  - `python -m app.pipelines.era5_window run --window-start YYYY-MM-DD [--initial-window] --max-units N [--batch 50] [--years-per-chunk 5] [--incident-start 1940-01-01]` (register → fill gaps → normals due → 3-year prune). Exit status 1 when any chunk or batch failed or the prune refused. DP1 resolved: `--incident-start` must be `1989-12-26` (6 days before the owner's 1990-01-01 incident floor, not this draft's `1940-01-01`).
 
 - [ ] **Step 1: Failing tests** — `backend/tests/test_era5_window.py`:
 
@@ -2502,7 +2502,7 @@ if __name__ == "__main__":
         sys.exit(1)
 ```
 
-`--incident-start` defaults to 1940-01-01 `[default pending: DP1]`. Append `"app.pipelines.era5_window"` to strict mypy.
+`--incident-start` defaults to 1940-01-01 `[default pending: DP1]`; resolved to `1989-12-26` (owner DP1 decision: 1990-01-01 incident floor, minus the 6 days a first 7-day window needs). Append `"app.pipelines.era5_window"` to strict mypy.
 
 - [ ] **Step 4: Run** — `cd backend && uv run pytest tests/test_era5_window.py -q && uv run mypy && uv run ruff check . ../scripts/` → PASS (one series: route and incident share bucket and zone; the incident makes it reach back to `min(2025-01-01, 2024-01-01)`; one 5-year chunk to 2027-01-10; one normals batch for 2017–2026; the second run finds no gaps and nothing due).
 - [ ] **Step 5: Commit** — `git add backend/app/pipelines/era5_window.py backend/tests/test_era5_window.py backend/pyproject.toml && git commit -m "feat(pipelines): era5_window, the Professional-window ERA5 entry point"`
@@ -2517,7 +2517,7 @@ if __name__ == "__main__":
 
 **Interfaces:**
 - Consumes: `tests.verify._db.fetch` (plan 1; analyst, verify-full).
-- Produces: `R6_SQL: str` (returns `n`, `r_tmax`, `p99_gust`), `async verify(conn) -> dict[str, float | int | None]`, CLI `python -m app.pipelines.r6_verify` (logs `source='r6_verify'` with the numbers in `validation_report`); `-m db` cells: 7-day window coverage from 1940-01-07 on (earlier incidents reported as `conditions_missing`), accidents without a timezone reported, r > 0.95, gust p99 < 60, no visibility column, normals rows consistent with `cell_normals_status`.
+- Produces: `R6_SQL: str` (returns `n`, `r_tmax`, `p99_gust`), `async verify(conn) -> dict[str, float | int | None]`, CLI `python -m app.pipelines.r6_verify` (logs `source='r6_verify'` with the numbers in `validation_report`); `-m db` cells: 7-day window coverage from 1940-01-07 on (earlier incidents reported as `conditions_missing`; superseded by DP1 = 1990-01-01, so the live first-window-end is `1990-01-07`), accidents without a timezone reported, r > 0.95, gust p99 < 60, no visibility column, normals rows consistent with `cell_normals_status`.
 
 - [ ] **Step 1: Write the verification cells** — `backend/tests/verify/test_phase2a_conditions.py`:
 
@@ -2530,6 +2530,8 @@ from tests.verify._db import fetch
 pytestmark = pytest.mark.db
 
 # ERA5 in the Open-Meteo archive starts 1940-01-01, so the first full 7-day window ends 1940-01-07.
+# DP1 resolved: the owner's floor is 1990-01-01, not this archive-start default, so the live
+# first-window-end is DATE '1990-01-07'; this constant is this draft's superseded value.
 FIRST_WINDOW_END = "DATE '1940-01-07'"
 ELIGIBLE = (
     "FROM accidents_clean_daily a JOIN accidents t ON t.accident_id = a.accident_id "
