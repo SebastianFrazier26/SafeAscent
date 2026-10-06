@@ -3590,21 +3590,21 @@ The owner opens `data/review/r11_route_matches_branch.csv` (candidate ids, names
 ```bash
 P=~/Developer/safeascent-private/manual; R=../data/review
 for f in aac_refresh caic_refresh nps_refresh; do
-  save_once $R/p2a4_routes_${f}_dry_branch.json INGMOD app.pipelines.accident_facts --file "$P/${f}_routes.csv" --apply-route-ids --dry-run || break
+  [ -e $R/p2a4_routes_${f}_dry_branch.json ] || save_once $R/p2a4_routes_${f}_dry_branch.json INGMOD app.pipelines.accident_facts --file "$P/${f}_routes.csv" --apply-route-ids --dry-run || break
 done
-save_once $R/p2a4_routes.sha256 shasum -a 256 "$P/aac_refresh_routes.csv" "$P/caic_refresh_routes.csv" "$P/nps_refresh_routes.csv"
 ```
 
-Expected: `would_update` per file and a report whose quarantine is empty. `unknown_route` (no such MP route), `not_loaded`, `not_an_r11_row` or `route_already_set` means the owner corrects that copy, deletes that file's `_dry_branch.json` deliberately, and reruns. When clean:
+Expected: `would_update` per file and a report whose quarantine is empty. `unknown_route` (no such MP route), `not_loaded`, `not_an_r11_row` or `route_already_set` means the owner corrects that copy, deletes that file's `_dry_branch.json` deliberately, and reruns: the `[ -e ] ||` skips every file whose dry run is already clean, so the corrected file is the one that actually re-runs. When clean:
 
 ```bash
 P=~/Developer/safeascent-private/manual; R=../data/review
 for f in aac_refresh caic_refresh nps_refresh; do
   save_once $R/p2a4_routes_${f}_apply_branch.json INGMOD app.pipelines.accident_facts --file "$P/${f}_routes.csv" --apply-route-ids || break
-done
+done && \
+save_once $R/p2a4_routes.sha256 shasum -a 256 "$P/aac_refresh_routes.csv" "$P/caic_refresh_routes.csv" "$P/nps_refresh_routes.csv"
 ```
 
-Expected: `updated` equal to each dry run's `would_update`. The backtest cell (Step 8) needs these links.
+Expected: `updated` equal to each dry run's `would_update`, then the route-files hash saved (after the apply, not the dry run, so a correction never leaves a stale hash). The backtest cell (Step 8) needs these links.
 
 - [ ] **Step 6 (owner/agent): R5 re-dedupe with the R11 rows**
 
