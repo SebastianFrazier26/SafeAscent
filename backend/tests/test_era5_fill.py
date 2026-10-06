@@ -332,10 +332,36 @@ EDGE_STOPGAP = "".join(
     f"VALUES ({B}, '{TZ}', '2020-01-{d:02d}', 5.0, 'stopgap', 'open_meteo_forecast');" for d in (8, 9, 10))
 
 
-async def _fill(url: str, handler, gap: Gap) -> dict[str, object]:
-    client = ArchiveClient(None, transport=httpx.MockTransport(handler))
-    return await run(lambda: create_async_engine(url), client, plan_chunks([gap], batch=50, years_per_chunk=1),
-                     today=TODAY, budget=Budget(max_units=100, spent=0), window=WIN)
+# last_era5_day(EDGE_TODAY) == EDGE.end, so EDGE's chunk sits on the lag edge.
+EDGE_TODAY = date(2020, 1, 15)
+
+
+async def _fill(url: str, handler, gap: Gap, *, today: date = TODAY, batch: int = 50,
+                breaker: int | None = None, gaps: list[Gap] | None = None) -> dict[str, object]:
+    client = ArchiveClient(None, transport=httpx.MockTransport(handler), sleep=lambda _: None)
+    chunks = plan_chunks(gaps or [gap], batch=batch, years_per_chunk=1)
+    return await run(lambda: create_async_engine(url), client, chunks, today=today,
+                     budget=Budget(max_units=1000, spent=0), window=WIN, breaker=breaker)
+
+
+def _per_var(value: Callable[[str, int], float | None], *, fail_lats: frozenset[float] = frozenset()):
+    """Like _handler_with, but per variable; locations whose latitude is in fail_lats get a 400."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = request.url.params
+        if float(params["latitude"].split(",")[0]) in fail_lats:
+            return httpx.Response(400, json={"error": True, "reason": "bad"})
+        start, end = date.fromisoformat(params["start_date"]), date.fromisoformat(params["end_date"])
+        n = (end - start).days + 1
+        body = []
+        for lat, lon in zip(params["latitude"].split(","), params["longitude"].split(",")):
+            daily: dict[str, object] = {"time": [(start + timedelta(d)).isoformat() for d in range(n)]}
+            for var in DAILY_VARS:
+                daily[var] = [value(var, i) for i in range(n)]
+            body.append({"latitude": float(lat), "longitude": float(lon), "timezone": params["timezone"],
+                         "daily": daily})
+        return httpx.Response(200, json=body)
+
+    return handler
 
 
 async def _days(url: str) -> list[tuple[object, ...]]:
@@ -354,7 +380,7 @@ def test_trailing_all_null_lag_edge_days_are_neither_written_nor_covered():
     handler = _handler_with(lambda i: None if i >= 7 else 1.0)
 
     async def scenario(url: str):
-        result = await _fill(url, handler, EDGE)
+        result = await _fill(url, handler, EDGE, today=EDGE_TODAY)
         cov, _ = await _coverage_and_rows(url)
         return result, cov, await _days(url)
 
@@ -370,6 +396,102 @@ def test_trailing_all_null_lag_edge_days_are_neither_written_nor_covered():
     # The next plan asks for the edge days again.
     gaps = series_gaps(cov, today=date(2020, 1, 15), incident_start=INCIDENT_START_DEFAULT)
     assert Gap(B, TZ, date(2020, 1, 8), date(2020, 1, 10), "forward") in gaps
+
+
+@requires_pg
+def test_a_partly_observed_edge_day_is_trimmed_but_an_interior_one_is_kept():
+    # M1: day 8 has tmax but no tmin (a partial ERA5 edge day), 9-10 nothing; day 3 is an
+    # interior day missing precipitation. Only the trailing run lacking a core value is cut.
+    def value(var: str, i: int) -> float | None:
+        if i >= 8 or (i == 7 and var != "temperature_2m_max") or (i == 2 and var == "precipitation_sum"):
+            return None
+        return 1.0
+
+    async def scenario(url: str):
+        await _fill(url, _per_var(value), EDGE, today=EDGE_TODAY)
+        cov, _ = await _coverage_and_rows(url)
+        return cov, await _days(url)
+
+    with migrated_db(seed_sql=SERIES_SEED + EDGE_STOPGAP) as name:
+        cov, days = asyncio.run(scenario(sa_url(name)))
+    assert (cov[0].first, cov[0].last) == (date(2020, 1, 1), date(2020, 1, 7))
+    assert [d[0] for d in days if d[2] == "era5"] == [date(2020, 1, d) for d in range(1, 8)]
+    assert [d for d in days if d[2] == "stopgap"] == [(date(2020, 1, d), 5.0, "stopgap") for d in (8, 9, 10)]
+
+
+@requires_pg
+def test_a_short_all_null_edge_chunk_is_pending_not_rejected_and_never_trips_the_breaker():
+    # A rerun a few days later: the newest days are not published yet for any of 4 series.
+    buckets = [grid_bucket(40.0 + k / 10, -105.3) for k in range(4)]
+    seed = "".join(f"INSERT INTO grid_bucket_series (grid_bucket, tz, first_era5_date, last_era5_date) "
+                   f"VALUES ({b}, '{TZ}', '2017-01-01', '2020-01-07');" for b in buckets)
+    gaps = [Gap(b, TZ, date(2020, 1, 8), date(2020, 1, 10), "forward") for b in buckets]
+
+    async def scenario(url: str):
+        result = await _fill(url, _handler_with(lambda i: None), gaps[0], today=EDGE_TODAY, batch=1,
+                             breaker=3, gaps=gaps)
+        cov, rows = await _coverage_and_rows(url)
+        return result, cov, rows
+
+    with migrated_db(seed_sql=seed) as name:
+        result, cov, rows = asyncio.run(scenario(sa_url(name)))
+        log = asyncio.run(_log(sa_url(name)))
+    assert (result["chunks"], result["pending_lag_edge"], result["done"], result["rejected"]) == (4, 4, 0, 0)
+    assert result["stopped_after_failures"] is False and result["blocked_after_failure"] == 0
+    assert rows == 0 and {(c.first, c.last) for c in cov} == {(date(2017, 1, 1), date(2020, 1, 7))}
+    assert log == [("ok", 1.0, 0, 0)] * 4
+    assert series_gaps(cov, today=EDGE_TODAY, incident_start=INCIDENT_START_DEFAULT)[:1] == [gaps[0]]
+
+
+@requires_pg
+def test_a_long_all_null_edge_chunk_is_still_rejected():
+    gap = Gap(B, TZ, date(2020, 1, 1), date(2020, 1, 30), "forward")
+
+    async def scenario(url: str):
+        result = await _fill(url, _handler_with(lambda i: None), gap, today=date(2020, 2, 4))
+        return result, await _coverage_and_rows(url)
+
+    with migrated_db(seed_sql=SERIES_SEED) as name:
+        result, (cov, rows) = asyncio.run(scenario(sa_url(name)))
+    assert (result["chunks"], result["rejected"], result["pending_lag_edge"]) == (1, 1, 0)
+    assert (cov[0].first, cov[0].last, rows) == (None, None, 0)
+
+
+@requires_pg
+def test_a_pending_chunk_between_two_failures_does_not_reset_the_breaker():
+    from app.pipelines.grid import bucket_center
+
+    buckets = [grid_bucket(40.0 + k / 10, -105.3) for k in range(3)]
+    seed = "".join(f"INSERT INTO grid_bucket_series (grid_bucket, tz, first_era5_date, last_era5_date) "
+                   f"VALUES ({b}, '{TZ}', '2017-01-01', '2020-01-07');" for b in buckets)
+    gaps = [Gap(b, TZ, date(2020, 1, 8), date(2020, 1, 10), "forward") for b in buckets]
+    failing = frozenset(bucket_center(b)[0] for b in (buckets[0], buckets[2]))
+
+    async def scenario(url: str):
+        return await _fill(url, _per_var(lambda v, i: None, fail_lats=failing), gaps[0], today=EDGE_TODAY,
+                           batch=1, breaker=2, gaps=gaps)
+
+    with migrated_db(seed_sql=seed) as name:
+        result = asyncio.run(scenario(sa_url(name)))
+    assert (result["failed"], result["pending_lag_edge"], result["done"]) == (2, 1, 0)
+    assert result["stopped_after_failures"] is True
+
+
+@requires_pg
+def test_a_quarantined_last_day_of_a_backward_chunk_is_accepted_and_covered():
+    # I2: day_rows drops the out-of-range last day; it must still count as observed (1 of 365
+    # days is under the 1% quarantine share), and stays inside the span, missing for good.
+    gap = Gap(B, TZ, date(2019, 1, 1), date(2019, 12, 31), "backward")
+    handler = _handler_with(lambda i: 999.0 if i == 364 else 1.0)
+
+    async def scenario(url: str):
+        result = await _fill(url, handler, gap)
+        return result, await _coverage_and_rows(url)
+
+    with migrated_db(seed_sql=SERIES_SEED) as name:
+        result, (cov, rows) = asyncio.run(scenario(sa_url(name)))
+    assert (result["done"], result["rejected"]) == (1, 0)
+    assert (cov[0].first, cov[0].last, rows) == (date(2019, 1, 1), date(2019, 12, 31), 364)
 
 
 @requires_pg
