@@ -22,6 +22,10 @@ depends_on = None
 CONDITIONS_SOURCES = ("open_meteo_archive", "open_meteo_forecast")
 NORMALS_SOURCES = ("open_meteo_era5_seamless", "derived_cell_daily_conditions")
 PAID_TABLES = ("cell_daily_conditions", "cell_climate_normals", "cell_climatology")
+# Owner OQ2 (rule 4): incidents from 1990. Must equal app.pipelines.localday.INCIDENT_START
+# (test_localday pins it); a migration never imports app code. Incident series start six days
+# earlier, so without this floor a late-1989 incident would get a partial window, not missing.
+INCIDENT_START_SQL = "1990-01-01"
 
 
 def upgrade() -> None:
@@ -136,7 +140,8 @@ def upgrade() -> None:
         "JOIN cell_daily_conditions c ON c.grid_bucket = grid_bucket_key(a.latitude, a.longitude) "
         "AND c.tz = t.tz AND c.date = a.date + o.day_offset "
         "WHERE a.point_trusted AND a.latitude IS NOT NULL AND a.longitude IS NOT NULL "
-        "AND a.year_lo IS NOT DISTINCT FROM a.year_hi"
+        "AND a.year_lo IS NOT DISTINCT FROM a.year_hi "
+        f"AND a.date >= DATE '{INCIDENT_START_SQL}'"
     )
 
 

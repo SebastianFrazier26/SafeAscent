@@ -1,4 +1,6 @@
 import asyncio
+import importlib.util
+from pathlib import Path
 from datetime import date, datetime, timezone
 
 import pytest
@@ -230,3 +232,12 @@ def test_register_logged_writes_one_ok_run_with_its_quarantine():
     assert result["report"]["quarantined"] == {"outside_us": 1}
     assert log == [("series_register", "ok", 2, 1)]
     assert quarantine == [("series_register", "outside_us")]
+
+
+def test_the_view_floor_in_migration_0007_matches_incident_start():
+    path = Path(__file__).resolve().parents[1] / "alembic" / "versions" / "0007_cell_daily_conditions.py"
+    spec = importlib.util.spec_from_file_location("m0007", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert date.fromisoformat(module.INCIDENT_START_SQL) == INCIDENT_START

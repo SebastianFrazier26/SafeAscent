@@ -172,3 +172,22 @@ def test_downgrade_without_paid_rows_removes_everything_0007_added():
             "EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'accidents' AND column_name = 'tz') AS tz"
         )))
     assert dict(rows[0]) == {"v": None, "t": None, "d": "accidents_clean_daily", "tz": False}
+
+
+def test_a_pre_1990_incident_gets_no_window_even_when_its_series_has_the_days():
+    # Rule 4: the series starts 1989-12-26 so the first 1990 incident's window is complete; an
+    # incident on 1989-12-28 must read as missing, never as a partial window.
+    b = grid_bucket(40.05, -105.25)
+    seed = (
+        "INSERT INTO accidents (accident_id, source, date, latitude, longitude, is_canonical, activity_class, country, "
+        "date_precision, geocode_precision, tz) VALUES "
+        "(7, 'AAC', '1989-12-28', 40.05, -105.25, true, 'climbing', 'US', 'day', 'crag', 'America/Denver'), "
+        "(8, 'AAC', '1990-01-01', 40.05, -105.25, true, 'climbing', 'US', 'day', 'crag', 'America/Denver');"
+    ) + "".join(
+        f"INSERT INTO cell_daily_conditions (grid_bucket, tz, date, tmax, record_kind, source) "
+        f"VALUES ({b}, 'America/Denver', DATE '1989-12-26' + {k}, 1, 'era5', 'open_meteo_archive');"
+        for k in range(0, 7)
+    )
+    with migrated_db(seed_sql=seed) as name:
+        rows = asyncio.run(_fetch(pg_url(name), "SELECT accident_id, count(*) AS n FROM accident_conditions GROUP BY 1"))
+    assert [(r["accident_id"], r["n"]) for r in rows] == [(8, 7)]
