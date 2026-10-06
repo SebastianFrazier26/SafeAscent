@@ -6,7 +6,7 @@ back from source_ingest_log, so reruns and slices can never add up past it.
 
 A paid month is 5M units. The plan gate stops above PLAN_STOP_UNITS before anything is bought.
 The cap is per database: a rehearsal branch's spend is logged only in the branch, so the
-runbook records it and the prod cap is 4.8M minus that number.
+runbook records it and the prod cap is 4.5M minus that number.
 """
 
 from __future__ import annotations

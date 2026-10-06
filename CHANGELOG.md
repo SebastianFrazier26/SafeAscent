@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Phase 2a final-review fixes (plan 3) — 2026-10-06
+
+- Normals take a bucket's alphabetically first timezone (`min(tz)`, owner rule 5), never the series with the longest stored ERA5 history, so the choice cannot flip between runs; `normals.run` refuses a due list that repeats a bucket.
+- `era5_fill` never writes or covers trailing all-NULL days (ERA5 days Open-Meteo has not finalised): each bucket's span ends at its last day with any observed value, stopgap rows on the edge days survive, and the next run asks for those days again. A bucket with no observed day in a chunk, or trailing NULL days in a backward chunk (the span would get a hole), rejects the chunk.
+- Migration `0007` (edited in place, not yet on prod): `accident_conditions` also requires `date >= 1990-01-01`, so a late-1989 incident reads as missing rather than a partial window.
+- `era5_window run` needs `OPEN_METEO_API_KEY` exported into the process environment; a key that settings would read from `backend/.env` is refused (owner ruling B8, fail closed). `--incident-start` accepts only 1989-12-26.
+- `r6_verify` reads `accidents_clean_daily` (trusted, known-day accidents only); `accident_facts` sets `tz` only for trusted point precisions; dead `open_meteo.kmh_to_ms` removed; the coverage verify cell reuses localday's eligibility, bounds by each series' `last_era5_date` and counts only days with an observed `tmax`.
+
 ### Phase 2a accident refresh (PR 2a-4) — 2026-10-05
 
 - `app/pipelines/accident_facts.py` (R11): `python -m app.pipelines.accident_facts --file PATH [--dry-run] [--overwrite] [--apply-route-ids]` loads a facts-only CSV of new incidents (date, place, activity, type, severity, experience facts, URL, and our own one-line `summary` — never scraped report text). The CSV header must match `data/manual/accident_facts.template.csv` exactly; filled CSVs are gitignored (`data/manual/*.csv`) and live in `~/Developer/safeascent-private/manual/` until legal question Q6 (Decision D12) is answered. New rows only: an existing `(source, source_id)` is quarantined `already_present`, compared case-insensitively on `source` and never changed or deleted; a new row is stored in the source's existing spelling. `country` is taken from the data via `geocode.classify_state`, never assumed — a foreign state quarantines `outside_us`, an unrecognised one `unknown_country`. `tz` is set at insert, from the point (`localday.tz_for_point`). The run log lists post-2024-08 month gaps per source family, counting day- and month-precision dates only (a year-precision date never fills a month). Loads and `--apply-route-ids` runs serialise on one advisory lock, so two runs never insert the same row twice. R11 rows are never touched by R3, R4 or R12 (they are absent from the frozen `internal.accidents_raw` snapshot), so the activity class and point decided in the facts CSV are final.
