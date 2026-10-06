@@ -157,15 +157,18 @@ async def plan_report(
         "over_plan_stop": total > PLAN_STOP_UNITS,
     }
     if incident_new or route_new:
-        report["warning"] = (f"{incident_new + route_new} point buckets are not registered; run `register` first. "
-                             "total_units includes an upper-bound estimate for them")
+        report["warning"] = (f"{incident_new + route_new} point buckets are not registered. "
+                             "total_units includes an estimate for them "
+                             "(run `register` first for an exact plan)")
     return report
 
 
 async def _unregistered_buckets(conn: AsyncConnection) -> tuple[int, int]:
     """(incident, route-only) buckets with no series yet. Counted before register has assigned
     accident zones, so the incident side drops the tz condition; points register will quarantine
-    (no zone, outside the US) are counted too, which only over-estimates."""
+    (no zone, outside the US) are counted too. This is an estimate (run `register` first for an
+    exact plan), not a bound: a new incident in a route-only bucket, or a bucket that straddles a
+    timezone, is undercounted."""
     grid = grid_bucket_sql("p.lat", "p.lon")
     row = (await conn.execute(text(
         f"WITH inc AS (SELECT DISTINCT {grid} AS b FROM ({_INCIDENT_POINTS_ANY_TZ_SQL}) p(lat, lon)), "

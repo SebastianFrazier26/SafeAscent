@@ -53,6 +53,27 @@ def test_no_visibility_in_new_conditions():
     assert rows == []
 
 
+def test_r11_refresh_window_has_incidents():
+    [row] = fetch(
+        "SELECT count(*) AS n FROM accidents_clean WHERE date BETWEEN DATE '2026-02-05' AND DATE '2026-07-02'"
+    )
+    print({"feb5_jul2_2026_clean_incidents": row["n"]})
+    assert row["n"] > 0
+    [latest] = fetch("SELECT max(date) AS d FROM accidents WHERE date <= (now() AT TIME ZONE 'UTC')::date")
+    assert latest["d"] is not None and latest["d"].year >= 2025
+
+
+def test_r11_backtest_inputs_exist():
+    [row] = fetch(
+        "SELECT count(*) AS incidents, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM historical_predictions h "
+        "WHERE h.route_id = a.mp_route_id AND h.prediction_date = a.date)) AS with_prediction "
+        "FROM accidents_clean_daily a WHERE a.date BETWEEN DATE '2026-02-05' AND DATE '2026-07-02' "
+        "AND a.mp_route_id IS NOT NULL"
+    )
+    print({"backtest_incidents": row["incidents"], "backtest_with_prediction": row["with_prediction"]})
+    assert row["incidents"] > 0 and row["with_prediction"] > 0
+
+
 def test_normals_status_matches_the_normals_rows():
     [row] = fetch(
         "SELECT count(*) FILTER (WHERE st.status <> 'pending' AND (SELECT count(*) FROM cell_climate_normals n "
