@@ -4061,12 +4061,21 @@ if p["over_plan_stop"] or p["total_units"] + b > 4_500_000 or p["unregistered_in
 
 If this STOPs on the budget, the owner chooses per OQ4; the slices below then still stop at the 4.5M line and the rest waits for a second paid month or the next window.
 
+**STOP — owner plan review (as Task 12 Step 3).** `GATE OK: plan_ok` is a mechanical budget check only, not the owner's go-ahead to spend. The agent pastes the printed `prod total_units` and `branch spent` to the owner. Only on the owner's written "plan ok" does the owner run:
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && GATE_DIR=../data/review/gates_era5w1_prod gate_pass owner_prod_plan_ack )
+```
+
+4d requires this gate too, so the first 1,000,000-unit slice cannot run on the mechanical gate alone.
+
 **4d. Slice 1 (cap 1,000,000), then the owner's dashboard check.**
 
 ```bash
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1
   # PRODUCTION (paid)
   gate_require plan_ok || exit 1
+  gate_require owner_prod_plan_ack || exit 1
   W="$(cat ../data/review/era5w1_window_start.txt)" || exit 1
   set -a; . ./.env.openmeteo || exit 1; set +a
   [ -n "${OPEN_METEO_API_KEY:-}" ] || { echo "refusing: OPEN_METEO_API_KEY missing" >&2; exit 1; }
@@ -4131,6 +4140,8 @@ Done when the last run's JSON shows `fill.chunks: 0` and `normals.due: 0` with e
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1
   # PRODUCTION
   gate_require owner_units_confirmed_prod || exit 1
+  LAST_SLICE_LOG=../data/review/logs/era5w1_prod_s3.log  # edit to s2's log if 4f was skipped, or the _r2/_r3 name if the last slice needed a rerun
+  bg_wait "$LAST_SLICE_LOG" 0 >/dev/null || { echo "$LAST_SLICE_LOG has not finished ok: STOP" >&2; exit 1; }
   INGMOD app.pipelines.r6_verify || exit 1
   bg_start ../data/review/logs/verify_era5w1_prod.log VERIFY tests/verify -q -s )
 ```
