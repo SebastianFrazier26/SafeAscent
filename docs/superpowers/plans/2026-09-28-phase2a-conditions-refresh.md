@@ -3871,7 +3871,8 @@ Further rounds follow plan 2 Task 13 12h with the `_r11` names, exactly as many 
 ```bash
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
   # PRODUCTION
-  case "${LAST:-}" in ../data/review/logs/r5_r11_apply[0-9]_prod.log) ;; *) echo "LAST is not set to an r5_r11 prod log: STOP" >&2; exit 1 ;; esac
+  LAST=../data/review/logs/r5_r11_apply1_prod.log  # edit to the last _r11 prod log this step actually wrote (apply2, apply3, ...)
+  case "$LAST" in ../data/review/logs/r5_r11_apply[0-9]_prod.log) ;; *) echo "LAST is not set to an r5_r11 prod log: STOP" >&2; exit 1 ;; esac
   bg_wait "$LAST" 0 >/dev/null || { echo "$LAST has not finished ok: STOP" >&2; exit 1; }
   grep -Eq '"review_pending": 0[,}]' "$LAST" || { echo "review_pending is not 0: STOP" >&2; exit 1; }
   gate_pass r5_done )
