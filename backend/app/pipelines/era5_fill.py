@@ -53,6 +53,7 @@ ERA5_LAG_DAYS = 5
 HISTORY_YEARS = 3
 
 Direction = Literal["forward", "backward"]
+Outcome = Literal["full", "pending", "trimmed"]
 
 
 @dataclass(frozen=True)
@@ -197,24 +198,35 @@ def _last_days(response: LocationResponse) -> tuple[date | None, date | None]:
     return any_last, core_last
 
 
-def _trim_lag_edge(chunk: Chunk, responses: Sequence[LocationResponse], *, today: date) -> _Trim:
+def is_edge(chunk: Chunk, today: date) -> bool:
+    """A forward chunk reaching into the last PENDING_MAX_DAYS before the lag edge. ERA5 can lag
+    past ERA5_LAG_DAYS, and a forward gap splits at 31 December, so in January the chunk before
+    the split can end in unpublished days too; it must get the edge rules, not a rejection."""
+    return chunk.direction == "forward" and chunk.end > last_era5_day(today) - timedelta(days=PENDING_MAX_DAYS)
+
+
+def _trim_lag_edge(
+    chunk: Chunk, responses: Sequence[LocationResponse], survived: dict[int, date], *, today: date
+) -> _Trim:
     """Open-Meteo returns NULL (or partly NULL) days for ERA5 days not yet final. An era5 row
-    (rank 3) would replace a good stopgap row and the span would claim the day for good, so a
-    forward chunk ending on the lag edge keeps each bucket's days only up to its last day with
-    every core value (M1); the trailing days are neither written nor covered, and the next run
-    asks for them again. A short edge chunk with no such day is pending: nothing published yet.
-    Any other chunk is not trimmed: trailing unobserved days there would leave a hole inside the
-    span (a later chunk of the group extends past them), so they reject the chunk, as does a
-    bucket with no observed day. A quarantined day still counts as observed (I2): it stays inside
-    the span, missing for good, so it must not reject the chunk every run."""
-    edge = chunk.direction == "forward" and chunk.end == last_era5_day(today)
+    (rank 3) would replace a good stopgap row and the span would claim the day for good, so an
+    edge chunk keeps each bucket's days only up to its last day with every core value that also
+    survived validation (M1): a trailing quarantined edge day stays uncovered, keeps its stopgap
+    row and is asked for again. A short edge chunk with no such day is pending: nothing published
+    yet. Any other chunk is not trimmed, since trailing unobserved days there would leave a hole
+    inside the span (a later chunk of the group extends past them), so they reject the chunk, as
+    does a bucket with no observed day. There a quarantined day counts as observed (I2): it stays
+    inside the span, missing for good, so it must not reject the chunk every run."""
+    edge = is_edge(chunk, today)
     short = (chunk.end - chunk.start).days < PENDING_MAX_DAYS
     ends: dict[int, date] = {}
     pending: list[int] = []
     problems: list[str] = []
     for b, response in zip(chunk.buckets, responses):
         any_last, core_last = _last_days(response)
-        last = core_last if edge else any_last
+        last = any_last
+        if edge:
+            last = None if core_last is None or b not in survived else min(core_last, survived[b])
         if last is None:
             if edge and short:
                 pending.append(b)
@@ -225,6 +237,12 @@ def _trim_lag_edge(chunk: Chunk, responses: Sequence[LocationResponse], *, today
         else:
             ends[b] = last
     return _Trim(ends, tuple(pending), problems)
+
+
+_SPAN_ENDS = text(
+    "SELECT grid_bucket, last_era5_date FROM grid_bucket_series WHERE tz = :tz AND grid_bucket = ANY(:buckets) "
+    "FOR UPDATE"
+)
 
 
 def _incomplete(responses: Sequence[LocationResponse], chunk: Chunk) -> bool:
@@ -242,12 +260,12 @@ async def _write_chunk(
     today: date,
     units: float,
     problem: str | None,
-) -> tuple[RunStatus, bool]:
-    """The flag is True when every bucket was pending on the lag edge: logged ok, nothing written."""
+) -> tuple[RunStatus, Outcome]:
+    """Outcome "pending": ok, but no bucket's span moved (nothing published yet). "trimmed": an
+    ok edge chunk that left at least one bucket short of chunk.end, to be asked for again."""
     report = ValidationReport(SOURCE)
     rows: list[DayRow] = []
     ends: dict[int, date] = {}
-    pending = False
     failed = problem is not None
     problems: list[str] = [problem] if problem else []
     if problem is None:
@@ -268,15 +286,30 @@ async def _write_chunk(
             report.quarantined.update(location.quarantined)
             report.issues.extend(location.issues)
         if not failed:
-            trim = _trim_lag_edge(chunk, responses, today=today)
+            survived: dict[int, date] = {}
+            for r in rows:
+                survived[r.grid_bucket] = max(r.date, survived.get(r.grid_bucket, date.min))
+            trim = _trim_lag_edge(chunk, responses, survived, today=today)
             ends, problems = trim.ends, problems + trim.problems
-            pending = not ends and not trim.problems
-            rows = [r for r in rows if r.grid_bucket in ends and r.date <= ends[r.grid_bucket]]
     status: RunStatus = "failed" if failed else "rejected" if problems else "ok"
+    outcome: Outcome = "full"
     async with engine.begin() as conn:
         await write_quarantine(conn, run_id, report)
         n = 0
         if status == "ok":
+            if chunk.direction == "forward":
+                # A forward chunk must continue its bucket's span: after an earlier chunk of the
+                # group was trimmed, extending to this one would cover the trimmed days for good.
+                # Such a bucket waits for the next run, which re-plans from its real last day.
+                lasts: dict[int, date | None] = {
+                    int(b): last for b, last in (await conn.execute(_SPAN_ENDS, {"tz": chunk.tz, "buckets": list(ends)})).all()
+                }
+                ends = {b: e for b, e in ends.items() if (last := lasts.get(b)) is None or last >= chunk.start - timedelta(days=1)}
+            rows = [r for r in rows if r.grid_bucket in ends and r.date <= ends[r.grid_bucket]]
+            if not ends:
+                outcome = "pending"
+            elif is_edge(chunk, today) and any(ends.get(b) != chunk.end for b in chunk.buckets):
+                outcome = "trimmed"
             n = await upsert_rows(conn, rows, run_id=run_id)
             # Quarantined days (at most 1% per location) stay inside the span: they are missing for
             # good, never zero and never re-bought, which the quarantine rows record.
@@ -287,7 +320,7 @@ async def _write_chunk(
                 await conn.execute(COVERAGE_UPDATE, {"s": chunk.start, "e": e, "tz": chunk.tz, "buckets": buckets})
         await finish_run(conn, run_id, status=status, report=report, rows_upserted=n,
                          problems=problems or None, cost_units=units)
-    return status, pending and status == "ok"
+    return status, outcome
 
 
 async def run(
@@ -308,7 +341,7 @@ async def run(
     None keeps the DB's own time. `breaker` stops the run after that many consecutive failed or
     rejected chunks, so an upstream outage cannot spend the window on doomed requests."""
     engine = engine_factory()
-    done = failed = rejected = blocked = consecutive = pending_lag_edge = 0
+    done = failed = rejected = blocked = consecutive = pending_lag_edge = edge_trimmed = 0
     stopped = tripped = closed = False
     failed_groups: set[str] = set()
     try:
@@ -346,14 +379,16 @@ async def run(
                 stopped = stopped or fetched.budget_exhausted
                 if problem is None and _incomplete(responses, chunk):
                     problem = f"response does not cover every day of {chunk.start}..{chunk.end}"
-                status, pending = await _write_chunk(engine, chunk, run_id, responses, today=today, units=billed,
+                status, outcome = await _write_chunk(engine, chunk, run_id, responses, today=today, units=billed,
                                                      problem=problem)
-                if pending:
+                if status == "ok" and outcome == "pending":
                     # Nothing published yet is neither progress nor failure: the breaker's count
                     # is left exactly as it was, and the group stays open for the next run.
                     pending_lag_edge += 1
                 elif status == "ok":
                     done += 1
+                    if outcome == "trimmed":
+                        edge_trimmed += 1
                     consecutive = 0
                 else:
                     failed_groups.add(chunk.group)
@@ -369,7 +404,8 @@ async def run(
                     break
     finally:
         await engine.dispose()
-    return {"chunks": len(chunks), "done": done, "pending_lag_edge": pending_lag_edge, "failed": failed,
+    return {"chunks": len(chunks), "done": done, "pending_lag_edge": pending_lag_edge, "edge_trimmed": edge_trimmed,
+            "failed": failed,
             "rejected": rejected,
             "blocked_after_failure": blocked, "stopped_for_budget": stopped, "stopped_after_failures": tripped,
             "stopped_window_closed": closed}

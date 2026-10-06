@@ -494,6 +494,127 @@ def test_a_quarantined_last_day_of_a_backward_chunk_is_accepted_and_covered():
     assert (cov[0].first, cov[0].last, rows) == (date(2019, 1, 1), date(2019, 12, 31), 364)
 
 
+def _by_date(value: Callable[[float, date, str], float | None]):
+    """Each location's value per (latitude, day, variable)."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = request.url.params
+        start, end = date.fromisoformat(params["start_date"]), date.fromisoformat(params["end_date"])
+        days = [start + timedelta(d) for d in range((end - start).days + 1)]
+        body = []
+        for lat, lon in zip(params["latitude"].split(","), params["longitude"].split(",")):
+            daily: dict[str, object] = {"time": [d.isoformat() for d in days]}
+            for var in DAILY_VARS:
+                daily[var] = [value(float(lat), d, var) for d in days]
+            body.append({"latitude": float(lat), "longitude": float(lon), "timezone": params["timezone"],
+                         "daily": daily})
+        return httpx.Response(200, json=body)
+
+    return handler
+
+
+def _spans(buckets: list[int], first: str, last: str) -> str:
+    return "".join(f"INSERT INTO grid_bucket_series (grid_bucket, tz, first_era5_date, last_era5_date) "
+                   f"VALUES ({b}, '{TZ}', '{first}', '{last}');" for b in buckets)
+
+
+JAN_TODAY = date(2026, 1, 8)  # last_era5_day == 2026-01-03
+
+
+@requires_pg
+def test_a_january_run_with_era5_lagging_past_the_year_split_never_rejects_or_trips():
+    # M2: real ERA5 lags to 2025-12-26, past ERA5_LAG_DAYS. Each forward gap splits at 31
+    # December, so every group's first chunk ends in unpublished days without touching the edge.
+    buckets = [grid_bucket(40.0 + k / 10, -105.3) for k in range(3)]
+    gaps = [Gap(b, TZ, date(2025, 12, 21), date(2026, 1, 3), "forward") for b in buckets]
+    handler = _by_date(lambda lat, d, var: 1.0 if d <= date(2025, 12, 26) else None)
+
+    async def scenario(url: str):
+        result = await _fill(url, handler, gaps[0], today=JAN_TODAY, batch=1, breaker=3, gaps=gaps)
+        cov, _ = await _coverage_and_rows(url)
+        return result, cov
+
+    with migrated_db(seed_sql=_spans(buckets, "2023-01-01", "2025-12-20")) as name:
+        result, cov = asyncio.run(scenario(sa_url(name)))
+    assert (result["chunks"], result["rejected"], result["failed"], result["blocked_after_failure"]) == (6, 0, 0, 0)
+    assert result["stopped_after_failures"] is False
+    assert (result["done"], result["edge_trimmed"], result["pending_lag_edge"]) == (3, 3, 3)
+    assert result["chunks"] == result["pending_lag_edge"] + result["edge_trimmed"]  # type: ignore[operator]
+    assert {c.last for c in cov} == {date(2025, 12, 26)}
+
+
+@requires_pg
+def test_a_trimmed_chunk_is_never_bridged_by_the_next_chunk_of_its_group():
+    # 27-31 December unpublished but 1-3 January answered: covering January would claim the
+    # December days for good, so January waits for the next run, which re-plans from 26 December.
+    handler = _by_date(lambda lat, d, var: None if date(2025, 12, 27) <= d <= date(2025, 12, 31) else 1.0)
+    gap = Gap(B, TZ, date(2025, 12, 21), date(2026, 1, 3), "forward")
+
+    async def scenario(url: str):
+        result = await _fill(url, handler, gap, today=JAN_TODAY)
+        cov, _ = await _coverage_and_rows(url)
+        return result, cov, await _days(url)
+
+    with migrated_db(seed_sql=_spans([B], "2023-01-01", "2025-12-20")) as name:
+        result, cov, days = asyncio.run(scenario(sa_url(name)))
+    assert cov[0].last == date(2025, 12, 26)
+    assert max(d[0] for d in days if d[2] == "era5") == date(2025, 12, 26)  # type: ignore[type-var]
+    assert (result["rejected"], result["edge_trimmed"], result["pending_lag_edge"]) == (0, 1, 1)
+
+
+@requires_pg
+def test_a_quarantined_trailing_edge_day_stays_uncovered_and_keeps_its_stopgap_row():
+    # M1: on an edge chunk the span ends at the last day that survived validation; 1 of 121 days
+    # is under the 1% quarantine share, so the chunk itself is accepted.
+    gap = Gap(B, TZ, date(2020, 1, 1), date(2020, 4, 30), "forward")
+    stopgap = (f"INSERT INTO cell_daily_conditions (grid_bucket, tz, date, tmax, record_kind, source) "
+               f"VALUES ({B}, '{TZ}', '2020-04-30', 5.0, 'stopgap', 'open_meteo_forecast');")
+
+    async def scenario(url: str):
+        result = await _fill(url, _handler_with(lambda i: 999.0 if i == 120 else 1.0), gap, today=date(2020, 5, 5))
+        cov, _ = await _coverage_and_rows(url)
+        return result, cov, await _days(url)
+
+    with migrated_db(seed_sql=SERIES_SEED + stopgap) as name:
+        result, cov, days = asyncio.run(scenario(sa_url(name)))
+    assert (result["done"], result["edge_trimmed"], result["rejected"]) == (1, 1, 0)
+    assert (cov[0].first, cov[0].last) == (date(2020, 1, 1), date(2020, 4, 29))
+    assert [d for d in days if d[0] == date(2020, 4, 30)] == [(date(2020, 4, 30), 5.0, "stopgap")]
+
+
+@requires_pg
+def test_a_mixed_edge_chunk_is_done_and_its_unpublished_bucket_keeps_its_span_and_stopgap_rows():
+    from app.pipelines.grid import bucket_center
+
+    b2 = grid_bucket(40.1, -105.3)
+    empty_lat = bucket_center(b2)[0]
+    stopgap = "".join(
+        f"INSERT INTO cell_daily_conditions (grid_bucket, tz, date, tmax, record_kind, source) "
+        f"VALUES ({b2}, '{TZ}', '2020-01-{d:02d}', 5.0, 'stopgap', 'open_meteo_forecast');" for d in (8, 9, 10))
+    gap = Gap(B, TZ, date(2020, 1, 8), date(2020, 1, 10), "forward")
+    handler = _by_date(lambda lat, d, var: None if lat == empty_lat else 1.0)
+
+    async def scenario(url: str):
+        result = await _fill(url, handler, gap, today=EDGE_TODAY,
+                             gaps=[gap, Gap(b2, TZ, gap.start, gap.end, "forward")])
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                spans = dict((await conn.execute(text(
+                    "SELECT grid_bucket, last_era5_date FROM grid_bucket_series"))).all())
+                kept = (await conn.execute(text(
+                    f"SELECT count(*) FROM cell_daily_conditions WHERE grid_bucket = {b2} AND record_kind = 'stopgap'"
+                ))).scalar_one()
+        finally:
+            await engine.dispose()
+        return result, spans, kept
+
+    with migrated_db(seed_sql=_spans([B, b2], "2017-01-01", "2020-01-07") + stopgap) as name:
+        result, spans, kept = asyncio.run(scenario(sa_url(name)))
+    assert (result["chunks"], result["done"], result["pending_lag_edge"], result["edge_trimmed"]) == (1, 1, 0, 1)
+    assert spans == {B: date(2020, 1, 10), b2: date(2020, 1, 7)}
+    assert kept == 3
+
+
 @requires_pg
 def test_a_chunk_with_no_observed_day_is_rejected_and_never_covered():
     async def scenario(url: str):
