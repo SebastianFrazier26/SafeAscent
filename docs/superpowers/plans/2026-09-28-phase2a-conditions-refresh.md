@@ -3929,7 +3929,7 @@ Rewritten 2026-10-06 (pre-flight G6, G19, R1, R9, D20; OQ1; Task 5–7 carries).
 
 **Exit status.** `era5_window run` exits 1 when any chunk or batch failed or was rejected, the breaker tripped, the window closed mid-run, or the prune refused. `bg_wait` then returns 1: STOP and report the log's JSON (`fill`, `normals`, `prune`); the owner decides whether to rerun. A rerun resumes from the stored spans and never re-buys what is stored. Unlike the repairs, a killed window run keeps what it committed (each chunk commits on its own; D20): it is safe to rerun after `pgrep -fl 'app[.]data[.]repair|app[.]pipelines'` prints nothing. Every rerun gets a new log name (`…_r2.log`, `…_r3.log`); never move a paid run's log aside.
 
-**The key.** `backend/.env.openmeteo` holds `OPEN_METEO_API_KEY=<key>`, mode 0600, matched by `.gitignore`'s `.env.*`. A paid block sources it inside its own subshell (`set -a; . ./.env.openmeteo; set +a`) just before `bg_start`, so the key reaches the job through its environment, never argv, and never outlives the block. No block prints it.
+**The key.** `backend/.env.openmeteo` holds `OPEN_METEO_API_KEY=<key>`, mode 0600, matched by `.gitignore`'s `.env.*`. A paid block sources it inside its own subshell (`set -a; . ./.env.openmeteo; set +a`) just before `bg_start`, so the key reaches the job through its environment, never argv, and never outlives the block. No block prints it. Owner ruling (fail closed): every paid block checks `[ -n "${OPEN_METEO_API_KEY:-}" ]` right after sourcing the file and refuses with no network call if it is empty, then `export OPEN_METEO_API_KEY` so the key reaches `bg_start`'s child process — the code requires the key in the process environment and rejects one read only from `backend/.env`.
 
 **Re-enter the rehearsal branch (Steps 2–3).** Task 13's re-entry block with `B=p2a-4-rehearsal`.
 
@@ -3982,6 +3982,8 @@ The first paid slice, 20,000 units:
 ( [ -n "${TARGET_HOST-}" ] && [ "$TARGET_HOST" != production ] || { echo "not on the rehearsal branch: run the re-entry block" >&2; exit 1; }
   W="$(cat ../data/review/era5w1_window_start.txt)" || exit 1
   set -a; . ./.env.openmeteo || exit 1; set +a
+  [ -n "${OPEN_METEO_API_KEY:-}" ] || { echo "refusing: OPEN_METEO_API_KEY missing" >&2; exit 1; }
+  export OPEN_METEO_API_KEY
   bg_start ../data/review/logs/era5w1_branch_s1.log INGMOD app.pipelines.era5_window run --window-start "$W" --initial-window --max-units 20000 )
 ```
 
@@ -4067,6 +4069,8 @@ If this STOPs on the budget, the owner chooses per OQ4; the slices below then st
   gate_require plan_ok || exit 1
   W="$(cat ../data/review/era5w1_window_start.txt)" || exit 1
   set -a; . ./.env.openmeteo || exit 1; set +a
+  [ -n "${OPEN_METEO_API_KEY:-}" ] || { echo "refusing: OPEN_METEO_API_KEY missing" >&2; exit 1; }
+  export OPEN_METEO_API_KEY
   bg_start ../data/review/logs/era5w1_prod_s1.log INGMOD app.pipelines.era5_window run --window-start "$W" --initial-window --max-units 1000000 )
 ```
 
@@ -4083,9 +4087,12 @@ A multi-hour slice returns 2 from `bg_wait` many times: run the same block again
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1
   # PRODUCTION (paid)
   gate_require owner_units_confirmed_prod || exit 1
-  bg_wait ../data/review/logs/era5w1_prod_s1.log 0 >/dev/null || { echo "slice 1 has not finished ok: STOP" >&2; exit 1; }
+  S1_LOG=../data/review/logs/era5w1_prod_s1.log  # edit to the _r2/_r3 name if slice 1 needed a rerun
+  bg_wait "$S1_LOG" 0 >/dev/null || { echo "$S1_LOG has not finished ok: STOP" >&2; exit 1; }
   W="$(cat ../data/review/era5w1_window_start.txt)" || exit 1
   set -a; . ./.env.openmeteo || exit 1; set +a
+  [ -n "${OPEN_METEO_API_KEY:-}" ] || { echo "refusing: OPEN_METEO_API_KEY missing" >&2; exit 1; }
+  export OPEN_METEO_API_KEY
   bg_start ../data/review/logs/era5w1_prod_s2.log INGMOD app.pipelines.era5_window run --window-start "$W" --initial-window --max-units 2500000 )
 ```
 
@@ -4100,11 +4107,14 @@ A multi-hour slice returns 2 from `bg_wait` many times: run the same block again
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1
   # PRODUCTION (paid)
   gate_require owner_units_confirmed_prod || exit 1
-  bg_wait ../data/review/logs/era5w1_prod_s2.log 0 >/dev/null || { echo "slice 2 has not finished ok: STOP" >&2; exit 1; }
+  S2_LOG=../data/review/logs/era5w1_prod_s2.log  # edit to the _r2/_r3 name if slice 2 needed a rerun
+  bg_wait "$S2_LOG" 0 >/dev/null || { echo "$S2_LOG has not finished ok: STOP" >&2; exit 1; }
   W="$(cat ../data/review/era5w1_window_start.txt)" || exit 1
   CAP=$((4500000 - $(cat ../data/review/era5w1_branch_spent.txt)))
   echo "final cap $CAP"
   set -a; . ./.env.openmeteo || exit 1; set +a
+  [ -n "${OPEN_METEO_API_KEY:-}" ] || { echo "refusing: OPEN_METEO_API_KEY missing" >&2; exit 1; }
+  export OPEN_METEO_API_KEY
   bg_start ../data/review/logs/era5w1_prod_s3.log INGMOD app.pipelines.era5_window run --window-start "$W" --initial-window --max-units "$CAP" )
 ```
 
