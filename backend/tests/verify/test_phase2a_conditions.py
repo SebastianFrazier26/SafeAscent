@@ -3,31 +3,41 @@ url> uv run pytest -m db tests/verify."""
 
 import pytest
 
-from app.pipelines.localday import INCIDENT_START
+from app.pipelines.localday import INCIDENT_FROM_WHERE_SQL, INCIDENT_START
 from app.pipelines.r6_verify import R6_SQL
 from tests.verify._db import fetch
 
 pytestmark = pytest.mark.db
 
 # Owner decision DP1 (2026-10-01): incident ERA5 starts at localday.INCIDENT_START (1990), not
-# the archive's 1940 start. Incident series are filled from INCIDENT_START - 6 days, so the
-# first full 7-day window ends on INCIDENT_START itself; incidents before it get no incident
-# series at all (localday's INCIDENT_FROM_WHERE_SQL) and must read as missing, never a value.
-FIRST_WINDOW_END = f"DATE '{INCIDENT_START.isoformat()}'"
-ELIGIBLE = (
+# the archive's 1940 start. Eligibility is localday's own INCIDENT_FROM_WHERE_SQL (trusted point,
+# both coordinates, a zone, a known day, on or after INCIDENT_START), so this cell can never
+# disagree with registration or the accident_conditions view. ERA5 is bought only inside the
+# yearly window, so an incident counts only up to its series' last_era5_date; an incident whose
+# series was never filled stays counted (COALESCE), so it fails as missing rather than vanishing.
+SERIES_LAST = (
+    "(SELECT s.last_era5_date FROM grid_bucket_series s "
+    "WHERE s.grid_bucket = grid_bucket_key(a.latitude, a.longitude) AND s.tz = t.tz)"
+)
+ELIGIBLE = f"{INCIDENT_FROM_WHERE_SQL} AND a.date <= COALESCE({SERIES_LAST}, a.date)"
+TRUSTED = (
     "FROM accidents_clean_daily a JOIN accidents t ON t.accident_id = a.accident_id "
-    "WHERE a.point_trusted AND a.latitude IS NOT NULL AND a.date <= (now() AT TIME ZONE 'UTC')::date - 5"
+    "WHERE a.point_trusted AND a.latitude IS NOT NULL AND a.longitude IS NOT NULL"
 )
 
 
 def test_every_clean_day_incident_has_a_seven_day_window():
+    # An all-NULL era5 day is not a day of conditions: tmax must be observed.
     [row] = fetch(
-        f"SELECT count(*) FILTER (WHERE a.date >= {FIRST_WINDOW_END} AND t.tz IS NOT NULL AND "
-        "(SELECT count(*) FROM accident_conditions c WHERE c.accident_id = a.accident_id AND c.record_kind = 'era5') < 7) AS missing, "
-        f"count(*) FILTER (WHERE a.date < {FIRST_WINDOW_END}) AS conditions_missing_pre_era5, "
-        f"count(*) FILTER (WHERE t.tz IS NULL) AS no_timezone {ELIGIBLE}"
+        "SELECT count(*) FILTER (WHERE (SELECT count(*) FROM accident_conditions c WHERE c.accident_id = a.accident_id "
+        "AND c.record_kind = 'era5' AND c.tmax IS NOT NULL) < 7) AS missing, count(*) AS eligible "
+        f"{ELIGIBLE}"
     )
-    print(dict(row))
+    [info] = fetch(
+        f"SELECT count(*) FILTER (WHERE a.date < DATE '{INCIDENT_START.isoformat()}') AS conditions_missing_pre_era5, "
+        f"count(*) FILTER (WHERE t.tz IS NULL) AS no_timezone {TRUSTED}"
+    )
+    print(dict(row), dict(info))
     assert row["missing"] == 0
 
 
