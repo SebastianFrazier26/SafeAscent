@@ -3933,6 +3933,8 @@ Rewritten 2026-10-06 (pre-flight G6, G19, R1, R9, D20; OQ1; Task 5–7 carries).
 
 **The key.** `backend/.env.openmeteo` holds `OPEN_METEO_API_KEY=<key>`, mode 0600, matched by `.gitignore`'s `.env.*`. A paid block sources it inside its own subshell (`set -a; . ./.env.openmeteo; set +a`) just before `bg_start`, so the key reaches the job through its environment, never argv, and never outlives the block. No block prints it. Owner ruling (fail closed): every paid block checks `[ -n "${OPEN_METEO_API_KEY:-}" ]` right after sourcing the file and refuses with no network call if it is empty, then `export OPEN_METEO_API_KEY` so the key reaches `bg_start`'s child process — the code requires the key in the process environment and rejects one read only from `backend/.env`.
 
+**Doc sync.** Monthly normals and day-of-year climatology are one series per bucket, keyed on the bucket's **alphabetically first** timezone (`min(tz)`) when a bucket straddles a zone boundary (Decisions section #5; `normals.py`'s `stored_complete_years` groups by bucket only). Separately, `era5_fill` never stores a series' trailing all-NULL ERA5 days at the archive's lag edge: a series' `last_era5_date` is its last **observed** day, so the unfinalised tail is asked for again next run rather than recorded as missing.
+
 **Re-enter the rehearsal branch (Steps 2–3).** Task 13's re-entry block with `B=p2a-4-rehearsal`.
 
 **Prod preamble (Step 4 only):**
