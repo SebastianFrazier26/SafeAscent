@@ -9,6 +9,8 @@ from pathlib import Path
 APP = Path(__file__).resolve().parents[1] / "app"
 ALLOWED = {
     APP / "data" / "repair" / "experience.py", APP / "data" / "repair" / "framework.py", APP / "models" / "accident.py",
+    # The R11 loader stores the experience facts a CSV row states. It must never score on
+    # them, nor read them to decide anything; a scoring use belongs nowhere in app/.
     APP / "pipelines" / "accident_facts.py",
 }
 COLUMNS = re.compile(r"\b(?:exp_years_climbing|exp_stated_level|exp_first_season|exp_rule_version)\b")

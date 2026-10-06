@@ -28,8 +28,11 @@ Prescription, CAIC and NPS exports from the private tools) live in
   severity, and `activity` to a known activity. The placeholders `unknown` and `other`, and
   AAC `ski mountaineering`, are quarantined `activity_needs_review`: fix the activity in the CSV
   and reload.
-- A `(source, source_id)` already in the database is quarantined `already_present`. Existing
-  incidents are never changed or deleted.
+- A `(source, source_id)` already in the database is quarantined `already_present`. The source is
+  compared ignoring case and surrounding spaces (`aac` is `AAC`), and a new row is stored with the
+  spelling the source already has in the table. Existing incidents are never changed or deleted.
+- Loads and `--apply-route-ids` runs take one advisory lock, so two runs never insert the same row
+  twice; a second run waits for the first. `--dry-run` takes no lock.
 
 ## Loading
 
@@ -44,7 +47,8 @@ uv run python -m app.pipelines.accident_facts --file ~/Developer/safeascent-priv
 `already_present`, and how many rows would need a route decision. It writes nothing.
 
 The run log (`source_ingest_log`, source `accident_facts`) lists post-2024-08 months with no
-incident for each source family in the file, under `problems`.
+incident for each source family in the file, under `problems`. Only day- and month-precision
+dates count: a year-precision date does not fill a month.
 
 ## Linking rows to Mountain Project routes
 
@@ -56,11 +60,14 @@ incident for each source family in the file, under `problems`.
   exactly one of them has the same normalised name as `route`. Case, punctuation, accents, a
   leading "the" and "Rte" for "Route" are ignored. Near names such as "Northeast Ridge" and
   "Northwest Ridge" never match.
-- Every other climbing row is loaded with `mp_route_id` empty and listed in
-  `data/review/r11_route_matches.csv`. That covers rows with no point, an untrusted point, no
-  route text, no route nearby, no equal name, or several equal names. The file is gitignored,
-  UTF-8 with a BOM, and holds ids, names and distances only. It is never replaced unless you
-  pass `--overwrite`; a load that would replace it is refused and rolled back.
+- Every other climbing row is loaded with `mp_route_id` empty. Each load rewrites
+  `data/review/r11_route_matches.csv` with every R11 climbing row still without a link, from
+  this load and earlier ones, so `--overwrite` never drops an unresolved row. Reasons: no point,
+  an untrusted point, no route text, no route nearby, no equal name, or several equal names. The
+  file is gitignored, UTF-8 with a BOM, and holds ids, names and distances only. It is never
+  replaced unless you pass `--overwrite`; a load that would replace it is refused and rolled back.
+- The review file is never read back. Its last column, `note`, is for your own notes only.
+  **Route ids go in the facts CSV's `mp_route_id` column**, not in the review file.
 
 The round trip:
 
@@ -74,6 +81,7 @@ The round trip:
 
 `--apply-route-ids` is needed because a reload would only report the row as `already_present`.
 
-It sets `mp_route_id` only where it is still empty, and only on rows R11 loaded. A legacy row
+It sets `mp_route_id` only where it is still empty, and only on rows R11 loaded. Each change is
+recorded in `internal.accident_revisions` (field `mp_route_id`, method `facts_csv`). A legacy row
 from the frozen 0004 snapshot is quarantined `not_an_r11_row`. A row whose link is already set
 to a different id is quarantined `route_already_set`.

@@ -1,8 +1,11 @@
 """R11: facts-only accident refresh from a hand-filled CSV (manual AAC entries; CAIC/NPS exports
 produced by private tools outside this repo). New rows only: nothing existing is overwritten or
 deleted. country is taken from the data (coordinates and a US state), never assumed. Rows are
-linked to an MP route only on a unique strong name match near the point; everything else goes
-to the owner (data/review/r11_route_matches.csv) and is applied later with --apply-route-ids."""
+linked to an MP route only on a unique strong name match near the point; every unlinked R11
+climbing row is listed for the owner in data/review/r11_route_matches.csv. That file is read
+only by people: the owner writes chosen route ids into the facts CSV's mp_route_id column, and
+--apply-route-ids applies them. Loads and route applies are serialised by an advisory lock,
+since accidents has no unique key on (source, source_id)."""
 
 from __future__ import annotations
 
@@ -13,7 +16,8 @@ import datetime as dt
 import json
 import math
 import unicodedata
-from collections.abc import Iterable, Sequence
+import uuid
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -53,6 +57,11 @@ CLIMBING_CLASSES = frozenset({"climbing", "climbing_approach"})
 # kilometre of its routes, and MP route points are often their area's point.
 ROUTE_MATCH_RADIUS_M = 1000
 REVIEW_NAME = "r11_route_matches.csv"
+REVIEW_NOTE_COLUMN = "note"
+ROUTE_REVISION_VERSION = "r11-route-v1"
+# Concurrent loads would each see a key as new and both insert it; there is no unique index
+# (the owner's call), so every write transaction takes this lock first.
+LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext('accident_facts'))"
 REVIEW_COLUMNS = [
     "source", "source_id", "date", "state", "mountain", "route", "latitude", "longitude", "reason",
     "candidate_ids", "candidate_names", "candidate_distances_m",
@@ -90,6 +99,14 @@ class FactRow(BaseModel):
     @property
     def ref(self) -> str:
         return f"{self.source}:{self.source_id}"
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return source_key(self.source), self.source_id
+
+
+def source_key(source: str) -> str:
+    return source.strip().lower()
 
 
 @dataclass(frozen=True)
@@ -157,7 +174,7 @@ def parse_facts(path: Path, *, today: dt.date, report: ValidationReport) -> list
                 continue
             problem = (
                 date_problem(row.date, today=today, earliest=EARLIEST)
-                or ("duplicate_in_file" if (row.source, row.source_id) in seen else None)
+                or ("duplicate_in_file" if row.key in seen else None)
                 or _country_problem(row)
             )
             derived = derive(row) if problem is None else None
@@ -166,7 +183,7 @@ def parse_facts(path: Path, *, today: dt.date, report: ValidationReport) -> list
             if problem is not None:
                 report.quarantine(ref, problem)
                 continue
-            seen.add((row.source, row.source_id))
+            seen.add(row.key)
             report.accept()
             rows.append(row)
     return rows
@@ -253,9 +270,22 @@ async def route_candidates(conn: AsyncConnection, lat: float, lon: float) -> lis
     ]
 
 
-async def _existing(conn: AsyncConnection) -> set[tuple[str, str]]:
-    result = await conn.execute(text("SELECT source, source_id FROM accidents WHERE source_id IS NOT NULL"))
-    return {(str(s), str(i)) for s, i in result.all()}
+async def _lock(conn: AsyncConnection) -> None:
+    await conn.execute(text(LOCK_SQL))
+
+
+async def _existing(conn: AsyncConnection) -> tuple[set[tuple[str, str]], dict[str, str]]:
+    """Keys already loaded, compared as (lower(trim(source)), source_id), and the spelling each
+    source already has in the table (its most common one), so "aac" is stored as "AAC"."""
+    keys = await conn.execute(text(
+        "SELECT DISTINCT lower(trim(source)), source_id FROM accidents WHERE source IS NOT NULL AND source_id IS NOT NULL"))
+    spellings = await conn.execute(text(
+        "SELECT lower(trim(source)), trim(source), count(*) FROM accidents WHERE source IS NOT NULL "
+        "GROUP BY 1, 2 ORDER BY 1, 3 DESC, 2"))
+    canonical: dict[str, str] = {}
+    for key, spelling, _ in spellings.all():
+        canonical.setdefault(str(key), str(spelling))
+    return {(str(k), str(i)) for k, i in keys.all()}, canonical
 
 
 async def _known_routes(conn: AsyncConnection, ids: set[int]) -> set[int]:
@@ -277,16 +307,27 @@ def _demote(report: ValidationReport, ref: str, reason: str) -> None:
 @dataclass(frozen=True)
 class Planned:
     row: FactRow
+    source: str
     derived: Derived
     match: RouteMatch | None
 
 
-def _review_row(row: FactRow, match: RouteMatch) -> dict[str, object]:
+async def _match_point(
+    conn: AsyncConnection, lat: float | None, lon: float | None, precision: str | None, route: str | None
+) -> RouteMatch:
+    if lat is None or lon is None:
+        return RouteMatch(None, "no_coords", ())
+    if precision not in TRUSTED_POINT_PRECISIONS:
+        return RouteMatch(None, "untrusted_point", ())
+    return match_route(route, await route_candidates(conn, lat, lon))
+
+
+def _review_row(row: Mapping[str, object], match: RouteMatch) -> dict[str, object]:
     shown = match.candidates[:MAX_REVIEW_CANDIDATES]
     return {
-        "source": row.source, "source_id": row.source_id, "date": row.date.isoformat(), "state": row.state,
-        "mountain": row.mountain, "route": row.route, "latitude": row.latitude, "longitude": row.longitude,
-        "reason": match.reason,
+        **{c: row[c] for c in ("source", "source_id", "date", "state", "mountain", "route", "latitude", "longitude")},
+        # A row still NULL whose point now has a unique match (MP data changed since its load).
+        "reason": match.reason or "match_now_available",
         "candidate_ids": " | ".join(str(c.mp_route_id) for c in shown),
         "candidate_names": " | ".join(c.name for c in shown),
         "candidate_distances_m": " | ".join(f"{c.distance_m:.0f}" for c in shown),
@@ -296,7 +337,7 @@ def _review_row(row: FactRow, match: RouteMatch) -> dict[str, object]:
 async def plan_new(conn: AsyncConnection, rows: list[FactRow], *, report: ValidationReport) -> list[Planned]:
     """Every database-dependent refusal and route decision, before any write: read-only, so
     --dry-run runs exactly this."""
-    existing = await _existing(conn)
+    existing, canonical = await _existing(conn)
     known = await _known_routes(conn, {r.mp_route_id for r in rows if r.mp_route_id is not None})
     planned: list[Planned] = []
     for row in rows:
@@ -304,26 +345,22 @@ async def plan_new(conn: AsyncConnection, rows: list[FactRow], *, report: Valida
         if isinstance(derived, str):
             _demote(report, row.ref, derived)
             continue
-        if (row.source, row.source_id) in existing:
+        if row.key in existing:
             _demote(report, row.ref, "already_present")
             continue
+        source = canonical.get(row.key[0], row.source)
         if row.mp_route_id is not None:
             if row.mp_route_id not in known:
                 _demote(report, row.ref, "unknown_route")
                 continue
-            planned.append(Planned(row, derived, None))
+            planned.append(Planned(row, source, derived, None))
             continue
         # A route link only matters for rows the clean views keep.
         if derived.activity_class not in CLIMBING_CLASSES:
-            planned.append(Planned(row, derived, None))
+            planned.append(Planned(row, source, derived, None))
             continue
-        if row.latitude is None or row.longitude is None:
-            match = RouteMatch(None, "no_coords", ())
-        elif row.geocode_precision not in TRUSTED_POINT_PRECISIONS:
-            match = RouteMatch(None, "untrusted_point", ())
-        else:
-            match = match_route(row.route, await route_candidates(conn, row.latitude, row.longitude))
-        planned.append(Planned(row, derived, match))
+        match = await _match_point(conn, row.latitude, row.longitude, row.geocode_precision, row.route)
+        planned.append(Planned(row, source, derived, match))
     return planned
 
 
@@ -346,7 +383,7 @@ def _params(p: Planned) -> dict[str, object]:
     route_id = row.mp_route_id if row.mp_route_id is not None else (p.match.mp_route_id if p.match else None)
     zone = tz_for_point(row.latitude, row.longitude) if row.latitude is not None and row.longitude is not None else None
     return {
-        "source": row.source, "source_id": row.source_id, "date": row.date, "year": float(row.date.year),
+        "source": p.source, "source_id": row.source_id, "date": row.date, "year": float(row.date.year),
         "date_precision": row.date_precision, "state": row.state, "mountain": row.mountain, "route": row.route,
         "mp_route_id": route_id, "latitude": row.latitude, "longitude": row.longitude,
         "geocode_precision": row.geocode_precision, "geocode_method": METHOD,
@@ -365,29 +402,54 @@ async def insert_new(
     rows: list[FactRow],
     *,
     report: ValidationReport,
-    review_rows: list[dict[str, object]] | None = None,
 ) -> int:
-    """Insert rows not already present. Rows needing a route decision are appended to
-    review_rows (ids, names and distances only)."""
+    """Insert rows not already present, under the load lock."""
+    await _lock(conn)
     planned = await plan_new(conn, rows, report=report)
     for p in planned:
         await conn.execute(INSERT, _params(p))
-        if review_rows is not None and p.match is not None and p.match.mp_route_id is None:
-            review_rows.append(_review_row(p.row, p.match))
     return len(planned)
 
 
-_OWN_ROW = (
-    "SELECT a.accident_id, a.mp_route_id, "
-    "EXISTS (SELECT 1 FROM internal.accidents_raw r WHERE r.accident_id = a.accident_id) AS legacy "
-    "FROM accidents a WHERE a.source = :source AND a.source_id = :source_id"
+# R11 rows are the ones absent from the frozen 0004 snapshot: R11 is the only inserter since.
+_R11_ROW = "NOT EXISTS (SELECT 1 FROM internal.accidents_raw r WHERE r.accident_id = a.accident_id)"
+_UNRESOLVED = (
+    "SELECT a.source, a.source_id, a.date, a.state, a.mountain, a.route, a.latitude, a.longitude, a.geocode_precision "
+    "FROM accidents a WHERE a.mp_route_id IS NULL AND a.activity_class IN ('climbing', 'climbing_approach') "
+    f"AND {_R11_ROW} ORDER BY a.date, a.source, a.source_id"
 )
 
 
-async def apply_route_ids(conn: AsyncConnection, rows: list[FactRow], *, report: ValidationReport, apply: bool) -> int:
+async def unresolved_review_rows(conn: AsyncConnection) -> list[dict[str, object]]:
+    """Every R11 climbing row still without a route link, not only this load's: an --overwrite
+    of the review file then never drops an earlier unresolved row."""
+    out: list[dict[str, object]] = []
+    for r in (await conn.execute(text(_UNRESOLVED))).mappings().all():
+        lat = None if r["latitude"] is None else float(r["latitude"])
+        lon = None if r["longitude"] is None else float(r["longitude"])
+        match = await _match_point(conn, lat, lon, r["geocode_precision"], r["route"])
+        row = dict(r) | {"date": r["date"].isoformat() if r["date"] is not None else None}
+        out.append(_review_row(row, match))
+    return out
+
+
+_OWN_ROW = (
+    f"SELECT a.accident_id, a.mp_route_id, NOT {_R11_ROW} AS legacy "
+    "FROM accidents a WHERE lower(trim(a.source)) = :source AND a.source_id = :source_id"
+)
+
+
+async def apply_route_ids(
+    conn: AsyncConnection, rows: list[FactRow], *, report: ValidationReport, apply: bool, run_id: uuid.UUID | None = None
+) -> int:
     """The owner's later mp_route_id fills for rows already loaded. Only R11's own rows (absent
     from the frozen 0004 snapshot, so never a legacy row) and only where mp_route_id IS NULL:
-    a link set by anyone else is never overwritten."""
+    a link set by anyone else is never overwritten. Each update is audited in
+    internal.accident_revisions, as the repair writer does."""
+    if apply:
+        if run_id is None:
+            raise ValueError("apply_route_ids(apply=True) needs the run's run_id for the revision rows")
+        await _lock(conn)
     known = await _known_routes(conn, {r.mp_route_id for r in rows if r.mp_route_id is not None})
     updated = 0
     for row in rows:
@@ -396,7 +458,7 @@ async def apply_route_ids(conn: AsyncConnection, rows: list[FactRow], *, report:
         if row.mp_route_id not in known:
             _demote(report, row.ref, "unknown_route")
             continue
-        found = (await conn.execute(text(_OWN_ROW), {"source": row.source, "source_id": row.source_id})).all()
+        found = (await conn.execute(text(_OWN_ROW), {"source": row.key[0], "source_id": row.source_id})).all()
         if not found:
             _demote(report, row.ref, "not_loaded")
             continue
@@ -409,17 +471,27 @@ async def apply_route_ids(conn: AsyncConnection, rows: list[FactRow], *, report:
                 _demote(report, row.ref, "route_already_set")
             continue
         if apply:
+            accident_id = int(found[0][0])
             await conn.execute(
                 text("UPDATE accidents SET mp_route_id = :rid, updated_at = now() "
                      "WHERE accident_id = :aid AND mp_route_id IS NULL"),
-                {"rid": row.mp_route_id, "aid": int(found[0][0])},
+                {"rid": row.mp_route_id, "aid": accident_id},
+            )
+            await conn.execute(
+                text("INSERT INTO internal.accident_revisions "
+                     "(accident_id, field, old_value, new_value, method, rule_version, run_id) "
+                     "VALUES (:a, 'mp_route_id', NULL, :new, :m, :v, :run)"),
+                {"a": accident_id, "new": str(row.mp_route_id), "m": METHOD, "v": ROUTE_REVISION_VERSION,
+                 "run": run_id},
             )
         updated += 1
     return updated
 
 
 async def _gap_log(conn: AsyncConnection, families: set[str], *, today: dt.date) -> list[str]:
-    dated = (await conn.execute(text("SELECT source, date FROM accidents WHERE date >= :since"),
+    # A year-precision date says nothing about its month, so it cannot fill a month.
+    dated = (await conn.execute(text("SELECT source, date FROM accidents WHERE date >= :since "
+                                     "AND date_precision IN ('day', 'month')"),
                                 {"since": REFRESH_SINCE})).all()
     by_family: dict[str, list[dt.date]] = {f: [] for f in families}
     for source, day in dated:
@@ -449,8 +521,8 @@ async def _read_only(engine: AsyncEngine, rows: list[FactRow], report: Validatio
             out: dict[str, object] = {"would_update": n}
         else:
             planned = await plan_new(conn, rows, report=report)
-            pending = sum(1 for p in planned if p.match is not None and p.match.mp_route_id is None)
-            out = {"would_insert": len(planned), "review_pending": pending}
+            new = sum(1 for p in planned if p.match is not None and p.match.mp_route_id is None)
+            out = {"would_insert": len(planned), "review_pending": len(await unresolved_review_rows(conn)) + new}
         await conn.rollback()
     return {"mode": "dry_run", **out, "report": report.summary()}
 
@@ -465,14 +537,15 @@ async def main(path: Path, *, today: dt.date, dry_run: bool, overwrite: bool = F
             return await _read_only(engine, rows, report, route_ids=route_ids)
         sha = sha256_rows([(r.source, r.source_id, r.mp_route_id) for r in rows])
         async with engine.begin() as conn:
+            await _lock(conn)
             run_id = await start_run(conn, source=report.source, window_start=None, window_end=None, content_sha256=sha)
             if route_ids:
-                n = await apply_route_ids(conn, rows, report=report, apply=True)
+                n = await apply_route_ids(conn, rows, report=report, apply=True, run_id=run_id)
                 await write_quarantine(conn, run_id, report)
                 await finish_run(conn, run_id, status="ok", report=report, rows_upserted=n)
                 return {"updated": n, "report": report.summary()}
-            pending: list[dict[str, object]] = []
-            n = await insert_new(conn, rows, report=report, review_rows=pending)
+            n = await insert_new(conn, rows, report=report)
+            pending = await unresolved_review_rows(conn)
             gaps = await _gap_log(conn, _families(rows), today=today)
             await write_quarantine(conn, run_id, report)
             await finish_run(conn, run_id, status="ok", report=report, rows_upserted=n, problems=gaps,
@@ -480,7 +553,7 @@ async def main(path: Path, *, today: dt.date, dry_run: bool, overwrite: bool = F
             out = review.REVIEW_DIR / REVIEW_NAME
             if pending:
                 # Inside the transaction: a refused overwrite rolls the whole load back.
-                review._write(out, pending, REVIEW_COLUMNS, "mp_route_id", overwrite=overwrite, encoding="utf-8-sig")
+                review._write(out, pending, REVIEW_COLUMNS, REVIEW_NOTE_COLUMN, overwrite=overwrite, encoding="utf-8-sig")
     finally:
         await engine.dispose()
     return {"inserted": n, "gaps": gaps, "review_pending": len(pending),

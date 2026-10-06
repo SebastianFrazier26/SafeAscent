@@ -1,5 +1,6 @@
 import asyncio
 import csv
+import uuid
 from datetime import date
 
 import pytest
@@ -18,6 +19,7 @@ from app.pipelines.accident_facts import (
     match_route,
     month_gaps,
     parse_facts,
+    unresolved_review_rows,
 )
 from app.pipelines.validate import ValidationReport
 from tests.pgtest import migrated_db, requires_pg, sa_url
@@ -256,9 +258,9 @@ def test_route_links_only_on_a_unique_strong_match(tmp_path):
     async def scenario(engine):
         report = ValidationReport("t")
         rows = parse_facts(_csv(tmp_path, *rows_in), today=TODAY, report=report)
-        pending: list[dict[str, object]] = []
         async with engine.begin() as conn:
-            n = await insert_new(conn, rows, report=report, review_rows=pending)
+            n = await insert_new(conn, rows, report=report)
+            pending = await unresolved_review_rows(conn)
             linked = dict((await conn.execute(text(
                 "SELECT source_id, mp_route_id FROM accidents WHERE source_id LIKE 'R%' ORDER BY 1"))).all())
         return n, report, pending, linked
@@ -311,7 +313,7 @@ def test_main_logs_gaps_writes_the_review_file_and_dry_run_is_read_only(tmp_path
     raw = review_file.read_bytes()
     assert raw.startswith(b"\xef\xbb\xbf")
     header = raw.decode("utf-8-sig").splitlines()[0].split(",")
-    assert header == [*accident_facts.REVIEW_COLUMNS, "mp_route_id"]
+    assert header == [*accident_facts.REVIEW_COLUMNS, "note"]
     assert "Leader fell" not in raw.decode("utf-8-sig")
 
 
@@ -358,14 +360,18 @@ def test_apply_route_ids_fills_only_null_links_on_r11_rows(tmp_path):
         async with engine.begin() as conn:
             dry = await apply_route_ids(conn, rows, report=ValidationReport("t"), apply=False)
             unchanged = (await conn.execute(text("SELECT mp_route_id FROM accidents WHERE source_id = 'A1'"))).scalar_one()
-            n = await apply_route_ids(conn, rows, report=report2, apply=True)
+            n = await apply_route_ids(conn, rows, report=report2, apply=True, run_id=uuid.uuid4())
             linked = dict((await conn.execute(text(
                 "SELECT source_id, mp_route_id FROM accidents WHERE source_id IN ('A1', 'A2', 'LEGACY-1')"))).all())
-        return dry, unchanged, n, report2, linked
+            audit = (await conn.execute(text(
+                "SELECT a.source_id, r.field, r.old_value, r.new_value, r.method, r.rule_version "
+                "FROM internal.accident_revisions r JOIN accidents a USING (accident_id)"))).all()
+        return dry, unchanged, n, report2, linked, audit
 
     with migrated_db(seed_sql=ROUTES_SEED) as name:
-        dry, unchanged, n, report2, linked = asyncio.run(_with_engine(sa_url(name), scenario))
+        dry, unchanged, n, report2, linked, audit = asyncio.run(_with_engine(sa_url(name), scenario))
     assert (dry, unchanged, n) == (1, None, 1)
+    assert [tuple(r) for r in audit] == [("A1", "mp_route_id", None, "900000002", "facts_csv", "r11-route-v1")]
     assert linked == {"A1": 900000002, "A2": 900000001, "LEGACY-1": None}
     assert report2.quarantined == {"route_already_set": 1, "not_an_r11_row": 1, "not_loaded": 1, "unknown_route": 1}
 
@@ -382,3 +388,95 @@ def test_insert_columns_match_the_grant_and_the_verify_list_exactly():
     verified = [c.strip().strip("'") for c in verify.group(1).split(",")]
     assert granted == list(accident_facts.INSERT_COLUMNS) == verified
     assert "accident_id" not in granted
+
+
+def test_source_case_and_spacing_do_not_make_a_new_key(tmp_path):
+    rows, report = _parse(tmp_path, _row(source="AAC"), _row(source=" aac "))
+    assert len(rows) == 1 and report.quarantined == {"duplicate_in_file": 1}
+
+
+@requires_pg
+def test_lowercase_source_matches_the_stored_spelling(tmp_path):
+    async def scenario(engine):
+        report = ValidationReport("t")
+        rows = parse_facts(_csv(tmp_path, _row(source="aac", source_id="LEGACY-1", date="2025-03-01"),
+                                _row(source="aac", source_id="C1")), today=TODAY, report=report)
+        async with engine.begin() as conn:
+            n = await insert_new(conn, rows, report=report)
+            stored = (await conn.execute(text("SELECT source FROM accidents WHERE source_id = 'C1'"))).scalar_one()
+        return n, report, stored
+
+    with migrated_db(seed_sql=ROUTES_SEED) as name:
+        n, report, stored = asyncio.run(_with_engine(sa_url(name), scenario))
+    assert (n, stored) == (1, "AAC")
+    assert report.quarantined == {"already_present": 1}
+
+
+@requires_pg
+def test_gap_log_ignores_year_precision_dates():
+    seed = (
+        "INSERT INTO accidents (accident_id, source, date, date_precision) VALUES "
+        "(800000101, 'AAC', '2024-09-01', 'year'), (800000102, 'AAC', '2024-10-05', 'day'), "
+        "(800000103, 'AAC', '2024-12-01', 'month');"
+    )
+
+    async def scenario(engine):
+        async with engine.connect() as conn:
+            return await accident_facts._gap_log(conn, {"aac"}, today=date(2025, 1, 15))
+
+    with migrated_db(seed_sql=seed) as name:
+        lines = asyncio.run(_with_engine(sa_url(name), scenario))
+    assert lines == ["post-2024 gap aac: 2024-08,2024-09,2024-11"]
+
+
+@requires_pg
+def test_overwritten_review_file_keeps_earlier_unresolved_rows(tmp_path, monkeypatch):
+    monkeypatch.setattr(review, "REVIEW_DIR", tmp_path / "review")
+    twin = {"route": "Twin Line", "latitude": "40.2504", "longitude": "-105.6004"}
+    first = _csv(tmp_path, _row(source_id="X1", **twin), name="first.csv")
+    second = _csv(tmp_path, _row(source_id="X2", **twin), name="second.csv")
+
+    async def scenario(url):
+        monkeypatch.setattr(accident_facts, "ingest_engine", lambda: create_async_engine(url))
+        await accident_facts.main(first, today=TODAY, dry_run=False)
+        dry = await accident_facts.main(second, today=TODAY, dry_run=True)
+        loaded = await accident_facts.main(second, today=TODAY, dry_run=False, overwrite=True)
+        return dry, loaded
+
+    with migrated_db(seed_sql=ROUTES_SEED) as name:
+        dry, loaded = asyncio.run(scenario(sa_url(name)))
+    assert dry["review_pending"] == loaded["review_pending"] == 2
+    with (tmp_path / "review" / accident_facts.REVIEW_NAME).open(encoding="utf-8-sig", newline="") as fh:
+        assert sorted(r["source_id"] for r in csv.DictReader(fh)) == ["X1", "X2"]
+
+
+@requires_pg
+def test_writes_wait_for_the_load_lock_and_dry_run_does_not(tmp_path, monkeypatch):
+    monkeypatch.setattr(review, "REVIEW_DIR", tmp_path / "review")
+    facts = _csv(tmp_path, _row(source_id="K1"))
+    fill = _csv(tmp_path, _row(source_id="K1", mp_route_id="900000001"), name="fill.csv")
+
+    async def scenario(url):
+        monkeypatch.setattr(accident_facts, "ingest_engine", lambda: create_async_engine(url))
+        holder = create_async_engine(url)
+        try:
+            async with holder.connect() as conn:
+                await conn.execute(text(accident_facts.LOCK_SQL))
+                with pytest.raises(TimeoutError):
+                    await asyncio.wait_for(accident_facts.main(facts, today=TODAY, dry_run=False), 2)
+                with pytest.raises(TimeoutError):
+                    await asyncio.wait_for(
+                        accident_facts.main(fill, today=TODAY, dry_run=False, route_ids=True), 2)
+                dry = await asyncio.wait_for(accident_facts.main(facts, today=TODAY, dry_run=True), 20)
+                await conn.rollback()
+            loaded = await accident_facts.main(facts, today=TODAY, dry_run=False)
+            async with holder.connect() as conn:
+                logs = (await conn.execute(text("SELECT count(*) FROM source_ingest_log"))).scalar_one()
+        finally:
+            await holder.dispose()
+        return dry, loaded, logs
+
+    with migrated_db(seed_sql=ROUTES_SEED) as name:
+        dry, loaded, logs = asyncio.run(scenario(sa_url(name)))
+    assert dry["would_insert"] == 1 and loaded["inserted"] == 1
+    assert logs == 1  # the timed-out runs rolled back whole
