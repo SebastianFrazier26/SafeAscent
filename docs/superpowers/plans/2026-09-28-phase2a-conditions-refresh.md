@@ -3557,14 +3557,14 @@ Each load is one transaction under the loader's advisory lock. The first writes 
 
 ```bash
 P=~/Developer/safeascent-private/manual; R=../data/review
-shasum -a 256 "$P/aac_refresh.csv" "$P/caic_refresh.csv" "$P/nps_refresh.csv" | cmp - $R/p2a4_facts.sha256 || echo "facts files changed since Step 2: STOP"
-save_once $R/p2a4_load_aac_refresh_branch.json INGMOD app.pipelines.accident_facts --file "$P/aac_refresh.csv" && \
-save_once $R/p2a4_load_caic_refresh_branch.json INGMOD app.pipelines.accident_facts --file "$P/caic_refresh.csv" --overwrite && \
-save_once $R/p2a4_load_nps_refresh_branch.json INGMOD app.pipelines.accident_facts --file "$P/nps_refresh.csv" --overwrite && \
+{ shasum -a 256 "$P/aac_refresh.csv" "$P/caic_refresh.csv" "$P/nps_refresh.csv" | cmp - $R/p2a4_facts.sha256 || { echo "facts files changed since Step 2: STOP" >&2; false; }; } && \
+{ [ -e $R/p2a4_load_aac_refresh_branch.json ] || save_once $R/p2a4_load_aac_refresh_branch.json INGMOD app.pipelines.accident_facts --file "$P/aac_refresh.csv"; } && \
+{ [ -e $R/p2a4_load_caic_refresh_branch.json ] || save_once $R/p2a4_load_caic_refresh_branch.json INGMOD app.pipelines.accident_facts --file "$P/caic_refresh.csv" --overwrite; } && \
+{ [ -e $R/p2a4_load_nps_refresh_branch.json ] || save_once $R/p2a4_load_nps_refresh_branch.json INGMOD app.pipelines.accident_facts --file "$P/nps_refresh.csv" --overwrite; } && \
 { [ ! -e $R/r11_route_matches.csv ] || mv -n $R/r11_route_matches.csv $R/r11_route_matches_branch.csv; } && echo "loads done"
 ```
 
-Expected: no `STOP` line; three JSON lines with `inserted` equal to each dry run's `would_insert`, `gaps` (the post-2024 months with no incident per source family) and `review_pending`; then `loads done`. Record the gaps in the PR (spec R11). A gap in NPS or CAIC means the private export is incomplete: stop, re-pull, and restart from a new branch. A `save_once` refusal on a rerun means that load already happened: never load a file twice. The review file is renamed to `r11_route_matches_branch.csv` so the prod load can write its own.
+Expected: no `STOP` line; three JSON lines with `inserted` equal to each dry run's `would_insert`, `gaps` (the post-2024 months with no incident per source family) and `review_pending`; then `loads done`. Record the gaps in the PR (spec R11). A gap in NPS or CAIC means the private export is incomplete: stop, re-pull, and restart from a new branch. The sha check now actually stops the chain (`&&` into every load, not an unchecked `echo`) instead of letting the loads run after a changed-file warning. **Per-file resume:** if this STOPs partway (one file loaded, the next failed), rerunning the same block is safe and resumes correctly: `[ -e ] ||` skips the file(s) already loaded (their evidence JSON exists), and even loading a file a second time would only quarantine its already-inserted rows as `already_present` rather than duplicate them — never load a file whose `save_once` already succeeded on purpose, but doing so by accident is not destructive. The review file is renamed to `r11_route_matches_branch.csv` so the prod load can write its own.
 
 - [ ] **Step 4 (owner/agent): G20 — R2/R1 ignore the new rows**
 
@@ -3743,14 +3743,14 @@ Expected: `GATE OK: dry_runs`. Any difference means prod changed after the branc
   # PRODUCTION
   gate_require dry_runs || exit 1
   P=~/Developer/safeascent-private/manual; R=../data/review
-  save_once $R/p2a4_load_aac_refresh_prod.json INGMOD app.pipelines.accident_facts --file "$P/aac_refresh.csv" || exit 1
-  save_once $R/p2a4_load_caic_refresh_prod.json INGMOD app.pipelines.accident_facts --file "$P/caic_refresh.csv" --overwrite || exit 1
-  save_once $R/p2a4_load_nps_refresh_prod.json INGMOD app.pipelines.accident_facts --file "$P/nps_refresh.csv" --overwrite || exit 1
+  [ -e $R/p2a4_load_aac_refresh_prod.json ] || save_once $R/p2a4_load_aac_refresh_prod.json INGMOD app.pipelines.accident_facts --file "$P/aac_refresh.csv" || exit 1
+  [ -e $R/p2a4_load_caic_refresh_prod.json ] || save_once $R/p2a4_load_caic_refresh_prod.json INGMOD app.pipelines.accident_facts --file "$P/caic_refresh.csv" --overwrite || exit 1
+  [ -e $R/p2a4_load_nps_refresh_prod.json ] || save_once $R/p2a4_load_nps_refresh_prod.json INGMOD app.pipelines.accident_facts --file "$P/nps_refresh.csv" --overwrite || exit 1
   [ ! -e $R/r11_route_matches.csv ] || mv -n $R/r11_route_matches.csv $R/r11_route_matches_prod.csv || exit 1
   gate_pass loaded )
 ```
 
-This block runs once: a `save_once` refusal on a rerun means a load already happened, so STOP and report (never reload a file).
+**Per-file resume:** if this STOPs partway, rerunning it skips every file whose evidence JSON already exists (`[ -e ] ||`) and resumes at the one that failed. This is safe: each file's load is one transaction, so a failed file committed nothing, and even a file re-sent after a partial success only quarantines its already-loaded rows as `already_present` rather than duplicating them. Only a full `gate_pass loaded` with all three files' counts matching the branch's (below) means the load is done.
 
 ```bash
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
