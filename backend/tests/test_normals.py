@@ -261,11 +261,12 @@ LOG_SQL = ("SELECT status, cost_units, rows_upserted, rows_quarantined FROM sour
 
 
 @requires_pg
-def test_normals_due_takes_pending_and_out_of_period_buckets_and_the_longest_stored_series():
+def test_normals_due_takes_pending_and_out_of_period_buckets_and_the_alphabetical_zone():
     b3 = grid_bucket(40.2, -105.3)
     seed = (
         _registered(B1, B2, b3)
-        # B2 straddles a zone line: its Pacific series has the longer stored history.
+        # B2 straddles a zone line: its Pacific series has the longer stored history, but owner
+        # rule 5 takes the alphabetically first zone (Denver) regardless.
         + f"INSERT INTO grid_bucket_series (grid_bucket, tz, first_era5_date, last_era5_date) VALUES "
           f"({B2}, 'America/Los_Angeles', '2016-01-01', '2026-09-23');"
         + f"UPDATE grid_bucket_series SET first_era5_date = '2023-01-01', last_era5_date = '2026-09-23' WHERE grid_bucket = {B2} AND tz = '{TZ}';"
@@ -278,7 +279,29 @@ def test_normals_due_takes_pending_and_out_of_period_buckets_and_the_longest_sto
 
     with migrated_db(seed_sql=seed) as name:
         due = asyncio.run(_due(sa_url(name)))
-    assert due == [(B2, "America/Los_Angeles"), (b3, TZ)]
+    assert due == [(B2, TZ), (b3, TZ)]
+
+
+@requires_pg
+@pytest.mark.parametrize("denver_first", ["2016-01-01", "2023-01-01", None])
+def test_a_two_zone_bucket_takes_the_alphabetical_zone_whatever_its_first_era5_date(denver_first):
+    first, last = (f"'{denver_first}'", "'2026-09-23'") if denver_first else ("NULL", "NULL")
+    seed = (
+        _registered(B2)
+        + f"INSERT INTO grid_bucket_series (grid_bucket, tz, first_era5_date, last_era5_date) "
+          f"VALUES ({B2}, 'America/Los_Angeles', '2010-01-01', '2026-09-23');"
+        + f"UPDATE grid_bucket_series SET first_era5_date = {first}, last_era5_date = {last} "
+          f"WHERE grid_bucket = {B2} AND tz = '{TZ}';"
+    )
+    with migrated_db(seed_sql=seed) as name:
+        assert asyncio.run(_due(sa_url(name))) == [(B2, TZ)]
+
+
+def test_run_refuses_a_due_list_that_repeats_a_bucket():
+    with pytest.raises(ValueError, match="repeats a bucket"):
+        asyncio.run(run(lambda: None, ArchiveClient(None, transport=httpx.MockTransport(_no_requests)),  # type: ignore[arg-type,return-value]
+                        [(B1, TZ), (B1, "America/Los_Angeles")], today=TODAY, batch=1,
+                        budget=Budget(max_units=1, spent=0), pro_window=WIN))
 
 
 def _climatology(b: int, version: str) -> str:

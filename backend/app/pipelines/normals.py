@@ -252,7 +252,7 @@ async def stored_complete_years(
     rows = (await conn.execute(text(
         "SELECT c.grid_bucket, extract(year FROM c.date)::int AS y, count(*) FROM cell_daily_conditions c "
         "JOIN unnest(CAST(:bs AS int[]), CAST(:tzs AS text[])) AS d(b, tz) ON c.grid_bucket = d.b AND c.tz = d.tz "
-        "WHERE c.record_kind = 'era5' AND c.date BETWEEN :s AND :e GROUP BY 1, 2"
+        "WHERE c.record_kind = 'era5' AND c.date BETWEEN :s AND :e GROUP BY c.grid_bucket, c.tz, 2"
     ), {"bs": [b for b, _ in due], "tzs": [tz for _, tz in due],
         "s": date(start_year, 1, 1), "e": date(end_year, 12, 31)})).all()
     out: dict[int, set[int]] = defaultdict(set)
@@ -317,13 +317,12 @@ STATUS_UPSERT = text(
 
 async def normals_due(conn: AsyncConnection, *, today: date) -> list[tuple[int, str]]:
     """Buckets that are pending, or whose normals or climatology predate this period or their
-    version (either version bump alone recomputes both). A bucket on a
-    timezone line takes the series with the longest stored ERA5 history (then the alphabetically
-    first zone), so the stored-row path applies whenever any of its zones allows it; month-scale
-    values barely move with a one-hour day boundary."""
+    version (either version bump alone recomputes both). A bucket on a timezone line takes its
+    alphabetically first zone (owner rule 5): a stable choice that never flips between runs as
+    first_era5_date moves; month-scale values barely move with a one-hour day boundary."""
     _, end_year = window(today)
     rows = (await conn.execute(text(
-        "SELECT st.grid_bucket, (array_agg(s.tz ORDER BY s.first_era5_date NULLS LAST, s.tz))[1] "
+        "SELECT st.grid_bucket, min(s.tz) "
         "FROM cell_normals_status st JOIN grid_bucket_series s ON s.grid_bucket = st.grid_bucket "
         "WHERE st.status = 'pending' OR NOT EXISTS (SELECT 1 FROM cell_climate_normals n "
         "WHERE n.grid_bucket = st.grid_bucket AND n.period_end_year = :pe AND n.normals_version = :v) "
@@ -449,6 +448,9 @@ async def run(
     that many consecutive failed or rejected paid batches, as in era5_fill."""
     if batch < 1:
         raise ValueError(f"batch must be at least 1, got {batch}")
+    buckets = [b for b, _ in due]
+    if len(buckets) != len(set(buckets)):
+        raise ValueError("due repeats a bucket; normals take exactly one series per bucket")
     period = window(today)
     engine = engine_factory()
     derived = bought = failed = rejected = batches = consecutive = 0
