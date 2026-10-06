@@ -18,8 +18,9 @@ import argparse
 import asyncio
 import dataclasses
 import json
+import os
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import date, timedelta
 
 from sqlalchemy import text
@@ -188,11 +189,15 @@ def _check_incident_start(incident_start: date) -> None:
                          "the earliest day an incident series needs")
 
 
-def archive_client(api_key: str | None) -> ArchiveClient:
-    # ArchiveClient's own refusal is an OpenMeteoError; a paid CLI run must stop cleanly before
-    # touching the database.
-    if not (api_key or "").strip():
-        raise SystemExit("OPEN_METEO_API_KEY is not set; the archive needs the Professional key, "
+def archive_client(environ: Mapping[str, str] | None = None) -> ArchiveClient:
+    """Owner ruling B8 (fail closed): the paid key must be exported into the process environment
+    for this run. app.config.settings would also read it from backend/.env, so a key left in that
+    file could start a billed run unnoticed; settings is deliberately not consulted. ArchiveClient's
+    own refusal is an OpenMeteoError; a paid CLI run must stop cleanly before touching the database."""
+    api_key = (os.environ if environ is None else environ).get("OPEN_METEO_API_KEY", "")
+    if not api_key.strip():
+        raise SystemExit("OPEN_METEO_API_KEY is not set in the process environment; the archive needs the "
+                         "Professional key exported for this run (a value only in backend/.env is refused), "
                          "and the public host is non-commercial")
     return ArchiveClient(api_key)
 
@@ -273,7 +278,6 @@ def exit_status(result: dict[str, object]) -> int:
 
 
 async def _main(args: argparse.Namespace) -> tuple[dict[str, object], int]:
-    from app.config import settings
     from app.pipelines.db import ingest_engine
     from app.services.temporal_weighting import utc_today
 
@@ -307,7 +311,7 @@ async def _main(args: argparse.Namespace) -> tuple[dict[str, object], int]:
     if window is None:
         raise SystemExit("run needs --window-start")
     require_open(window, today)
-    with archive_client(settings.OPEN_METEO_API_KEY) as client:
+    with archive_client() as client:
         result = await run_window(ingest_engine, client, window=window, today=today, max_units=args.max_units,
                                   batch=args.batch, years_per_chunk=args.years_per_chunk,
                                   incident_start=incident_start)

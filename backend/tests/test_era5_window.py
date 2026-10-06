@@ -100,15 +100,33 @@ def test_an_incident_start_before_the_owner_start_is_refused():
                                **_kwargs(incident_start=date(1940, 1, 1))))
 
 
-@pytest.mark.parametrize("key", [None, "", "   "])
-def test_a_missing_api_key_stops_the_real_client_before_anything_runs(key):
+@pytest.mark.parametrize("environ", [{}, {"OPEN_METEO_API_KEY": ""}, {"OPEN_METEO_API_KEY": "   "}])
+def test_a_missing_api_key_stops_the_real_client_before_anything_runs(environ):
     with pytest.raises(SystemExit, match="OPEN_METEO_API_KEY"):
-        archive_client(key)
+        archive_client(environ)
 
 
-def test_a_set_api_key_builds_the_customer_client():
-    with archive_client("k") as client:
+def test_a_key_exported_into_the_environment_builds_the_customer_client(monkeypatch):
+    monkeypatch.setenv("OPEN_METEO_API_KEY", "test-key")
+    with archive_client() as client:
         assert isinstance(client, ArchiveClient)
+
+
+def test_a_key_only_in_the_env_file_is_refused(monkeypatch):
+    # B8, fail closed: settings has the key (as pydantic would read it from backend/.env), the
+    # process environment does not, so the paid run must stop before any engine or request.
+    from app.config import settings
+    from app.pipelines import era5_window
+    from app.services import temporal_weighting
+
+    monkeypatch.delenv("OPEN_METEO_API_KEY", raising=False)
+    monkeypatch.setattr(settings, "OPEN_METEO_API_KEY", "from-env-file")
+    monkeypatch.setattr(temporal_weighting, "utc_today", lambda: WINDOW.start)
+    monkeypatch.setattr("app.pipelines.db.ingest_engine", lambda: pytest.fail("engine created"))
+    args = build_parser().parse_args(["run", "--window-start", WINDOW.start.isoformat(), "--max-units", "1"])
+    with pytest.raises(SystemExit, match="process environment") as refused:
+        asyncio.run(era5_window._main(args))
+    assert "from-env-file" not in str(refused.value)
 
 
 @pytest.mark.parametrize("part, value", [
