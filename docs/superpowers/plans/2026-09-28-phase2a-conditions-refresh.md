@@ -3990,10 +3990,10 @@ bg_wait ../data/review/logs/era5w1_branch_s1.log
 ```
 
 ```bash
-save_once ../data/review/era5w1_branch_spent.txt python3 -c 'import json,sys; d=json.loads([x for x in open(sys.argv[1]) if x.startswith("{")][-1]); print(int(-(-d["units_spent_window"] // 1)))' ../data/review/logs/era5w1_branch_s1.log
+save_once ../data/review/era5w1_branch_spent.txt printf '%s\n' 20000
 ```
 
-Expected: `finished ok`; `fill.done` > 0, `fill.failed: 0`, `fill.stopped_for_budget: true` (the cap is small on purpose); the branch spend, rounded up, saved once.
+Expected: `finished ok`; `fill.done` > 0, `fill.failed: 0`, `fill.stopped_for_budget: true` (the cap is small on purpose); `20000` saved once — the branch `--max-units` cap itself, not whatever this run's log says it spent. The cap is cumulative per database (R9), so branch spend is always ≤ 20,000 regardless of retries; reading the log's `units_spent_window` instead would under-count after a `_r2` rerun and let the prod final cap (4c/4f) overspend by the difference.
 
 **STOP — owner dashboard check.** The owner compares the Open-Meteo dashboard's used units with `era5w1_branch_spent.txt`. The ceiling formula over-estimates, so the dashboard should show the same or less. If it shows more, stop: the cost estimate is corrected in a reviewed commit before any further run. Only when it matches, the owner runs `( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && GATE_DIR=../data/review/gates_era5w1_prod gate_pass owner_units_confirmed_branch )`.
 
