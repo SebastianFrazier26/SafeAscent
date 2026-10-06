@@ -464,3 +464,13 @@ def test_a_bad_incident_start_is_a_clean_exit(monkeypatch):
     args = build_parser().parse_args(["plan", "--incident-start", "1990-13-01"])
     with pytest.raises(SystemExit):
         asyncio.run(era5_window._main(args))
+
+
+@pytest.mark.parametrize("command", [["plan"], ["run", "--window-start", "2027-01-10", "--max-units", "1"], ["register"]])
+@pytest.mark.parametrize("start", ["1989-12-25", "1989-12-27", "1990-01-01", "2025-01-01"])
+def test_the_cli_refuses_any_incident_start_but_the_owner_start(command, start):
+    from app.pipelines import era5_window
+
+    args = build_parser().parse_args([*command, "--incident-start", start])
+    with pytest.raises(SystemExit, match="must be 1989-12-26"):
+        asyncio.run(era5_window._main(args))

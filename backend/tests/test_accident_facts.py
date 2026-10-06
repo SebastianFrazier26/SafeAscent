@@ -480,3 +480,18 @@ def test_writes_wait_for_the_load_lock_and_dry_run_does_not(tmp_path, monkeypatc
         dry, loaded, logs = asyncio.run(scenario(sa_url(name)))
     assert dry["would_insert"] == 1 and loaded["inserted"] == 1
     assert logs == 1  # the timed-out runs rolled back whole
+
+
+@requires_pg
+@pytest.mark.parametrize("precision,tz", [("crag", "America/Denver"), ("region_fallback", None)])
+def test_only_a_trusted_point_gets_a_timezone(tmp_path, precision, tz):
+    # Same rule as localday.assign_accident_tz, so register never has to clear what insert set.
+    async def scenario(engine):
+        report = ValidationReport("t")
+        rows = parse_facts(_csv(tmp_path, _row(geocode_precision=precision)), today=TODAY, report=report)
+        async with engine.begin() as conn:
+            await insert_new(conn, rows, report=report)
+            return (await conn.execute(text("SELECT tz FROM accidents WHERE source_id = 'ANAC-2025-001'"))).scalar_one()
+
+    with migrated_db() as name:
+        assert asyncio.run(_with_engine(sa_url(name), scenario)) == tz

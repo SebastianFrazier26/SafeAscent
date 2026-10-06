@@ -1,5 +1,7 @@
 """R6 acceptance: ERA5 cell temperatures vs the legacy weather rows that were linked
-correctly (dated inside their accident's 7-day window and within ~5 km of it)."""
+correctly (dated inside their accident's 7-day window and within ~5 km of it). Only known-day
+trusted points, as in accident_conditions: a month- or year-precision accident's placeholder date
+would correlate the wrong week."""
 
 from __future__ import annotations
 
@@ -18,9 +20,11 @@ R6_SQL = f"""
 WITH linked AS (
   SELECT w.temperature_max AS legacy_tmax, c.tmax AS new_tmax
   FROM weather w
-  JOIN accidents a ON a.accident_id = w.accident_id
-  JOIN cell_daily_conditions c ON c.grid_bucket = {GRID} AND c.tz = a.tz AND c.date = w.date
-  WHERE w.date BETWEEN a.date - 6 AND a.date
+  JOIN accidents_clean_daily a ON a.accident_id = w.accident_id
+  JOIN accidents t ON t.accident_id = a.accident_id
+  JOIN cell_daily_conditions c ON c.grid_bucket = {GRID} AND c.tz = t.tz AND c.date = w.date
+  WHERE a.point_trusted AND a.year_lo IS NOT DISTINCT FROM a.year_hi
+    AND w.date BETWEEN a.date - 6 AND a.date
     AND abs(w.latitude - a.latitude) < 0.05 AND abs(w.longitude - a.longitude) < 0.05
     AND w.temperature_max IS NOT NULL AND c.tmax IS NOT NULL AND c.record_kind = 'era5'
 )

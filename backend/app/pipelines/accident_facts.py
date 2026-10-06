@@ -381,7 +381,10 @@ INSERT = text(
 def _params(p: Planned) -> dict[str, object]:
     row = p.row
     route_id = row.mp_route_id if row.mp_route_id is not None else (p.match.mp_route_id if p.match else None)
-    zone = tz_for_point(row.latitude, row.longitude) if row.latitude is not None and row.longitude is not None else None
+    # Same rule as localday.assign_accident_tz: only a trusted point gets a zone.
+    zone = None
+    if row.geocode_precision in TRUSTED_POINT_PRECISIONS and row.latitude is not None and row.longitude is not None:
+        zone = tz_for_point(row.latitude, row.longitude)
     return {
         "source": p.source, "source_id": row.source_id, "date": row.date, "year": float(row.date.year),
         "date_precision": row.date_precision, "state": row.state, "mountain": row.mountain, "route": row.route,

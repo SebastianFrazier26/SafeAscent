@@ -12,7 +12,6 @@ from app.pipelines.open_meteo import (
     Location,
     OpenMeteoError,
     cost_units,
-    kmh_to_ms,
 )
 
 TZ = "America/Denver"
@@ -33,10 +32,6 @@ def _ok(request: httpx.Request) -> httpx.Response:
 
 def _offline(handler) -> ArchiveClient:
     return ArchiveClient(None, transport=httpx.MockTransport(handler))
-
-
-def test_wind_conversion_36_kmh_is_10_ms():
-    assert kmh_to_ms(36.0) == pytest.approx(10.0)
 
 
 def test_cost_units_rule_is_a_ceiling():

@@ -102,10 +102,6 @@ def cost_units(n_locations: int, n_vars: int, n_days: int) -> int:
     return n_locations * math.ceil(n_vars / 10) * math.ceil(n_days / 14)
 
 
-def kmh_to_ms(kmh: float) -> float:
-    return kmh / 3.6
-
-
 class ArchiveClient:
     """With no key the client refuses to start unless `allow_public=True`: the public host is
     non-commercial and rate-limited, so a missing key must stop a paid run, not reroute it.

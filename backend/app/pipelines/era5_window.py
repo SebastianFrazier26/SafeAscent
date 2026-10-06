@@ -283,6 +283,12 @@ async def _main(args: argparse.Namespace) -> tuple[dict[str, object], int]:
         window = ProWindow(date.fromisoformat(args.window_start), initial=args.initial_window) if args.window_start else None
     except ValueError as exc:
         raise SystemExit(str(exc)) from None
+    # The flag accepts only the owner start. A later day leaves early-1990 incident windows
+    # incomplete; an earlier one buys days for no incident. The library check below refuses only
+    # earlier days, so tests can plan small later-start scenarios.
+    if incident_start != era5_fill.INCIDENT_START_DEFAULT:
+        raise SystemExit(f"--incident-start {incident_start} must be {era5_fill.INCIDENT_START_DEFAULT}, "
+                         "the day an incident series needs to start")
     if args.command == "register":
         engine = ingest_engine()
         try:
