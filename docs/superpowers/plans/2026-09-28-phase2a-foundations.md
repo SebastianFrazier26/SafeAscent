@@ -90,7 +90,7 @@ Why this cut:
 | Elevation / static features | once per new point, after each catalog load | `static_features points|elevation|routes` (plan 5) | Transient HTTP errors are retried, never stored as `no_tile`. |
 | GNIS summits | quarterly | plan 2 loader (plan 6 re-seeds objectives) | |
 | MP tick quarantine (R8) | on every tick load and weekly | `data-weekly.yml` (plan 7) runs `mp_ticks_quarantine` | Relative to `LEAST(today, capture day + 1)`. |
-| MP ice/mixed tick aggregates | after each completed private scrape | owner runs `mp_tick_aggregates` (plan 1) | The scrape month and later stay `partial_month`. Closed months are INSERT-only; changed counts are quarantined `count_changed`. |
+| MP ice/mixed tick aggregates | after each completed private scrape | owner runs `mp_tick_aggregates` (plan 1) | The scrape month and later stay `partial_month`. Closed months are INSERT-only; a reload only adds new months, a changed count on a stored key is skipped and counted, never quarantined (owner decision 2026-10-02). |
 | `mp_tick_counts` | weekly after R8 | `data-weekly.yml` (plans 4/7) | |
 | Accidents (R1–R5, R9, R12) | on each refresh load | plan 2 jobs, re-run by plan 3's R11 runbook | R1/R2 touch only ids present in `internal.accidents_raw`. |
 | R10 legacy relink | once in plan 5; re-run after plan 6's data load, before `0012` | plan 5 job, plan 6 runbook | Unresolved rows go to `internal.r10_unresolved`; nothing is nulled. |
@@ -3359,8 +3359,8 @@ neonctl branches delete p2a-0-rehearsal --project-id still-morning-74008008
 
 - [ ] **Step 4 (owner): Later scrapes**
 - Reloading the same export never accepts its `partial_month` rows (D3). Months at or after the scrape month land only from a **newer** private scrape that finished after those months closed.
-- After each new scrape, run Step 3 on it. **Known limitation (final review M9, owner decision pending):** MP's totals only grow and `period='total'` is INSERT-only, so a newer scrape turns almost every stored total into `count_changed`. At ~7–12 rows per route that is roughly 8–12% of the batch, above the default `--max-quarantine-share 0.10`, so the reload is likely **rejected** whole and its newly closed months do not land. The first load is unaffected. Decide before the second load: exclude `total` rows from the share, or key totals per scrape. Do not just raise `--max-quarantine-share`, which would also hide real drift.
-- `count_changed` rows (late-logged ticks, or MP's total grew) are quarantined, never applied. Review their count in the run's report. If the drift matters for exposure, rebuilding the table is a new migration plus a full reload, decided by the owner.
+- After each new scrape, run Step 3 on it. A reload **only adds new months** (owner decision 2026-10-02): a stored `(mp_route_id, period, style)` row is never changed, whether the newly exported count matches it or not. This replaces the earlier known limitation (final review M9) where MP's ever-growing totals turned almost every stored total into `count_changed` and, at ~7–12 rows per route (roughly 8–12% of the batch), pushed the reload above the default `--max-quarantine-share 0.10` and got it rejected whole.
+- A stored key whose newly exported count matches is skipped and counted `already_loaded_same`; one whose count changed (late-logged ticks, or MP's total grew) is also skipped, counted `already_loaded_changed`, and no longer quarantined or weighed against `--max-quarantine-share` — only a genuinely new key loads. Review the counts in the run's report. If the drift matters for exposure, rebuilding the table is a new migration plus a full reload, decided by the owner.
 - Removal (legal Q1): `DROP TABLE internal.mp_tick_aggregates` via a new migration, then plan 8's removal drill.
 
 ---

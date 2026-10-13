@@ -5,20 +5,19 @@ Months are the finest grain in the export, so completeness is judged per month (
 at or after the route's scrape month (cut-off min(today, scraped_at)) is partial for this
 export forever, and months after the current UTC month are future. The outcome depends only
 on the file, so reloading it in a later month is a no-op rather than a way to accept a
-partial month. The table is INSERT-only: a stored count is never overwritten, and a
-different count from a later scrape is quarantined with both values.
+partial month. The table is INSERT-only: a stored (mp_route_id, period, style) row is never
+changed by a later scrape, whether the newly exported count matches it or not (owner decision
+2026-10-02). A matching key is skipped and counted in the run's stats as already_loaded_same;
+a key whose count has grown or shrunk is also skipped, counted as already_loaded_changed, and
+never quarantined or weighed against --max-quarantine-share — only a genuinely new key loads.
+This also resolves the earlier known limitation where MP's ever-growing totals rejected most
+later-scrape reloads outright (final review M9): a changed total no longer counts toward the
+quarantine share, so a reload's newly closed months land even though its totals keep growing.
 
 scraped_at is the private export's last-page time for the route, not its first (the scraper
 upserts it on every page). A route whose pages straddle a month boundary could therefore
 treat a month as partial when only its early days were actually unobserved; accepted for now
 (owner-noted), since a route's pages are normally fetched back to back.
-
-Known limitation (final review M9, open for the owner): MP's per-route totals only grow, and
-period='total' is INSERT-only, so on a newer scrape almost every stored total comes back as
-count_changed. At ~7-12 rows per route that alone is roughly 8-12% of the batch, above the
-default --max-quarantine-share 0.10, so a later-scrape reload is likely rejected whole and its
-newly closed months do not land. The first load is unaffected. Fix before the second scrape is
-loaded: exclude 'total' rows from the share, or key totals per scrape.
 """
 
 from __future__ import annotations
@@ -134,22 +133,22 @@ def _month_problem(year_month: str, *, today: date, cutoff: date) -> str | None:
 
 def _accept_or_compare(
     row: AggregateRow,
-    ref: str,
     existing: dict[tuple[int, str, str], int],
     report: ValidationReport,
     accepted: list[AggregateRow],
     stats: dict[str, int],
-) -> bool:
+) -> None:
+    # Owner decision 2026-10-02: a stored key is never touched by a later scrape, matching
+    # count or not — skip and count it, rather than quarantine (which used to reject whole
+    # reloads once MP's ever-growing totals pushed count_changed past --max-quarantine-share).
     stored = existing.get((row.mp_route_id, row.period, row.style))
-    if stored is not None and stored != row.tick_count:
-        report.quarantine(ref, "count_changed", stored=stored, exported=row.tick_count)
-        return False
     report.accept()
     if stored is None:
         accepted.append(row)
+    elif stored == row.tick_count:
+        stats["already_loaded_same"] += 1
     else:
-        stats["already_loaded"] += 1
-    return True
+        stats["already_loaded_changed"] += 1
 
 
 def validate(
@@ -167,7 +166,8 @@ def validate(
         "routes": len(by_route),
         "mp_reported_total": sum(t.total_ticks for t in totals),
         "accepted_month_ticks": 0,
-        "already_loaded": 0,
+        "already_loaded_same": 0,
+        "already_loaded_changed": 0,
         "total_mismatch_routes": 0,
     }
     raw_sums: dict[int, int] = {}
@@ -188,8 +188,8 @@ def validate(
             report.quarantine(ref, "nonpositive_count", n=row.n)
         else:
             candidate = AggregateRow(row.mp_route_id, row.year_month, row.style, row.n, total.scraped_at)
-            if _accept_or_compare(candidate, ref, existing, report, accepted, stats):
-                stats["accepted_month_ticks"] += row.n
+            _accept_or_compare(candidate, existing, report, accepted, stats)
+            stats["accepted_month_ticks"] += row.n
     for total in totals:
         ref = f"{total.mp_route_id}:total"
         if (problem := _route_problem(total.mp_route_id, total, route_types, today)) is not None:
@@ -198,7 +198,7 @@ def validate(
             report.quarantine(ref, "bad_total", total=total.total_ticks)
         else:
             candidate = AggregateRow(total.mp_route_id, "total", "all", total.total_ticks, total.scraped_at)
-            _accept_or_compare(candidate, ref, existing, report, accepted, stats)
+            _accept_or_compare(candidate, existing, report, accepted, stats)
             if raw_sums.get(total.mp_route_id, 0) != total.total_ticks:
                 stats["total_mismatch_routes"] += 1
     return accepted, report, stats
