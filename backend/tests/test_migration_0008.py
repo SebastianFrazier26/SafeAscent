@@ -74,22 +74,53 @@ def test_tick_coverage_has_three_states_and_never_zero():
     assert months == [(900000001, "2024-02", 5)]
 
 
-def test_existing_accepted_totals_are_backfilled_as_complete():
-    with migrated_db("0007_cell_daily_conditions", seed_sql=MP) as name:
-        run_sql(name, "INSERT INTO internal.mp_tick_aggregates (mp_route_id, period, style, tick_count, scraped_at) VALUES "
-                      "(900000001, 'total', 'all', 42, '2024-03-15T12:00:00Z'), (900000002, '2024-01', 'lead', 3, "
-                      "'2024-03-15T12:00:00Z')")
+RUN = "00000000-0000-4000-8000-000000000001"
+BACKFILL_SEED = f"""
+INSERT INTO mp_routes (mp_route_id, name, location_id, type) VALUES
+  (900000004, 'Fixture Four', 900000101, 'Ice'), (900000005, 'Fixture Five', 900000101, 'Ice'),
+  (900000006, 'Fixture Six', 900000101, 'Ice');
+INSERT INTO source_ingest_log (run_id, source, status) VALUES ('{RUN}', 'mp_tick_aggregates', 'ok');
+INSERT INTO internal.mp_tick_aggregates (mp_route_id, period, style, tick_count, scraped_at, loaded_run_id) VALUES
+  (900000001, 'total', 'all', 42, '2024-03-15T12:00:00Z', '{RUN}'), (900000001, '2024-01', 'lead', 40,
+   '2024-03-15T12:00:00Z', '{RUN}'),
+  (900000002, '2024-01', 'lead', 3, '2024-03-15T12:00:00Z', '{RUN}'),
+  (900000004, 'total', 'all', 5, '2024-03-01T02:00:00+05:00', '{RUN}'),
+  (900000004, '2024-01', 'lead', 5, '2024-03-01T02:00:00+05:00', '{RUN}'),
+  (900000005, 'total', 'all', 3, '2024-03-15T12:00:00Z', '{RUN}'),
+  (900000005, '2024-01', 'lead', 3, '2024-03-15T12:00:00Z', '{RUN}'),
+  (900000006, 'total', 'all', 9, '2024-03-15T12:00:00Z', '{RUN}'),
+  (900000006, '2024-01', 'lead', 3, '2024-03-15T12:00:00Z', '{RUN}');
+INSERT INTO internal.ingest_quarantine (run_id, source, row_ref, reason, detail) VALUES
+  ('{RUN}', 'mp_tick_aggregates', '900000001:2024-03:lead', 'partial_month', '{{"n": 2}}'),
+  ('{RUN}', 'mp_tick_aggregates', '900000005:2024-02:lead', 'nonpositive_count', '{{"n": 0}}');
+"""
+
+
+def test_existing_accepted_totals_are_backfilled_as_complete_only_without_gaps():
+    with migrated_db("0007_cell_daily_conditions", seed_sql=MP + BACKFILL_SEED) as name:
         command.upgrade(_alembic_cfg(name), PIN)
         rows = fetch(name, "SELECT mp_route_id, complete, complete_through::text AS ct, total_ticks "
                            "FROM internal.route_tick_scrapes ORDER BY 1")
-    assert rows == [(900000001, True, "2024-02-29", 42)]
+    # 900000001: its scrape-month ticks were quarantined partial, so 40 + 2 = 42 is whole.
+    # 900000004: 02:00 at +05:00 on 1 March is still February in UTC.
+    # 900000005 (a counted month quarantined, though its months still sum to 3) and 900000006 (months 3 != total 9) read missing.
+    assert rows == [(900000001, True, "2024-02-29", 42), (900000004, True, "2024-01-31", 5)]
 
 
-def test_0008_downgrade_refuses_while_routes_exist():
+def test_0008_downgrade_refuses_while_any_catalog_or_seam_row_exists():
     with migrated_db(PIN, seed_sql=MP + AREAS) as name:
         run_sql(name, ROUTES + "(900000001, 900000101, 'trad', false, '{trad}', 'rt-mp-v1', true, NULL, 'h', 'v')")
-        with pytest.raises(RuntimeError, match="refusing to downgrade 0008"):
+        with pytest.raises(RuntimeError, match="refusing to downgrade 0008: canonical_routes"):
             command.downgrade(_alembic_cfg(name), "0007_cell_daily_conditions")
+        run_sql(name, "DELETE FROM canonical_routes")
+        with pytest.raises(RuntimeError, match="refusing to downgrade 0008: canonical_areas"):
+            command.downgrade(_alembic_cfg(name), "0007_cell_daily_conditions")
+        run_sql(name, "DELETE FROM canonical_areas; INSERT INTO internal.route_tick_scrapes (mp_route_id, source, "
+                      "scraped_at, complete) VALUES (900000001, 'mp_scrape', now(), false)")
+        with pytest.raises(RuntimeError, match="refusing to downgrade 0008: internal.route_tick_scrapes"):
+            command.downgrade(_alembic_cfg(name), "0007_cell_daily_conditions")
+        run_sql(name, "DELETE FROM internal.route_tick_scrapes")
+        command.downgrade(_alembic_cfg(name), "0007_cell_daily_conditions")
 
 
 def test_0008_refuses_without_ltree_when_unprivileged():

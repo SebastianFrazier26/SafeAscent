@@ -37,15 +37,36 @@ FROM internal.mp_tick_aggregates t
 JOIN internal.route_tick_scrapes s ON s.mp_route_id = t.mp_route_id AND s.complete
 WHERE t.period <> 'total' AND to_date(t.period || '-01', 'YYYY-MM-DD') <= s.complete_through
 """
-# Only totals the loader accepted exist (it accepts complete routes only); the last fully observed
-# month is the one before the scrape's UTC month, the same cut-off the loader's partial_month rule uses.
+# Only totals the loader accepted exist; the last fully observed month is the one before the
+# scrape's UTC month, the same cut-off the loader's partial_month rule uses. A route is backfilled
+# complete only when nothing inside its counted range was quarantined in the run that loaded its
+# total and its stored months plus that run's quarantined partial/future months sum to the total
+# (the loader's seam_rows rule): otherwise an absent month would read as a real zero, so the route
+# is left out and reads missing until a reload writes it.
 TICK_BACKFILL = """
+WITH t AS (
+  SELECT a.mp_route_id, a.tick_count, a.scraped_at, a.loaded_run_id,
+         (date_trunc('month', a.scraped_at AT TIME ZONE 'UTC') - interval '1 day')::date AS through
+  FROM internal.mp_tick_aggregates a JOIN mp_routes r ON r.mp_route_id = a.mp_route_id
+  WHERE a.period = 'total' AND a.style = 'all' AND a.scraped_at IS NOT NULL
+), q AS (
+  SELECT q.run_id, split_part(q.row_ref, ':', 1) AS route_ref, q.row_ref, q.reason, q.detail
+  FROM internal.ingest_quarantine q WHERE q.source = 'mp_tick_aggregates'
+)
 INSERT INTO internal.route_tick_scrapes (mp_route_id, source, scraped_at, complete, complete_through, total_ticks,
   loaded_run_id)
-SELECT t.mp_route_id, 'mp_scrape', t.scraped_at, true,
-       (date_trunc('month', t.scraped_at AT TIME ZONE 'UTC') - interval '1 day')::date, t.tick_count, t.loaded_run_id
-FROM internal.mp_tick_aggregates t JOIN mp_routes r ON r.mp_route_id = t.mp_route_id
-WHERE t.period = 'total' AND t.style = 'all' AND t.scraped_at IS NOT NULL
+SELECT t.mp_route_id, 'mp_scrape', t.scraped_at, true, t.through, t.tick_count, t.loaded_run_id
+FROM t
+WHERE NOT EXISTS (
+        SELECT 1 FROM q WHERE q.run_id = t.loaded_run_id AND q.route_ref = t.mp_route_id::text
+          AND split_part(q.row_ref, ':', 2) <> 'total' AND q.reason NOT IN ('partial_month', 'future_month'))
+  AND t.tick_count =
+        (SELECT coalesce(sum(m.tick_count), 0) FROM internal.mp_tick_aggregates m
+         WHERE m.mp_route_id = t.mp_route_id AND m.period <> 'total'
+           AND to_date(m.period || '-01', 'YYYY-MM-DD') <= t.through)
+        + (SELECT coalesce(sum((q.detail ->> 'n')::int), 0) FROM q
+           WHERE q.run_id = t.loaded_run_id AND q.route_ref = t.mp_route_id::text
+             AND q.reason IN ('partial_month', 'future_month'))
 """
 
 
@@ -150,9 +171,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    n = op.get_bind().exec_driver_sql("SELECT count(*) FROM canonical_routes").scalar_one()
-    if n:
-        raise RuntimeError(f"refusing to downgrade 0008: canonical_routes has {n} rows")
+    bind = op.get_bind()
+    for table in ("canonical_routes", "canonical_areas", "internal.route_tick_scrapes"):
+        n = bind.exec_driver_sql(f"SELECT count(*) FROM {table}").scalar_one()
+        if n:
+            raise RuntimeError(f"refusing to downgrade 0008: {table} has {n} rows")
     op.execute("DROP VIEW internal.route_tick_months")
     op.execute("DROP VIEW internal.route_tick_coverage")
     op.drop_table("route_tick_scrapes", schema="internal")

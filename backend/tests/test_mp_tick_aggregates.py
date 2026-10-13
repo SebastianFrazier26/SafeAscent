@@ -320,52 +320,92 @@ def test_heavy_quarantine_rejects_the_batch_and_writes_nothing(tmp_path, monkeyp
         assert asyncio.run(_stored(url)) == []
 
 
+def test_complete_through_is_the_month_before_the_utc_scrape_month():
+    from app.pipelines.mp_tick_aggregates import complete_through
+
+    assert complete_through(datetime.fromisoformat("2024-03-15T12:00:00+00:00")) == date(2024, 2, 29)
+    assert complete_through(datetime.fromisoformat("2024-03-01T02:00:00+05:00")) == date(2024, 1, 31)
+
+
+def _seam(tmp_path, monthly, totals, existing=None):
+    from app.pipelines.mp_tick_aggregates import seam_rows
+
+    totals_, monthly_ = read_export(_export(tmp_path, monthly, totals))
+    _, report, _ = validate(totals_, monthly_, route_types=ICE, existing=existing or {}, today=TODAY)
+    return {(s.mp_route_id, s.complete, s.total_ticks) for s in seam_rows(totals_, monthly_, report)}
+
+
+def test_seam_is_complete_only_when_every_counted_month_landed(tmp_path):
+    # The scrape month is partial (outside the counted range), so it never makes a route gappy.
+    assert _seam(tmp_path, [(R1, "2026-01", "lead", 3), (R1, "2026-09", "lead", 2)], [(R1, 5, 1)]) == {(R1, True, 5)}
+
+
+def test_a_quarantined_month_in_range_writes_the_route_as_scraped(tmp_path):
+    seam = _seam(tmp_path, [(R1, "2026-01", "lead", 3), (R1, "2026-02", "bogus", 2)], [(R1, 5, 1)])
+    assert seam == {(R1, False, None)}
+
+
+def test_a_month_sum_mismatch_writes_the_route_as_scraped(tmp_path):
+    assert _seam(tmp_path, [(R1, "2026-01", "lead", 3)], [(R1, 5, 1)]) == {(R1, False, None)}
+
+
+def test_an_already_loaded_total_still_feeds_the_seam_with_the_exported_total(tmp_path):
+    seam = _seam(tmp_path, [(R1, "2026-01", "lead", 3), (R1, "2026-02", "lead", 4)], [(R1, 7, 1)],
+                 existing={(R1, "2026-01", "lead"): 3, (R1, "total", "all"): 3})
+    assert seam == {(R1, True, 7)}
+
+
+async def _seam_state(url: str) -> tuple[list[tuple], list[tuple]]:
+    engine = create_async_engine(url)
+    try:
+        async with engine.connect() as conn:
+            scrapes = (await conn.execute(text(
+                "SELECT mp_route_id, scraped_at, complete, complete_through, total_ticks "
+                "FROM internal.route_tick_scrapes ORDER BY 1"))).all()
+            months = (await conn.execute(text(
+                "SELECT route_id, period, tick_count FROM internal.route_tick_months ORDER BY 1, 2"))).all()
+            return [tuple(r) for r in scrapes], [tuple(r) for r in months]
+    finally:
+        await engine.dispose()
+
+
 @requires_pg
-def test_loader_writes_the_seam_only_for_complete_routes():
-    from datetime import UTC, date, datetime
-
-    from app.pipelines.mp_tick_aggregates import AggregateRow, complete_through, load
-
-    assert complete_through(datetime(2024, 3, 15, 12, tzinfo=UTC)) == date(2024, 2, 29)
-    seed = ("INSERT INTO mp_locations (mp_id, name) VALUES (900000101, 'Fixture Crag'); "
-            "INSERT INTO mp_routes (mp_route_id, name, location_id, type) VALUES "
-            "(900000001, 'Fixture Ice', 900000101, 'Ice'), (900000002, 'Fixture Mixed', 900000101, 'Mixed')")
-    at = datetime(2024, 3, 15, 12, tzinfo=UTC)
-    rows = [AggregateRow(900000001, "2024-02", "lead", 5, at), AggregateRow(900000001, "total", "all", 5, at),
-            AggregateRow(900000002, "2024-01", "lead", 3, at)]
-    with migrated_db("0008_mp_catalog", seed_sql=seed) as name:
-        async def go():
-            engine = create_async_engine(sa_url(name))
-            try:
-                async with engine.begin() as conn:
-                    await load(conn, rows, run_id=uuid.uuid4(), scrape_run_id="t")
-                    return (await conn.execute(text(
-                        "SELECT mp_route_id, complete, complete_through, total_ticks FROM internal.route_tick_scrapes"))).all()
-            finally:
-                await engine.dispose()
-
-        assert [tuple(r) for r in asyncio.run(go())] == [(900000001, True, date(2024, 2, 29), 5)]
-
-
-@requires_pg
-def test_seam_keeps_the_newest_scrape():
+def test_a_rescrape_advances_the_seam_and_reveals_newly_closed_months(tmp_path, monkeypatch):
     from datetime import UTC
 
-    seed = ("INSERT INTO mp_locations (mp_id, name) VALUES (900000101, 'Fixture Crag'); "
-            "INSERT INTO mp_routes (mp_route_id, name, location_id, type) VALUES (900000001, 'Fixture Ice', 900000101, 'Ice')")
-    older, newer = datetime(2024, 3, 15, tzinfo=UTC), datetime(2024, 6, 2, tzinfo=UTC)
-    with migrated_db("0008_mp_catalog", seed_sql=seed) as name:
-        async def go():
-            engine = create_async_engine(sa_url(name))
-            try:
-                for at, n in ((newer, 9), (older, 5)):
-                    async with engine.begin() as conn:
-                        await load(conn, [AggregateRow(900000001, "total", "all", n, at)], run_id=uuid.uuid4(),
-                                   scrape_run_id="t")
-                async with engine.connect() as conn:
-                    return (await conn.execute(text(
-                        "SELECT complete_through, total_ticks FROM internal.route_tick_scrapes"))).all()
-            finally:
-                await engine.dispose()
+    first = _export(tmp_path, [(R1, "2026-06", "lead", 3), (R1, "2026-08", "lead", 1)], [(R1, 4, 1)],
+                    scraped_at="2026-08-20T00:00:00+00:00", name="first.sqlite")
+    second = _export(tmp_path, [(R1, "2026-06", "lead", 3), (R1, "2026-08", "lead", 1), (R1, "2026-09", "lead", 2)],
+                     [(R1, 6, 1)], scraped_at="2026-09-20T00:00:00+00:00", name="second.sqlite")
+    with migrated_db(seed_sql=_seed_ice_route()) as name:
+        url = sa_url(name)
+        monkeypatch.setattr(loader, "ingest_engine", lambda: create_async_engine(url))
+        assert asyncio.run(main(first, today=TODAY, max_quarantine_share=1.0, dry_run=False))["status"] == "ok"
+        assert asyncio.run(_seam_state(url)) == (
+            [(R1, datetime(2026, 8, 20, tzinfo=UTC), True, date(2026, 7, 31), 4)], [(R1, "2026-06", 3)])
+        again = asyncio.run(main(second, today=TODAY, max_quarantine_share=1.0, dry_run=False))
+        assert again["status"] == "ok" and again["stats"]["already_loaded_changed"] == 1
+        assert asyncio.run(_seam_state(url)) == (
+            [(R1, datetime(2026, 9, 20, tzinfo=UTC), True, date(2026, 8, 31), 6)],
+            [(R1, "2026-06", 3), (R1, "2026-08", 1)])
+        # An older export loaded afterwards never rolls the seam back.
+        older = _export(tmp_path, [(R1, "2026-06", "lead", 3)], [(R1, 3, 1)], scraped_at="2026-07-10T00:00:00+00:00",
+                        name="older.sqlite")
+        assert asyncio.run(main(older, today=TODAY, max_quarantine_share=1.0, dry_run=False))["status"] == "ok"
+        assert asyncio.run(_seam_state(url))[0][0][3] == date(2026, 8, 31)
 
-        assert [tuple(r) for r in asyncio.run(go())] == [(date(2024, 5, 31), 9)]
+
+@requires_pg
+def test_gappy_routes_load_as_scraped_and_hide_their_months(tmp_path, monkeypatch):
+    path = _export(tmp_path, [(R1, "2026-01", "lead", 3), (R1, "2026-02", "bogus", 2), (R2, "2026-01", "lead", 3)],
+                   [(R1, 5, 1), (R2, 5, 1)])
+    seed = _seed_ice_route() + (
+        f"INSERT INTO mp_routes (mp_route_id, name, location_id, type) VALUES ({R2}, 'Fixture Mixed', 900000100, 'Ice');")
+    with migrated_db(seed_sql=seed) as name:
+        url = sa_url(name)
+        monkeypatch.setattr(loader, "ingest_engine", lambda: create_async_engine(url))
+        result = asyncio.run(main(path, today=TODAY, max_quarantine_share=1.0, dry_run=False))
+        assert result["status"] == "ok" and result["stats"]["seam_scraped"] == 2
+        scrapes, months = asyncio.run(_seam_state(url))
+    assert [(r[0], r[2], r[3], r[4]) for r in scrapes] == [(R1, False, None, None), (R2, False, None, None)]
+    assert months == []
