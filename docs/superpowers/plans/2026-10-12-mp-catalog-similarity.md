@@ -4,6 +4,8 @@
 
 **Revision 2 (2026-10-12):** the owner's answers to round 1. DP1–DP5, DP10–DP12 decided as recommended; this plan takes migrations 0008–0010 and Phase 4 renumbers after it; scheduled refresh (DP6, new options); v2.2 terrain/lithology source research appendix (DP7); LLM allocation of legacy accidents (DP8, new options); a tick-source seam the exposure plan only adds a loader to (DP9); toprope/aid map to the underlying rock group (coordinator ruling R-1).
 
+**Revision 3 (2026-10-12):** owner decision DP14: the R10 LLM pass (Task 15) sends the **full accident narrative** (the owner states the accident text all comes from open online sources), alongside the short fields; pick-from-candidates, one audit row per call, the dollar cap and the sample gate are unchanged. DP6, DP8 and DP13 had no owner answer, so their recommended defaults stand as controller rulings (the owner may override): launchd yearly on 2 January plus on demand; the thresholds as written; a Haiku-vs-Sonnet sample.
+
 **Goal:** Build a thin route catalog on Mountain Project data (`canonical_areas` and `canonical_routes` keyed by the MP ids themselves, with a versioned `type_group` mapper, an `ltree` area path from the `parent_id` chain, a scorable flag, a tick-source seam, and a scheduled refresh), then the Phase 3 MVP-1 similarity features on that catalog (type group, elevation with 100% coverage checked against USGS EPQS, monthly climate normals from plan 3, latitude), then R10 as a near-identity accident→route link on `accidents.mp_route_id`, with an audited, sample-gated LLM pass that picks among our own candidates for the legacy residue.
 
 **Architecture:** `area_tree.py` (pure) turns `mp_locations` rows into root-first paths, US state codes and coordinates with their true source; `route_types.py` (pure) maps the MP type string and grade to a type group; `mp_catalog.py` reads `mp_locations`/`mp_routes`, derives only those columns, and upserts them in one gated transaction. No name, grade, URL or prose is copied: displayable facts stay in the MP tables, where Phase 4's `app/catalog_seam.py` reads them by the same ids. Ticks reach every consumer through one seam, `internal.route_tick_scrapes` (per-route scrape completeness) read through `internal.route_tick_coverage`; the exposure plan only adds a rock loader that writes it. The features half is the 2026-09-28 similarity plan re-pointed at this catalog (`feature_points`, `route_static_features`, the `scoring_unit_features` view as the Phase 3 MVP-1 read contract). `catalog_cycle.py` chains refresh → points → elevation → route table for the scheduled run. R10 is a view (`accident_route_links`): the identity on `accidents.mp_route_id`, plus legacy links that carried a usable MP id, owner decisions, and LLM picks that cleared a measured gate.
@@ -29,7 +31,7 @@ The algorithm work is the owner's top priority, so this plan merges first and ta
 The foundations plan's Global Constraints apply. Also:
 - **Missing is never 0.** A feature, coordinate, tick count or normal that is not known is NULL with a reason column, never 0 and never a default. Ticks are read only through `internal.route_tick_coverage`: a route with no scrape row is `missing` (NULL total, NULL months), a scraped but incomplete route is `scraped`, and only a route whose scrape finished is `complete` as of `complete_through`; months after `complete_through` are missing, never zero. A transient failure (network error, timeout, 5xx, 429) leaves a value unfilled for the next run; only an authoritative "not there" is recorded as missing.
 - **No MP prose, anywhere.** No description, comment, beta, protection or photo field is read, stored, logged, exported, committed or sent to a third party. The catalog copies no names, grades or URLs either; review CSVs (gitignored `data/review/`) may show names and grades, never `url` or prose.
-- **Third-party API calls (the R10 LLM pass only)** send the minimal field set of Task 15 (`[default pending: DP14]`), never accident `description`, never coordinates finer than the candidate distances, never ids of people; the API key is read only from the exported shell environment, never from `backend/.env`, Railway or GitHub.
+- **Third-party API calls (the R10 LLM pass only)** send the field set of Task 15 `(decided: DP14)`: the short accident fields, the accident's **full narrative** (`description`; owner decision 2026-10-12: the accident text comes from open online sources), and the candidates' MP facts. Never coordinates, exact dates, URLs or any id (accident, route, area or person); never MP prose; the API key is read only from the exported shell environment, never from `backend/.env`, Railway or GitHub.
 - **Test fixtures:** MP-shaped ids only in the synthetic range ≥ 900000000 (the convention in `backend/tests/test_accident_facts.py`, enforced from PR C-1 by `scripts/check_no_mp_data.py`); names are `Fixture …` or US state names, never real MP route or area names. CI never calls the Anthropic API (fake allocator).
 - **Parameterised SQL only.** Values travel as bound parameters (`:name`, arrays via `CAST(:x AS bigint[])`); no SQL string is built from data. The only f-strings in SQL interpolate module constants.
 - **Least privilege.** Grants change only in the Phase 2 three-file lockstep (`create_roles_phase2.sql` is untouched here; `grants_phase2.sql` and `verify_roles_phase2.sql` change together, with `tests/test_roles_phase2.py` green). `ingest` gets column-level SELECT where a table holds anything it does not need; `trainer` gets nothing until Phase 3 (D13); `app` holds nothing in `internal`. No prod database credential is added to Railway, GitHub or any shared host by this plan (DP6).
@@ -64,11 +66,11 @@ The foundations plan's Global Constraints apply. Also:
 - D-G **Commitment grade in the MP type string** (`Grade IV`–`Grade VII` as its own comma token) → `alpine`, per spec P2-3. Every type token with ≥ 50 routes must be mapped or explicitly ignored before the mapper is frozen (Task 2 Step 1).
 - D-H `(decided: DP11)` **Refresh gate:** a refresh whose scorable count is more than 3% below the stored catalog's is `rejected` and writes nothing but its log row.
 - D-I `(decided: DP5)` **FK `ON DELETE RESTRICT` to `mp_routes`/`mp_locations`.** The private scrape loader upserts and never deletes MP rows; the owner confirms it in runbook Task 6 Step 0.
-- D-J `[default pending: DP6]` **Scheduled refresh** (Task 12). Recommended: **option A, a launchd job on the owner's Mac**, running `catalog_cycle` **once a year on 2 January** (before the January ERA5 Professional window opens, which plan 3 starts on or after 10 January, so every new point's bucket is `pending` in time to get normals bought that month) **plus on demand** after each scrape load, and a launchd catch-up run when the Mac was asleep at the scheduled time. Prod credentials stay in the main checkout's 0600 `backend/.env.ingest`, beside the scraper and its private data; nothing new holds a prod credential. Alternatives: **B, a Celery beat task on the Railway worker**, which would give the worker (an internet-facing service's sibling, running app code) an `ingest`-level credential that can write accident repair columns, the catalog and conditions; to be acceptable it needs a new narrow role (`catalog_job`, catalog/feature tables only) and the `pipelines` group (`rasterio`, `h3`) in the worker image. **C, a scheduled Railway job service** (cron start command): isolated from the worker, but the same new role and image weight, and a prod write credential on Railway. Both B and C also move the 3DEP/EPQS traffic to Railway egress.
+- D-J `(ruled: DP6, controller ruling 2026-10-12, recommended default; the owner may override)` **Scheduled refresh** (Task 12). Ruled: **option A, a launchd job on the owner's Mac**, running `catalog_cycle` **once a year on 2 January** (before the January ERA5 Professional window opens, which plan 3 starts on or after 10 January, so every new point's bucket is `pending` in time to get normals bought that month) **plus on demand** after each scrape load, and a launchd catch-up run when the Mac was asleep at the scheduled time. Prod credentials stay in the main checkout's 0600 `backend/.env.ingest`, beside the scraper and its private data; nothing new holds a prod credential. Alternatives: **B, a Celery beat task on the Railway worker**, which would give the worker (an internet-facing service's sibling, running app code) an `ingest`-level credential that can write accident repair columns, the catalog and conditions; to be acceptable it needs a new narrow role (`catalog_job`, catalog/feature tables only) and the `pipelines` group (`rasterio`, `h3`) in the worker image. **C, a scheduled Railway job service** (cron start command): isolated from the worker, but the same new role and image weight, and a prod write credential on Railway. Both B and C also move the 3DEP/EPQS traffic to Railway egress.
 - D-K `(decided: DP7)` **Terrain and lithology (v2.2) stay deferred** to a follow-up plan that carries the 2026-09-28 plan's Tasks 6–7 over (they touch only `feature_points`). Their columns are created now in `0009`. Appendix A records the candidate data sources (licence, coverage, resolution, access) for that plan; nothing is fetched now.
 - D-L `(decided: DP12)` **`scoring_unit_features` lists scorable routes only.**
 - D-M `(decided: DP9)` **Tick-source seam.** Table `internal.route_tick_scrapes(mp_route_id PK FK mp_routes, source, scraped_at, complete, complete_through, total_ticks, loaded_run_id)`: one row per route whose ticks some loader has read, written by every tick loader (the existing ice/mixed loader from this plan on, the exposure plan's rock loader later). View `internal.route_tick_coverage(route_id, tick_status ∈ {'missing','scraped','complete'}, complete_through, scraped_at, tick_total)` over every catalog route is the only read path. Monthly counts stay in `internal.mp_tick_aggregates`; a month counts only when it is ≤ `complete_through`. Rock tick loading (and the M9 `period='total'` reload issue) stays in the exposure plan, which adds a loader and nothing else.
-- D-N **R10:** the identity on `accidents.mp_route_id`, legacy links with a usable MP id, owner decisions, and (Task 15) LLM picks. `[default pending: DP8]` Auto-link vs owner-review thresholds; `[default pending: DP13]` model; `[default pending: DP14]` what is sent. Recommended defaults in Task 15. The legacy `routes`/`mountains` tables and columns stay.
+- D-N **R10:** the identity on `accidents.mp_route_id`, legacy links with a usable MP id, owner decisions, and (Task 15) LLM picks. `(ruled: DP8, controller ruling 2026-10-12, recommended default; the owner may override)` auto-link vs owner-review thresholds as written in Task 15; `(ruled: DP13, controller ruling 2026-10-12, recommended default; the owner may override)` model chosen from a Haiku-vs-Sonnet sample; `(decided: DP14)` the full accident narrative is sent with the short fields. Details in Task 15. The legacy `routes`/`mountains` tables and columns stay.
 - D-O From the 2026-09-28 similarity plan, kept: point key 5 decimals; 3DEP NAD83 treated as WGS84; `route_static_features.lat` beside the P3 columns; points only from areas with non-boulder routes attached; `slope_deg` = max Horn slope within 200 m; EPQS gate per slope class (median ≤ 2/4/8 m, p90 ≤ 5/10/20 m, ≥ 30 per class, ≥ 180 total, any |Δ| > 100 m fails).
 
 ## Review Focus
@@ -3267,7 +3269,7 @@ def test_every_point_bucket_has_a_normals_status_and_complete_means_twelve_real_
 **Interfaces:**
 - Consumes: `mp_catalog.run_logged(engine, *, dry_run) -> RefreshResult` (Task 4); `static_features.run_step(engine, step, *, limit) -> dict[str, object]` (extracted here from Task 10's `_main`, same body, the engine passed in).
 - Produces: `MAX_ELEVATION_ROUNDS = 20`, `ELEVATION_LIMIT = 5000`, `CycleStatus = Literal["ok","rejected","incomplete","failed"]`, `@dataclass CycleResult(status: CycleStatus, steps: dict[str, object])`, `async run_cycle(engine, *, refresh=run_logged, step=run_step, max_rounds: int = MAX_ELEVATION_ROUNDS, epqs: bool = True) -> CycleResult`, CLI `python -m app.pipelines.catalog_cycle run [--skip-epqs] [--max-rounds N]` with exit codes 0 ok, 1 rejected/failed, 2 incomplete (a transient 3DEP outage left points unfilled; the next run retries them).
-- `[default pending: DP6]` The scheduler is option A (launchd on the owner's Mac). The cycle code is scheduler-agnostic: options B and C would call the same `run_cycle`, so choosing them later changes only where it runs and which role it connects as (D-J).
+- `(ruled: DP6, controller ruling 2026-10-12, recommended default; the owner may override)` The scheduler is option A (launchd on the owner's Mac). The cycle code is scheduler-agnostic: options B and C would call the same `run_cycle`, so choosing them later changes only where it runs and which role it connects as (D-J).
 
 - [ ] **Step 1: Extract `run_step`** — in `backend/app/pipelines/static_features.py`, move the body of `_main` into:
 
@@ -3508,7 +3510,7 @@ exit "$status"
 </plist>
 ```
 
-`[default pending: DP6]` cadence: once a year on 2 January, plus on demand (`launchctl kickstart gui/$(id -u)/com.safeascent.catalog-cycle`) after each scrape load. launchd runs a calendar job missed during sleep at the next wake but not one missed while the Mac was powered off (recalled behaviour, not verified this session: Task 13 Step 6 checks it with `launchctl print` after the first scheduled date); the healthchecks.io check (period about one year plus a week of grace, if the service allows a period that long: check when creating it) catches a silent miss.
+`(ruled: DP6, controller ruling 2026-10-12, recommended default; the owner may override)` cadence: once a year on 2 January, plus on demand (`launchctl kickstart gui/$(id -u)/com.safeascent.catalog-cycle`) after each scrape load. launchd runs a calendar job missed during sleep at the next wake but not one missed while the Mac was powered off (recalled behaviour, not verified this session: Task 13 Step 6 checks it with `launchctl print` after the first scheduled date); the healthchecks.io check (period about one year plus a week of grace, if the service allows a period that long: check when creating it) catches a silent miss.
 
 - [ ] **Step 6: Run** — `cd backend && uv run pytest tests/test_catalog_cycle.py tests/test_static_features.py -q && uv run mypy && uv run ruff check . ../scripts/ && bash -n scripts/catalog_cycle.sh && plutil -lint ../ops/launchd/com.safeascent.catalog-cycle.plist.template` → PASS (`plutil` checks the XML; the placeholders are valid strings).
 - [ ] **Step 7: Docs** — `DEPLOYMENT.md` "Scheduled jobs": the cycle, its cadence and why (before the January window), the dedicated checkout `~/Developer/SafeAscent-cycle` on `main` (updated by the owner with `git -C ~/Developer/SafeAscent-cycle pull --ff-only` after each merge that touches `app/pipelines`), where logs go, the exit codes, and that no prod credential leaves the Mac. `CLAUDE.md` Commands: `uv run python -m app.pipelines.catalog_cycle run [--skip-epqs] [--max-rounds N]`.
@@ -3555,7 +3557,7 @@ ANALYST_PSQL -At -c "SELECT normals_status, count(DISTINCT unit_id) FROM scoring
 Expected: every cell passes; the normals line shows how many scorable routes read `complete`/`insufficient` vs `pending`. **STOP — owner review:** the agent pastes the elevation `dem_source` counts, the EPQS class table and the normals split. Pending buckets read as missing until plan 3's next January window (or the current one, if still open, via `era5_window run`); the owner decides whether MVP-1 training waits for them. Only on "features ok" go on.
 
 - [ ] **Step 5 (owner go, then agent): Prod** — gate blocks as Task 6 Step 4: 5a `gate_pass c2_migrate` after checking `../data/review/mpc2_points_branch.json` exists and prod `MIG current` is `0008_mp_catalog`; 5b (`gate_require c2_migrate`) migrate + grants + verify; 5c (no gate needed: idempotent, no paid calls) `mp_catalog refresh`, `static_features points`, `elevation` until `sampled: 0, retry: 0`, `epqs-check` under `bg_start`, `routes`; 5d `VERIFY tests/verify/test_mp_features.py tests/verify/test_mp_catalog.py -q -s` → all pass. Record the prod counts in the PR.
-- [ ] **Step 6 (owner, on the Mac; DP6 option A once decided): Install the scheduled cycle**
+- [ ] **Step 6 (owner, on the Mac; DP6 option A, ruled): Install the scheduled cycle**
   - Create the dedicated checkout once: `git -C /Users/sebastianfrazier/Developer/SafeAscent worktree add ../SafeAscent-cycle main` (a worktree on `main`; it never holds env files) and `cd ../SafeAscent-cycle/backend && uv sync --frozen`.
   - Fill the template: `sed -e "s|__CYCLE_CHECKOUT__|$HOME/Developer/SafeAscent-cycle|" -e "s|__ENV_DIR__|$HOME/Developer/SafeAscent/backend|" -e "s|__PATH__|$(dirname "$(command -v uv)"):/usr/bin:/bin|" -e "s|__LOG_DIR__|$HOME/Library/Logs/SafeAscent|" ops/launchd/com.safeascent.catalog-cycle.plist.template > ~/Library/LaunchAgents/com.safeascent.catalog-cycle.plist`, then `mkdir -p ~/Library/Logs/SafeAscent`, `plutil -lint` it, `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.safeascent.catalog-cycle.plist`.
   - Optional: create a healthchecks.io check and add `HEALTHCHECKS_CATALOG_URL=<ping url>` to `backend/.env.ingest` (the owner edits it; agents never read or print it).
@@ -4229,7 +4231,7 @@ GRANT SELECT, INSERT ON internal.r10_llm_calls, internal.r10_llm_gates TO ingest
 
 Designed like the Phase 4 Jev triage (`2026-10-12-phase4-users-incident-reporting.md` Decision 5, Task 28): **the model classifies, our code decides.** It sees only the candidates Task 14 generated, labelled `A`–`E`, and answers with one of those letters or `none`, a confidence and a reason code, through a JSON schema. It never sees or returns an id; our code maps the letter back, and the database refuses a pick that was not offered (`r10_llm_calls_pick_offered_check`). Every call writes one audit row, committed before the next call, so a crash never loses a paid result. A dollar cap stops the run before the call that would pass it. Nothing is linked until a spot-checked sample for the same pinned model and prompt version passes the gate.
 
-**Owner flag (must be answered before Step 7 runs):** this sends accident facts to the Anthropic API. By default (`[default pending: DP14]`) it sends only short fields: the accident's year and month, US state, activity class, the legacy short route/mountain/location strings, and the candidates' MP names, grades, types, area names and distances. It never sends `description` (the narrative), tags, URLs, coordinates, exact dates, or any id. Even the short location strings of AAC rows come from AAC text whose licence is still under legal review (Q6), and candidate names are MP route facts sent to a third party. The owner decides whether either may leave our systems before the first paid call. The alternative is sending a redacted narrative excerpt as well, through the Phase 4 redaction (regex + NER). That needs Phase 4's `triage` dependency group and the Q6 answer, so it is not the default.
+**What leaves our systems `(decided: DP14, owner 2026-10-12)`:** this sends accident facts to the Anthropic API: the accident's year and month, US state, activity class, the legacy short route/mountain/location strings, the accident's **full narrative** (`accidents.description`, untruncated: the owner states the accident text all comes from open online sources), and the candidates' MP names, grades, types and area names. It never sends tags, URLs, coordinates, exact dates, or any id (accident, route, area or person). The narrative goes only into the API request: it is never written to the audit row (which stores `payload_fields` and the request hash, not the payload), a log line, or the spot-check CSV (`review._write` keeps narratives out of review files).
 
 **Files:**
 - Create: `backend/app/data/repair/r10_llm.py`, `backend/tests/test_r10_llm.py`
@@ -4239,7 +4241,7 @@ Designed like the Phase 4 Jev triage (`2026-10-12-phase4-users-incident-reportin
 - Consumes: Task 14's `internal.r10_unresolved` (`candidate_route_ids`/`candidate_area_ids`, already ranked), `internal.r10_llm_calls`, `internal.r10_llm_gates`, `accident_legacy_links` (method `llm`), `review._write`/`REVIEW_DIR`; `db.ingest_engine`.
 - Produces:
   - `PROMPT_VERSION = "r10-llm-v1"`; `MODELS = {"haiku": "claude-haiku-4-5-20251001", "sonnet": "claude-sonnet-5"}` (pinned ids exactly as the owner named them); `PRICES_USD_PER_MTOK = {"claude-haiku-4-5-20251001": (1.00, 5.00), "claude-sonnet-5": (2.00, 10.00)}` (input, output; from the Anthropic pricing table as cached on 2026-06-24, **re-checked before every paid run**); `MAX_OUTPUT_TOKENS = 4096`; `LETTERS = ("A","B","C","D","E")`; `ReasonCode = Literal["name_match","name_and_grade_match","location_only","ambiguous","no_match"]`.
-  - `[default pending: DP8]` `AUTO_LINK_CONFIDENCE = 0.90`, `REVIEW_CONFIDENCE = 0.60`, gate `GATE_MIN_CHECKED = 100`, `GATE_MIN_AUTO_BAND = 30`, `GATE_MIN_AUTO_PRECISION = 0.95`.
+  - `(ruled: DP8, controller ruling 2026-10-12, recommended default; the owner may override)` `AUTO_LINK_CONFIDENCE = 0.90`, `REVIEW_CONFIDENCE = 0.60`, gate `GATE_MIN_CHECKED = 100`, `GATE_MIN_AUTO_BAND = 30`, `GATE_MIN_AUTO_PRECISION = 0.95`.
   - `@dataclass(frozen=True) Case(accident_id: int, kind: Literal["route","area"], candidate_ids: tuple[int, ...], payload: dict[str, object])`; `PAYLOAD_FIELDS: tuple[str, ...]`; `async build_cases(conn, *, limit: int | None = None) -> list[Case]`.
   - `@dataclass(frozen=True) Allocation(status: Literal["ok","invalid","refusal","max_tokens","error"], pick_index: int | None, pick_none: bool | None, confidence: float | None, reason_code: str | None, input_tokens: int | None, output_tokens: int | None, model_reported: str | None)`.
   - `class Allocator(Protocol)`: `model: str`, `async def allocate(self, case: Case) -> Allocation`. `ClaudeAllocator(api_key: str, model: str)` is the only class that calls the API; tests use a fake.
@@ -4250,7 +4252,7 @@ Designed like the Phase 4 Jev triage (`2026-10-12-phase4-users-incident-reportin
   - `async apply_picks(conn, *, model: str, apply: bool) -> dict[str, object]` (no API calls).
   - CLI `python -m app.data.repair.r10_llm plan | sample --model haiku|sonnet --n N --max-usd X --out CSV [--seed S] | gate --model … --review-file CSV | run --model … --max-usd X | apply --model … [--apply]`. `plan` and `apply` never call the API; `sample` and `run` do and need the key exported in the shell.
 
-- [ ] **Step 1: Verify before build (agent, read-only, one cheap call each; needs the owner's go and an exported key)** — like Phase 4 Task 34 Step 6b, record in the PR description: (1) the current price of both models on the Anthropic pricing page (update `PRICES_USD_PER_MTOK` if it differs); (2) that `claude-haiku-4-5-20251001` with `thinking={"type": "enabled", "budget_tokens": 2048}` and `claude-sonnet-5` with `thinking={"type": "adaptive"}` both accept `output_config={"format": {"type": "json_schema", …}}` together with thinking, by one call each on the synthetic fixture case from the tests (`Fixture …` names only, no real accident). If either rejects the combination, STOP and report: the fallback is a strict tool (`strict: true`, `tool_choice` auto with an instruction), and it is the owner's call. (3) the org's data-retention setting for API calls (whether zero data retention applies), which the owner weighs for DP14. Pin the `anthropic` SDK at the version used here: `cd backend && uv add --group llm 'anthropic>=0.116,<2'`, then rewrite the line to the resolved `==` version and `uv lock`.
+- [ ] **Step 1: Verify before build (agent, read-only, one cheap call each; needs the owner's go and an exported key)** — like Phase 4 Task 34 Step 6b, record in the PR description: (1) the current price of both models on the Anthropic pricing page (update `PRICES_USD_PER_MTOK` if it differs); (2) that `claude-haiku-4-5-20251001` with `thinking={"type": "enabled", "budget_tokens": 2048}` and `claude-sonnet-5` with `thinking={"type": "adaptive"}` both accept `output_config={"format": {"type": "json_schema", …}}` together with thinking, by one call each on the synthetic fixture case from the tests (`Fixture …` names only, no real accident). If either rejects the combination, STOP and report: the fallback is a strict tool (`strict: true`, `tool_choice` auto with an instruction), and it is the owner's call. (3) the org's data-retention setting for API calls (whether zero data retention applies), recorded for the owner now that full narratives are sent (DP14). Pin the `anthropic` SDK at the version used here: `cd backend && uv add --group llm 'anthropic>=0.116,<2'`, then rewrite the line to the resolved `==` version and `uv lock`.
 
 - [ ] **Step 2: Failing tests** — `backend/tests/test_r10_llm.py`:
 
@@ -4344,7 +4346,7 @@ def _prepared(name):
 
 
 @requires_pg
-def test_payload_carries_only_the_minimal_fields_and_letters():
+def test_payload_carries_the_narrative_but_no_ids_coordinates_or_exact_date():
     with migrated_db(PIN, seed_sql=SEED) as name:
         run_sql(name, "UPDATE accidents SET description = 'NARRATIVE-SENTINEL', state = 'Colorado', "
                       "date = '2015-07-04', latitude = 40.0, longitude = -105.3 WHERE accident_id = 3")
@@ -4356,7 +4358,8 @@ def test_payload_carries_only_the_minimal_fields_and_letters():
         built = {c.accident_id: c for c in _db(name, cases)}
     assert set(built) == {3, 4, 5}
     payload = json.dumps(built[3].payload)
-    assert "NARRATIVE-SENTINEL" not in payload and "40.0" not in payload and "2015-07-04" not in payload
+    assert built[3].payload["narrative"] == "NARRATIVE-SENTINEL"
+    assert "40.0" not in payload and "2015-07-04" not in payload
     assert "900000012" not in payload and '"accident_id"' not in payload
     assert set(built[3].payload) == set(PAYLOAD_FIELDS)
     assert [c["label"] for c in built[3].payload["candidates"]] == ["A", "B"]
@@ -4462,7 +4465,9 @@ only picks among the candidates R10 ranked (letters A-E) or says none; our code 
 ids, and the database refuses a pick that was not offered. Pinned model ids, a fixed prompt
 version, one committed audit row per call, a dollar cap checked before every call, and no link
 until a spot-checked sample for the same model and prompt version passed the gate. The key is
-read only from the exported shell environment. Never sends the accident narrative."""
+read only from the exported shell environment. The full accident narrative is sent (owner
+decision DP14: the accident text comes from open online sources); it is never stored in the
+audit row, logged, or written to a review file."""
 
 from __future__ import annotations
 
@@ -4499,8 +4504,8 @@ GATE_MIN_AUTO_PRECISION = 0.95
 BACKEND_ENV = Path(__file__).resolve().parents[3] / ".env"
 ReasonCode = Literal["name_match", "name_and_grade_match", "location_only", "ambiguous", "no_match"]
 Status = Literal["ok", "invalid", "refusal", "max_tokens", "error"]
-PAYLOAD_FIELDS = ("when", "state", "activity", "reported_route", "reported_peak", "reported_location", "legacy",
-                  "candidate_kind", "candidates")
+PAYLOAD_FIELDS = ("when", "state", "activity", "reported_route", "reported_peak", "reported_location", "narrative",
+                  "legacy", "candidate_kind", "candidates")
 SYSTEM = (
     "You match one climbing accident record to at most one candidate from a fixed list. Use only the "
     "fields given. Answer with the candidate's letter, or 'none' when no candidate is clearly the same "
@@ -4615,7 +4620,7 @@ class ClaudeAllocator:
 
 CASES_SQL = text(
     "SELECT u.accident_id, u.candidate_route_ids, u.candidate_area_ids, a.date, a.state, a.activity_class, "
-    "a.route, a.mountain, a.location, r.name, r.grade, r.type, m.name FROM internal.r10_unresolved u "
+    "a.route, a.mountain, a.location, a.description, r.name, r.grade, r.type, m.name FROM internal.r10_unresolved u "
     "JOIN accidents a ON a.accident_id = u.accident_id "
     "LEFT JOIN routes r ON r.route_id = u.legacy_route_id LEFT JOIN mountains m ON m.mountain_id = u.legacy_mountain_id "
     "WHERE u.owner_decision IS NULL AND cardinality(u.candidate_route_ids) + cardinality(u.candidate_area_ids) > 0 "
@@ -4637,7 +4642,7 @@ def _short(value: object, limit: int = 120) -> str | None:
 
 async def build_cases(conn: AsyncConnection, *, limit: int | None = None) -> list[Case]:
     cases: list[Case] = []
-    for a, cr, ca, day, state, activity, route, peak, location, lname, lgrade, ltype, mname in (
+    for a, cr, ca, day, state, activity, route, peak, location, narrative, lname, lgrade, ltype, mname in (
             await conn.execute(CASES_SQL)).all():
         kind: Literal["route", "area"] = "route" if cr else "area"
         ids = tuple(int(i) for i in (cr or ca))[: len(LETTERS)]
@@ -4647,6 +4652,8 @@ async def build_cases(conn: AsyncConnection, *, limit: int | None = None) -> lis
             "when": day.strftime("%Y-%m") if day is not None else None,
             "state": _short(state, 40), "activity": _short(activity, 40),
             "reported_route": _short(route), "reported_peak": _short(peak), "reported_location": _short(location),
+            # DP14: the whole narrative, never truncated; call_ceiling_usd prices its length.
+            "narrative": None if narrative is None else str(narrative),
             "legacy": {"name": _short(lname or mname), "grade": _short(lgrade, 20), "type": _short(ltype, 40)},
             "candidate_kind": kind,
             "candidates": [{"label": LETTERS[i], "name": _short(facts[c][1]), "grade": _short(facts[c][2], 20),
@@ -4756,7 +4763,7 @@ async def apply_picks(conn: AsyncConnection, *, model: str, apply: bool) -> dict
 
 The CLI (`cli()` at the bottom of the module) wires the subcommands:
 - `plan` (no calls): `build_cases` on a read connection → case count by kind and the summed `call_ceiling_usd` for each model.
-- `sample` (paid): `api_key_from_environment()`, `ClaudeAllocator(key, MODELS[args.model])`, `random.Random(args.seed or 42).sample(cases, min(args.n, len(cases)))`, `run_calls(..., is_sample=True, max_usd=args.max_usd)`, then writes the spot-check CSV with `review._write` (columns `accident_id`, `run_id`, the payload's short fields, each candidate's id/name/grade/area, `llm_answer` (a candidate id or `none`), `llm_confidence`; decision column `owner_answer`). The owner fills `owner_answer` blind to nothing: the LLM answer is shown, which the gate accepts as a spot-check, not a blind relabel (the owner may hide the two LLM columns when labelling).
+- `sample` (paid): `api_key_from_environment()`, `ClaudeAllocator(key, MODELS[args.model])`, `random.Random(args.seed or 42).sample(cases, min(args.n, len(cases)))`, `run_calls(..., is_sample=True, max_usd=args.max_usd)`, then writes the spot-check CSV with `review._write` (columns `accident_id`, `run_id`, the payload's short fields (never `narrative`: review files carry no narrative text), each candidate's id/name/grade/area, `llm_answer` (a candidate id or `none`), `llm_confidence`; decision column `owner_answer`). The owner fills `owner_answer` blind to nothing: the LLM answer is shown, which the gate accepts as a spot-check, not a blind relabel (the owner may hide the two LLM columns when labelling).
 - `gate` (no calls): reads the filled CSV (every row needs `owner_answer` = one of the row's candidate ids or `none`, else the whole import refuses), `compute_gate(..., auto_threshold=AUTO_LINK_CONFIDENCE)`, inserts one `internal.r10_llm_gates` row with the sample's `run_id`, and prints the numbers.
 - `run` (paid): every case with no `ok` call yet for this model and prompt version, `is_sample=False`.
 - `apply` (no calls): `apply_picks(..., apply=args.apply)` in one transaction; dry by default.
@@ -4777,13 +4784,13 @@ INGLLM() { ( _need_target && _load ./.env.ingest || exit 1
 and add `"INGLLM app.data.repair.r10_llm plan"` to the helper list `tests/test_runbook_helpers.py` parametrizes (refuses without `TARGET_HOST`).
 
 - [ ] **Step 5: Run** — `cd backend && uv run pytest tests/test_r10_llm.py tests/test_legacy_links.py tests/test_runbook_helpers.py -q && uv run mypy && uv run ruff check . ../scripts/` → PASS. CI never sets `ANTHROPIC_API_KEY`; no test constructs `ClaudeAllocator`.
-- [ ] **Step 6: Docs** — `CLAUDE.md` Commands: `uv run --group llm python -m app.data.repair.r10_llm plan|sample|gate|run|apply` (runbooks: `INGLLM`) (paid steps need `ANTHROPIC_API_KEY` exported in the shell, never in a file). Data rules: "The R10 LLM pass sends only the DP14 field set to the Anthropic API, never `description`." `data/DATABASE_STRUCTURE.md`: `internal.r10_llm_calls`, `internal.r10_llm_gates`, method `llm`. `CHANGELOG.md` folds into the C-3 entry.
+- [ ] **Step 6: Docs** — `CLAUDE.md` Commands: `uv run --group llm python -m app.data.repair.r10_llm plan|sample|gate|run|apply` (runbooks: `INGLLM`) (paid steps need `ANTHROPIC_API_KEY` exported in the shell, never in a file). Data rules: "The R10 LLM pass sends the DP14 field set to the Anthropic API: short accident fields, the full accident narrative (owner decision 2026-10-12: open-source accident text) and candidate MP facts; never coordinates, exact dates, URLs or ids. The narrative is never stored in the audit table, logged, or written to a review CSV." `data/DATABASE_STRUCTURE.md`: `internal.r10_llm_calls`, `internal.r10_llm_gates`, method `llm`. `CHANGELOG.md` folds into the C-3 entry.
 - [ ] **Step 7: Commit** — `git add backend/app/data/repair/r10_llm.py backend/tests/test_r10_llm.py backend/scripts/runbook_helpers.sh backend/tests/test_runbook_helpers.py backend/pyproject.toml backend/uv.lock .github/workflows/ci.yml CLAUDE.md data/DATABASE_STRUCTURE.md && git commit -m "feat(repair): sample-gated LLM allocation of the R10 residue among ranked candidates"`
 
-**Defaults pending the owner:**
-- `[default pending: DP8]` thresholds. Auto-link when the pick is a candidate with confidence ≥ 0.90 **and** a passing gate exists for this model and prompt version: ≥ 100 owner-checked sample cases, ≥ 30 of them in the auto band, auto-band precision ≥ 0.95. Prefill the owner-review export at 0.60–0.90. Below 0.60, or `none`, the accident stays unresolved and pooled by its own coordinates. Alternative: no auto-link at all, so every pick only prefills review.
-- `[default pending: DP13]` model. Sample 150 cases on **both** models: worst case about $3 for Haiku and $6 for Sonnet at the cached prices; in practice much less, since outputs are short. Use Haiku 4.5 unless only Sonnet 5 passes the gate, or Sonnet's auto-band precision is at least 3 points higher.
-- `[default pending: DP14]` payload. The minimal fields above, never the narrative. Alternative: also send a Phase 4-redacted narrative excerpt, which needs the Q6 answer and the `triage` group.
+**Rulings (DP8, DP13: controller ruling 2026-10-12, recommended default; the owner may override; DP14: owner decision):**
+- `(ruled: DP8)` thresholds. Auto-link when the pick is a candidate with confidence ≥ 0.90 **and** a passing gate exists for this model and prompt version: ≥ 100 owner-checked sample cases, ≥ 30 of them in the auto band, auto-band precision ≥ 0.95. Prefill the owner-review export at 0.60–0.90. Below 0.60, or `none`, the accident stays unresolved and pooled by its own coordinates. Alternative: no auto-link at all, so every pick only prefills review.
+- `(ruled: DP13)` model. Sample 150 cases on **both** models: worst case about $3.5 for Haiku and $7 for Sonnet at the cached prices (the output ceiling dominates; full narratives add roughly $0.3 and $0.6 of input at ~2k tokens each); in practice much less, since outputs are short. Use Haiku 4.5 unless only Sonnet 5 passes the gate, or Sonnet's auto-band precision is at least 3 points higher.
+- `(decided: DP14)` payload. The short fields above plus the full accident narrative (owner decision 2026-10-12: the accident text comes from open online sources), no redaction step. Still never coordinates, exact dates, URLs or ids.
 
 ---
 
@@ -4805,7 +4812,7 @@ ANALYST_PSQL -At -c "SELECT count(*) FILTER (WHERE route_id IS NOT NULL), count(
 Expected: the dry run prints `legacy_accidents`, `links: {legacy_mp_id: N}`, `unresolved` by reason, `legacy_conflict` (report any non-zero count to the owner); both applies print the same counts; the view shows `mp_route_id` and `legacy_mp_id` rows; the accidents counts equal the same query run before Step 2 (R10 never writes accidents). The spec's earlier figures (421 direct, 762 needing a matcher) are the comparison: the second group is what lands in `unresolved`.
 
 - [ ] **Step 3 (owner, optional): Review** — only if the owner wants the residue linked (D-N): `ING r10-export --out ../data/review/r10_unresolved.csv`; the owner fills `owner_decision` (`link`/`no_link`) and, for `link`, `decided_kind` (`route`/`area`) and `decided_id` (a candidate's id, or any catalog id); `ING r10-import --review-file ../data/review/r10_unresolved.csv` (dry), then with `--apply`; `ING r10 --apply`. The CSV holds MP names and grades for review only; it stays in gitignored `data/review/` and is never committed or shared.
-- [ ] **Step 3b (owner decides DP8/DP13/DP14 first, then agent with the key exported in its shell): LLM sample on the branch** — nothing is sent until the owner has answered the DP14 flag in writing.
+- [ ] **Step 3b (owner go, then agent with the key exported in its shell): LLM sample on the branch** — DP14 is decided (full narrative); DP8/DP13 run on their rulings unless the owner overrides them before this step.
 
 ```bash
 INGLLM app.data.repair.r10_llm plan
@@ -4856,7 +4863,7 @@ The follow-up v2.2 plan needs per-point slope, aspect (with confidence), litholo
   - Thin catalog with derived columns only (D-B).
   - `type_group`, with toprope/aid to the underlying rock group per ruling R-1 (Task 2).
   - `ltree` path (Tasks 1, 3) and the scorable flag (Task 4).
-  - Scheduled refresh (Task 12; DP6 open) on top of the CLI refresh path (Task 4).
+  - Scheduled refresh (Task 12; DP6 ruled: launchd yearly on 2 January plus on demand) on top of the CLI refresh path (Task 4).
   - No matcher: R10 candidates are ranked only, and the LLM picks among them.
   - The seam: MP ids as keys (D-A).
   - Similarity features adapted (Tasks 7–11), with 100% elevation and the EPQS gate (Tasks 8–13).
@@ -4866,11 +4873,11 @@ The follow-up v2.2 plan needs per-point slope, aspect (with confidence), litholo
   - Terrain/lithology deferred, with source research (Appendix A).
   - Similarity pooling unblocked for MVP-1.
 - **Rules:**
-  - Decided calls read `(decided: DPn)`. The open ones are `[default pending: DP6, DP8, DP13, DP14]`, plus ruling R-1.
+  - Decided calls read `(decided: DPn)`; DP14 is an owner decision (full narrative). DP6, DP8 and DP13 read `(ruled: DPn)`: controller rulings on the recommended defaults, which the owner may override. Plus ruling R-1.
   - Missing is NULL with a reason in every new table.
   - Grants are column-level for `mp_locations`, `routes` and `mountains`. `trainer` gets nothing, `app` gets nothing in `internal`, and the LLM audit and gate tables are append-only for `ingest`.
   - No new prod credential is held anywhere but the owner's Mac (DP6 option A).
-  - All SQL binds values; no prose column is read or sent (Task 5 pins the schemas, and Task 15's payload test pins what leaves).
+  - All SQL binds values; no MP prose column is read or sent (Task 5 pins the schemas). The one accident narrative that leaves is DP14's, and Task 15's payload test pins what leaves.
   - Fixtures use ids ≥ 900000000 and `Fixture …`/state names. CI never calls a paid API.
 - **Placeholders:** none in code. The deliberate runtime values are:
   - the dependency pins (`h3`, `rasterio`, `anthropic`, resolved by `uv`);
