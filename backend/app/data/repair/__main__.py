@@ -19,6 +19,10 @@ STEPS: dict[str, Step] = {
     "r9-import": severity.run_r9_import,
     "r1-export": severity.run_r1_export,
     "r1-import": severity.run_r1_import,
+    "r1v2": dates.run_r1v2,
+    "r1v2-backtest": dates.run_r1v2_backtest,
+    "r1v2-export": severity.run_r1v2_export,
+    "r1v2-import": severity.run_r1v2_import,
 }
 
 

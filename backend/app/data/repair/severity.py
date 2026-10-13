@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.data.repair import review
 from app.data.repair.checks import YES_NO, record_check, refuse_ineligible
-from app.data.repair.dates import YEAR_SOURCE
+from app.data.repair.dates import R1V2_VERSION, YEAR_SOURCE, accident_ids_with_revisions, source_scheme
 from app.data.repair.framework import Change, fetch_accidents, run_step
 from app.data.repair.sources import SourceFamily, source_family
 from app.pipelines.validate import ValidationReport
@@ -117,7 +117,7 @@ def r1_check_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
     ]
 
 
-async def r1_check_pool(conn: AsyncConnection) -> list[dict[str, object]]:
+async def _redated_rows(conn: AsyncConnection) -> list[dict[str, object]]:
     return r1_check_rows(
         await fetch_accidents(
             conn,
@@ -127,6 +127,18 @@ async def r1_check_pool(conn: AsyncConnection) -> list[dict[str, object]]:
             ],
         )
     )
+
+
+async def r1_check_pool(conn: AsyncConnection) -> list[dict[str, object]]:
+    # r1-v1's pool only: r1-v2's rows have their own check, and keeping them out means the
+    # r1 sample is the same whether or not r1-v2 has run (Task 12 6f compares the ids).
+    v2 = await accident_ids_with_revisions(conn, R1V2_VERSION)
+    return [r for r in await _redated_rows(conn) if _id(r) not in v2]
+
+
+async def r1v2_check_pool(conn: AsyncConnection) -> list[dict[str, object]]:
+    v2 = await accident_ids_with_revisions(conn, R1V2_VERSION)
+    return [r for r in await _redated_rows(conn) if _id(r) in v2]
 
 
 # The spec gate is ±1 year of the repaired point year, not of the [year_lo, year_hi] range:
@@ -165,3 +177,37 @@ async def run_r1_import(conn: AsyncConnection, args: argparse.Namespace) -> dict
     )
     refuse_ineligible(decisions, {_id(r) for r in await r1_check_pool(conn)})
     return await record_check(conn, "repair:r1-check", decisions)
+
+
+# A uniform 40 of ~185 would hold about 4 eight-digit rows; that rule dates a whole scheme
+# from one assumption, so it gets enough rows to be seen failing.
+R1V2_QUOTAS = {"eight_digit": 8, "sequence": 32}
+
+
+async def run_r1v2_export(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
+    rows = await r1v2_check_pool(conn)
+    out = _out(args, "r1v2_year_check.csv")
+    taken = review.export_stratified(
+        rows,
+        stratum=lambda r: source_scheme(_str_or_none(r["source_id"])),
+        quotas=R1V2_QUOTAS,
+        seed=2,
+        path=out,
+        columns=[*LOCATOR_COLUMNS, "year_lo", "year_hi", "source_url"],
+        decision_column="within_one_year",
+        overwrite=args.overwrite,
+    )
+    return {
+        "exported": sum(taken.values()),
+        "taken": taken,
+        "path": str(out),
+        "instructions": R1_CHECK_INSTRUCTIONS,
+    }
+
+
+async def run_r1v2_import(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
+    decisions = review.read_decisions(
+        Path(args.review_file), key="accident_id", decision_column="within_one_year", allowed=YES_NO
+    )
+    refuse_ineligible(decisions, {_id(r) for r in await r1v2_check_pool(conn)})
+    return await record_check(conn, "repair:r1v2-check", decisions)
