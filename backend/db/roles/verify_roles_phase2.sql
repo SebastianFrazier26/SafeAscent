@@ -71,7 +71,25 @@ INSERT INTO ingest_privs VALUES
   ('public.gnis_summits', 'SELECT'), ('public.gnis_summits', 'INSERT'), ('public.gnis_summits', 'UPDATE'),
   ('public.gnis_summits', 'DELETE'),
   ('internal.duplicate_decisions', 'SELECT'), ('internal.duplicate_decisions', 'INSERT'),
-  ('internal.duplicate_decisions', 'UPDATE');
+  ('internal.duplicate_decisions', 'UPDATE'),
+  -- Plan 3 (0007): conditions (DELETE for the prune), series registry, normals, read views.
+  ('public.cell_daily_conditions', 'SELECT'), ('public.cell_daily_conditions', 'INSERT'),
+  ('public.cell_daily_conditions', 'UPDATE'), ('public.cell_daily_conditions', 'DELETE'),
+  ('public.grid_bucket_series', 'SELECT'), ('public.grid_bucket_series', 'INSERT'),
+  ('public.grid_bucket_series', 'UPDATE'),
+  ('public.cell_normals_status', 'SELECT'), ('public.cell_normals_status', 'INSERT'),
+  ('public.cell_normals_status', 'UPDATE'),
+  ('public.cell_climate_normals', 'SELECT'), ('public.cell_climate_normals', 'INSERT'),
+  ('public.cell_climate_normals', 'UPDATE'),
+  ('public.cell_climatology', 'SELECT'), ('public.cell_climatology', 'INSERT'),
+  ('public.cell_climatology', 'UPDATE'),
+  ('public.accidents_clean', 'SELECT'), ('public.accidents_clean_daily', 'SELECT'),
+  ('public.accident_conditions', 'SELECT'),
+  -- Plan 3 (R6 verify): the legacy weather table is read-only input to r6_verify.
+  ('public.weather', 'SELECT'),
+  -- Plan 3 (R7): area_weekly_weather SELECT is table-level; UPDATE is column-level (longitude
+  -- only), checked below.
+  ('public.area_weekly_weather', 'SELECT');
 
 -- PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views, so extension-owned
 -- relations are skipped throughout, as verify_roles.sql does.
@@ -92,11 +110,15 @@ SELECT 'ingest ' || priv || ' on ' || tbl || ' matches the expected set',
        held = EXISTS (SELECT 1 FROM ingest_privs e WHERE e.tbl = privs.tbl AND e.priv = privs.priv)
 FROM privs;
 
+-- R11 inserts accidents through accident_id's nextval() default, which needs USAGE on its
+-- sequence: that one sequence is exempt for USAGE only, never SELECT or UPDATE (setval).
 INSERT INTO role_checks
 SELECT 'ingest has nothing on sequence ' || tbl,
-       NOT (has_sequence_privilege('ingest', oid, 'USAGE') OR has_sequence_privilege('ingest', oid, 'SELECT')
-            OR has_sequence_privilege('ingest', oid, 'UPDATE'))
+       has_sequence_privilege('ingest', oid, 'USAGE') = (tbl = 'public.accidents_accident_id_seq')
+       AND NOT (has_sequence_privilege('ingest', oid, 'SELECT') OR has_sequence_privilege('ingest', oid, 'UPDATE'))
 FROM rels WHERE relkind = 'S'
+UNION ALL
+SELECT 'accidents id sequence check ran', EXISTS (SELECT 1 FROM rels WHERE tbl = 'public.accidents_accident_id_seq')
 UNION ALL
 SELECT 'app holds nothing on internal relation ' || tbl,
        NOT (has_table_privilege('app', oid, 'SELECT') OR has_table_privilege('app', oid, 'INSERT')
@@ -137,22 +159,32 @@ SELECT 'ingest mp_ticks column privileges match the expected set: ' || attname,
 FROM cols;
 
 -- ingest's column grants from plan 2: UPDATE on accidents exactly the repair columns (never
--- description, source, source_id or accident_id); SELECT on accidents_raw only the R1-R4 inputs.
+-- description, source, source_id or accident_id), plus plan 3's tz and R11's mp_route_id; SELECT
+-- on accidents_raw only the R1-R4 inputs. INSERT (R11) is exactly accident_facts.INSERT_COLUMNS:
+-- never accident_id, location, tags or elevation_meters.
 WITH cols AS (
   SELECT a.attnum, a.attname,
          a.attname IN ('date', 'year', 'latitude', 'longitude', 'coordinates', 'country', 'date_precision',
                        'year_source', 'year_lo', 'year_hi', 'geocode_precision', 'geocode_method',
                        'activity_class', 'activity_rule_version', 'inclusion_flag', 'incident_group_id',
                        'is_canonical', 'severity_scale', 'excluded_reason', 'source_url', 'updated_at',
-                       'exp_years_climbing', 'exp_stated_level', 'exp_first_season', 'guided', 'exp_rule_version')
-           AS may_update
+                       'exp_years_climbing', 'exp_stated_level', 'exp_first_season', 'guided', 'exp_rule_version',
+                       'tz', 'mp_route_id')
+           AS may_update,
+         a.attname IN ('source', 'source_id', 'date', 'year', 'date_precision', 'state', 'mountain', 'route',
+                       'mp_route_id', 'latitude', 'longitude', 'geocode_precision', 'geocode_method', 'country',
+                       'tz', 'activity', 'activity_class', 'activity_rule_version', 'inclusion_flag',
+                       'accident_type', 'injury_severity', 'severity_scale', 'exp_years_climbing',
+                       'exp_stated_level', 'exp_first_season', 'guided', 'exp_rule_version', 'source_url',
+                       'description', 'updated_at')
+           AS may_insert
   FROM pg_attribute a
   WHERE a.attrelid = 'public.accidents'::regclass AND a.attnum > 0 AND NOT a.attisdropped
 )
 INSERT INTO role_checks
 SELECT 'ingest accidents column privileges match the expected set: ' || attname,
        has_column_privilege('ingest', 'public.accidents', attnum, 'UPDATE') = may_update
-       AND NOT has_column_privilege('ingest', 'public.accidents', attnum, 'INSERT')
+       AND has_column_privilege('ingest', 'public.accidents', attnum, 'INSERT') = may_insert
        AND NOT has_column_privilege('ingest', 'public.accidents', attnum, 'REFERENCES')
 FROM cols;
 
@@ -167,6 +199,20 @@ SELECT 'ingest mp_locations column privileges match the expected set: ' || attna
        AND NOT has_column_privilege('ingest', 'public.mp_locations', attnum, 'UPDATE')
        AND NOT has_column_privilege('ingest', 'public.mp_locations', attnum, 'INSERT')
        AND NOT has_column_privilege('ingest', 'public.mp_locations', attnum, 'REFERENCES')
+FROM cols;
+
+-- Plan 3 (R7): ingest's only write on area_weekly_weather is UPDATE longitude; SELECT is
+-- table-level (checked in ingest_privs above), so every column already has it.
+WITH cols AS (
+  SELECT a.attnum, a.attname
+  FROM pg_attribute a
+  WHERE a.attrelid = 'public.area_weekly_weather'::regclass AND a.attnum > 0 AND NOT a.attisdropped
+)
+INSERT INTO role_checks
+SELECT 'ingest area_weekly_weather column privileges match the expected set: ' || attname,
+       has_column_privilege('ingest', 'public.area_weekly_weather', attnum, 'UPDATE') = (attname = 'longitude')
+       AND NOT has_column_privilege('ingest', 'public.area_weekly_weather', attnum, 'INSERT')
+       AND NOT has_column_privilege('ingest', 'public.area_weekly_weather', attnum, 'REFERENCES')
 FROM cols;
 
 -- By oid from rels, not 'internal.accidents_raw'::regclass: the name lookup needs USAGE on
@@ -188,13 +234,17 @@ FROM cols;
 INSERT INTO role_checks VALUES
   ('accidents_raw column checks ran', EXISTS (SELECT 1 FROM rels WHERE tbl = 'internal.accidents_raw'));
 
--- Plan 2 (0006): app and analyst read the clean views through migrator's default privileges
--- and hold nothing else on them (a simple view is auto-updatable, so writes are checked too).
--- ingest and trainer hold nothing on them: the exact ingest set and the trainer check above
--- cover views; plan 3 grants ingest, Phase 3 grants trainer (D13).
+-- Plan 2 (0006) and plan 3 (0007): app and analyst read the clean views, the conditions tables
+-- and accident_conditions through migrator's default privileges and hold nothing else on them
+-- (a simple view is auto-updatable, so writes are checked too). ingest's SELECT is in the exact
+-- set above; trainer holds nothing until Phase 3 (D13), per the trainer check above.
 INSERT INTO role_checks
 SELECT 'clean view exists: ' || v, EXISTS (SELECT 1 FROM rels WHERE tbl = v AND relkind = 'v')
-FROM unnest(ARRAY['public.accidents_clean', 'public.accidents_clean_daily']) AS v
+FROM unnest(ARRAY['public.accidents_clean', 'public.accidents_clean_daily', 'public.accident_conditions']) AS v
+UNION ALL
+SELECT 'conditions table exists: ' || t, EXISTS (SELECT 1 FROM rels WHERE tbl = t AND relkind = 'r')
+FROM unnest(ARRAY['public.cell_daily_conditions', 'public.grid_bucket_series', 'public.cell_normals_status',
+                  'public.cell_climate_normals', 'public.cell_climatology']) AS t
 UNION ALL
 SELECT g || ' can SELECT ' || r.tbl || ' and nothing else',
        has_table_privilege(g, r.oid, 'SELECT')
@@ -202,7 +252,9 @@ SELECT g || ' can SELECT ' || r.tbl || ' and nothing else',
                 OR has_table_privilege(g, r.oid, 'DELETE') OR has_table_privilege(g, r.oid, 'TRUNCATE')
                 OR has_table_privilege(g, r.oid, 'REFERENCES') OR has_table_privilege(g, r.oid, 'TRIGGER'))
 FROM rels r CROSS JOIN unnest(ARRAY['app', 'analyst']) AS g
-WHERE r.tbl IN ('public.accidents_clean', 'public.accidents_clean_daily');
+WHERE r.tbl IN ('public.accidents_clean', 'public.accidents_clean_daily', 'public.accident_conditions',
+                'public.cell_daily_conditions', 'public.grid_bucket_series', 'public.cell_normals_status',
+                'public.cell_climate_normals', 'public.cell_climatology');
 
 SELECT check_name, ok FROM role_checks ORDER BY ok, check_name;
 

@@ -66,7 +66,8 @@ def test_0006_revision_id_fits_alembic_version():
 
 @requires_pg
 def test_0006_clean_views_apply_every_rule_and_hide_narratives():
-    with migrated_db("head", SEED) as name:
+    # Pinned at 0006, not head: later revisions stack on these views and must not break this test.
+    with migrated_db(REV_0006, SEED) as name:
         assert _rows(name, "SELECT version_num FROM alembic_version") == [REV_0006]
         assert _rows(name, "SELECT accident_id FROM accidents_clean ORDER BY 1") == [1, 2, 7]
         assert _rows(name, "SELECT accident_id FROM accidents_clean_daily ORDER BY 1") == [1, 7]

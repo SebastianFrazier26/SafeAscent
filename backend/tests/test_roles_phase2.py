@@ -3,17 +3,20 @@ upgrades to head → grants_phase2.sql → verify scripts."""
 
 import argparse
 import asyncio
+import csv
 import os
 import subprocess
+import uuid
 from datetime import date
 
 from alembic import command
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.data.repair import activity, dates, dedupe, experience, geocode, review, severity
 from app.data.repair.checks import record_check
 from app.data.repair.framework import LOCATION, Change, run_step
-from app.pipelines import gnis, mp_tick_aggregates, mp_ticks_quarantine
+from app.pipelines import accident_facts, cell_conditions, gnis, localday, mp_tick_aggregates, mp_ticks_quarantine
 from app.pipelines.validate import ValidationReport
 from tests.pgtest import requires_pg
 from tests.test_gnis import HEADER as GNIS_HEADER
@@ -189,6 +192,67 @@ def _run_real_jobs_as_ingest(ingest_url: str, tmp_path, monkeypatch) -> None:
     assert (r5_out["mode"], r5_out["review_pending"], r5_out["path"]) == ("apply", 0, None)
     assert r12_out["mode"] == "apply"
 
+    # Plan 3 Task 3: the conditions upsert as ingest — INSERT, then the ON CONFLICT UPDATE whose
+    # precedence WHERE reads the stored row.
+    async def conditions() -> list[int]:
+        def row(kind: cell_conditions.RecordKind, source: str) -> cell_conditions.DayRow:
+            return cell_conditions.DayRow(1, "America/Denver", date(2026, 9, 20), 5.0, -1.0, 0.0, 0.0, 4.0, 9.0,
+                                          True, kind, "m", source)
+
+        engine = create_async_engine(sa_ingest)
+        try:
+            async with engine.begin() as conn:
+                return [
+                    await cell_conditions.upsert_rows(conn, [row(kind, source)], run_id=uuid.uuid4())
+                    for kind, source in [("stopgap", "open_meteo_forecast"), ("era5", "open_meteo_archive"),
+                                         ("forecast", "open_meteo_forecast")]
+                ]
+        finally:
+            await engine.dispose()
+
+    assert asyncio.run(conditions()) == [1, 1, 0]
+
+    # Plan 3 Task 4: the register job as ingest — accidents.tz through its column grant, the clean
+    # views, mp_locations through its three-column grant, the registry and the ingest log.
+    async def register() -> dict[str, object]:
+        engine = create_async_engine(sa_ingest)
+        try:
+            async with engine.begin() as conn:
+                # The repairs above leave no clean trusted point; promote one, as R3/R4 would.
+                await conn.execute(text("UPDATE accidents SET activity_class = 'climbing', geocode_precision = 'crag' "
+                                        "WHERE accident_id = 900000002"))
+            return await localday.register_logged(engine)
+        finally:
+            await engine.dispose()
+
+    registered = asyncio.run(register())
+    assert registered["accident_tz_changed"] == registered["accident_tz_assigned"] == 1
+    assert (registered["incident_series"], registered["route_series"]) == (1, 0)
+
+    # Plan 3 Task 10: the R11 loader as ingest — the column-level INSERT (accident_id from the
+    # column default), the route-match reads, the run log and quarantine, then --apply-route-ids.
+    monkeypatch.setattr(accident_facts, "ingest_engine", lambda: create_async_engine(sa_ingest))
+
+    def facts_csv(name: str, mp_route_id: str) -> object:
+        path = tmp_path / name
+        with path.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=accident_facts.COLUMNS)
+            writer.writeheader()
+            writer.writerow({
+                "source": "AAC", "source_id": "R11-ROLE-1", "date": "2025-02-10", "date_precision": "day",
+                "state": "CO", "route": "Fixture Ice", "mp_route_id": mp_route_id, "latitude": "40.0",
+                "longitude": "-105.0", "geocode_precision": "crag", "activity": "ice climbing",
+                "injury_severity": "minor", "source_url": "https://example.org/r11", "summary": "Fixture fall.",
+            })
+        return path
+
+    loaded = asyncio.run(accident_facts.main(facts_csv("r11.csv", ""), today=JOB_TODAY, dry_run=False))
+    assert (loaded["inserted"], loaded["review_pending"]) == (1, 1)
+    dry = asyncio.run(accident_facts.main(facts_csv("r11.csv", ""), today=JOB_TODAY, dry_run=True))
+    assert dry["report"]["quarantined"] == {"already_present": 1}
+    fill = facts_csv("r11-fill.csv", "900000002")
+    assert asyncio.run(accident_facts.main(fill, today=JOB_TODAY, dry_run=False, route_ids=True))["updated"] == 1
+
 
 # PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views; those belong to the
 # extension, not to any grant this project makes, so the check skips them as verify_roles.sql does.
@@ -308,7 +372,16 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
     _as(ingest, "INSERT INTO internal.accident_revisions (accident_id, field, method, rule_version, run_id) SELECT accident_id, 'f', 'm', 'v', gen_random_uuid() FROM accidents WHERE false")
     _denied(ingest, "UPDATE accidents SET description = 'x' WHERE false")
     _denied(ingest, "UPDATE accidents SET source_id = 'x' WHERE false")
+    _as(ingest, "UPDATE accidents SET tz = NULL WHERE tz IS NOT NULL AND false")
     _denied(ingest, "DELETE FROM accidents WHERE false")
+    # R11 (D15): the INSERT probe commits nothing. Never accident_id or a narrative column.
+    _as(ingest, "BEGIN; INSERT INTO accidents (source, source_id, description) VALUES ('AAC', 'probe', 'x'); ROLLBACK")
+    assert _fetch_row(fresh_db, "SELECT count(*) FROM accidents WHERE source_id = 'probe'") == [0]
+    _denied(ingest, "INSERT INTO accidents (accident_id, source) VALUES (1, 'AAC')")
+    _denied(ingest, "INSERT INTO accidents (source, location) VALUES ('AAC', 'x')")
+    _denied(ingest, "INSERT INTO accidents (source, tags) VALUES ('AAC', 'x')")
+    _as(ingest, "UPDATE accidents SET mp_route_id = NULL WHERE false")
+    _denied(ingest, "UPDATE accidents SET route = 'x' WHERE false")
     _denied(ingest, "UPDATE internal.accident_revisions SET method = 'x' WHERE false")
     _as(ingest, "INSERT INTO internal.duplicate_decisions (low_id, high_id, score, decision, decided_by, rule_version) "
         "VALUES (1, 2, 0.9, 'merge', 'auto', 'r5-v1') ON CONFLICT (low_id, high_id) DO UPDATE SET score = EXCLUDED.score")
@@ -327,12 +400,47 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
     # trainer cannot log in and holds no table privilege anywhere until Phase 3 (D13).
     assert _fetch_row(fresh_db, TRAINER_STATE_SQL) == [False, False]
 
-    # 0006: app and analyst read the clean views (default privileges); ingest gets them in plan 3,
+    # 0006: app and analyst read the clean views (default privileges); ingest since plan 3 (0007),
     # trainer in Phase 3 (D13, TRAINER_STATE_SQL above covers views).
     clean_views = "SELECT count(*) FROM accidents_clean; SELECT count(*) FROM accidents_clean_daily"
     _as(app, clean_views)
     _as(analyst, clean_views)
-    _denied(ingest, "SELECT count(*) FROM accidents_clean")
+    _as(ingest, clean_views)
+    _as(ingest, "SELECT count(*) FROM accident_conditions")
+    _denied(ingest, "DELETE FROM accidents_clean WHERE false")
+
+    # Plan 3 (0007): ingest writes conditions (DELETE only for the 3-year prune) and upserts the
+    # series registry and normals, which it never deletes; app and analyst only read.
+    _as(ingest, "INSERT INTO cell_daily_conditions (grid_bucket, tz, date, record_kind, source) "
+        "VALUES (1, 'UTC', '2020-01-01', 'era5', 'open_meteo_archive') "
+        "ON CONFLICT (grid_bucket, tz, date) DO UPDATE SET tmax = EXCLUDED.tmax")
+    _as(ingest, "DELETE FROM cell_daily_conditions WHERE grid_bucket = 1")
+    _as(ingest, "INSERT INTO grid_bucket_series (grid_bucket, tz) VALUES (1, 'UTC') "
+        "ON CONFLICT (grid_bucket, tz) DO UPDATE SET first_era5_date = NULL")
+    _as(ingest, "INSERT INTO cell_normals_status (grid_bucket, status) VALUES (1, 'pending') "
+        "ON CONFLICT (grid_bucket) DO UPDATE SET status = EXCLUDED.status")
+    _as(ingest, "UPDATE cell_climate_normals SET n_years = 1 WHERE false; "
+        "UPDATE cell_climatology SET n_years = 1 WHERE false")
+    for table in ("grid_bucket_series", "cell_normals_status", "cell_climate_normals", "cell_climatology"):
+        _denied(ingest, f"DELETE FROM {table} WHERE false")
+    _denied(ingest, "TRUNCATE cell_daily_conditions")
+    _as(app, "SELECT count(*) FROM cell_daily_conditions; SELECT count(*) FROM accident_conditions")
+    _denied(app, "DELETE FROM cell_daily_conditions WHERE false")
+
+    # Plan 3 (R6 verify): ingest reads the legacy weather table, never writes it.
+    _as(ingest, "SELECT count(*) FROM weather")
+    _denied(ingest, "UPDATE weather SET temperature_max = 0 WHERE false")
+    _denied(ingest, "DELETE FROM weather WHERE false")
+    _denied(ingest, "INSERT INTO weather (date, latitude, longitude) VALUES ('2020-01-01', 0, 0)")
+
+    # Plan 3 (R7): ingest reads area_weekly_weather and can flip longitude only.
+    _as(ingest, "SELECT count(*) FROM area_weekly_weather")
+    _as(ingest, "UPDATE area_weekly_weather SET longitude = -longitude WHERE false")
+    _denied(ingest, "UPDATE area_weekly_weather SET temp_avg = 0 WHERE false")
+    _denied(ingest, "INSERT INTO area_weekly_weather (latitude, longitude, week_start, week_end) "
+        "VALUES (0, 0, '2020-01-06', '2020-01-12')")
+    _denied(ingest, "DELETE FROM area_weekly_weather WHERE false")
+    _denied(analyst, "BEGIN READ WRITE; DELETE FROM grid_bucket_series WHERE false; COMMIT")
     _denied(app, "UPDATE accidents_clean SET source_url = 'x' WHERE false")
     _denied(analyst, "BEGIN READ WRITE; DELETE FROM accidents_clean_daily WHERE false; COMMIT")
 
@@ -396,13 +504,15 @@ def test_grants_phase2_narrows_a_preexisting_table_level_grant(role_cleanup, fre
 
     # Simulates an older grants script, or a by-hand grant, that gave ingest the whole table
     # (climber_name included) before this script's REVOKE-then-column-GRANT existed.
-    _as(migrator_url, "GRANT SELECT ON public.mp_ticks TO ingest")
+    _as(migrator_url, "GRANT SELECT ON public.mp_ticks TO ingest; GRANT INSERT ON public.accidents TO ingest")
     ingest = _role_url(fresh_db, "ingest", PHASE2_PASSWORDS["ingest"])
     _as(ingest, "SELECT climber_name FROM mp_ticks")
 
     assert _psql(owner_url, GRANTS_PHASE2, {}).returncode == 0
     _denied(ingest, "SELECT climber_name FROM mp_ticks")
     _as(ingest, "SELECT tick_id FROM mp_ticks")
+    _denied(ingest, "BEGIN; INSERT INTO accidents (source, tags) VALUES ('AAC', 'x'); ROLLBACK")
+    _as(ingest, "BEGIN; INSERT INTO accidents (source, source_id) VALUES ('AAC', 'probe'); ROLLBACK")
     verified = _psql(owner_url, VERIFY_PHASE2, {})
     assert verified.returncode == 0, verified.stdout + verified.stderr
 
@@ -431,11 +541,20 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "ALTER DEFAULT PRIVILEGES IN SCHEMA internal GRANT SELECT ON TABLES TO ingest;"
         "GRANT SELECT ON public.accidents TO trainer;"
         "GRANT SELECT ON public.accidents_clean TO trainer;"
-        "GRANT SELECT ON public.accidents_clean_daily TO ingest;"
+        "REVOKE SELECT ON public.accidents_clean_daily FROM ingest;"
+        "GRANT DELETE ON public.grid_bucket_series TO ingest;"
+        "GRANT TRUNCATE ON public.cell_daily_conditions TO ingest;"
+        "GRANT INSERT ON public.cell_daily_conditions TO app;"
+        "GRANT SELECT ON public.accident_conditions TO trainer;"
         "GRANT UPDATE ON public.accidents_clean TO app;"
         "REVOKE SELECT ON public.accidents_clean_daily FROM analyst;"
         "GRANT CREATE ON SCHEMA internal TO app;"
-        "REVOKE SELECT ON internal.accident_revisions FROM analyst;",
+        "REVOKE SELECT ON internal.accident_revisions FROM analyst;"
+        "REVOKE UPDATE (tz) ON public.accidents FROM ingest;"
+        "REVOKE SELECT ON public.weather FROM ingest;"
+        "GRANT INSERT (location) ON public.accidents TO ingest;"
+        "REVOKE INSERT (description) ON public.accidents FROM ingest;"
+        "GRANT SELECT ON SEQUENCE public.accidents_accident_id_seq TO ingest;",
     )
     _as(owner_url, "GRANT ingest TO analyst")
     # CREATE without USAGE is enough to create a table, which is why verify checks both.
@@ -451,17 +570,26 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "ingest SELECT on internal.accidents_raw matches the expected set",
         "ingest accidents_raw column privileges match the expected set: description",
         "ingest mp_locations column privileges match the expected set: name",
+        "ingest accidents column privileges match the expected set: tz",
         "ingest mp_ticks column privileges match the expected set: climber_name",
         "ingest has nothing on sequence public.mp_ticks_tick_id_seq",
         "no default privileges grant ingest or trainer anything",
         "trainer holds no privilege on public.accidents",
         "trainer holds no privilege on public.accidents_clean",
         "ingest SELECT on public.accidents_clean_daily matches the expected set",
+        "ingest DELETE on public.grid_bucket_series matches the expected set",
+        "ingest TRUNCATE on public.cell_daily_conditions matches the expected set",
+        "app can SELECT public.cell_daily_conditions and nothing else",
+        "trainer holds no privilege on public.accident_conditions",
         "app can SELECT public.accidents_clean and nothing else",
         "analyst can SELECT public.accidents_clean_daily and nothing else",
         "app has no CREATE on schema internal",
         "analyst can SELECT internal.accident_revisions",
         "nobody can SET or INHERIT ingest",
         "nobody but CURRENT_USER holds ADMIN on ingest",
+        "ingest SELECT on public.weather matches the expected set",
+        "ingest accidents column privileges match the expected set: location",
+        "ingest accidents column privileges match the expected set: description",
+        "ingest has nothing on sequence public.accidents_accident_id_seq",
     ):
         assert check in stray.stderr, check

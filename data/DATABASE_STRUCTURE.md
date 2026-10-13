@@ -110,6 +110,7 @@ Colorado (parent_id=NULL)
 | exp_first_season | BOOLEAN | First season climbing, if stated |
 | guided | TEXT | NOT NULL, default `unknown`; `guided`, `unguided`, `unknown` (check) |
 | exp_rule_version | TEXT | Rule version that set the experience columns |
+| tz | TEXT | Added by `0007`. IANA timezone of the accident's crag (check `accidents_tz_check`: not empty); the zone its weather day and its `cell_daily_conditions`/`accident_conditions` join use. NULL until `localday`/`era5_window` registers the point |
 
 **Indexes:**
 - Primary key on `accident_id`
@@ -130,8 +131,8 @@ WHERE ST_DWithin(
 
 ---
 
-### 4. weather
-**Purpose:** 7-day weather windows for accident dates
+### 4. weather (legacy)
+**Purpose:** 7-day weather windows for accident dates. Superseded by `cell_daily_conditions` (table 10) as of `0007`/plan 3; read-only from here on, kept only as the comparison input to `r6_verify`'s one-time ERA5-vs-legacy agreement check (`app/pipelines/r6_verify.py`). Nothing in `app/` writes it. It stays until the Phase 3 MVP-1 PR, which **must** drop it (hard gate: MVP-1 does not merge while `weather` exists); see `DEPLOYMENT.md`.
 **Records:** ~25,000
 
 | Column | Type | Description |
@@ -248,6 +249,112 @@ Columns: `accident_id, source, source_id, date, year, date_precision, year_sourc
 `point_trusted` is true only for `geocode_precision` `exact`, `crag`, `area` or `park_centroid` (false when unlabelled). `region_fallback` and `unknown` rows keep their coordinates for state or region pooling, but no point-level join (plan 3's `accident_conditions`, Phase 3 spatial features) may use them. A row whose year is a range (`year_source = 'aac_source_id_neighbours'`, `date_precision = 'year'`) must be counted over `[year_lo, year_hi]` in yearly totals (owner rule); the views carry `year_source` for this.
 
 Grants: `app` and `analyst` read both views through `migrator`'s default privileges; `ingest` from plan 3; `trainer` from Phase 3 (D13).
+
+---
+
+### 10. cell_daily_conditions
+**Purpose:** Daily weather per 0.1° grid cell, local timezone and local calendar day — the replacement for `weather` (table 4). Added by `0007`; written by `app/pipelines/cell_conditions.py`'s validated upsert. A missing day is an absent row, never a zero.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| grid_bucket | INTEGER | Part of the PK. The packed 0.1° grid key (`app/pipelines/grid.py`'s `grid_bucket_key()`), shared with SQL |
+| tz | TEXT | Part of the PK. IANA timezone the row's `date` is a local calendar day in (check: not empty) |
+| date | DATE | Part of the PK. The local day this row covers |
+| tmax, tmin | REAL | Daily max/min temperature, °C |
+| precip_mm | REAL | Daily precipitation, mm |
+| snowfall_cm, snow_depth_cm | REAL | Daily snowfall and standing snow depth, cm |
+| wind_max_ms, gust_max_ms | REAL | Daily max sustained wind and gust, m/s (Open-Meteo's native unit; never converted to km/h) |
+| freeze_thaw | BOOLEAN | Whether the day crossed freezing |
+| swe_delta_mm | REAL | Day-over-day snow-water-equivalent change, mm |
+| nws_alert_codes | TEXT[] | NWS alert codes active that day, if any |
+| aqi | SMALLINT | Air quality index |
+| record_kind | TEXT | `era5` (final, paid archive), `stopgap` (Forecast-API past day, not ERA5) or `forecast` (future day); check `cell_daily_conditions_record_kind_check` |
+| is_forecast | BOOLEAN | NOT NULL; exactly `record_kind = 'forecast'` (check) |
+| model | TEXT | Open-Meteo model name, if applicable |
+| source | TEXT | `open_meteo_archive` or `open_meteo_forecast` (check) |
+| fetched_at | TIMESTAMPTZ | When the row was written |
+| run_id | UUID | The `source_ingest_log` run that wrote it |
+
+**Precedence (owner rule):** `era5 > stopgap > forecast`, enforced in the upsert's `WHERE` (`_RANK` in `cell_conditions.py`), not by application order. A re-fetch at the same rank that comes back NULL never erases an already-stored value; an `era5` row always replaces a lower-kind row whole. Constraints: PK `(grid_bucket, tz, date)`.
+
+---
+
+### 11. grid_bucket_series
+**Purpose:** Registry of every `(grid_bucket, tz)` series that has ever been registered (from an accident, a route point, or a nearby one sharing the bucket), and the ERA5 span bought for it so far. Added by `0007`; written by `localday`/`era5_window`.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| grid_bucket, tz | INTEGER, TEXT | Primary key |
+| first_seen_at | TIMESTAMPTZ | When the series was first registered |
+| first_era5_date, last_era5_date | DATE | The bought ERA5 span so far; both NULL or both set (check), `first <= last` (check) |
+
+---
+
+### 12. cell_normals_status
+**Purpose:** Per-bucket state machine for the monthly climate-normals computation. Added by `0007`; written by `app/pipelines/normals.py`.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| grid_bucket | INTEGER | Primary key |
+| status | TEXT | `pending`, `complete`, or `insufficient` (check) |
+| first_seen_at | TIMESTAMPTZ | When the bucket first became due for normals |
+| computed_at | TIMESTAMPTZ | When normals were last computed, if ever |
+| n_years | SMALLINT | Years of ERA5 history the computation used |
+| run_id | UUID | The `source_ingest_log` run that computed it |
+
+A bucket stays `pending` (never 0 or an interpolated value) until enough ERA5 years are stored; `test_normals_status_matches_the_normals_rows` (`tests/verify/test_phase2a_conditions.py`) checks a `complete` bucket always has exactly 12 `cell_climate_normals` rows with no NULL `tmax_mean`/`precip_mm`.
+
+---
+
+### 13. cell_climate_normals
+**Purpose:** Monthly climate normals per grid cell, derived from stored ERA5 history. Added by `0007`; written by `app/pipelines/normals.py`.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| grid_bucket, month | INTEGER, SMALLINT | Primary key (`month` 1–12, check) |
+| tmax_mean, tmin_mean | REAL | Mean daily max/min temperature for the month, °C |
+| precip_mm | REAL | Mean monthly precipitation, mm |
+| snowfall_cm | REAL | Mean monthly snowfall, cm |
+| freeze_thaw_days | REAL | Mean count of freeze-thaw days in the month |
+| n_years | SMALLINT | Years of history behind the mean |
+| period_start_year, period_end_year | SMALLINT | The ERA5 year range used |
+| ref_elevation_m | REAL | Reference elevation for the cell, if known |
+| source | TEXT | `open_meteo_era5_seamless` (bought) or `derived_cell_daily_conditions` (computed from rows already stored) (check) |
+| normals_version | TEXT | The normals rule version that computed the row |
+| run_id | UUID | The `source_ingest_log` run that wrote it |
+
+---
+
+### 14. cell_climatology
+**Purpose:** Day-of-year climatology (percentiles, not just means) per grid cell, for comparing a given day's conditions against its historical spread. Added by `0007`; written by `app/pipelines/normals.py`.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| grid_bucket, doy | INTEGER, SMALLINT | Primary key (`doy` 1–366, check) |
+| tmax_mean, tmax_p10, tmax_p90 | REAL | Max temperature mean and 10th/90th percentile |
+| tmin_mean, tmin_p10, tmin_p90 | REAL | Min temperature mean and 10th/90th percentile |
+| precip_mean, precip_p90 | REAL | Precipitation mean and 90th percentile |
+| snowfall_mean | REAL | Mean snowfall |
+| gust_p90 | REAL | 90th-percentile gust |
+| freeze_thaw_freq | REAL | Fraction of years with a freeze-thaw crossing on this day-of-year |
+| lightning_day_freq | REAL | Reserved for plan 7's lightning tables; unused by plan 3 |
+| n_years | SMALLINT | Years of history behind the row |
+| period_start_year, period_end_year | SMALLINT | The ERA5 year range used |
+| climatology_version | TEXT | The climatology rule version that computed the row |
+| run_id | UUID | The `source_ingest_log` run that wrote it |
+
+No visibility column exists anywhere in `cell_daily_conditions` or here (`test_no_visibility_in_new_conditions`); Open-Meteo's visibility field was deliberately left out of plan 3.
+
+---
+
+### 15. accident_conditions (view)
+**Purpose:** The 7-day (`day_offset` -6..0) weather window per clean-daily incident, joined by cell + crag timezone + local day — never by `accident_id` alone. Added by `0007`.
+
+Columns: `accident_id, day_offset, grid_bucket, tz, date, tmax, tmin, precip_mm, snowfall_cm, wind_max_ms, gust_max_ms, freeze_thaw, record_kind, is_forecast`.
+
+Joins `accidents_clean_daily` to `accidents` (for `tz`) to `cell_daily_conditions` on `grid_bucket = grid_bucket_key(latitude, longitude)`, `tz` and `date = accident date + day_offset`; restricted to `point_trusted` rows with known coordinates and a single-year date (`year_lo IS NOT DISTINCT FROM year_hi`, i.e. not an AAC year-range row). Incident ERA5 history starts 1990-01-01 (owner decision DP1; `localday.INCIDENT_START`); an incident before that date gets no row here at all for any `day_offset` and must read as missing (`conditions_missing`), never a zero — `test_every_clean_day_incident_has_a_seven_day_window` in `tests/verify/test_phase2a_conditions.py` checks every eligible post-1990 incident has all 7 `era5` days.
+
+Grants: `app`, `analyst` and `ingest` read it through `migrator`'s default privileges (`accident_conditions`); `trainer` from Phase 3 (D13).
 
 ---
 

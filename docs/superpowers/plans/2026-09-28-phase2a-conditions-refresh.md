@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the mislinked per-accident `weather` rows with daily conditions per 0.1° cell and **local calendar day** (`cell_daily_conditions`, keyed by `(grid_bucket, tz, date)`, m/s, no visibility), filled from the ERA5 archive for every incident series back to 1940 and for every route series over the trailing 3 years, plus the monthly climate normals and day-of-year climatology every later plan reads. All ERA5 work happens inside one Open-Meteo Professional window per year (the first one here, then every January). Verify against the legacy table (R6), fix the `area_weekly_weather` sign error (R7), and load the 2024-08-to-now accident refresh from facts-only CSVs (R11) so Phase 3 MVP-0 is unblocked.
+**Goal:** Replace the mislinked per-accident `weather` rows with daily conditions per 0.1° cell and **local calendar day** (`cell_daily_conditions`, keyed by `(grid_bucket, tz, date)`, m/s, no visibility), filled from the ERA5 archive for every incident series back to 1940 (superseded by the owner's DP1 decision: 1990, see the Decisions section) and for every route series over the trailing 3 years, plus the monthly climate normals and day-of-year climatology every later plan reads. All ERA5 work happens inside one Open-Meteo Professional window per year (the first one here, then every January). Verify against the legacy table (R6), fix the `area_weekly_weather` sign error (R7), and load the 2024-08-to-now accident refresh from facts-only CSVs (R11) so Phase 3 MVP-0 is unblocked.
 
 **Architecture:** A typed Open-Meteo archive client (`app/pipelines/open_meteo.py`, pydantic-validated responses, recorded-response tests, API key never logged, one IANA timezone per request) feeds a validating writer (`cell_conditions.py`) whose upsert enforces `era5` > `stopgap` > `forecast` precedence. `localday.py` resolves each point's IANA timezone and registers `(grid_bucket, tz)` series. `era5_fill.py` keeps one contiguous ERA5 span per series and fills its gaps in order; `normals.py` builds monthly normals and day-of-year climatology per bucket; `era5_window.py` is the only ERA5 entry point: it refuses to run outside a declared Professional window and caps the window's **cumulative** spend from `source_ingest_log`. A view `accident_conditions` joins accidents to conditions on (cell, crag timezone, local date), never on `accident_id`. The R11 loader reads facts-only CSVs (manual AAC, private CAIC/NPS exports) and inserts new rows through the same validation as every other boundary.
 
@@ -19,7 +19,7 @@
 - Prices and limits read 2026-09-28 from open-meteo.com/en/pricing; **re-check before every purchase**. Professional $99/month (5M calls); Standard $29/month (1M calls). The pricing FAQ states: "Historical, climate, ensemble, and satellite radiation APIs require the Professional API Plan or higher." Spec P2-5 ("one month of Professional for the backfill, then Standard", "weekly append after that") is therefore wrong: Standard cannot call the archive at all. The spec is not edited here; this section and the foundations plan's cadence table supersede it.
 - Owner decision 2026-09-28: **one Professional month per year, in January**, started on or after 10 January (ERA5's ~5-day lag plus margin, so the whole previous year is final). The first window is the initial backfill (Task 14); `[default pending: DP5]` it is bought when this plan's runbook is ready rather than waiting for January 2027.
 - Between windows, recent days come from the Forecast API `past_days` (plan 7's nightly job, on the Standard plan the spec already budgets for the forecast), written as `record_kind = 'stopgap'`: a clearly flagged, non-ERA5 stopgap. The January window replaces every stopgap row with ERA5. There is **no weekly ERA5 append** anywhere.
-- Estimated spend (ceiling formula, which over-estimates because Open-Meteo counts fractionally): first window ≈ 1.6M units (incident series from 1940, `[default pending: DP1]`) + ≈ 0.36M (3-year history, ~4.5K series) + ≈ 1.2M (10-year normals) ≈ **3.2M of 5M**. Each later January ≈ 0.12M (prior year for every series) + ≈ 1.2M (normals rebuild) + new-series history.
+- Estimated spend (ceiling formula, which over-estimates because Open-Meteo counts fractionally): first window ≈ 1.6M units (incident series from 1940, `[default pending: DP1]`; DP1 resolved to 1990, ~0.67M per the spec's own figure — see Task 12 Step 3's plan numbers for the actual total) + ≈ 0.36M (3-year history, ~4.5K series) + ≈ 1.2M (10-year normals) ≈ **3.2M of 5M**. Each later January ≈ 0.12M (prior year for every series) + ≈ 1.2M (normals rebuild) + new-series history.
 
 ## Global Constraints
 
@@ -43,7 +43,7 @@ The foundations plan's Global Constraints apply. Also:
 4. R11 inserts new accidents only; a row whose `(source, source_id)` already exists is quarantined `already_present`, never overwritten. The own one-line summary goes into `description` (capped at 200 characters), since the table has no separate summary column and new rows carry no narrative.
 5. A bucket that straddles a timezone boundary gets one series per timezone. Monthly normals and day-of-year climatology are per bucket and use the bucket's alphabetically first timezone: a one-hour shift of the day boundary does not move a monthly mean or a ±7-day pooled percentile measurably.
 6. ERA5 coverage is one contiguous span `[first_era5_date, last_era5_date]` per series. Gaps before it are filled newest-first and gaps after it oldest-first; a failed chunk blocks the rest of its group, so the span never has a hole and resume needs no log lookup.
-7. `[default pending: DP1]` Incident series are filled from 1940-01-01 (the start of ERA5 in the Open-Meteo archive), so every clean day-precision incident from 1940-01-07 on has a 7-day window. Days before 1979 are pre-satellite ERA5 (lower quality); Phase 3 can see this from the date. Incidents before 1940-01-07 are reported as `conditions_missing`, never given values. Alternative: start 1990 (the spec's figure, ~0.67M units) and report pre-1990 incidents as `conditions_missing`.
+7. `[default pending: DP1]` Incident series are filled from 1940-01-01 (the start of ERA5 in the Open-Meteo archive), so every clean day-precision incident from 1940-01-07 on has a 7-day window. Days before 1979 are pre-satellite ERA5 (lower quality); Phase 3 can see this from the date. Incidents before 1940-01-07 are reported as `conditions_missing`, never given values. Alternative: start 1990 (the spec's figure, ~0.67M units) and report pre-1990 incidents as `conditions_missing`. **DP1 resolved (owner decision):** the alternative above, not the 1940 default — incident series fill from 1990-01-01 (series reach back to 1989-12-26 for the first 7-day window), pre-1990 incidents `conditions_missing`. Every later `1940`/`1940-01-01`/`1940-01-07` figure in this plan is this superseded default, kept for history; Task 12 onward already implement 1990.
 8. R11 `country` comes from the data: `US` when the coordinates pass the US check, or, for a row without coordinates, when `state` is a US state or DC; any other blank-coordinate row is quarantined `unknown_country` (never assumed US).
 
 ## Review Focus
@@ -402,6 +402,7 @@ Append `"app.pipelines.open_meteo"` to the strict mypy block.
   - `cell_climate_normals(grid_bucket integer, month smallint CHECK 1..12, tmax_mean real, tmin_mean real, precip_mm real, snowfall_cm real, freeze_thaw_days real, n_years smallint NOT NULL, period_start_year smallint NOT NULL, period_end_year smallint NOT NULL, ref_elevation_m real, source text NOT NULL, normals_version text NOT NULL, run_id uuid, PK (grid_bucket, month))` (moved from plan 5's `0010`).
   - `cell_climatology(grid_bucket integer, doy smallint CHECK 1..366, tmax_mean real, tmax_p10 real, tmax_p90 real, tmin_mean real, tmin_p10 real, tmin_p90 real, precip_mean real, precip_p90 real, snowfall_mean real, gust_p90 real, freeze_thaw_freq real, lightning_day_freq real /* plan 7 */, n_years smallint NOT NULL, period_start_year smallint NOT NULL, period_end_year smallint NOT NULL, climatology_version text NOT NULL, run_id uuid, PK (grid_bucket, doy))` `[assumes D7]` (moved from plan 5's `0010`).
   - View `accident_conditions(accident_id, day_offset, grid_bucket, tz, date, tmax, tmin, precip_mm, snowfall_cm, wind_max_ms, gust_max_ms, freeze_thaw, record_kind, is_forecast)` over `accidents_clean_daily` rows with `point_trusted` (plan 2: `region_fallback`/`unknown` points keep coordinates for pooling but never get a point-level join) × offsets −6..0, joined on `(grid_bucket_key(lat, lon), accidents.tz, local date)`.
+- Review fixes (2026-10-01): CHECK `cell_daily_conditions.source IN ('open_meteo_archive','open_meteo_forecast')`; CHECK `cell_climate_normals.source IN ('open_meteo_era5_seamless','derived_cell_daily_conditions')` (see Task 6); `tz <> ''` on `accidents`, `grid_bucket_series`, `cell_daily_conditions`; the view excludes every year range (`a.year_lo IS NOT DISTINCT FROM a.year_hi`, D13 generalised); `downgrade()` sets `lock_timeout` first.
 - Produces (Python): `app.models.conditions.CellDailyConditions`, `GridBucketSeries`, `CellNormalsStatus`, `CellClimateNormals`, `CellClimatology`; `Accident.tz`.
 
 - [ ] **Step 1: Failing test** — `backend/tests/test_migration_0007.py`:
@@ -1293,7 +1294,7 @@ GRANT UPDATE (tz) ON public.accidents TO ingest;
 **Interfaces:**
 - Consumes: Tasks 1–4; `grid.bucket_center`, `grid.grid_bucket_sql`; `ingest_log.*`.
 - Produces (`pro_window.py`): `PRO_WINDOW_DAYS = 30`, `JANUARY_EARLIEST_DAY = 10`, `PAID_SOURCES = ("era5_fill", "era5_normals")`, `@dataclass(frozen=True) ProWindow(start: date, initial: bool = False)` with `.end` and `.contains(today) -> bool` (a non-initial window must start in January on or after the 10th), `require_open(window: ProWindow, today: date) -> None` (`SystemExit` outside), `async units_spent(conn, window: ProWindow) -> float`, `@dataclass Budget(max_units: float, spent: float)` with `fits(units) -> bool`, `spend(units) -> None`.
-- Produces (`era5_fill.py`): `SOURCE = "era5_fill"`, `ERA5_START = date(1940, 1, 1)`, `INCIDENT_START_DEFAULT = ERA5_START` `[default pending: DP1]`, `ERA5_LAG_DAYS = 5`, `HISTORY_YEARS = 3`, `SeriesCoverage`, `Gap`, `Chunk` (`.units()`), `last_era5_day(today)`, `history_start(today, history_years=3)`, `series_gaps(coverage, *, today, incident_start, history_years=3) -> list[Gap]`, `plan_chunks(gaps, *, batch, years_per_chunk) -> list[Chunk]`, `async load_coverage(conn) -> list[SeriesCoverage]`, `async run(engine_factory, client, chunks, *, today, budget) -> dict[str, object]`, `PRUNE_SOURCE = "era5_prune"`, `MAX_INCIDENT_DROP = 0.10`, `class PruneRefused(Exception)` (`.kept`), `async prune(conn, *, today, history_years=3) -> tuple[int, int]` (incident series kept, rows deleted), `async log_prune(conn, *, status, kept, deleted, problem) -> None`.
+- Produces (`era5_fill.py`): `SOURCE = "era5_fill"`, `ERA5_START = date(1940, 1, 1)`, `INCIDENT_START_DEFAULT = ERA5_START` `[default pending: DP1, resolved to 1990-01-01]`, `ERA5_LAG_DAYS = 5`, `HISTORY_YEARS = 3`, `SeriesCoverage`, `Gap`, `Chunk` (`.units()`), `last_era5_day(today)`, `history_start(today, history_years=3)`, `series_gaps(coverage, *, today, incident_start, history_years=3) -> list[Gap]`, `plan_chunks(gaps, *, batch, years_per_chunk) -> list[Chunk]`, `async load_coverage(conn) -> list[SeriesCoverage]`, `async run(engine_factory, client, chunks, *, today, budget) -> dict[str, object]`, `PRUNE_SOURCE = "era5_prune"`, `MAX_INCIDENT_DROP = 0.10`, `class PruneRefused(Exception)` (`.kept`), `async prune(conn, *, today, history_years=3) -> tuple[int, int]` (incident series kept, rows deleted), `async log_prune(conn, *, status, kept, deleted, problem) -> None`.
 - Rules: an incident series needs ERA5 from `min(incident_start, history_start)`; any other series from `history_start` (1 January, three years back); both end at `today − 5`. A failed chunk counts as spent and blocks the rest of its group. Non-incident rows older than `history_start` are pruned (spec: 3-year window); incident series are never pruned. This is the only 3-year prune in Phase 2 (plan 7 has none). It refuses (`PruneRefused`, logged `rejected`, `era5_window` exits 1) when the incident set is empty or has shrunk by more than 10% since the last successful prune (`last_ok_rows_in('era5_prune')`).
 
 - [ ] **Step 1: Failing tests** — `backend/tests/test_pro_window.py`:
@@ -1656,7 +1657,7 @@ SOURCE = "era5_fill"
 PRUNE_SOURCE = "era5_prune"
 MAX_INCIDENT_DROP = 0.10
 ERA5_START = date(1940, 1, 1)
-INCIDENT_START_DEFAULT = ERA5_START
+INCIDENT_START_DEFAULT = ERA5_START  # DP1 resolved: 1990-01-01, not this draft default; see the Decisions section
 ERA5_LAG_DAYS = 5
 HISTORY_YEARS = 3
 
@@ -1895,6 +1896,7 @@ This task was plan 5's Task 3. It moves here because every archive call must fal
 **Interfaces:**
 - Consumes: `open_meteo.ArchiveClient`, `LocationResponse`, `Location`, `cost_units` (Task 1); `pro_window.Budget` (Task 5); `ingest_log` (plan 1); `grid.bucket_center`; tables from Task 2.
 - Produces: `NORMALS_VERSION = "n-v2"`, `CLIMATOLOGY_VERSION = "c-v1"`, `SOURCE = "era5_normals"`, `YEARS = 10`, `MIN_YEARS = 8`, `MIN_DAY_SHARE = 0.9`, `ERA5_LAG_DAYS = 5`, `DOY_HALF_WINDOW = 7`, `window(today: date) -> tuple[int, int]`, `@dataclass(frozen=True) MonthNormal(month: int, tmax_mean, tmin_mean, precip_mm, snowfall_cm, freeze_thaw_days: float | None, n_years: int)`, `monthly_normals(response: LocationResponse) -> list[MonthNormal]` (12 entries), `doy_climatology(response: LocationResponse) -> list[dict[str, float | int | None]]` (366 rows, keys = `cell_climatology` columns without bucket/period/version), `bucket_status(normals: Sequence[MonthNormal]) -> str`, `async normals_due(conn, *, today: date) -> list[tuple[int, str]]`, `async run(engine_factory, client, due: Sequence[tuple[int, str]], *, today: date, batch: int, budget: Budget) -> dict[str, object]`. No CLI of its own: `era5_window run` calls it.
+- **Source values (0007 CHECK `cell_climate_normals_source_check`, Task 2 review 2026-10-01):** `cell_climate_normals.source` must be `'open_meteo_era5_seamless'` (normals bought from the archive, the UPSERT below) or `'derived_cell_daily_conditions'` (OQ6 ruling: normals computed from rows already stored in `cell_daily_conditions` where the 10 years are complete). Any other value is a CHECK violation; a new source needs a migration.
 - Rules (review item S2): a variable's monthly value for one year needs ≥ 90% of that month's days observed for that variable; a few missing days are scaled to the full month (`sum × days_in_month / observed_days`), too many make that year's value missing, never 0. A month's normal needs ≥ 8 usable years **per variable**, else that variable is NULL. Completion is tracked per bucket in `cell_normals_status`, so a batch interrupted or failed is re-bought only for the buckets it did not finish, and adding buckets never invalidates finished ones.
 
 - [ ] **Step 1: Failing tests** — `backend/tests/test_normals.py`:
@@ -2262,7 +2264,7 @@ async def run(
 - Produces: `async plan(conn, *, today: date, incident_start: date, batch: int, years_per_chunk: int) -> tuple[list[Chunk], list[tuple[int, str]]]`, `async run_window(engine_factory, client, *, window: ProWindow, today: date, max_units: int, batch: int, years_per_chunk: int, incident_start: date) -> dict[str, object]`, CLI:
   - `python -m app.pipelines.era5_window register` (same as `localday register`),
   - `python -m app.pipelines.era5_window plan [--incident-start 1940-01-01] [--window-start YYYY-MM-DD [--initial-window]]` (read-only: chunks, units, buckets due, units already spent in the window),
-  - `python -m app.pipelines.era5_window run --window-start YYYY-MM-DD [--initial-window] --max-units N [--batch 50] [--years-per-chunk 5] [--incident-start 1940-01-01]` (register → fill gaps → normals due → 3-year prune). Exit status 1 when any chunk or batch failed or the prune refused.
+  - `python -m app.pipelines.era5_window run --window-start YYYY-MM-DD [--initial-window] --max-units N [--batch 50] [--years-per-chunk 5] [--incident-start 1940-01-01]` (register → fill gaps → normals due → 3-year prune). Exit status 1 when any chunk or batch failed or the prune refused. DP1 resolved: `--incident-start` must be `1989-12-26` (6 days before the owner's 1990-01-01 incident floor, not this draft's `1940-01-01`).
 
 - [ ] **Step 1: Failing tests** — `backend/tests/test_era5_window.py`:
 
@@ -2500,7 +2502,7 @@ if __name__ == "__main__":
         sys.exit(1)
 ```
 
-`--incident-start` defaults to 1940-01-01 `[default pending: DP1]`. Append `"app.pipelines.era5_window"` to strict mypy.
+`--incident-start` defaults to 1940-01-01 `[default pending: DP1]`; resolved to `1989-12-26` (owner DP1 decision: 1990-01-01 incident floor, minus the 6 days a first 7-day window needs). Append `"app.pipelines.era5_window"` to strict mypy.
 
 - [ ] **Step 4: Run** — `cd backend && uv run pytest tests/test_era5_window.py -q && uv run mypy && uv run ruff check . ../scripts/` → PASS (one series: route and incident share bucket and zone; the incident makes it reach back to `min(2025-01-01, 2024-01-01)`; one 5-year chunk to 2027-01-10; one normals batch for 2017–2026; the second run finds no gaps and nothing due).
 - [ ] **Step 5: Commit** — `git add backend/app/pipelines/era5_window.py backend/tests/test_era5_window.py backend/pyproject.toml && git commit -m "feat(pipelines): era5_window, the Professional-window ERA5 entry point"`
@@ -2515,7 +2517,7 @@ if __name__ == "__main__":
 
 **Interfaces:**
 - Consumes: `tests.verify._db.fetch` (plan 1; analyst, verify-full).
-- Produces: `R6_SQL: str` (returns `n`, `r_tmax`, `p99_gust`), `async verify(conn) -> dict[str, float | int | None]`, CLI `python -m app.pipelines.r6_verify` (logs `source='r6_verify'` with the numbers in `validation_report`); `-m db` cells: 7-day window coverage from 1940-01-07 on (earlier incidents reported as `conditions_missing`), accidents without a timezone reported, r > 0.95, gust p99 < 60, no visibility column, normals rows consistent with `cell_normals_status`.
+- Produces: `R6_SQL: str` (returns `n`, `r_tmax`, `p99_gust`), `async verify(conn) -> dict[str, float | int | None]`, CLI `python -m app.pipelines.r6_verify` (logs `source='r6_verify'` with the numbers in `validation_report`); `-m db` cells: 7-day window coverage from 1940-01-07 on (earlier incidents reported as `conditions_missing`; superseded by DP1 = 1990-01-01, so the live first-window-end is `1990-01-07`), accidents without a timezone reported, r > 0.95, gust p99 < 60, no visibility column, normals rows consistent with `cell_normals_status`.
 
 - [ ] **Step 1: Write the verification cells** — `backend/tests/verify/test_phase2a_conditions.py`:
 
@@ -2528,6 +2530,8 @@ from tests.verify._db import fetch
 pytestmark = pytest.mark.db
 
 # ERA5 in the Open-Meteo archive starts 1940-01-01, so the first full 7-day window ends 1940-01-07.
+# DP1 resolved: the owner's floor is 1990-01-01, not this archive-start default, so the live
+# first-window-end is DATE '1990-01-07'; this constant is this draft's superseded value.
 FIRST_WINDOW_END = "DATE '1940-01-07'"
 ELIGIBLE = (
     "FROM accidents_clean_daily a JOIN accidents t ON t.accident_id = a.accident_id "
@@ -3157,84 +3161,1015 @@ The Feb 5–Jul 2 2026 window is the spec's backtest window, a historical span, 
 
 ### Task 12: OWNER/AGENT RUNBOOK — PR 2a-3: migrate, register, plan, R7 (no purchase yet)
 
-- [ ] **Step 1 (owner/agent): Shell helpers** — plan 2's committed `backend/scripts/runbook_helpers.sh` (Task 4 there), never a local redefinition:
+Rewritten 2026-10-06 (SDD runbook pass, pre-flight G6, G18, G19, R1, R9) to the plan-2 Task 12/13 pattern. Nothing in this task calls Open-Meteo: `register`, `plan` and R7 are free. The first paid call is Task 14.
+
+Every connection is TLS verify-full (`verify_full_url` for psql; `connect_args_for` via `tests/verify/_db.fetch` and `db.ingest_engine` for Python). Every job runs as `ingest` and prints counts only. Neon branch creation and snapshots can be run by an agent under the owner's CLI authorization. The owner does: the plan review (Step 3), the sign-off (Step 5) and authorizing prod (Step 6).
+
+**Ordering (precondition gate).** PR 2a-1 and PR 2a-2 must be applied on prod first (plan 2, Tasks 12 and 13), so prod is at `0006_accidents_clean`. 6a refuses unless `MIG current` on prod prints exactly that. A branch rehearsal may run earlier only on a branch where 0005–0006 were applied in that rehearsal (Step 1 shows `0004_phase2a_foundation` first); such an early rehearsal checks the code path only. Its register and plan counts describe accidents that 2a-2 has not repaired, so before Step 6 the rehearsal is redone from current `production` after 2a-2: move its evidence (`../data/review/p2a3_*`, `../data/review/logs/*_2a3_branch.log`) to `../data/review/superseded-<date>/` and delete the branch (owner consent), then restart at Step 1.
+
+**Shell state.** As plan 2 Task 12: `TARGET_HOST`, `B`, `BRANCH_HOST` and the helpers live only in the shell that set them. `TARGET_HOST` must be explicit: a branch host, or the literal `production`. The helpers refuse while it is unset, and nothing defaults to prod (O4). An agent runs every block in a fresh shell, so on the branch it runs the re-entry block first, then only the block it is on; every Step 6 block carries its own prod preamble. No block defines a function for a later block: `ING`, `INGMOD`, `MIG`, `OWNER_PSQL`, `ANALYST_PSQL`, `VERIFY`, `save_once`, `same_ids`, `gate_pass`, `gate_require`, `bg_start`, `bg_wait` and `branch_host` all come from `scripts/runbook_helpers.sh`. Never re-run a creation (Step 1's `neonctl branches create`, 6b) or a `save_once` line that already wrote its file.
+
+**Secrets.** Never echo a secret or print a connection string. Credentials come only from the 0600 gitignored `backend/.env.<role>` files, sourced inside a subshell (the helpers do this). DB roles are created only through SQL as the owner, never with `neonctl`. Railway auto-deploy stays OFF; any Railway variable is set only with `--skip-deploys`. This PR's code is not deployed before 6c has migrated prod.
+
+**Long runs.** Data jobs run from the CLI in the pipelines-synced env, started by `bg_start`, never through Celery. `bg_start LOG CMD…` (from `backend/`) runs CMD under `nohup` with the exported `TARGET_HOST` and ends LOG with `RUNBOOK_ELAPSED=<n>s` and `RUNBOOK_EXIT=<rc>`; it refuses a LOG that exists. `bg_wait LOG` polls for up to 9 minutes: 0 = CMD exited 0; 2 = still running (run the same `bg_wait` block again, never start a second run); 1 = CMD failed, or the run is gone with no exit line. After a 1: confirm `pgrep -fl 'app[.]data[.]repair|app[.]pipelines'` prints nothing, then STOP and report; on the owner's go, move the log to `../data/review/logs/failed/` and rerun the `bg_start` block. `register` is one transaction (a kill rolls it back). `bg_wait LOG 0` checks without waiting. If `bg_wait` reports the run gone at once, the agent's tool killed background children: STOP; the owner decides whether to rerun that block with the tool's own background mode.
+
+**Gates (Step 6).** Every prod write runs in its own block after a gate block. Every check in a gate block ends in `|| exit 1`; only when all hold does it call `gate_pass NAME` (prints `GATE OK: NAME`, leaves a marker in `$GATE_DIR`). A write block opens with `gate_require NAME || exit 1`. **A block that does not end with its expected `GATE OK` or `finished ok` line means STOP:** run nothing further and report to the owner.
+
+**Re-enter the rehearsal branch (Steps 1–5).** Never creates anything.
 
 ```bash
 cd /Users/sebastianfrazier/Developer/SafeAscent/backend
-# split_pg_url and verify_full_url defined first (foundations Task 8 Step 1)
 . scripts/runbook_helpers.sh
-uv sync --group pipelines
-# Paid calls only: load the Open-Meteo key in a subshell so it never stays in the interactive shell.
-OM() { ( set -a; . ./.env.openmeteo; set +a; INGMOD "$@" ); }
+unset TARGET_HOST
+B=p2a-3-rehearsal
+BRANCH_HOST="$(branch_host "${B:?}")"
+( set -a; . ./.env.owner; set +a
+  [ -n "${BRANCH_HOST-}" ] || { echo 'BRANCH_HOST is not set: re-run the line that sets it' >&2; exit 1; }
+  case "$OWNER_DATABASE_URL" in *"@${BRANCH_HOST}/"* | *"@${BRANCH_HOST}?"* | *"@${BRANCH_HOST}:"*) echo 'BRANCH_HOST is production: stop' >&2; exit 1 ;; esac
+  echo "branch host ok" ) && export TARGET_HOST="$BRANCH_HOST"
+[ -n "${TARGET_HOST-}" ] && [ "$TARGET_HOST" != production ] && echo "target is the rehearsal branch"
 ```
 
-`TARGET_HOST` set = that Neon branch; `unset TARGET_HOST` = prod (the env file's host). `INGMOD <module> [args]` runs a job as `ingest`; `ING <step>` runs a repair step; `VERIFY <pytest args>` runs `-m db` cells as `analyst`. `ingest_engine()` refuses a remote URL without certificate verification (plan 1, D14) and `tests.verify._db.fetch` connects with `connect_args_for`, so TLS is verify-full everywhere. `uv sync --group pipelines` installs `timezonefinder`/`tzdata` once; if a job then fails with `ModuleNotFoundError: timezonefinder`, `uv run` re-synced without the group, so rerun `uv sync --group pipelines`.
+Expected: `branch host ok` and `target is the rehearsal branch`. Anything else: stop; `TARGET_HOST` stays unset.
 
-- [ ] **Step 2 (owner/agent): Rehearsal branch `p2a-3-rehearsal`**: migrate as `migrator` (→ `0007_cell_daily_conditions (head)`, `alembic check` clean), run `grants_phase2.sql`, both verify scripts (foundations Task 9 Step 2 pattern).
-
-- [ ] **Step 3 (owner/agent): Register series and plan the first window on the branch** (free: no Open-Meteo call)
+**Prod preamble (Step 6 only, after the owner's go-ahead).** Every Step 6 block repeats this line inside its own subshell:
 
 ```bash
-export TARGET_HOST=<branch host from the Neon Console>
-INGMOD app.pipelines.era5_window register
-INGMOD app.pipelines.era5_window plan
+cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
 ```
 
-Expected: `register` reports `accident_tz_assigned` close to the number of clean accidents with coordinates, `incident_series` ≈ 700, `route_series` ≈ 4–5K, and a quarantine summary (counts only; `no_timezone` should be a handful of coastal points). `plan` reports `fill_units` ≈ 1.9–2.1M (incidents from 1940 `[default pending: DP1]` ≈ 1.6M plus 3-year history ≈ 0.36M) and `normals_units` ≈ 1.2M. If `fill_units + normals_units` is above 4.5M (Professional's 5M/month less margin), stop and review with the agent.
+- [ ] **Step 0 (owner/agent): Checkout, tools, helpers, direct host**
 
-- [ ] **Step 4 (owner/agent): R7 on the branch** — `ING r7` (dry run shows `would_update_longitude: 113.2`), `ING r7 --apply` → `updated: 1`, rerun → `note: no positive longitudes`; `VERIFY tests/verify/test_phase2a_conditions.py -q -k r7` → pass.
+As plan 2 Task 13 Step 0 (C4, G18): the role env files exist only in the main checkout's `backend/`, so the runbook runs there, with this PR's branch checked out. Git will not check out a branch a worktree holds, so the agent first removes the review worktree `SafeAscent-2a3` (no commit is lost: worktrees share refs). This session's working directory must not be inside `SafeAscent-2a3`. The agent never copies, links or prints an env file into a worktree.
 
-- [ ] **Step 5 (owner/agent): Prod** — migrate + grants + verify scripts on prod; then `unset TARGET_HOST`, `INGMOD app.pipelines.era5_window register`, `ING r7` / `ING r7 --apply`, `VERIFY tests/verify/test_phase2a_conditions.py -q -k "r7 or visibility"` → pass. No ERA5 call happens before Task 14.
+```bash
+( M=/Users/sebastianfrazier/Developer/SafeAscent; W=/Users/sebastianfrazier/Developer/SafeAscent-2a3
+  [ -z "$(git -C "$M" status --porcelain --untracked-files=no)" ] || { echo "main checkout has uncommitted changes: STOP" >&2; exit 1; }
+  if git -C "$M" worktree list --porcelain | grep -qx "worktree $W"; then
+    [ -z "$(git -C "$W" status --porcelain)" ] || { echo "$W has uncommitted or untracked files: STOP, ask the owner" >&2; exit 1; }
+    git -C "$M" worktree remove "$W" || exit 1
+  fi
+  git -C "$M" checkout feat/phase2a-conditions-refresh || exit 1
+  [ "$(git -C "$M" branch --show-current)" = feat/phase2a-conditions-refresh ] && echo "checkout ok" )
+```
+
+Expected: `checkout ok`. Never pass `--force`; a refused removal or checkout is a stop.
+
+```bash
+cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+uv sync --frozen
+. scripts/runbook_helpers.sh
+unset TARGET_HOST
+psql --version
+command -v neonctl
+type same_ids gate_pass gate_require bg_start bg_wait save_once branch_host >/dev/null && echo "helpers loaded"
+uv run python -c 'import timezonefinder, tzdata; print("pipelines group ok")'
+( set -a; . ./.env.ingest; set +a
+  case "${INGEST_DATABASE_URL:-}" in "") echo "INGEST_DATABASE_URL is not set: STOP" >&2; exit 1 ;; *-pooler*) echo "ingest URL is a -pooler host: the advisory window lock needs the DIRECT host: STOP" >&2; exit 1 ;; esac
+  echo "ingest host is direct" )
+```
+
+Expected: `psql` 16+, `neonctl` resolves, `helpers loaded`, `pipelines group ok`, `ingest host is direct`. `uv sync --frozen` installs the `pipelines` group by default (`default-groups`); if the import fails, an older checkout is active: stop. The direct-host check matters because `era5_window`'s cap holds a Postgres advisory lock for the whole run, and a transaction-pooled `-pooler` connection does not keep it (Task 5 carry). `branch_host` returns the direct host too (no `--pooled`), and `_retarget` swaps only the host, so the branch is direct as well.
+
+- [ ] **Step 1 (owner/agent): New Neon branch `p2a-3-rehearsal` from `production`; migrate; grants**
+
+```bash
+B=p2a-3-rehearsal
+neonctl branches create --project-id still-morning-74008008 --name "${B:?}" --parent production --no-secrets --output json \
+  | python3 -c 'import json,sys; b=json.load(sys.stdin)["branch"]; print(b["id"], b["name"], b["parent_id"])'
+BRANCH_HOST="$(branch_host "${B:?}")"
+( set -a; . ./.env.owner; set +a
+  [ -n "${BRANCH_HOST-}" ] || { echo 'BRANCH_HOST is not set: re-run the line that sets it' >&2; exit 1; }
+  case "$OWNER_DATABASE_URL" in *"@${BRANCH_HOST}/"* | *"@${BRANCH_HOST}?"* | *"@${BRANCH_HOST}:"*) echo 'BRANCH_HOST is production: stop' >&2; exit 1 ;; esac
+  echo "branch host ok" ) && export TARGET_HOST="$BRANCH_HOST"
+[ -n "${TARGET_HOST-}" ] && [ "$TARGET_HOST" != production ] && echo "target is the rehearsal branch"
+```
+
+Expected: parent `br-restless-bar-ajw5zy4b` (`production`), then `branch host ok` and `target is the rehearsal branch`. Run once; if the branch exists, use the re-entry block.
+
+```bash
+MIG current
+MIG upgrade head
+MIG current
+MIG check
+OWNER_PSQL -q -f db/roles/grants_phase2.sql
+OWNER_PSQL -q -f db/roles/verify_roles.sql
+OWNER_PSQL -q -f db/roles/verify_roles_phase2.sql
+```
+
+Expected, in order:
+- The first `MIG current` prints `0006_accidents_clean` with no `(head)` (this code ships 0007). `0004_phase2a_foundation` means 2a-2 is not on prod: allowed only as the early rehearsal described under Ordering (record it in the PR). Anything else: stop.
+- The second prints `0007_cell_daily_conditions (head)`; then `No new upgrade operations detected.`
+- `phase 2 grants applied`, `ALL ROLE CHECKS PASSED`, `ALL PHASE 2 ROLE CHECKS PASSED`. `grants_phase2.sql` is re-applied after the migration because plan 3 added grants that the verify script now checks: SELECT on the 0007 tables and views, SELECT on `weather` (Task 8), SELECT and `UPDATE (longitude)` on `area_weekly_weather` (Task 9), column-level INSERT on `accidents`, USAGE on `accidents_accident_id_seq` and `UPDATE (mp_route_id)` (Task 10).
+
+0007 runs under `lock_timeout = '5s'`; a lock timeout rolls it back and is safe to rerun.
+
+- [ ] **Step 2 (owner/agent): Register on the branch** (free; one transaction)
+
+Register runs before plan (Task 7 C4): `plan`'s estimate for unregistered points is not an upper bound.
+
+```bash
+bg_start ../data/review/logs/register_2a3_branch.log INGMOD app.pipelines.era5_window register
+```
+
+```bash
+bg_wait ../data/review/logs/register_2a3_branch.log
+```
+
+```bash
+save_once ../data/review/p2a3_register_branch.json grep '^{' ../data/review/logs/register_2a3_branch.log
+```
+
+Expected: `finished ok`, then one JSON line with `accident_tz_assigned` (close to the clean accidents with a trusted point from 1990 on, plus earlier ones: every trusted clean point gets a zone), `incident_series` in the hundreds, `route_series` in the thousands (OQ4: every route point registers), `series_total`, and a quarantine summary (counts only; `no_timezone` a handful of coastal points, `outside_us` small).
+
+- [ ] **Step 3 (owner/agent, then STOP for the owner): Plan the first window on the branch** (free; read-only)
+
+```bash
+save_once ../data/review/p2a3_plan_branch.json INGMOD app.pipelines.era5_window plan
+ANALYST_PSQL -At -c "SELECT tz, count(*) FROM grid_bucket_series WHERE tz !~ '^(America/(New_York|Detroit|Kentucky/[A-Za-z_]+|Indiana/[A-Za-z_]+|Chicago|Menominee|North_Dakota/[A-Za-z_]+|Denver|Boise|Phoenix|Los_Angeles|Anchorage|Juneau|Sitka|Metlakatla|Yakutat|Nome|Adak)|Pacific/Honolulu)\$' GROUP BY 1 ORDER BY 1"
+```
+
+`plan` exits 1 when `over_plan_stop` is true, and then `save_once` writes nothing and reports a failure: that is the stop below, not a retry. To read the over-budget numbers, run `INGMOD app.pipelines.era5_window plan` once unsaved.
+
+Expected:
+- `unregistered_incident_buckets: 0` and `unregistered_route_buckets: 0` (Step 2 ran), no `warning`.
+- `window_units_spent: null` (no `--window-start` yet), `plan_stop_units: 4500000`, `over_plan_stop: false`.
+- `fill_units` (incident series from 1989-12-26 per DP1/OQ2, plus 3-year route history, plus `refresh_units`) and `normals_units` (an upper bound: OQ6 derives normals from stored ERA5 where 10 years exist). Pre-flight R1 estimated ~0.7M for incidents from 1990, ~0.36M for 4.5K route series and ~1.36M for normals; every 1K extra route buckets costs ~0.34M.
+- The tz query prints **no rows**: every series zone is a US zone (Task 4 M2). Any row: STOP and show the owner. The allowlist is the US zones of the IANA `zone.tab` as recalled while writing (2026-10-06, not re-read); a legitimate US zone missing from it is added to this block, never ignored.
+
+**STOP — owner plan review.** The agent pastes `total_units`, `fill_units`, `refresh_units`, `normals_units`, `normals_buckets`, `incident_series`, `route_series` and the tz result to the owner. If `total_units` is above 4,500,000 (the 5M Professional month less margin), the owner picks per OQ4 (accepted 2026-10-01: register all route points; finish the rest in a second paid month or the next window). Only on the owner's written "plan ok" go on.
+
+- [ ] **Step 4 (owner/agent): R7 on the branch**
+
+```bash
+save_once ../data/review/p2a3_r7_dry_branch.json ING r7
+save_once ../data/review/p2a3_r7_apply_branch.json ING r7 --apply
+ING r7
+VERIFY tests/verify/test_phase2a_conditions.py -q -k "r7 or visibility"
+```
+
+Expected: the dry run is exactly `{"mode": "dry_run", "would_update_longitude": 113.2}`; the apply prints `{"updated": 1}`; the rerun prints `"note": "no positive longitudes"`; both cells pass. If the dry run refuses (`expected exactly one positive longitude`), stop: the data is not what R7 was written for.
+
+- [ ] **Step 5 (owner): Sign-off (blocks prod)** — the PR carries the Step 1 revisions, the register counts and quarantine summary, the plan numbers and the owner's "plan ok", and the R7 result. The `accident_conditions` query plan (Task 2 M6) cannot be read yet, because no conditions rows exist; Task 14 Step 3 takes it on the branch after the first paid slice.
+
+- [ ] **Step 6 (owner authorizes): Prod**
+
+Do not repeat Steps 1–5. Run only the blocks below, one at a time, in order, well clear of the 02:00 UTC nightly.
+
+**STOP — agent: wait for the owner's written go-ahead for prod in this session before running anything below.** The Step 5 sign-off is not that go-ahead; it is a separate, explicit message ("go ahead with prod"). Without it, end here and report.
+
+**6a. Gate: PR 2a-1/2a-2 are on prod (prod at 0006), the helpers are current, no earlier attempt left gates, and the branch evidence exists.**
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
+  # PRODUCTION
+  for f in same_ids gate_pass gate_require bg_start bg_wait save_once; do type "$f" >/dev/null 2>&1 || { echo "runbook helpers are stale: STOP" >&2; exit 1; }; done
+  [ ! -e "$GATE_DIR" ] || { echo "$GATE_DIR exists: an earlier prod attempt; STOP, ask the owner" >&2; exit 1; }
+  for f in p2a3_register_branch.json p2a3_plan_branch.json p2a3_r7_dry_branch.json; do [ -s "../data/review/$f" ] || { echo "missing branch evidence $f: STOP" >&2; exit 1; }; done
+  cur="$(MIG current)" || exit 1
+  printf '%s\n' "$cur"
+  [ "$cur" = 0006_accidents_clean ] || { echo "prod is not at 0006_accidents_clean: PR 2a-1/2a-2 are not on prod: STOP" >&2; exit 1; }
+  gate_pass prod_at_0006 )
+```
+
+Expected: `0006_accidents_clean` (no `(head)`) and `GATE OK: prod_at_0006`.
+
+**6b. Snapshot `pre-2a-3` immediately before the migration.** Run once; if neonctl says the branch exists, stop and ask the owner (never recreate it).
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
+  # PRODUCTION snapshot
+  gate_require prod_at_0006 || exit 1
+  snap="$(neonctl branches create --project-id still-morning-74008008 --name pre-2a-3 --parent production --no-secrets --output json \
+    | python3 -c 'import json,sys; b=json.load(sys.stdin)["branch"]; print(b["id"], b["name"], b["parent_id"], b["created_at"])')" || exit 1
+  printf '%s\n' "$snap"
+  case "$snap" in *" pre-2a-3 br-restless-bar-ajw5zy4b "*) gate_pass snapshot ;; *) echo "snapshot parent is not production: STOP" >&2; exit 1 ;; esac )
+```
+
+Expected: parent `br-restless-bar-ajw5zy4b` and `GATE OK: snapshot`. Record the id and `created_at` in the PR.
+
+**6c. Migrate, check, grants, verify.**
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
+  # PRODUCTION
+  gate_require snapshot || exit 1
+  MIG upgrade head || exit 1
+  cur="$(MIG current)" || exit 1
+  printf '%s\n' "$cur"
+  [ "$cur" = "0007_cell_daily_conditions (head)" ] || { echo "prod is not at 0007_cell_daily_conditions (head): STOP" >&2; exit 1; }
+  MIG check || exit 1
+  OWNER_PSQL -q -f db/roles/grants_phase2.sql || exit 1
+  OWNER_PSQL -q -f db/roles/verify_roles.sql || exit 1
+  OWNER_PSQL -q -f db/roles/verify_roles_phase2.sql || exit 1
+  gate_pass migrated )
+```
+
+Expected: the Step 1 lines, ending with `GATE OK: migrated`.
+
+**6d. Register on prod, in the background; then gate its counts against the branch's.**
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
+  # PRODUCTION
+  gate_require migrated || exit 1
+  bg_start ../data/review/logs/register_2a3_prod.log INGMOD app.pipelines.era5_window register )
+```
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+  bg_wait ../data/review/logs/register_2a3_prod.log )
+```
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
+  # PRODUCTION
+  bg_wait ../data/review/logs/register_2a3_prod.log 0 >/dev/null || { echo "register has not finished ok: STOP" >&2; exit 1; }
+  R=../data/review
+  [ -e $R/p2a3_register_prod.json ] || save_once $R/p2a3_register_prod.json grep '^{' $R/logs/register_2a3_prod.log >/dev/null || exit 1
+  cmp $R/p2a3_register_branch.json $R/p2a3_register_prod.json || { echo "register counts differ from the branch: STOP" >&2; exit 1; }
+  gate_pass registered )
+```
+
+Expected: `GATE OK: registered`. Prod's data equals the branch's parent, so the counts and quarantine summary are byte-equal. A difference means prod changed after the branch was made: STOP; the owner decides.
+
+**6e. Gate: the prod plan fits and has no foreign zone.**
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
+  # PRODUCTION
+  gate_require registered || exit 1
+  R=../data/review
+  [ -e $R/p2a3_plan_prod.json ] || save_once $R/p2a3_plan_prod.json INGMOD app.pipelines.era5_window plan >/dev/null || { echo "plan failed or is over the 4.5M stop: STOP" >&2; exit 1; }
+  python3 - $R/p2a3_plan_branch.json $R/p2a3_plan_prod.json <<'PY' || exit 1
+import json, sys
+branch, prod = (json.load(open(p, encoding="utf-8")) for p in sys.argv[1:3])
+keys = ("total_units", "fill_units", "refresh_units", "normals_units", "normals_buckets", "unregistered_incident_buckets", "unregistered_route_buckets")
+for k in keys:
+    print(k, "branch", branch[k], "prod", prod[k])
+if prod["over_plan_stop"] or prod["total_units"] > 4_500_000:
+    sys.exit("prod plan is over the 4.5M stop: STOP")
+if prod["unregistered_incident_buckets"] or prod["unregistered_route_buckets"]:
+    sys.exit("prod has unregistered buckets after register: STOP")
+PY
+  bad="$(ANALYST_PSQL -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM grid_bucket_series WHERE tz !~ '^(America/(New_York|Detroit|Kentucky/[A-Za-z_]+|Indiana/[A-Za-z_]+|Chicago|Menominee|North_Dakota/[A-Za-z_]+|Denver|Boise|Phoenix|Los_Angeles|Anchorage|Juneau|Sitka|Metlakatla|Yakutat|Nome|Adak)|Pacific/Honolulu)\$'")" || exit 1
+  [ "$bad" = 0 ] || { echo "$bad series with a non-US zone: STOP" >&2; exit 1; }
+  gate_pass plan_ok )
+```
+
+Expected: seven `branch … prod …` lines, then `GATE OK: plan_ok`. The unit figures may differ slightly from the branch's when the two plans ran on different days (history and normals periods move with `today`); the gate is the 4.5M stop, not equality. Record both in the PR.
+
+**6f. R7.** Gate: the prod dry run shows exactly one positive longitude, `113.2`.
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
+  # PRODUCTION
+  gate_require plan_ok || exit 1
+  R=../data/review
+  [ -e $R/p2a3_r7_dry_prod.json ] || save_once $R/p2a3_r7_dry_prod.json ING r7 >/dev/null || exit 1
+  python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d); sys.exit(0 if d == {"mode": "dry_run", "would_update_longitude": 113.2} else "r7 dry run is not exactly one longitude 113.2: STOP")' $R/p2a3_r7_dry_prod.json || exit 1
+  cmp $R/p2a3_r7_dry_branch.json $R/p2a3_r7_dry_prod.json || { echo "r7 dry run differs from the branch: STOP" >&2; exit 1; }
+  gate_pass r7_dry )
+```
+
+Only after `GATE OK: r7_dry`:
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
+  # PRODUCTION
+  gate_require r7_dry || exit 1
+  out="$(ING r7 --apply)" || exit 1
+  printf '%s\n' "$out"
+  [ "$out" = '{"updated": 1}' ] || { echo "r7 apply did not update exactly 1 row: STOP" >&2; exit 1; }
+  gate_pass r7_applied )
+```
+
+Expected: `{"updated": 1}` and `GATE OK: r7_applied`. Never re-run this block after a successful apply: the `r7_dry` marker still lets it start, and R7 then prints `"note": "no positive longitudes"` with `updated: 0`, which fails the equality: that is a STOP to report, not a data problem.
+
+**6g. Acceptance (read-only).**
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
+  # PRODUCTION (read-only)
+  gate_require r7_applied || exit 1
+  VERIFY tests/verify/test_phase2a_conditions.py -q -s -k "r7 or visibility or normals_status" || exit 1
+  gate_pass verified_2a3 )
+```
+
+Expected: the three cells pass (the normals cell prints `pending` equal to the registered bucket count, `broken: 0`), then `GATE OK: verified_2a3`. Task 13 requires this marker. The seven-day-window and R6 cells need ERA5 data; they run in Task 14. No ERA5 call happens before Task 14.
+
+**6h. Clean up.** Delete `p2a-3-rehearsal` with the owner's consent. Keep `pre-2a-3` until the PR has merged and the owner says otherwise. Keep `data/review/gates_2a3_prod/` and the logs.
+
+- [ ] **Rollback.** A failed or killed `register` wrote nothing (one transaction); move its log to `logs/failed/` and rerun on the owner's go. R7 is one transaction; a failed apply wrote nothing. Wrong data after 6c: STOP; the owner decides between restoring `production` from `pre-2a-3` (confirm Neon's restore path in its docs first; list what it discards with `ANALYST_PSQL -At -c "SELECT source, started_at FROM source_ingest_log WHERE started_at > '<pre-2a-3 created_at>' ORDER BY 2"` under `TARGET_HOST=production`; afterwards trigger the nightly once, move `gates_2a3_prod` and every `p2a3_*_prod*` file aside, never delete them, and re-run 6a), or `MIG downgrade 0006_accidents_clean`, which 0007 allows only while the conditions and normals tables are empty (true until Task 14). R7 is reversed by the restore only; `area_weekly_weather` has no revision table.
 
 ---
 
 ### Task 13: OWNER/AGENT RUNBOOK — PR 2a-4: load the refresh
 
-- [ ] **Step 1 (owner): Prepare the CSVs** in `~/Developer/safeascent-private/manual/`: `aac_refresh.csv` (typed by hand from ANAC 2025/2026 and The Prescription, facts only, ~60–120 rows), `caic_refresh.csv` and `nps_refresh.csv` (from the private exporters, same header). Copy the header from `data/manual/accident_facts.template.csv`.
+Rewritten 2026-10-06 (pre-flight G6, G19, G20; Task 10 OQ5 carry). Free: no Open-Meteo call. **Shell state, secrets, long runs and gates are exactly as Task 12**, with branch `p2a-4-rehearsal`, the prod gate directory `../data/review/gates_2a4_prod`, and the same Step 0 checkout (`feat/phase2a-conditions-refresh` in the main checkout, `helpers loaded`, `ingest host is direct`). The owner does: the facts CSVs (Step 1), the R11 route ids (Step 5), the R5 review (Step 6), the sign-off (Step 9) and authorizing prod (Step 10).
 
-- [ ] **Step 2 (owner/agent): Dry run each file, then load on a branch** (Task 12 Step 1 helpers)
+**Precondition.** Task 12 is done on prod: `../data/review/gates_2a3_prod/verified_2a3.ok` exists and prod is at `0007_cell_daily_conditions (head)` (10a checks both).
+
+**Files.** The owner's facts CSVs live outside the repo in `~/Developer/safeascent-private/manual/`. The three load files (`aac_refresh.csv`, `caic_refresh.csv`, `nps_refresh.csv`) are **frozen** after Step 2: the branch and prod load the same bytes, checked by sha256. The owner's route ids go into copies (`*_routes.csv`, Step 5), never into the load files. That way the prod load repeats the branch load exactly and every prod route link is written by `--apply-route-ids`, which audits each one in `internal.accident_revisions` (an id set at insert has no revision row).
+
+**Re-enter the rehearsal branch (Steps 2–9).** As Task 12's block, with `B=p2a-4-rehearsal`:
 
 ```bash
-export TARGET_HOST=<branch host>
+cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+. scripts/runbook_helpers.sh
+unset TARGET_HOST
+B=p2a-4-rehearsal
+BRANCH_HOST="$(branch_host "${B:?}")"
+( set -a; . ./.env.owner; set +a
+  [ -n "${BRANCH_HOST-}" ] || { echo 'BRANCH_HOST is not set: re-run the line that sets it' >&2; exit 1; }
+  case "$OWNER_DATABASE_URL" in *"@${BRANCH_HOST}/"* | *"@${BRANCH_HOST}?"* | *"@${BRANCH_HOST}:"*) echo 'BRANCH_HOST is production: stop' >&2; exit 1 ;; esac
+  echo "branch host ok" ) && export TARGET_HOST="$BRANCH_HOST"
+[ -n "${TARGET_HOST-}" ] && [ "$TARGET_HOST" != production ] && echo "target is the rehearsal branch"
+```
+
+**Prod preamble (Step 10 only):**
+
+```bash
+cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+```
+
+- [ ] **Step 1 (owner): Prepare the CSVs** in `~/Developer/safeascent-private/manual/`: `aac_refresh.csv` (typed by hand from ANAC 2025/2026 and The Prescription, facts only, ~60–120 rows), `caic_refresh.csv` and `nps_refresh.csv` (from the private exporters). Copy the header from `data/manual/accident_facts.template.csv` and leave `mp_route_id` blank (Step 5 fills it in copies). Set `activity` correctly per row (O1: R11 rows skip R3/R4/R12). Never put these files under the repo.
+
+- [ ] **Step 2 (owner/agent): New branch from `production`, migration check, grants, then dry runs until clean**
+
+```bash
+B=p2a-4-rehearsal
+neonctl branches create --project-id still-morning-74008008 --name "${B:?}" --parent production --no-secrets --output json \
+  | python3 -c 'import json,sys; b=json.load(sys.stdin)["branch"]; print(b["id"], b["name"], b["parent_id"])'
+BRANCH_HOST="$(branch_host "${B:?}")"
+( set -a; . ./.env.owner; set +a
+  [ -n "${BRANCH_HOST-}" ] || { echo 'BRANCH_HOST is not set: re-run the line that sets it' >&2; exit 1; }
+  case "$OWNER_DATABASE_URL" in *"@${BRANCH_HOST}/"* | *"@${BRANCH_HOST}?"* | *"@${BRANCH_HOST}:"*) echo 'BRANCH_HOST is production: stop' >&2; exit 1 ;; esac
+  echo "branch host ok" ) && export TARGET_HOST="$BRANCH_HOST"
+[ -n "${TARGET_HOST-}" ] && [ "$TARGET_HOST" != production ] && echo "target is the rehearsal branch"
+```
+
+Expected: parent `br-restless-bar-ajw5zy4b`, `branch host ok`, `target is the rehearsal branch`. Run once; afterwards use the re-entry block.
+
+```bash
+MIG current
+MIG check
+OWNER_PSQL -q -f db/roles/grants_phase2.sql
+OWNER_PSQL -q -f db/roles/verify_roles.sql
+OWNER_PSQL -q -f db/roles/verify_roles_phase2.sql
+```
+
+Expected: `0007_cell_daily_conditions (head)` (anything else: Task 12 is not on prod, stop), `No new upgrade operations detected.`, `phase 2 grants applied`, `ALL ROLE CHECKS PASSED`, `ALL PHASE 2 ROLE CHECKS PASSED`. The grants are re-applied because the loader needs Task 10's column-level INSERT on `accidents`, USAGE on `accidents_accident_id_seq` and `UPDATE (mp_route_id)`, and the verify script checks them.
+
+Dry runs (read-only; repeat freely while the owner fixes rows):
+
+```bash
+P=~/Developer/safeascent-private/manual
 for f in aac_refresh caic_refresh nps_refresh; do
-  INGMOD app.pipelines.accident_facts --file ~/Developer/safeascent-private/manual/$f.csv --dry-run
+  INGMOD app.pipelines.accident_facts --file "$P/$f.csv" --dry-run || break
 done
 ```
 
-Expected: a report per file with counts only. Fix every quarantined row in the private CSV (the report names row numbers and reasons, never content) until `quarantined` is empty or each remaining entry is a deliberate exclusion. Then run without `--dry-run`; each load prints `gaps`, the post-2024 months with no incident per source family. Record them in the PR (spec R11 "log any post-2024 gap"); a gap in NPS or CAIC means the private export is incomplete, so re-pull before continuing.
+Expected per file: `mode: dry_run`, `would_insert`, `review_pending`, and a `report` with counts only. The report names row numbers and reasons, never content. The owner fixes every quarantined row in the private CSV (`unmapped_severity`, `activity_needs_review`, `unknown_country`, `outside_us`, `invalid`, `already_present`, …) until `quarantined` is empty or each remaining entry is a deliberate exclusion, recorded in the PR.
 
-- [ ] **Step 3 (owner/agent): Re-dedupe and register** — run `ING r5 --apply --out ../data/review/duplicates.csv`, decide any new review pairs, `ING r5-import …`, `ING r5 --apply`. `ING r2r1` (dry run) must propose nothing for the new rows (R1/R2 only touch ids in `internal.accidents_raw`); its `proposed` counts match those recorded in PR 2a-1. Then `INGMOD app.pipelines.era5_window register` so the new incidents get `tz` and their series (plan 7's nightly stopgap covers them from registration; Task 14 buys their ERA5 windows).
+When the owner says the files are final, freeze them and save the evidence (once):
 
-- [ ] **Step 4 (owner/agent): Verify and report** — `VERIFY tests/verify/test_phase2a_conditions.py -q -s -k r11` → pass; record the printed `feb5_jul2_2026_clean_incidents`, `backtest_incidents` and `backtest_with_prediction` in the PR (spec 2a-4 acceptance; record now, because `historical_predictions` rows older than a year are purged and plan 8 folds rows older than 7 days). Repeat Steps 2–4 after `unset TARGET_HOST` (prod). Phase 3 MVP-0 is unblocked once Task 14 has filled the windows.
+```bash
+P=~/Developer/safeascent-private/manual
+save_once ../data/review/p2a4_facts.sha256 shasum -a 256 "$P/aac_refresh.csv" "$P/caic_refresh.csv" "$P/nps_refresh.csv"
+for f in aac_refresh caic_refresh nps_refresh; do
+  save_once ../data/review/p2a4_${f}_dry_branch.json INGMOD app.pipelines.accident_facts --file "$P/$f.csv" --dry-run || break
+done
+```
+
+From here on, an edit to a load file means restarting this task from a new branch (move the `p2a4_*` evidence to `../data/review/superseded-<date>/` first).
+
+- [ ] **Step 3 (owner/agent): The R2/R1 baseline, then load on the branch**
+
+The G20 baseline: an `r2r1` dry run before the load. After the 2a-1 apply it proposes only live≠rule differences (about 0), not the PR 2a-1 numbers.
+
+```bash
+save_once ../data/review/p2a4_r2r1_pre_branch.json ING r2r1
+[ ! -e ../data/review/r11_route_matches.csv ] && echo "no stale review file"
+```
+
+Expected: the JSON, and `no stale review file`. If the file exists, stop and ask the owner (an earlier run wrote it).
+
+Each load is one transaction under the loader's advisory lock. The first writes `data/review/r11_route_matches.csv` if any R11 climbing row is unlinked. The second and third pass `--overwrite`: the file is rebuilt from the database each time and lists **every** unresolved R11 row, and people only read it, so replacing it loses nothing.
+
+```bash
+P=~/Developer/safeascent-private/manual; R=../data/review
+{ shasum -a 256 "$P/aac_refresh.csv" "$P/caic_refresh.csv" "$P/nps_refresh.csv" | cmp - $R/p2a4_facts.sha256 || { echo "facts files changed since Step 2: STOP" >&2; false; }; } && \
+{ [ -e $R/p2a4_load_aac_refresh_branch.json ] || save_once $R/p2a4_load_aac_refresh_branch.json INGMOD app.pipelines.accident_facts --file "$P/aac_refresh.csv"; } && \
+{ [ -e $R/p2a4_load_caic_refresh_branch.json ] || save_once $R/p2a4_load_caic_refresh_branch.json INGMOD app.pipelines.accident_facts --file "$P/caic_refresh.csv" --overwrite; } && \
+{ [ -e $R/p2a4_load_nps_refresh_branch.json ] || save_once $R/p2a4_load_nps_refresh_branch.json INGMOD app.pipelines.accident_facts --file "$P/nps_refresh.csv" --overwrite; } && \
+{ [ ! -e $R/r11_route_matches.csv ] || mv -n $R/r11_route_matches.csv $R/r11_route_matches_branch.csv; } && echo "loads done"
+```
+
+Expected: no `STOP` line; three JSON lines with `inserted` equal to each dry run's `would_insert`, `gaps` (the post-2024 months with no incident per source family) and `review_pending`; then `loads done`. Record the gaps in the PR (spec R11). A gap in NPS or CAIC means the private export is incomplete: stop, re-pull, and restart from a new branch. The sha check now actually stops the chain (`&&` into every load, not an unchecked `echo`) instead of letting the loads run after a changed-file warning. **Per-file resume:** if this STOPs partway (one file loaded, the next failed), rerunning the same block is safe and resumes correctly: `[ -e ] ||` skips the file(s) already loaded (their evidence JSON exists), and even loading a file a second time would only quarantine its already-inserted rows as `already_present` rather than duplicate them — never load a file whose `save_once` already succeeded on purpose, but doing so by accident is not destructive. The review file is renamed to `r11_route_matches_branch.csv` so the prod load can write its own.
+
+- [ ] **Step 4 (owner/agent): G20 — R2/R1 ignore the new rows**
+
+```bash
+save_once ../data/review/p2a4_r2r1_post_branch.json ING r2r1
+python3 - ../data/review/p2a4_r2r1_pre_branch.json ../data/review/p2a4_r2r1_post_branch.json <<'PY'
+import json, sys
+pre, post = (json.load(open(p, encoding="utf-8")) for p in sys.argv[1:3])
+for step in ("r2", "r1"):
+    print(step, "pre", pre[step]["proposed_total"], "post", post[step]["proposed_total"])
+    if pre[step]["proposed_total"] != post[step]["proposed_total"]:
+        sys.exit(f"{step} proposes {post[step]['proposed_total'] - pre[step]['proposed_total']} more changes after the R11 load: STOP")
+PY
+ANALYST_PSQL -At -c "SELECT count(*) FROM internal.accident_revisions v WHERE v.rule_version IN ('r1-v1', 'r2-v1') AND v.accident_id NOT IN (SELECT accident_id FROM internal.accidents_raw)"
+```
+
+Expected: equal `proposed_total` before and after the load, and `0` from the query: no R1/R2 revision for any R11 id (`accident_id NOT IN accidents_raw`). R1/R2 read only snapshot ids (plan 2 review A2), so new rows can add no proposals. `r2r1` is never applied in this task.
+
+- [ ] **Step 5 (owner, then agent): R11 route ids** (OQ5: automatic unique strong matches were set at insert; the rest go to the owner, never guessed)
+
+The owner opens `data/review/r11_route_matches_branch.csv` (candidate ids, names, distances; no narrative), copies each load file to `<name>_routes.csv` in the same private folder, and fills `mp_route_id` only where a candidate is clearly the route; blank stays NULL. Then:
+
+```bash
+P=~/Developer/safeascent-private/manual; R=../data/review
+for f in aac_refresh caic_refresh nps_refresh; do
+  [ -e $R/p2a4_routes_${f}_dry_branch.json ] || save_once $R/p2a4_routes_${f}_dry_branch.json INGMOD app.pipelines.accident_facts --file "$P/${f}_routes.csv" --apply-route-ids --dry-run || break
+done
+```
+
+Expected: `would_update` per file and a report whose quarantine is empty. `unknown_route` (no such MP route), `not_loaded`, `not_an_r11_row` or `route_already_set` means the owner corrects that copy, deletes that file's `_dry_branch.json` deliberately, and reruns: the `[ -e ] ||` skips every file whose dry run is already clean, so the corrected file is the one that actually re-runs. When clean:
+
+```bash
+P=~/Developer/safeascent-private/manual; R=../data/review
+for f in aac_refresh caic_refresh nps_refresh; do
+  save_once $R/p2a4_routes_${f}_apply_branch.json INGMOD app.pipelines.accident_facts --file "$P/${f}_routes.csv" --apply-route-ids || break
+done && \
+save_once $R/p2a4_routes.sha256 shasum -a 256 "$P/aac_refresh_routes.csv" "$P/caic_refresh_routes.csv" "$P/nps_refresh_routes.csv"
+```
+
+Expected: `updated` equal to each dry run's `would_update`, then the route-files hash saved (after the apply, not the dry run, so a correction never leaves a stale hash). The backtest cell (Step 8) needs these links.
+
+- [ ] **Step 6 (owner/agent): R5 re-dedupe with the R11 rows**
+
+R5 sees R11 rows (plan 2 D16). The 2a-2 `duplicates.csv` already exists and `--out` refuses without `--overwrite`, so this round writes a new `duplicates_r11.csv`.
+
+```bash
+save_once ../data/review/p2a4_r5_dry_branch.json ING r5
+```
+
+Record `review_pairs` and `review_basis` in the PR. Then the export, **once**:
+
+```bash
+bg_start ../data/review/logs/r5_r11_apply1_branch.log ING r5 --apply --out ../data/review/duplicates_r11.csv
+```
+
+```bash
+bg_wait ../data/review/logs/r5_r11_apply1_branch.log
+```
+
+Expected: `finished ok`. If `review_pairs` was 0, `path` is `null`, no file is written and the owner has nothing to fill: skip to Step 7. Otherwise the owner fills `decision` (`merge|distinct`) in `duplicates_r11.csv` (save under the same name). Then the dry import:
+
+```bash
+ING r5-import --review-file ../data/review/duplicates_r11.csv
+```
+
+Then, in a separate block, the apply and the second R5 run (its own `--out`, never the filled file):
+
+```bash
+ING r5-import --review-file ../data/review/duplicates_r11.csv --apply && \
+  bg_start ../data/review/logs/r5_r11_apply2_branch.log ING r5 --apply --out ../data/review/duplicates_r11_round2.csv
+```
+
+```bash
+bg_wait ../data/review/logs/r5_r11_apply2_branch.log
+```
+
+Expected: the dry import shows `imported` and an empty `overwritten`; the second apply reports `review_pending: 0` and `path: null`. If it reports `review_pending > 0`, round 2 repeats with the next names (`duplicates_r11_round2.csv`, `r5_r11_apply3_branch.log`, `--out ../data/review/duplicates_r11_round3.csv`). Record the number of rounds in the PR; 10f runs exactly those rounds.
+
+- [ ] **Step 7 (owner/agent): Register the new incidents**
+
+```bash
+bg_start ../data/review/logs/register_2a4_branch.log INGMOD app.pipelines.era5_window register
+```
+
+```bash
+bg_wait ../data/review/logs/register_2a4_branch.log
+```
+
+```bash
+save_once ../data/review/p2a4_register_branch.json grep '^{' ../data/review/logs/register_2a4_branch.log
+```
+
+Expected: `incident_series` grows by the new incident buckets from 1990 on; `accident_tz_changed` counts the new rows. Plan 7's nightly stopgap covers them from registration; Task 14 buys their ERA5.
+
+- [ ] **Step 8 (owner/agent): Acceptance on the branch**
+
+```bash
+VERIFY tests/verify/test_phase2a_conditions.py -q -s -k "r11 or r7 or visibility or normals_status"
+VERIFY tests/verify/test_phase2a_repair.py -q -s -k r5
+```
+
+Expected: every cell passes. Record `feb5_jul2_2026_clean_incidents`, `backtest_incidents` and `backtest_with_prediction` in the PR now (spec 2a-4 acceptance): `historical_predictions` rows older than a year are purged, and plan 8 folds rows older than 7 days. The backtest cell needs Step 5's route links; a zero there with links applied is a STOP for the owner.
+
+- [ ] **Step 9 (owner): Sign-off (blocks prod)** — the PR carries the quarantine exclusions, gaps, `inserted` counts, route-id counts, the G20 result, R5 review sizes and rounds, the register counts and the Step 8 numbers.
+
+- [ ] **Step 10 (owner authorizes): Prod**
+
+Do not repeat Steps 1–9. Run only the blocks below, one at a time, in order, well clear of the 02:00 UTC nightly.
+
+**STOP — agent: wait for the owner's written go-ahead for prod in this session before running anything below.** The sign-off is not that go-ahead. Without it, end here and report.
+
+**10a. Gate: 2a-3 is on prod, prod is at 0007, the facts files and branch evidence are the rehearsal's, and no stale review file.**
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+  # PRODUCTION
+  for f in same_ids gate_pass gate_require bg_start bg_wait save_once; do type "$f" >/dev/null 2>&1 || { echo "runbook helpers are stale: STOP" >&2; exit 1; }; done
+  [ ! -e "$GATE_DIR" ] || { echo "$GATE_DIR exists: an earlier prod attempt; STOP, ask the owner" >&2; exit 1; }
+  [ -f ../data/review/gates_2a3_prod/verified_2a3.ok ] || { echo "Task 12 has not finished on prod: STOP" >&2; exit 1; }
+  P=~/Developer/safeascent-private/manual; R=../data/review
+  shasum -a 256 "$P/aac_refresh.csv" "$P/caic_refresh.csv" "$P/nps_refresh.csv" | cmp - $R/p2a4_facts.sha256 || { echo "load files differ from the rehearsal: STOP" >&2; exit 1; }
+  shasum -a 256 "$P/aac_refresh_routes.csv" "$P/caic_refresh_routes.csv" "$P/nps_refresh_routes.csv" | cmp - $R/p2a4_routes.sha256 || { echo "route files differ from the rehearsal: STOP" >&2; exit 1; }
+  [ ! -e $R/r11_route_matches.csv ] || { echo "r11_route_matches.csv exists: STOP, ask the owner" >&2; exit 1; }
+  cur="$(MIG current)" || exit 1
+  printf '%s\n' "$cur"
+  [ "$cur" = "0007_cell_daily_conditions (head)" ] || { echo "prod is not at 0007_cell_daily_conditions (head): STOP" >&2; exit 1; }
+  gate_pass prod_ready )
+```
+
+**10b. Snapshot `pre-2a-4` immediately before the first prod write.** Run once; if the branch exists, stop and ask the owner.
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+  # PRODUCTION snapshot
+  gate_require prod_ready || exit 1
+  snap="$(neonctl branches create --project-id still-morning-74008008 --name pre-2a-4 --parent production --no-secrets --output json \
+    | python3 -c 'import json,sys; b=json.load(sys.stdin)["branch"]; print(b["id"], b["name"], b["parent_id"], b["created_at"])')" || exit 1
+  printf '%s\n' "$snap"
+  case "$snap" in *" pre-2a-4 br-restless-bar-ajw5zy4b "*) gate_pass snapshot ;; *) echo "snapshot parent is not production: STOP" >&2; exit 1 ;; esac )
+```
+
+Record the id and `created_at` in the PR.
+
+**10c. Grants (re-applied), then gate: the baseline and the dry runs equal the branch's.**
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+  # PRODUCTION
+  gate_require snapshot || exit 1
+  OWNER_PSQL -q -f db/roles/grants_phase2.sql || exit 1
+  OWNER_PSQL -q -f db/roles/verify_roles.sql || exit 1
+  OWNER_PSQL -q -f db/roles/verify_roles_phase2.sql || exit 1
+  gate_pass grants )
+```
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+  # PRODUCTION
+  gate_require grants || exit 1
+  P=~/Developer/safeascent-private/manual; R=../data/review
+  [ -e $R/p2a4_r2r1_pre_prod.json ] || save_once $R/p2a4_r2r1_pre_prod.json ING r2r1 >/dev/null || exit 1
+  cmp $R/p2a4_r2r1_pre_branch.json $R/p2a4_r2r1_pre_prod.json || { echo "r2r1 baseline differs from the branch: STOP" >&2; exit 1; }
+  for f in aac_refresh caic_refresh nps_refresh; do
+    [ -e $R/p2a4_${f}_dry_prod.json ] || save_once $R/p2a4_${f}_dry_prod.json INGMOD app.pipelines.accident_facts --file "$P/$f.csv" --dry-run >/dev/null || exit 1
+    cmp $R/p2a4_${f}_dry_branch.json $R/p2a4_${f}_dry_prod.json || { echo "$f dry run differs from the branch: STOP" >&2; exit 1; }
+  done
+  gate_pass dry_runs )
+```
+
+Expected: `GATE OK: dry_runs`. Any difference means prod changed after the branch was made: STOP; the owner decides.
+
+**10d. Load, then gate the counts against the branch's load counts.**
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+  # PRODUCTION
+  gate_require dry_runs || exit 1
+  P=~/Developer/safeascent-private/manual; R=../data/review
+  [ -e $R/p2a4_load_aac_refresh_prod.json ] || save_once $R/p2a4_load_aac_refresh_prod.json INGMOD app.pipelines.accident_facts --file "$P/aac_refresh.csv" || exit 1
+  [ -e $R/p2a4_load_caic_refresh_prod.json ] || save_once $R/p2a4_load_caic_refresh_prod.json INGMOD app.pipelines.accident_facts --file "$P/caic_refresh.csv" --overwrite || exit 1
+  [ -e $R/p2a4_load_nps_refresh_prod.json ] || save_once $R/p2a4_load_nps_refresh_prod.json INGMOD app.pipelines.accident_facts --file "$P/nps_refresh.csv" --overwrite || exit 1
+  [ ! -e $R/r11_route_matches.csv ] || mv -n $R/r11_route_matches.csv $R/r11_route_matches_prod.csv || exit 1
+  gate_pass loaded )
+```
+
+**Per-file resume:** if this STOPs partway, rerunning it skips every file whose evidence JSON already exists (`[ -e ] ||`) and resumes at the one that failed. This is safe: each file's load is one transaction, so a failed file committed nothing, and even a file re-sent after a partial success only quarantines its already-loaded rows as `already_present` rather than duplicating them. Only a full `gate_pass loaded` with all three files' counts matching the branch's (below) means the load is done.
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+  # PRODUCTION
+  gate_require loaded || exit 1
+  R=../data/review
+  python3 - $R <<'PY' || exit 1
+import json, sys
+r = sys.argv[1]
+for f in ("aac_refresh", "caic_refresh", "nps_refresh"):
+    b, p = (json.load(open(f"{r}/p2a4_load_{f}_{s}.json", encoding="utf-8")) for s in ("branch", "prod"))
+    for k in ("inserted", "review_pending", "report"):
+        if b[k] != p[k]:
+            sys.exit(f"{f}: {k} differs (branch {b[k]!r}, prod {p[k]!r}): STOP")
+    print(f, "inserted", p["inserted"], "review_pending", p["review_pending"], "gaps", p["gaps"])
+PY
+  if [ -e $R/r11_route_matches_branch.csv ] || [ -e $R/r11_route_matches_prod.csv ]; then
+    same_ids $R/r11_route_matches_branch.csv $R/r11_route_matches_prod.csv source source_id || exit 1
+  fi
+  gate_pass load_counts )
+```
+
+Expected: three count lines (record the gaps; they may name one more month than the branch's if a month turned over), the review rows match, `GATE OK: load_counts`.
+
+**10e. G20 and route ids.**
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+  # PRODUCTION
+  gate_require load_counts || exit 1
+  P=~/Developer/safeascent-private/manual; R=../data/review
+  [ -e $R/p2a4_r2r1_post_prod.json ] || save_once $R/p2a4_r2r1_post_prod.json ING r2r1 >/dev/null || exit 1
+  python3 -c 'import json,sys
+pre, post = (json.load(open(p)) for p in sys.argv[1:3])
+for s in ("r2", "r1"):
+    print(s, pre[s]["proposed_total"], post[s]["proposed_total"])
+    if pre[s]["proposed_total"] != post[s]["proposed_total"]:
+        sys.exit("R2/R1 propose changes after the R11 load: STOP")' $R/p2a4_r2r1_pre_prod.json $R/p2a4_r2r1_post_prod.json || exit 1
+  n="$(ANALYST_PSQL -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM internal.accident_revisions v WHERE v.rule_version IN ('r1-v1', 'r2-v1') AND v.accident_id NOT IN (SELECT accident_id FROM internal.accidents_raw)")" || exit 1
+  [ "$n" = 0 ] || { echo "$n R1/R2 revisions on R11 rows: STOP" >&2; exit 1; }
+  for f in aac_refresh caic_refresh nps_refresh; do
+    [ -e $R/p2a4_routes_${f}_dry_prod.json ] || save_once $R/p2a4_routes_${f}_dry_prod.json INGMOD app.pipelines.accident_facts --file "$P/${f}_routes.csv" --apply-route-ids --dry-run >/dev/null || exit 1
+    cmp $R/p2a4_routes_${f}_dry_branch.json $R/p2a4_routes_${f}_dry_prod.json || { echo "$f route-id dry run differs: STOP" >&2; exit 1; }
+  done
+  gate_pass g20_routes_dry )
+```
+
+Only after `GATE OK: g20_routes_dry`:
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+  # PRODUCTION
+  gate_require g20_routes_dry || exit 1
+  P=~/Developer/safeascent-private/manual; R=../data/review
+  for f in aac_refresh caic_refresh nps_refresh; do
+    [ -e $R/p2a4_routes_${f}_apply_prod.json ] || save_once $R/p2a4_routes_${f}_apply_prod.json INGMOD app.pipelines.accident_facts --file "$P/${f}_routes.csv" --apply-route-ids >/dev/null || exit 1
+    cmp $R/p2a4_routes_${f}_apply_branch.json $R/p2a4_routes_${f}_apply_prod.json || { echo "$f route-id apply differs from the branch: STOP" >&2; exit 1; }
+  done
+  gate_pass routes_applied )
+```
+
+**10f. R5.** Gate: the dry run equals the branch's.
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+  # PRODUCTION
+  gate_require routes_applied || exit 1
+  [ -e ../data/review/p2a4_r5_dry_prod.json ] || save_once ../data/review/p2a4_r5_dry_prod.json ING r5 >/dev/null || exit 1
+  cmp ../data/review/p2a4_r5_dry_branch.json ../data/review/p2a4_r5_dry_prod.json || { echo "r5 dry run differs: STOP" >&2; exit 1; }
+  gate_pass r5_dry )
+```
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+  # PRODUCTION
+  gate_require r5_dry || exit 1
+  bg_start ../data/review/logs/r5_r11_apply1_prod.log ING r5 --apply --out ../data/review/duplicates_r11_prod.csv )
+```
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+  bg_wait ../data/review/logs/r5_r11_apply1_prod.log )
+```
+
+Gate: the prod review pairs are the branch's. When the branch wrote no `duplicates_r11.csv` (0 review pairs), prod must have written none either.
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+  # PRODUCTION
+  bg_wait ../data/review/logs/r5_r11_apply1_prod.log 0 >/dev/null || { echo "R5 apply 1 has not finished ok: STOP" >&2; exit 1; }
+  R=../data/review
+  if [ -e $R/duplicates_r11.csv ]; then
+    same_ids $R/duplicates_r11.csv $R/duplicates_r11_prod.csv low_id high_id || exit 1
+  else
+    [ ! -e $R/duplicates_r11_prod.csv ] || { echo "prod has review pairs the branch did not: STOP" >&2; exit 1; }
+    grep -Eq '"review_pending": 0[,}]' $R/logs/r5_r11_apply1_prod.log || { echo "review_pending is not 0: STOP" >&2; exit 1; }
+  fi
+  gate_pass r5_pairs )
+```
+
+Only after `GATE OK: r5_pairs`, and only if the branch had review pairs (otherwise skip to 10g; the last R5 log is `r5_r11_apply1_prod.log`):
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+  # PRODUCTION
+  gate_require r5_pairs || exit 1
+  ING r5-import --review-file ../data/review/duplicates_r11.csv --apply || exit 1
+  bg_start ../data/review/logs/r5_r11_apply2_prod.log ING r5 --apply --out ../data/review/duplicates_r11_round2_prod.csv )
+```
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+  bg_wait ../data/review/logs/r5_r11_apply2_prod.log )
+```
+
+Further rounds follow plan 2 Task 13 12h with the `_r11` names, exactly as many as the branch ran. Gate: R5 done. Set `LAST` to the last R5 log this step wrote:
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+  # PRODUCTION
+  LAST=../data/review/logs/r5_r11_apply1_prod.log  # edit to the last _r11 prod log this step actually wrote (apply2, apply3, ...)
+  case "$LAST" in ../data/review/logs/r5_r11_apply[0-9]_prod.log) ;; *) echo "LAST is not set to an r5_r11 prod log: STOP" >&2; exit 1 ;; esac
+  bg_wait "$LAST" 0 >/dev/null || { echo "$LAST has not finished ok: STOP" >&2; exit 1; }
+  grep -Eq '"review_pending": 0[,}]' "$LAST" || { echo "review_pending is not 0: STOP" >&2; exit 1; }
+  gate_pass r5_done )
+```
+
+**10g. Register on prod; gate against the branch.**
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+  # PRODUCTION
+  gate_require r5_done || exit 1
+  bg_start ../data/review/logs/register_2a4_prod.log INGMOD app.pipelines.era5_window register )
+```
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+  bg_wait ../data/review/logs/register_2a4_prod.log )
+```
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+  # PRODUCTION
+  bg_wait ../data/review/logs/register_2a4_prod.log 0 >/dev/null || { echo "register has not finished ok: STOP" >&2; exit 1; }
+  R=../data/review
+  [ -e $R/p2a4_register_prod.json ] || save_once $R/p2a4_register_prod.json grep '^{' $R/logs/register_2a4_prod.log >/dev/null || exit 1
+  cmp $R/p2a4_register_branch.json $R/p2a4_register_prod.json || { echo "register counts differ from the branch: STOP" >&2; exit 1; }
+  gate_pass registered )
+```
+
+**10h. Acceptance (read-only).**
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+  # PRODUCTION (read-only)
+  gate_require registered || exit 1
+  VERIFY tests/verify/test_phase2a_conditions.py -q -s -k "r11 or r7 or visibility or normals_status" || exit 1
+  VERIFY tests/verify/test_phase2a_repair.py -q -s -k r5 || exit 1
+  gate_pass verified_2a4 )
+```
+
+Expected: every cell passes with the Step 8 numbers; record them in the PR. Task 14 requires `verified_2a4`.
+
+**10i. Clean up.** Keep `p2a-4-rehearsal`: Task 14 rehearses its first slice there. Keep `pre-2a-4` until the PR has merged and the owner says otherwise. Keep the gates and logs.
+
+- [ ] **Rollback.** Each facts load, route-id apply and R5 import/apply is one transaction (the run log included): a failure wrote nothing. A load that refuses on the review file rolls back the whole load. Wrong data after 10d: STOP; the owner decides between restoring `production` from `pre-2a-4` (as Task 12's rollback: confirm Neon's restore path, list what it discards, trigger the nightly once, move `gates_2a4_prod` and the `p2a4_*_prod*` files and `r11_route_matches_prod.csv` aside, never delete them) and a reviewed script. `ingest` cannot delete rows, so a wrong R11 row is never removed by hand.
 
 ---
 
 ### Task 14: OWNER/AGENT RUNBOOK — the first Professional window (then every January)
 
-- [ ] **Step 1 (owner): Buy one month of Open-Meteo Professional** `[default pending: DP5]` — when Tasks 12 and 13 are done (not waiting for January 2027). Re-check the price, the 5M-call quota and the archive-needs-Professional rule on open-meteo.com/en/pricing first (read 2026-09-28). Put the key in a gitignored file with an editor: `backend/.env.openmeteo` containing `OPEN_METEO_API_KEY=<key>`. `git check-ignore -v .env.openmeteo` must match `.env.*`. Note the purchase date: it is `--window-start`.
+Rewritten 2026-10-06 (pre-flight G6, G19, R1, R9, D20; OQ1; Task 5–7 carries). This is the only task that spends money. **Shell state, secrets, long runs and gates are as Task 12**, with the prod gate directory `../data/review/gates_era5w1_prod`. The owner buys the month and confirms units on the Open-Meteo dashboard; the agent runs `plan` and the gated `run` only after the owner's written confirmation of the purchase and the window start date.
 
-- [ ] **Step 2 (owner/agent): A small slice on the branch, then check the dashboard**
+**Money rules.** A Professional month is 5,000,000 units (`pro_window.WINDOW_UNITS`). The plan gate stops above 4,500,000 (`PLAN_STOP_UNITS`). `--max-units` is the window's **cumulative** cap per database, read back from `source_ingest_log`, so a rerun never re-spends; each attempt's units are recorded before it is sent (Task 5 I3). The branch's spend is logged only in the branch, so prod's final cap is 4,500,000 minus the branch's `units_spent_window` (R9), which keeps the whole account at or below 4.5M of 5M. The failure breaker stops a run after 3 consecutive failed or rejected chunks or batches. The 90-day ERA5T re-fetch behind each span happens once per window, not once per run. `run` refuses without `OPEN_METEO_API_KEY` and outside the window.
+
+**Exit status.** `era5_window run` exits 1 when any chunk or batch failed or was rejected, the breaker tripped, the window closed mid-run, or the prune refused. `bg_wait` then returns 1: STOP and report the log's JSON (`fill`, `normals`, `prune`); the owner decides whether to rerun. A rerun resumes from the stored spans and never re-buys what is stored. Unlike the repairs, a killed window run keeps what it committed (each chunk commits on its own; D20): it is safe to rerun after `pgrep -fl 'app[.]data[.]repair|app[.]pipelines'` prints nothing. Every rerun gets a new log name (`…_r2.log`, `…_r3.log`); never move a paid run's log aside. A deterministic rejection (a bucket whose response fails a range check every time) is re-bought on every rerun up to the breaker's 3 consecutive failures; quarantined days are never re-bought automatically, so never rerun a failed or rejected chunk without a reviewed code fix (money review Minor 2).
+
+**The key.** `backend/.env.openmeteo` holds `OPEN_METEO_API_KEY=<key>`, mode 0600, matched by `.gitignore`'s `.env.*`. A paid block sources it inside its own subshell (`set -a; . ./.env.openmeteo; set +a`) just before `bg_start`, so the key reaches the job through its environment, never argv, and never outlives the block. No block prints it. Owner ruling (fail closed): every paid block checks `[ -n "${OPEN_METEO_API_KEY:-}" ]` right after sourcing the file and refuses with no network call if it is empty, then `export OPEN_METEO_API_KEY` so the key reaches `bg_start`'s child process — the code requires the key in the process environment and rejects one read only from `backend/.env`.
+
+**Doc sync.** Monthly normals and day-of-year climatology are one series per bucket, keyed on the bucket's **alphabetically first** timezone (`min(tz)`) when a bucket straddles a zone boundary (Decisions section #5; `normals.py`'s `stored_complete_years` groups by (bucket, tz), and `normals.run` refuses a due list that repeats a bucket). Separately, `era5_fill` never stores a series' trailing all-NULL ERA5 days at the archive's lag edge: on the edge chunk a series' `last_era5_date` is its last day with every core value (tmax, tmin, precipitation), so the unfinalised tail is asked for again next run rather than recorded as missing; an edge chunk is any forward chunk ending within 14 days of the lag edge (so January's 31-December split chunk is one too); a short one with nothing published yet is counted in `fill.pending_lag_edge` (logged ok, 0 rows, breaker untouched), and one that stops short of `chunk.end` in `fill.edge_trimmed`.
+
+**Re-enter the rehearsal branch (Steps 2–3).** Task 13's re-entry block with `B=p2a-4-rehearsal`.
+
+**Prod preamble (Step 4 only):**
 
 ```bash
-export TARGET_HOST=<branch host>
-OM app.pipelines.era5_window run --window-start <purchase date> --initial-window --max-units 20000
+cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1
 ```
 
-Expected: `fill.done` > 0, `fill.failed: 0`, `stopped_for_budget: true` (the cap is small on purpose). Compare the Open-Meteo dashboard's used calls with `units_spent_window`; the ceiling formula over-estimates, so the dashboard should show **less**. If it shows more than `units_spent_window`, stop and tell the agent (the cost estimate must be corrected before the full run). Then `INGMOD app.pipelines.r6_verify` and `VERIFY tests/verify/test_phase2a_conditions.py -q -s -k "r6 or visibility"` on the partial data: `r_tmax > 0.95`, `p99_gust < 60`. The window-coverage cell fails until the full fill; that is expected on the rehearsal.
+- [ ] **Step 1 (owner): Buy one month of Open-Meteo Professional** — OQ1 (2026-10-01): buy the first month now, once Tasks 12 and 13 are on prod, then every January. First re-check the price, the 5M-unit quota and the archive-needs-Professional rule on open-meteo.com/en/pricing (last read 2026-09-28). Put the key in the file with an editor (never `echo` it), then `chmod 600 backend/.env.openmeteo`. The purchase date is the window start (`--window-start`); the window is 30 days from it.
 
-- [ ] **Step 3 (owner/agent): Prod, in slices** — `unset TARGET_HOST` (prod). The branch's spend is logged in the branch database, so subtract it: run `OM app.pipelines.era5_window run --window-start <purchase date> --initial-window --max-units <cap>` with `<cap>` = 1000000, then 2500000, then 4800000 minus the branch's `units_spent_window`, checking the dashboard between slices. Each run resumes from the ERA5 spans; the cap is cumulative for the window, so a rerun never re-spends. Repeat the last command until the JSON shows `fill.chunks: 0` and `normals.batches: 0` (exit status 0). A non-zero exit means a chunk or batch failed: rerun (failed groups are retried from where their span ends).
+The owner, not the agent, records the confirmation:
 
-- [ ] **Step 4 (owner/agent): Verify on prod** — `INGMOD app.pipelines.r6_verify`; `VERIFY tests/verify/ -q -s` → every cell passes; record the printed `conditions_missing_pre_era5`, `no_timezone` and `pending` counts in the PR. Delete the rehearsal branch.
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+  printf '%s\n' YYYY-MM-DD > ../data/review/era5w1_window_start.txt
+  GATE_DIR=../data/review/gates_era5w1_prod gate_pass owner_purchase_confirmed )
+```
 
-- [ ] **Step 5 (owner): End of the window** — downgrade to Standard (the nightly forecast and its `past_days` stopgap, plan 7, need it). No ERA5 call is possible or made until the next window.
+Replace `YYYY-MM-DD` with the purchase date. The owner then tells the agent in writing: "purchase confirmed, window starts YYYY-MM-DD".
 
-- [ ] **Step 6 (owner, every year): The January window** — on or after 10 January, buy one Professional month (re-check prices first) and run `unset TARGET_HOST; INGMOD app.pipelines.era5_window plan --window-start <day>` then `OM app.pipelines.era5_window run --window-start <day> --max-units 4800000` until `fill.chunks: 0` and `normals.batches: 0`. This appends the previous year for every series (replacing its stopgap rows), gives series first seen since the last window their 3-year history (and incident series their full span), rebuilds normals for the new 10-year period and for every `pending` bucket, and prunes non-incident rows older than three years. Then `VERIFY tests/verify/ -q` and downgrade to Standard.
+- [ ] **Step 2 (agent): Key and window checks** (no network call)
+
+```bash
+cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+[ "$(stat -f %Lp .env.openmeteo)" = 600 ] && echo "key file is 0600"
+git check-ignore -q .env.openmeteo && echo "key file is ignored"
+( set -a; . ./.env.openmeteo; set +a; [ -n "${OPEN_METEO_API_KEY:-}" ] && echo "key present" )
+W="$(cat ../data/review/era5w1_window_start.txt)"; case "$W" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) echo "window start $W" ;; *) echo "bad window start: STOP" ;; esac
+[ -f ../data/review/gates_era5w1_prod/owner_purchase_confirmed.ok ] && echo "owner confirmed"
+[ -f ../data/review/gates_2a4_prod/verified_2a4.ok ] && echo "2a-4 is on prod"
+```
+
+Expected: all six lines. Any missing: STOP.
+
+- [ ] **Step 3 (owner/agent): Plan, one small slice on the branch, the dashboard check, R6 and the query plan**
+
+Run the re-entry block first (`p2a-4-rehearsal`). Plan with the window (free; read-only):
+
+```bash
+W="$(cat ../data/review/era5w1_window_start.txt)"
+save_once ../data/review/era5w1_plan_branch.json INGMOD app.pipelines.era5_window plan --window-start "$W" --initial-window
+```
+
+Expected: `over_plan_stop: false`, `total_units` ≤ 4,500,000, no unregistered buckets. `plan` exits 1 above the stop and `save_once` then writes nothing: STOP and show the owner (OQ4: the rest goes in a second paid month or the next window).
+
+The first paid slice, 20,000 units:
+
+```bash
+( [ -n "${TARGET_HOST-}" ] && [ "$TARGET_HOST" != production ] || { echo "not on the rehearsal branch: run the re-entry block" >&2; exit 1; }
+  W="$(cat ../data/review/era5w1_window_start.txt)" || exit 1
+  set -a; . ./.env.openmeteo || exit 1; set +a
+  [ -n "${OPEN_METEO_API_KEY:-}" ] || { echo "refusing: OPEN_METEO_API_KEY missing" >&2; exit 1; }
+  export OPEN_METEO_API_KEY
+  bg_start ../data/review/logs/era5w1_branch_s1.log INGMOD app.pipelines.era5_window run --window-start "$W" --initial-window --max-units 20000 )
+```
+
+```bash
+bg_wait ../data/review/logs/era5w1_branch_s1.log
+```
+
+```bash
+save_once ../data/review/era5w1_branch_spent.txt printf '%s\n' 20000
+```
+
+Expected: `finished ok`; `fill.done` > 0, `fill.failed: 0`, `fill.stopped_for_budget: true` (the cap is small on purpose); `20000` saved once — the branch `--max-units` cap itself, not whatever this run's log says it spent. The cap is cumulative per database (R9), so branch spend is always ≤ 20,000 regardless of retries; reading the log's `units_spent_window` instead would under-count after a `_r2` rerun and let the prod final cap (4c/4f) overspend by the difference.
+
+**STOP — owner dashboard check.** The owner compares the Open-Meteo dashboard's used units with `era5w1_branch_spent.txt`. The ceiling formula over-estimates, so the dashboard should show the same or less. If it shows more, stop: the cost estimate is corrected in a reviewed commit before any further run. Only when it matches, the owner runs `( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && GATE_DIR=../data/review/gates_era5w1_prod gate_pass owner_units_confirmed_branch )`.
+
+R6 and the query plan on the partial data (Task 2 M6):
+
+```bash
+INGMOD app.pipelines.r6_verify
+VERIFY tests/verify/test_phase2a_conditions.py -q -s -k "r6 or visibility"
+save_once ../data/review/era5w1_explain_branch.txt ANALYST_PSQL -v ON_ERROR_STOP=1 -At -c "EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM accident_conditions"
+```
+
+Expected: `r_tmax > 0.95`, `p99_gust < 60`, and `n > 100` (if the slice linked too few rows, the R6 cell fails on `n`: report it, it is checked again on prod). The plan shows an index scan on the `cell_daily_conditions` primary key `(grid_bucket, tz, date)` per incident-day, not a sequential scan of the conditions table; a seq scan is a STOP for review before the prod window. If R6 fails on `r_tmax`, also report r at a ±1-day shift before concluding (pre-flight R5): the legacy `weather.date` has no day definition.
+
+- [ ] **Step 4 (owner authorizes): Prod, in slices**
+
+**STOP — agent: wait for the owner's written go-ahead for the prod window in this session.** Without it, end here and report.
+
+**4a. Gate: everything the paid run depends on.**
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1
+  # PRODUCTION
+  for f in gate_pass gate_require bg_start bg_wait save_once; do type "$f" >/dev/null 2>&1 || { echo "runbook helpers are stale: STOP" >&2; exit 1; }; done
+  gate_require owner_purchase_confirmed || exit 1
+  gate_require owner_units_confirmed_branch || exit 1
+  [ -f ../data/review/gates_2a4_prod/verified_2a4.ok ] || { echo "Task 13 has not finished on prod: STOP" >&2; exit 1; }
+  [ -s ../data/review/era5w1_branch_spent.txt ] || { echo "branch spend not recorded: STOP" >&2; exit 1; }
+  [ "$(stat -f %Lp .env.openmeteo)" = 600 ] && git check-ignore -q .env.openmeteo || { echo "key file is not 0600 and ignored: STOP" >&2; exit 1; }
+  ( set -a; . ./.env.ingest; set +a; case "${INGEST_DATABASE_URL:-}" in ""|*-pooler*) exit 1 ;; esac ) || { echo "ingest URL is missing or a -pooler host: STOP" >&2; exit 1; }
+  cur="$(MIG current)" || exit 1
+  [ "$cur" = "0007_cell_daily_conditions (head)" ] || { echo "prod is not at 0007_cell_daily_conditions (head): STOP" >&2; exit 1; }
+  gate_pass prod_ready )
+```
+
+**4b. Snapshot `pre-era5-w1`** (paid rows are additive; this is the restore point if a run writes wrong data). Run once.
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1
+  # PRODUCTION snapshot
+  gate_require prod_ready || exit 1
+  snap="$(neonctl branches create --project-id still-morning-74008008 --name pre-era5-w1 --parent production --no-secrets --output json \
+    | python3 -c 'import json,sys; b=json.load(sys.stdin)["branch"]; print(b["id"], b["name"], b["parent_id"], b["created_at"])')" || exit 1
+  printf '%s\n' "$snap"
+  case "$snap" in *" pre-era5-w1 br-restless-bar-ajw5zy4b "*) gate_pass snapshot ;; *) echo "snapshot parent is not production: STOP" >&2; exit 1 ;; esac )
+```
+
+**4c. Gate: the prod plan fits with the branch spend.**
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1
+  # PRODUCTION
+  gate_require snapshot || exit 1
+  W="$(cat ../data/review/era5w1_window_start.txt)" || exit 1
+  R=../data/review
+  [ -e $R/era5w1_plan_prod.json ] || save_once $R/era5w1_plan_prod.json INGMOD app.pipelines.era5_window plan --window-start "$W" --initial-window >/dev/null || { echo "plan failed or is over the 4.5M stop: STOP" >&2; exit 1; }
+  python3 -c 'import json,sys
+p = json.load(open(sys.argv[1])); b = int(open(sys.argv[2]).read())
+print("prod total_units", p["total_units"], "branch spent", b)
+if p["over_plan_stop"] or p["total_units"] + b > 4_500_000 or p["unregistered_incident_buckets"] or p["unregistered_route_buckets"]:
+    sys.exit("prod plan plus branch spend is over 4.5M, or buckets are unregistered: STOP")' $R/era5w1_plan_prod.json $R/era5w1_branch_spent.txt || exit 1
+  gate_pass plan_ok )
+```
+
+If this STOPs on the budget, the owner chooses per OQ4; the slices below then still stop at the 4.5M line and the rest waits for a second paid month or the next window.
+
+**STOP — owner plan review (as Task 12 Step 3).** `GATE OK: plan_ok` is a mechanical budget check only, not the owner's go-ahead to spend. The agent pastes the printed `prod total_units` and `branch spent` to the owner. Only on the owner's written "plan ok" does the owner run:
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && GATE_DIR=../data/review/gates_era5w1_prod gate_pass owner_prod_plan_ack )
+```
+
+4d requires this gate too, so the first 1,000,000-unit slice cannot run on the mechanical gate alone.
+
+**4d. Slice 1 (cap 1,000,000), then the owner's dashboard check.**
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1
+  # PRODUCTION (paid)
+  gate_require plan_ok || exit 1
+  gate_require owner_prod_plan_ack || exit 1
+  W="$(cat ../data/review/era5w1_window_start.txt)" || exit 1
+  set -a; . ./.env.openmeteo || exit 1; set +a
+  [ -n "${OPEN_METEO_API_KEY:-}" ] || { echo "refusing: OPEN_METEO_API_KEY missing" >&2; exit 1; }
+  export OPEN_METEO_API_KEY
+  bg_start ../data/review/logs/era5w1_prod_s1.log INGMOD app.pipelines.era5_window run --window-start "$W" --initial-window --max-units 1000000 )
+```
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+  bg_wait ../data/review/logs/era5w1_prod_s1.log )
+```
+
+A multi-hour slice returns 2 from `bg_wait` many times: run the same block again each time. Expected: `finished ok`, `units_spent_window` ≤ 1,000,000. **STOP — owner dashboard check** (as Step 3; the dashboard now shows branch plus prod spend). Only if it matches, the owner runs `( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && GATE_DIR=../data/review/gates_era5w1_prod gate_pass owner_units_confirmed_prod )`.
+
+**4e. Slice 2 (cap 2,500,000).**
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1
+  # PRODUCTION (paid)
+  gate_require owner_units_confirmed_prod || exit 1
+  S1_LOG=../data/review/logs/era5w1_prod_s1.log  # edit to the _r2/_r3 name if slice 1 needed a rerun
+  bg_wait "$S1_LOG" 0 >/dev/null || { echo "$S1_LOG has not finished ok: STOP" >&2; exit 1; }
+  W="$(cat ../data/review/era5w1_window_start.txt)" || exit 1
+  set -a; . ./.env.openmeteo || exit 1; set +a
+  [ -n "${OPEN_METEO_API_KEY:-}" ] || { echo "refusing: OPEN_METEO_API_KEY missing" >&2; exit 1; }
+  export OPEN_METEO_API_KEY
+  bg_start ../data/review/logs/era5w1_prod_s2.log INGMOD app.pipelines.era5_window run --window-start "$W" --initial-window --max-units 2500000 )
+```
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+  bg_wait ../data/review/logs/era5w1_prod_s2.log )
+```
+
+**4f. The final slice (cap 4,500,000 minus the branch spend).** If slice 2 already shows `fill.chunks == fill.pending_lag_edge + fill.edge_trimmed` (every chunk left reached only the lag edge: nothing published yet, or stopped short of unpublished days) and `normals.due: 0`, skip to 4g. Early-January runs re-buy the short chunk after the 31-December split (and its pending days) until ERA5 publishes through 31 December; that is bounded at about 14 days per bucket per run, so it is expected spend, not a fault.
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1
+  # PRODUCTION (paid)
+  gate_require owner_units_confirmed_prod || exit 1
+  S2_LOG=../data/review/logs/era5w1_prod_s2.log  # edit to the _r2/_r3 name if slice 2 needed a rerun
+  bg_wait "$S2_LOG" 0 >/dev/null || { echo "$S2_LOG has not finished ok: STOP" >&2; exit 1; }
+  W="$(cat ../data/review/era5w1_window_start.txt)" || exit 1
+  CAP=$((4500000 - $(cat ../data/review/era5w1_branch_spent.txt)))
+  echo "final cap $CAP"
+  set -a; . ./.env.openmeteo || exit 1; set +a
+  [ -n "${OPEN_METEO_API_KEY:-}" ] || { echo "refusing: OPEN_METEO_API_KEY missing" >&2; exit 1; }
+  export OPEN_METEO_API_KEY
+  bg_start ../data/review/logs/era5w1_prod_s3.log INGMOD app.pipelines.era5_window run --window-start "$W" --initial-window --max-units "$CAP" )
+```
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+  bg_wait ../data/review/logs/era5w1_prod_s3.log )
+```
+
+Done when the last run's JSON shows `fill.chunks == fill.pending_lag_edge + fill.edge_trimmed` (0 == 0 counts) and `normals.due: 0` with exit 0. `fill.stopped_for_budget: true` at the final cap means the window is spent: the rest waits for a second paid month or the next January (OQ4). A rerun of the final slice (after a STOP and the owner's go) uses the same cap and the next log name (`era5w1_prod_s3_r2.log`); the cumulative cap means it never spends past it.
+
+**4g. Verify on prod (read-only), in the background.**
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1
+  # PRODUCTION
+  gate_require owner_units_confirmed_prod || exit 1
+  LAST_SLICE_LOG=../data/review/logs/era5w1_prod_s3.log  # edit to s2's log if 4f was skipped, or the _r2/_r3 name if the last slice needed a rerun
+  bg_wait "$LAST_SLICE_LOG" 0 >/dev/null || { echo "$LAST_SLICE_LOG has not finished ok: STOP" >&2; exit 1; }
+  INGMOD app.pipelines.r6_verify || exit 1
+  bg_start ../data/review/logs/verify_era5w1_prod.log VERIFY tests/verify -q -s )
+```
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+  bg_wait ../data/review/logs/verify_era5w1_prod.log )
+```
+
+Expected: every `-m db` cell passes as `analyst` over verify-full, including the 2a-3 cells (the seven-day window, R6, R7, visibility, normals status) and the 2a-4 cells (R11 window and the backtest inputs, which need Task 13's route links). Record `conditions_missing_pre_era5`, `no_timezone`, `pending`, the R6 numbers and every `RUNBOOK_ELAPSED` in the PR. Then delete `p2a-4-rehearsal` with the owner's consent; keep `pre-era5-w1` until the owner says otherwise.
+
+- [ ] **Step 5 (owner): End of the window** — downgrade to Standard (the nightly forecast and its `past_days` stopgap, plan 7, need it). No ERA5 call is possible or made until the next window. The live app reads history only from our own database (OQ7).
+
+- [ ] **Step 6 (owner, every year): The January window**
+
+On or after 10 January, re-check the prices, buy one Professional month and record it as Step 1 with a new year's names (`era5w<YYYY>_window_start.txt`, `gates_era5w<YYYY>_prod`). Then run Step 4 with these changes: **no `--initial-window`** (`require_initial_allowed` refuses it once any earlier paid spend exists, and a January start passes `ProWindow` without it), no branch slice (so the final cap is 4,500,000), and the plan gate reads `plan --window-start <day>`. Expect about 1.5M units (pre-flight R1): the previous year for every series (replacing its stopgap rows), the 90-day ERA5T re-fetch once per series, 3-year history for series first seen since the last window, normals for the new 10-year period and every `pending` bucket, and the prune of non-incident rows older than three years. Then 4g's verify and Step 5's downgrade.
+
+- [ ] **Rollback.** Paid rows are additive and resumable. A failed or breaker-stopped run is a STOP; the owner decides on a rerun. Wrong data after a slice: STOP; the owner decides between restoring `production` from `pre-era5-w1` (confirm Neon's restore path, list what it discards, trigger the nightly once; the units already bought are not refunded) and a reviewed fix. 0007's downgrade refuses once paid rows exist. Quarantined days are never re-bought automatically; never rerun a failed or rejected chunk without a reviewed code fix (money review Minor 2).
 
 ---
 
 ## Self-review
 
-- Spec coverage: R6 (Tasks 1–8, drop deferred per D9 as a hard MVP-1 gate), R7 (Task 9, with the `lon > 0` acceptance cell), R11 (Tasks 10–11, 13, including the post-2024 gap log and the backtest-input cell), 2a-3 acceptance "every clean day incident has a 7-day window" (Task 8 cell, from 1940-01-07 per DP1, earlier incidents reported as `conditions_missing`), 2a-4 acceptance (Task 11 cells). Amendment §3.1 normals and §6 Q5 (Task 6). Owner decisions 2026-09-28: one Professional window per year in January with stopgap rows between (Tasks 5, 7, 14; spec P2-5 corrected in the cost-model section), local weather day (Tasks 1–4, 8). Pipelines "recorded responses, rejection, idempotency" (Tasks 1, 3, 5, 7).
+- Spec coverage: R6 (Tasks 1–8, drop deferred per D9 as a hard MVP-1 gate), R7 (Task 9, with the `lon > 0` acceptance cell), R11 (Tasks 10–11, 13, including the post-2024 gap log and the backtest-input cell), 2a-3 acceptance "every clean day incident has a 7-day window" (Task 8 cell, from 1990-01-01 per the owner's DP1 decision — incident series fill back to 1989-12-26, earlier incidents reported as `conditions_missing`; corrects this self-review's earlier "1940-01-07" draft figure), 2a-4 acceptance (Task 11 cells). Amendment §3.1 normals and §6 Q5 (Task 6). Owner decisions 2026-09-28: one Professional window per year in January with stopgap rows between (Tasks 5, 7, 14; spec P2-5 corrected in the cost-model section), local weather day (Tasks 1–4, 8). Pipelines "recorded responses, rejection, idempotency" (Tasks 1, 3, 5, 7).
 - Placeholders: none beyond Console hosts, the purchase date and the owner's key file.
 - Types and names: `Location(grid_bucket, lat, lon, tz)`, `DayRow(... record_kind ...)`, `day_rows(grid_bucket, tz, response, *, today, origin, model, source, report)`, `upsert_rows`, `ArchiveClient.fetch`, `Chunk.units`, `Budget`, `ProWindow`, `register_series`, `tz_for_point`, `local_date` are used with the same signatures in Tasks 3–10 and in plans 5, 6 and 7. `grid_bucket_series`, `cell_normals_status`, `record_kind` and `accidents.tz` match the frozen contract in the foundations plan's interface ledger.
 - Removed from the previous revision: `incident_weather_backfill.py` (its chunk planner and budgeted runner became `era5_fill.py`, driven only by `era5_window`), the weekly ERA5 append, and the "downgrade to Standard, then weekly append" step.

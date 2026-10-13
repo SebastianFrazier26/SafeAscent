@@ -60,8 +60,49 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON public.gnis_summits TO ingest;
 GRANT SELECT, INSERT, UPDATE ON internal.duplicate_decisions TO ingest;
 
 -- Plan 2 (0006): no grant here. app and analyst read accidents_clean[_daily] through
--- migrator's default privileges (they cover views); ingest gets them in plan 3.
+-- migrator's default privileges (they cover views); ingest gets them in plan 3 (below).
 -- trainer: nothing until Phase 3 (D13), which grants it the views together with LOGIN.
+
+-- Plan 3 (0007). DELETE on cell_daily_conditions is only for the 3-year prune of non-incident
+-- series (era5_window); the registry and normals are upserted, never deleted. app and analyst
+-- read the new tables and view through migrator's default privileges; trainer gets nothing.
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.cell_daily_conditions TO ingest;
+GRANT SELECT, INSERT, UPDATE ON public.grid_bucket_series, public.cell_normals_status,
+  public.cell_climate_normals, public.cell_climatology TO ingest;
+GRANT SELECT ON public.accidents_clean, public.accidents_clean_daily, public.accident_conditions TO ingest;
+
+-- Plan 3 (local days): localday writes each accident's crag timezone. It reads accidents (table
+-- SELECT, plan 2), mp_routes (plan 1) and mp_locations through the three-column grant above, so
+-- no SELECT is widened here.
+GRANT UPDATE (tz) ON public.accidents TO ingest;
+
+-- Plan 3 (R6 verify): r6_verify's CLI logs the ERA5-vs-legacy agreement as ingest, reading the
+-- legacy weather table; never written.
+GRANT SELECT ON public.weather TO ingest;
+
+-- Plan 3 (R7): the one-time longitude sign fix reads and flips area_weekly_weather.longitude
+-- only; never any other column.
+GRANT SELECT ON public.area_weekly_weather TO ingest;
+GRANT UPDATE (longitude) ON public.area_weekly_weather TO ingest;
+
+-- Plan 3 (R11, PR 2a-4): the facts-only loader inserts new incidents, column by column, exactly
+-- the columns accident_facts.INSERT_COLUMNS names (never accident_id, location, tags or
+-- elevation_meters). description takes only the loader's own one-line summary (<= 200
+-- characters, enforced by FactRow), never report text. The REVOKE first narrows a stray
+-- table-level INSERT, as for mp_ticks above. UPDATE (mp_route_id) is --apply-route-ids: the
+-- owner's later route link, only where it is NULL on an R11 row. No DELETE: incidents are never
+-- deleted.
+REVOKE INSERT ON public.accidents FROM ingest;
+GRANT INSERT (source, source_id, date, year, date_precision, state, mountain, route, mp_route_id, latitude,
+              longitude, geocode_precision, geocode_method, country, tz, activity, activity_class,
+              activity_rule_version, inclusion_flag, accident_type, injury_severity, severity_scale,
+              exp_years_climbing, exp_stated_level, exp_first_season, guided, exp_rule_version, source_url,
+              description, updated_at)
+  ON public.accidents TO ingest;
+GRANT UPDATE (mp_route_id) ON public.accidents TO ingest;
+-- accident_id comes from its column default; nextval() there needs USAGE (verified: the INSERT
+-- fails "permission denied for sequence" without it). USAGE only: no SELECT/UPDATE (setval).
+GRANT USAGE ON SEQUENCE public.accidents_accident_id_seq TO ingest;
 
 RESET ROLE;
 COMMIT;

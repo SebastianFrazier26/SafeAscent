@@ -89,6 +89,17 @@ def test_finish_run_records_allowlisted_metrics_in_the_summary():
     assert (summary["agreement"], summary["review_pending"]) == (0.75, 3)
 
 
+def test_finish_run_records_r6_metrics_in_the_summary():
+    # G12: r6_verify logs its sample size, correlation and gust percentile through metrics
+    # rather than a raw jsonb problems string; a None value (no linked rows yet) is never sent.
+    report = ValidationReport("r6_verify")
+    report.accept()
+    conn = _RecordingConn()
+    asyncio.run(finish_run(conn, uuid.uuid4(), status="ok", report=report, rows_upserted=0, metrics={"n": 150, "r_tmax": 0.97, "p99_gust": 42.5}))  # type: ignore[arg-type]
+    summary = json.loads(str(conn.params["report"]))
+    assert (summary["n"], summary["r_tmax"], summary["p99_gust"]) == (150, 0.97, 42.5)
+
+
 @pytest.mark.parametrize(
     "metrics, message",
     [
