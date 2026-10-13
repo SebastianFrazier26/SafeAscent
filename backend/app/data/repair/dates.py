@@ -13,8 +13,9 @@ excluded as year_unverified (D10). Inputs come from the frozen internal.accident
 snapshot.
 
 r1-v2 (owner, 2026-10-13) is a second pass over the rows r1-v1 leaves unverified; r1-v1's
-own fixes stand. A sequence row takes its bound from the 10th..90th percentile of the same
-neighbours instead of the tight bound, so one out-of-order neighbour no longer voids it, and
+own fixes stand. A sequence row uses r1-v1's neighbourhood (up to NEIGHBOURS=10 trusted rows
+per side, at least MIN_SIDE=5 on each) and takes its bound from the 10th..90th percentile of
+those years instead of the tight bound, so one out-of-order neighbour no longer voids it, and
 is accepted when that range spans at most two years. An eight-digit row is dated 2018 within
 2017..2018: every trusted row in that scheme is from those years (49 rows, all 2018, read
 2026-10-13), and the rule refuses if the snapshot ever says otherwise.
@@ -396,6 +397,7 @@ async def run_r2r1(conn: AsyncConnection, args: argparse.Namespace) -> dict[str,
     fixes = {f.accident_id: f for f in r1_year_fixes(aac)}
     # A row r1-v2 has dated is r1-v2's now. An r1-v1 rerun would put its snapshot date back
     # (that key was never written when the date was already right) under a lifted exclusion.
+    # It is counted only as superseded, never as r1-v1's year_unverified.
     superseded = await accident_ids_with_revisions(conn, R1V2_VERSION) & fixes.keys()
     r1_changes: list[Change] = []
     r2_changes: list[Change] = []
@@ -407,6 +409,8 @@ async def run_r2r1(conn: AsyncConnection, args: argparse.Namespace) -> dict[str,
         year = _as_year(r["year"])
         live_excluded = _as_str(current[a]["excluded_reason"])
         excluded_elsewhere = live_excluded not in (None, YEAR_UNVERIFIED)
+        if a in superseded:
+            continue
         if a in fixes:
             fix = fixes[a]
             live_date = _as_date(current[a]["date"])
@@ -423,8 +427,7 @@ async def run_r2r1(conn: AsyncConnection, args: argparse.Namespace) -> dict[str,
                 if fix.new_date == live_date and live_year != fix.year:
                     row_changes.append(Change(a, "year", fix.year, "r1"))
                 r1_report.accept()
-            if a not in superseded:
-                r1_changes += row_changes
+            r1_changes += row_changes
             continue
         precision = r2_precision(families[a], d, year)
         r2_changes.append(Change(a, "date_precision", precision, "r2"))
@@ -438,7 +441,9 @@ async def run_r2r1(conn: AsyncConnection, args: argparse.Namespace) -> dict[str,
             r2_report.accept()
     r1 = await run_step(conn, step="r1", rule_version=R1_VERSION, changes=r1_changes, report=r1_report, apply=args.apply)
     r2 = await run_step(conn, step="r2", rule_version=R2_VERSION, changes=r2_changes, report=r2_report, apply=args.apply)
-    unverified_by_scheme = Counter(schemes[f.accident_id] for f in fixes.values() if f.excluded_reason)
+    unverified_by_scheme = Counter(
+        schemes[f.accident_id] for f in fixes.values() if f.excluded_reason and f.accident_id not in superseded
+    )
     # D10: excluded, never deleted; the runbook reports these as a Phase 3 recency-bias note.
     r1_unverified = r1_report.quarantined[YEAR_UNVERIFIED]
     r2_no_date = r2_report.quarantined["no_date"]
@@ -465,7 +470,7 @@ async def run_r2r1(conn: AsyncConnection, args: argparse.Namespace) -> dict[str,
     }
 
 
-# The fields r1-v2 writes besides excluded_reason (which changes_for already guards).
+# The date fields r1-v2 writes; excluded_reason is guarded separately (run_r1v2).
 R1V2_FIELDS = ("date", "year", "year_lo", "year_hi", "year_source", "date_precision")
 
 
@@ -481,15 +486,15 @@ async def require_r1v1(conn: AsyncConnection) -> None:
         raise SystemExit(f"r1v2 runs after {R1_VERSION}: apply r2r1 first")
 
 
-async def decided_elsewhere(conn: AsyncConnection) -> set[int]:
-    """Rows where any rule outside R1/R2, or an owner decision, has written one of r1-v2's
-    fields: that decision is never re-made by r1-v2."""
+async def decided_elsewhere(conn: AsyncConnection, fields: Sequence[str] = R1V2_FIELDS) -> set[int]:
+    """Rows where any rule outside R1/R2, or an owner decision, has written one of `fields`:
+    that decision is never re-made by r1-v2."""
     result = await conn.execute(
         text(
             "SELECT DISTINCT accident_id FROM internal.accident_revisions "
             "WHERE field = ANY(CAST(:fields AS text[])) AND rule_version NOT LIKE 'r1-%' AND rule_version NOT LIKE 'r2-%'"
         ),
-        {"fields": list(R1V2_FIELDS)},
+        {"fields": list(fields)},
     )
     return {int(a) for a in result.scalars()}
 
@@ -499,6 +504,9 @@ async def run_r1v2(conn: AsyncConnection, args: argparse.Namespace) -> dict[str,
     snap = await load_snapshot(conn)
     fixes = r1v2_year_fixes(snap.aac)
     blocked = await decided_elsewhere(conn)
+    # changes_for only sees the live value: an owner or another rule that set year_unverified
+    # itself would read as R1's own exclusion and be lifted.
+    exclusion_owned = await decided_elsewhere(conn, ("excluded_reason",))
     report = ValidationReport("repair:r1v2")
     changes: list[Change] = []
     recovered: Counter[str] = Counter()
@@ -510,9 +518,15 @@ async def run_r1v2(conn: AsyncConnection, args: argparse.Namespace) -> dict[str,
         live = snap.current[a]
         live_date, live_year = _as_date(live["date"]), _as_year(live["year"])
         method = "r1v2-eight-digit" if snap.schemes[a] == "eight_digit" else "r1v2-sequence"
-        changes += changes_for(fix, old_date=live_date, old_excluded=_as_str(live["excluded_reason"]), method=method)
+        row_changes = changes_for(fix, old_date=live_date, old_excluded=_as_str(live["excluded_reason"]), method=method)
         if fix.new_date == live_date and live_year != fix.year:
-            changes.append(Change(a, "year", fix.year, method))
+            row_changes.append(Change(a, "year", fix.year, method))
+        if a in exclusion_owned:
+            # Dated, but the exclusion is not r1-v2's to lift; the row stays excluded.
+            changes += [c for c in row_changes if c.field != "excluded_reason"]
+            report.quarantine(str(a), "decided_elsewhere")
+            continue
+        changes += row_changes
         recovered[snap.schemes[a]] += 1
         report.accept()
     result = await run_step(

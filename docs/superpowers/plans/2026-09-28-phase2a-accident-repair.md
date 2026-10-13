@@ -3805,6 +3805,9 @@ print({k: dry[k] for k in ("r1v1_unverified", "recovered", "still_unverified", "
 v2 = bt["backtest"]["sequence_v2"]
 if v2["within_one_year_rate"] is None or v2["within_one_year_rate"] < 0.95 or v2["in_range_rate"] < 0.95:
     sys.exit("r1-v2 backtest below 0.95: STOP")
+e8 = bt["backtest"]["eight_digit"]
+if e8["within_one_year_rate"] is None or e8["within_one_year_rate"] < 0.95:
+    sys.exit("eight-digit backtest below 0.95 within one year: STOP")
 if not dry["eight_digit_scheme_holds"] or dry["decided_elsewhere"] != 0:
     sys.exit("eight-digit scheme no longer 2017-2018, or rows decided elsewhere: STOP")
 PY
@@ -3814,7 +3817,7 @@ PY
 Expected (the investigation's figures, 2026-10-13, read from this branch):
 - Backtest on the 2,292 trusted `sequence` rows: `sequence_v1` dates 1,325 at 0.983 within one year; `sequence_v2` dates about 2,188 (coverage ≈0.955) at ≈0.972 within one year with the true year in range ≈0.963; `sequence_shipped` dates as many as `sequence_v2`. `eight_digit`: 49 rows, all dated, all within one year and in range.
 - Dry run: `r1v1_unverified` about `{"eight_digit": 19, "sequence": 197}`, `recovered` about `{"eight_digit": 19, "sequence": 166}`, `still_unverified` about 31, `decided_elsewhere` 0, `eight_digit_scheme_holds` true.
-- A figure far from these (more than ~10 rows or 1 point off) means STOP: the rule or the data is not what the owner approved. The block itself stops on a backtest below 0.95 or a failed eight-digit check.
+- A figure far from these (more than ~10 rows or 1 point off) means STOP: the rule or the data is not what the owner approved. The block itself stops on a sequence backtest below 0.95 (within one year or in range), an eight-digit backtest below 0.95 within one year, or a failed eight-digit check.
 
 Then apply twice, in the background (each run is one transaction):
 
@@ -3867,7 +3870,7 @@ Expected: `finished ok` twice, then two count lines and exit 0. Apply 1 shows `a
 ING r1v2-export --out ../data/review/r1v2_year_check.csv
 ```
 
-Expected: `exported` 40 and `taken` `{"eight_digit": 8, "sequence": 32, "_topup": 0}` (the eight-digit rule dates a whole scheme from one assumption, so it gets 8 rows rather than the ~4 a uniform sample would hold; the stratum is not written to the file). It refuses an existing file, like 4a: a refusal means 5b already ran; never pass `--overwrite` unless the owner has said in writing that the filled file is to be discarded.
+Expected: `exported` 40 and `taken` `{"eight_digit": 8, "sequence": 32}` (no `_topup` key, which appears only when a stratum is short). The eight-digit rule dates a whole scheme from one assumption, so it gets 8 rows rather than the ~4 a uniform sample would hold; the stratum is not written to the file. It refuses an existing file, like 4a: a refusal means 5b already ran; never pass `--overwrite` unless the owner has said in writing that the filled file is to be discarded.
 
 - [ ] **Step 5c (owner): Fill in the r1-v2 hand check**
 
@@ -3905,7 +3908,7 @@ Expected: every cell passes, now including the r1-v2 ones:
 - the `aac_schemes` block (`rows`/`suspects`/`unverified` per scheme, r1-v1's view) and Step 5a's dry-run line (what r1-v2 recovers per scheme);
 - Step 5a's backtest lines.
 
-The owner then signs off in the PR, with these pasted there.
+The owner then signs off in the PR, with these pasted there. A sign-off given before Step 5e does not count; the owner signs again after 5e.
 
 This is an accuracy call. r1-v1 never uses the eight-digit 2019NNNN scheme (68 rows) as neighbours, and r1-v2 dates its suspects to 2018 only because all its trusted rows are 2017–2018. A `sequence` suspect with fewer than 5 trusted neighbours on either side, or whose neighbours' P10–P90 spans more than two years, stays `year_unverified`. AAC data effectively ends in 2018: recent accidents come from plan 3's R11, not from R1. `test_r1_2023_aac_count_is_at_most_twice_the_2015_2018_mean` is only an upper bound. No sign-off means no Step 6.
 

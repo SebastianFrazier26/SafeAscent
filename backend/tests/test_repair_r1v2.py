@@ -297,6 +297,10 @@ def test_r1v2_dates_what_r1_v1_could_not_and_a_v1_rerun_never_undoes_it():
             async with engine.begin() as conn:
                 rerun = await run_r2r1(conn, _ns(apply=True))
             assert rerun["superseded_by_r1v2"] == 2
+            # Superseded rows are not r1-v1's year_unverified any more; only row 22 is.
+            assert rerun["r1_year_unverified"] == 1
+            assert rerun["aac_schemes"]["eight_digit"]["unverified"] == 0
+            assert rerun["r1"]["report"]["quarantined"] == {"year_unverified": 1}
             assert rerun["r1"]["applied"] == 0
             async with engine.connect() as conn:
                 assert await _row(conn, 11, "date, excluded_reason") == (date(2003, 5, 2), None)
@@ -401,6 +405,35 @@ def test_r1v2_backtest_is_read_only():
                 out = await run_r1v2_backtest(conn, _ns())
             assert out["backtest"]["eight_digit"]["rows"] == 10
             assert out["backtest"]["sequence_v2"]["rows"] == 20
+        finally:
+            await engine.dispose()
+
+    with migrated_db(seed_sql=R1V2_SEED) as name:
+        asyncio.run(scenario(sa_url(name)))
+
+
+@requires_pg
+def test_r1v2_never_lifts_an_exclusion_another_rule_or_the_owner_set():
+    async def scenario(url: str) -> None:
+        engine = create_async_engine(url)
+        try:
+            async with engine.begin() as conn:
+                await run_r2r1(conn, _ns(apply=True))
+                # The owner confirmed row 11's exclusion, with the same value r1-v1 set.
+                await conn.execute(text(
+                    "INSERT INTO internal.accident_revisions (accident_id, field, old_value, new_value, method, "
+                    "rule_version, run_id) VALUES (11, 'excluded_reason', 'year_unverified', 'year_unverified', "
+                    "'owner', 'owner-x', gen_random_uuid())"))
+            async with engine.begin() as conn:
+                out = await run_r1v2(conn, _ns(apply=True))
+            assert (out["decided_elsewhere"], out["recovered"]) == (1, {"eight_digit": 1})
+            async with engine.connect() as conn:
+                assert await _row(conn, 11, "date, excluded_reason") == (date(2003, 5, 2), "year_unverified")
+                assert await _row(conn, 41, "excluded_reason") == (None,)
+                fields = (await conn.execute(text(
+                    "SELECT array_agg(field ORDER BY field) FROM internal.accident_revisions "
+                    "WHERE accident_id = 11 AND rule_version = 'r1-v2'"))).scalar_one()
+            assert "excluded_reason" not in fields and "date" in fields
         finally:
             await engine.dispose()
 
