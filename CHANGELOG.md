@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### MP tick-aggregate reloads only add new months — 2026-10-02
+
+- Owner decision: a later scrape's reload of `internal.mp_tick_aggregates` never touches a stored `(mp_route_id, period, style)` row, matching count or not. A changed count (most often MP's ever-growing `total`) is now skipped and counted `already_loaded_changed` in the run's stats, rather than quarantined `count_changed`; it never counts toward `--max-quarantine-share`. This resolves the known limitation noted 2026-09-29, where MP's ever-growing totals pushed most later-scrape reloads above the default 10% quarantine gate and got them rejected whole, so a scrape's newly closed months never landed. `app/pipelines/mp_tick_aggregates.py`; tests in `tests/test_mp_tick_aggregates.py`; `DEPLOYMENT.md` and the plan 1 runbook (`docs/superpowers/plans/2026-09-28-phase2a-foundations.md`, Task 10 Step 4) updated to match.
+
 ### Phase 2a accident repair, part 1 (PR 2a-1) — 2026-09-30
 
 - `app/data/repair/`: one audited, idempotent writer for accident repairs (`internal.accident_revisions` per changed field, keyed by rule version), a dry-run-first CLI (`python -m app.data.repair`), and seeded owner review CSVs in gitignored `data/review/`. Review CSVs never carry `description`; hand-check CSVs carry a locator (`source_id`, `date`, `location`, `mountain`) so the owner can find the AAC report.
