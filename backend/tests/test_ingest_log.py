@@ -79,6 +79,33 @@ def test_finish_run_refuses_a_rule_version_that_is_not_a_plain_string():
     with pytest.raises(ValueError, match="rule_version must be a plain string"):
         asyncio.run(finish_run(_RecordingConn(), uuid.uuid4(), status="ok", report=report, rows_upserted=0))  # type: ignore[arg-type]
 
+def test_finish_run_records_allowlisted_metrics_in_the_summary():
+    report = ValidationReport("repair:r1-check")
+    report.accept()
+    conn = _RecordingConn()
+    asyncio.run(finish_run(conn, uuid.uuid4(), status="ok", report=report, rows_upserted=0, metrics={"agreement": 0.75, "review_pending": 3}))  # type: ignore[arg-type]
+    summary = json.loads(str(conn.params["report"]))
+    assert (summary["agreement"], summary["review_pending"]) == (0.75, 3)
+
+
+@pytest.mark.parametrize(
+    "metrics, message",
+    [
+        ({"lat": 40.1}, "unexpected metric"),
+        ({"source": 1}, "unexpected metric"),
+        ({"agreement": "0.9"}, "must be a finite number"),
+        ({"agreement": True}, "must be a finite number"),
+        ({"agreement": float("nan")}, "must be a finite number"),
+        ({"review_pending": {"row_ref": "r1"}}, "must be a finite number"),
+    ],
+)
+def test_finish_run_refuses_metrics_outside_the_allowlist(metrics, message):
+    report = ValidationReport("fixture")
+    report.accept()
+    with pytest.raises(ValueError, match=message):
+        asyncio.run(finish_run(_RecordingConn(), uuid.uuid4(), status="ok", report=report, rows_upserted=0, metrics=metrics))  # type: ignore[arg-type]
+
+
 @requires_pg
 def test_run_lifecycle_quarantine_and_noop_lookup():
     async def scenario(url: str) -> None:

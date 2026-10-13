@@ -119,6 +119,7 @@ data/*.json
 data/*.xlsx
 data/*.log
 data/tables/
+data/review/
 data/processed_*.csv
 data/mp_*.csv
 data/.*progress*.json
