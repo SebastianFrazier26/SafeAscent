@@ -101,6 +101,7 @@ module = [
     "app.pipelines.db",
     "app.pipelines.mp_ticks_quarantine",
     "app.pipelines.mp_tick_aggregates",
+    "app.pipelines.route_types",
     "app.data",
     "app.data.repair",
     "app.data.repair.framework",
