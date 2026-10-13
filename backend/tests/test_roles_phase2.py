@@ -10,12 +10,14 @@ from datetime import date
 from alembic import command
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.data.repair import dates, severity
+from app.data.repair import activity, dates, dedupe, experience, geocode, review, severity
 from app.data.repair.checks import record_check
 from app.data.repair.framework import LOCATION, Change, run_step
-from app.pipelines import mp_tick_aggregates, mp_ticks_quarantine
+from app.pipelines import gnis, mp_tick_aggregates, mp_ticks_quarantine
 from app.pipelines.validate import ValidationReport
 from tests.pgtest import requires_pg
+from tests.test_gnis import HEADER as GNIS_HEADER
+from tests.test_gnis import _line as gnis_line
 from tests.test_mp_tick_aggregates import _export
 from tests.test_migrations import (
     ANALYST_FIXTURE_SQL,
@@ -119,6 +121,74 @@ def _run_real_jobs_as_ingest(ingest_url: str, tmp_path, monkeypatch) -> None:
     r9, check = asyncio.run(r9_and_check())
     assert (r9["applied"], check["agreement"]) == (2, 1.0)
 
+    # G15: the GNIS loader's upsert and replace-delete, as ingest.
+    monkeypatch.setattr(gnis, "ingest_engine", lambda: create_async_engine(sa_ingest))
+    summits = tmp_path / "gnis.txt"
+    summits.write_text("\n".join([GNIS_HEADER, gnis_line("1", "Fixture Peak", "Summit", "Colorado", "40.25", "-105.6")]))
+    assert asyncio.run(gnis.main(summits))["status"] == "ok"
+    summits.write_text("\n".join([GNIS_HEADER, gnis_line("2", "Other Peak", "Summit", "Colorado", "40.2", "-105.6")]))
+    assert asyncio.run(gnis.main(summits))["rows_upserted"] == 1
+
+    # R3 and its check exports as ingest: snapshot, gnis_summits and revisions reads, the label writes.
+    monkeypatch.setattr(review, "REVIEW_DIR", tmp_path)
+
+    async def r3() -> tuple[dict[str, object], ...]:
+        engine = create_async_engine(sa_ingest)
+        try:
+            async with engine.begin() as conn:
+                out = await geocode.run_r3(conn, argparse.Namespace(apply=True))
+                exports = argparse.Namespace(out=None, overwrite=False)
+                return (
+                    out,
+                    await geocode.run_r3a_export(conn, exports),
+                    await geocode.run_r3_plot_export(conn, exports),
+                    await geocode.run_r3_ambiguous_export(conn, exports),
+                )
+        finally:
+            await engine.dispose()
+
+    r3_out, r3a, plot, ambiguous = asyncio.run(r3())
+    # The fixture repair above moved both points under an audited rule, so R3 keeps them but
+    # cannot vouch for them: labels only, both untrusted.
+    assert r3_out["applied"] == 6 and r3_out["methods"] == {"moved_by_other_rule": 2}
+    assert (r3a["exported"], plot["strata"]["unknown"], ambiguous["exported"]) == (0, 1, 0)
+
+    # R4 and its exports as ingest: snapshot activity, the MP terrain columns, the class writes.
+    async def r4() -> tuple[dict[str, object], ...]:
+        engine = create_async_engine(sa_ingest)
+        try:
+            async with engine.begin() as conn:
+                out = await activity.run_r4(conn, argparse.Namespace(apply=True))
+                exports = argparse.Namespace(out=None, overwrite=False)
+                return (
+                    out,
+                    await activity.run_r4_review_export(conn, exports),
+                    await activity.run_r4_golden_export(conn, exports),
+                )
+        finally:
+            await engine.dispose()
+
+    r4_out, r4_review, r4_golden = asyncio.run(r4())
+    # The seed's snapshot rows carry no activity: both wait for the owner, nothing is guessed.
+    assert (r4_out["review_pending"], r4_review["exported"], sum(r4_golden["strata"].values())) == (2, 2, 0)
+
+    # R5 and R12 as ingest (final review 2a-2 minor; G15): R5's snapshot/label reads, its
+    # require_r3/require_r4 run-log reads and decisions upsert, R12's narrative read and writes.
+    async def r5_r12() -> tuple[dict[str, object], dict[str, object]]:
+        engine = create_async_engine(sa_ingest)
+        try:
+            async with engine.begin() as conn:
+                return (
+                    await dedupe.run_r5(conn, argparse.Namespace(apply=True, out=None, overwrite=False)),
+                    await experience.run_r12(conn, argparse.Namespace(apply=True)),
+                )
+        finally:
+            await engine.dispose()
+
+    r5_out, r12_out = asyncio.run(r5_r12())
+    assert (r5_out["mode"], r5_out["review_pending"], r5_out["path"]) == ("apply", 0, None)
+    assert r12_out["mode"] == "apply"
+
 
 # PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views; those belong to the
 # extension, not to any grant this project makes, so the check skips them as verify_roles.sql does.
@@ -218,15 +288,17 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
     )
     _denied(ingest, "UPDATE internal.mp_tick_aggregates SET tick_count = 2 WHERE false")
     _denied(ingest, "DELETE FROM internal.ingest_quarantine")
-    _as(ingest, "SELECT accident_id, source, source_id, date, year FROM internal.accidents_raw")
-    _denied(ingest, "SELECT mountain FROM internal.accidents_raw")
+    _as(ingest, "SELECT accident_id, source, source_id, date, year, mountain, state, latitude, longitude, mp_route_id, "
+        "activity FROM internal.accidents_raw")
+    _denied(ingest, "SELECT location FROM internal.accidents_raw")
+    _denied(ingest, "SELECT route FROM internal.accidents_raw")
     _denied(ingest, "SELECT description FROM internal.accidents_raw")
     _denied(ingest, "SELECT * FROM internal.accidents_raw")
     _as(ingest, "UPDATE mp_ticks SET quarantine_reason = NULL WHERE false")
     _as(owner_url, JOB_SEED_SQL)
     # The seed lands after 0004's snapshot; the migrator owns accidents_raw, so it stands in for it.
-    _as(migrator_url, "INSERT INTO internal.accidents_raw (accident_id, source, source_id, date, year) "
-        "SELECT accident_id, source, source_id, date, year FROM accidents")
+    _as(migrator_url, "INSERT INTO internal.accidents_raw (accident_id, source, source_id, date, year, latitude, longitude) "
+        "SELECT accident_id, source, source_id, date, year, latitude, longitude FROM accidents")
     _run_real_jobs_as_ingest(ingest, tmp_path, monkeypatch)
     _as(ingest, "SELECT count(*) FROM accidents")
     _as(ingest, "SELECT mp_id, latitude, longitude FROM mp_locations")
@@ -238,6 +310,11 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
     _denied(ingest, "UPDATE accidents SET source_id = 'x' WHERE false")
     _denied(ingest, "DELETE FROM accidents WHERE false")
     _denied(ingest, "UPDATE internal.accident_revisions SET method = 'x' WHERE false")
+    _as(ingest, "INSERT INTO internal.duplicate_decisions (low_id, high_id, score, decision, decided_by, rule_version) "
+        "VALUES (1, 2, 0.9, 'merge', 'auto', 'r5-v1') ON CONFLICT (low_id, high_id) DO UPDATE SET score = EXCLUDED.score")
+    _as(ingest, "UPDATE internal.duplicate_decisions SET decision = 'distinct' WHERE low_id = 1")
+    _denied(ingest, "DELETE FROM internal.duplicate_decisions")
+    _denied(ingest, "TRUNCATE gnis_summits")
     _denied(ingest, "SELECT climber_name FROM mp_ticks")
     _denied(ingest, "SELECT * FROM mp_ticks")
     _denied(ingest, "UPDATE mp_ticks SET climber_name = 'x' WHERE false")
@@ -249,6 +326,15 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
 
     # trainer cannot log in and holds no table privilege anywhere until Phase 3 (D13).
     assert _fetch_row(fresh_db, TRAINER_STATE_SQL) == [False, False]
+
+    # 0006: app and analyst read the clean views (default privileges); ingest gets them in plan 3,
+    # trainer in Phase 3 (D13, TRAINER_STATE_SQL above covers views).
+    clean_views = "SELECT count(*) FROM accidents_clean; SELECT count(*) FROM accidents_clean_daily"
+    _as(app, clean_views)
+    _as(analyst, clean_views)
+    _denied(ingest, "SELECT count(*) FROM accidents_clean")
+    _denied(app, "UPDATE accidents_clean SET source_url = 'x' WHERE false")
+    _denied(analyst, "BEGIN READ WRITE; DELETE FROM accidents_clean_daily WHERE false; COMMIT")
 
     _denied(app, "SELECT count(*) FROM internal.mp_tick_aggregates")
     _denied(app, "SELECT count(*) FROM internal.accidents_raw")
@@ -336,12 +422,18 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         migrator_url,
         "GRANT DELETE ON public.source_ingest_log TO ingest;"
         "GRANT UPDATE ON internal.mp_tick_aggregates TO ingest;"
+        "GRANT DELETE ON internal.duplicate_decisions TO ingest;"
+        "REVOKE DELETE ON public.gnis_summits FROM ingest;"
         "GRANT SELECT ON internal.accidents_raw TO ingest;"
         "GRANT SELECT (name) ON public.mp_locations TO ingest;"
         "GRANT SELECT (climber_name) ON public.mp_ticks TO ingest;"
         "GRANT USAGE ON SEQUENCE public.mp_ticks_tick_id_seq TO ingest;"
         "ALTER DEFAULT PRIVILEGES IN SCHEMA internal GRANT SELECT ON TABLES TO ingest;"
         "GRANT SELECT ON public.accidents TO trainer;"
+        "GRANT SELECT ON public.accidents_clean TO trainer;"
+        "GRANT SELECT ON public.accidents_clean_daily TO ingest;"
+        "GRANT UPDATE ON public.accidents_clean TO app;"
+        "REVOKE SELECT ON public.accidents_clean_daily FROM analyst;"
         "GRANT CREATE ON SCHEMA internal TO app;"
         "REVOKE SELECT ON internal.accident_revisions FROM analyst;",
     )
@@ -354,6 +446,8 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
     for check in (
         "ingest DELETE on public.source_ingest_log matches the expected set",
         "ingest UPDATE on internal.mp_tick_aggregates matches the expected set",
+        "ingest DELETE on internal.duplicate_decisions matches the expected set",
+        "ingest DELETE on public.gnis_summits matches the expected set",
         "ingest SELECT on internal.accidents_raw matches the expected set",
         "ingest accidents_raw column privileges match the expected set: description",
         "ingest mp_locations column privileges match the expected set: name",
@@ -361,6 +455,10 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "ingest has nothing on sequence public.mp_ticks_tick_id_seq",
         "no default privileges grant ingest or trainer anything",
         "trainer holds no privilege on public.accidents",
+        "trainer holds no privilege on public.accidents_clean",
+        "ingest SELECT on public.accidents_clean_daily matches the expected set",
+        "app can SELECT public.accidents_clean and nothing else",
+        "analyst can SELECT public.accidents_clean_daily and nothing else",
         "app has no CREATE on schema internal",
         "analyst can SELECT internal.accident_revisions",
         "nobody can SET or INHERIT ingest",

@@ -11,6 +11,7 @@ from app.pipelines.ingest_log import (
     find_completed,
     finish_run,
     last_ok_rows_in,
+    last_ok_sha,
     sha256_rows,
     start_run,
     write_quarantine,
@@ -183,6 +184,32 @@ def test_rejected_runs_are_not_noops_and_not_row_count_baselines():
             async with engine.connect() as conn:
                 assert await find_completed(conn, source="fixture", window_start=None, window_end=None, content_sha256="abc") is None
                 assert await last_ok_rows_in(conn, "fixture") is None
+        finally:
+            await engine.dispose()
+
+    with migrated_db() as name:
+        asyncio.run(scenario(sa_url(name)))
+
+
+@requires_pg
+def test_last_ok_sha_is_the_latest_ok_run_only():
+    async def finish(conn, sha: str, status: str) -> None:
+        report = ValidationReport("fixture")
+        report.accept()
+        run_id = await start_run(conn, source="fixture", window_start=None, window_end=None, content_sha256=sha)
+        await finish_run(conn, run_id, status=status, report=report, rows_upserted=0)
+
+    async def scenario(url: str) -> None:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                assert await last_ok_sha(conn, "fixture") is None
+            for sha, status in (("a", "ok"), ("b", "ok"), ("c", "rejected")):
+                async with engine.begin() as conn:
+                    await finish(conn, sha, status)
+            async with engine.connect() as conn:
+                assert await last_ok_sha(conn, "fixture") == "b"
+                assert await last_ok_sha(conn, "other") is None
         finally:
             await engine.dispose()
 

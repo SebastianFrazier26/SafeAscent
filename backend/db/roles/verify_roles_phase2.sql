@@ -66,7 +66,12 @@ INSERT INTO ingest_privs VALUES
   ('internal.ingest_quarantine', 'SELECT'), ('internal.ingest_quarantine', 'INSERT'),
   -- Plan 2 (accident repair); mp_locations SELECT is column-level, checked below.
   ('public.accidents', 'SELECT'),
-  ('internal.accident_revisions', 'SELECT'), ('internal.accident_revisions', 'INSERT');
+  ('internal.accident_revisions', 'SELECT'), ('internal.accident_revisions', 'INSERT'),
+  -- Plan 2 (0005): the GNIS loader and R5 decisions.
+  ('public.gnis_summits', 'SELECT'), ('public.gnis_summits', 'INSERT'), ('public.gnis_summits', 'UPDATE'),
+  ('public.gnis_summits', 'DELETE'),
+  ('internal.duplicate_decisions', 'SELECT'), ('internal.duplicate_decisions', 'INSERT'),
+  ('internal.duplicate_decisions', 'UPDATE');
 
 -- PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views, so extension-owned
 -- relations are skipped throughout, as verify_roles.sql does.
@@ -132,7 +137,7 @@ SELECT 'ingest mp_ticks column privileges match the expected set: ' || attname,
 FROM cols;
 
 -- ingest's column grants from plan 2: UPDATE on accidents exactly the repair columns (never
--- description, source, source_id or accident_id); SELECT on accidents_raw only the R1/R2 inputs.
+-- description, source, source_id or accident_id); SELECT on accidents_raw only the R1-R4 inputs.
 WITH cols AS (
   SELECT a.attnum, a.attname,
          a.attname IN ('date', 'year', 'latitude', 'longitude', 'coordinates', 'country', 'date_precision',
@@ -173,13 +178,31 @@ WITH cols AS (
 )
 INSERT INTO role_checks
 SELECT 'ingest accidents_raw column privileges match the expected set: ' || attname,
-       has_column_privilege('ingest', oid, attnum, 'SELECT') = (attname IN ('accident_id', 'source', 'source_id', 'date', 'year'))
+       has_column_privilege('ingest', oid, attnum, 'SELECT') = (attname IN ('accident_id', 'source', 'source_id', 'date', 'year',
+                                                                     'mountain', 'state', 'latitude', 'longitude', 'mp_route_id',
+                                                                     'activity'))
        AND NOT has_column_privilege('ingest', oid, attnum, 'UPDATE')
        AND NOT has_column_privilege('ingest', oid, attnum, 'INSERT')
        AND NOT has_column_privilege('ingest', oid, attnum, 'REFERENCES')
 FROM cols;
 INSERT INTO role_checks VALUES
   ('accidents_raw column checks ran', EXISTS (SELECT 1 FROM rels WHERE tbl = 'internal.accidents_raw'));
+
+-- Plan 2 (0006): app and analyst read the clean views through migrator's default privileges
+-- and hold nothing else on them (a simple view is auto-updatable, so writes are checked too).
+-- ingest and trainer hold nothing on them: the exact ingest set and the trainer check above
+-- cover views; plan 3 grants ingest, Phase 3 grants trainer (D13).
+INSERT INTO role_checks
+SELECT 'clean view exists: ' || v, EXISTS (SELECT 1 FROM rels WHERE tbl = v AND relkind = 'v')
+FROM unnest(ARRAY['public.accidents_clean', 'public.accidents_clean_daily']) AS v
+UNION ALL
+SELECT g || ' can SELECT ' || r.tbl || ' and nothing else',
+       has_table_privilege(g, r.oid, 'SELECT')
+       AND NOT (has_table_privilege(g, r.oid, 'INSERT') OR has_table_privilege(g, r.oid, 'UPDATE')
+                OR has_table_privilege(g, r.oid, 'DELETE') OR has_table_privilege(g, r.oid, 'TRUNCATE')
+                OR has_table_privilege(g, r.oid, 'REFERENCES') OR has_table_privilege(g, r.oid, 'TRIGGER'))
+FROM rels r CROSS JOIN unnest(ARRAY['app', 'analyst']) AS g
+WHERE r.tbl IN ('public.accidents_clean', 'public.accidents_clean_daily');
 
 SELECT check_name, ok FROM role_checks ORDER BY ok, check_name;
 

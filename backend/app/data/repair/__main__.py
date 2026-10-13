@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from app.data.repair import dates, severity
+from app.data.repair import activity, dates, dedupe, experience, geocode, severity
 
 Step = Callable[[AsyncConnection, argparse.Namespace], Awaitable[dict[str, object]]]
 STEPS: dict[str, Step] = {
@@ -19,6 +19,23 @@ STEPS: dict[str, Step] = {
     "r9-import": severity.run_r9_import,
     "r1-export": severity.run_r1_export,
     "r1-import": severity.run_r1_import,
+    "r3": geocode.run_r3,
+    "r3-clusters": geocode.run_r3_clusters,
+    "r3-states": geocode.run_r3_states,
+    "r3a-export": geocode.run_r3a_export,
+    "r3a-import": geocode.run_r3a_import,
+    "r3-plot-export": geocode.run_r3_plot_export,
+    "r3-plot-import": geocode.run_r3_plot_import,
+    "r3-ambiguous-export": geocode.run_r3_ambiguous_export,
+    "r3-ambiguous-import": geocode.run_r3_ambiguous_import,
+    "r4": activity.run_r4,
+    "r4-golden-export": activity.run_r4_golden_export,
+    "r4-review-export": activity.run_r4_review_export,
+    "r4-review-import": activity.run_r4_review_import,
+    "r5": dedupe.run_r5,
+    "r5-import": dedupe.run_r5_import,
+    "r12": experience.run_r12,
+    "r12-golden-export": experience.run_r12_golden_export,
 }
 
 
@@ -29,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--review-file", help="decisions CSV for *-import steps")
     parser.add_argument("--out", help="output path for *-export steps")
     parser.add_argument(
-        "--overwrite", action="store_true", help="*-export: replace an existing file (it may hold filled decisions)"
+        "--overwrite", action="store_true", help="*-export (and r5 --apply): replace an existing file (it may hold filled decisions); r5-import: replace earlier owner decisions"
     )
     return parser
 

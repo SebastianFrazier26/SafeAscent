@@ -67,7 +67,7 @@ Trustworthy, traceable incidents, routes, objectives and weather (2a), then the 
 
 - `is_canonical`
 - `activity_class IN ('climbing','climbing_approach')`
-- `country = 'US'`
+- `country = 'US' OR country IS NULL` (owner decision O3, 2026-09-30: only a known non-US country drops a row; NULL-country rows stay and their count is reported)
 - `excluded_reason IS NULL` (rows with `date_precision='unknown'` carry `excluded_reason='year_unverified'`, matching Phase 3)
 
 ### Repairs

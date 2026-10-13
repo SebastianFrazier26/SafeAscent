@@ -1,7 +1,7 @@
 # SafeAscent Database Structure
 
 **Database:** Neon PostgreSQL 16 with PostGIS
-**Last Updated:** February 2026
+**Last Updated:** October 2026
 
 ---
 
@@ -224,6 +224,33 @@ WHERE ST_DWithin(
 
 ---
 
+### 8. gnis_summits
+**Purpose:** USGS GNIS summits (public-domain reference data), used by R3a/R3 to check and fix accident locations. Added by `0005`; loaded by `python -m app.pipelines.gnis` as `ingest`.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| gnis_id | INTEGER | Primary key (GNIS feature id) |
+| name | TEXT | GNIS feature name |
+| name_key | TEXT | Normalised name for matching (`textsim.place_key`), indexed |
+| state_code | CHAR(2) | US state (check: two capital letters) |
+| lat, lon | FLOAT | Summit point (check: in range, never NaN) |
+| loaded_run_id | UUID | The `source_ingest_log` run that loaded it |
+
+---
+
+### 9. accidents_clean and accidents_clean_daily (views)
+**Purpose:** Phase 3's incident definition, added by `0006`. Phase 3 reads these, never `accidents`.
+
+`accidents_clean` keeps an `accidents` row when all hold: `is_canonical`; `activity_class IN ('climbing', 'climbing_approach')`; `country = 'US' OR country IS NULL` (owner decision O3: only a known non-US country drops a row); `excluded_reason IS NULL` (an `unknown` date precision always carries `year_unverified`). `accidents_clean_daily` is the same set with `date_precision = 'day'`, the set the conditions model trains on.
+
+Columns: `accident_id, source, source_id, date, year, date_precision, year_source, year_lo, year_hi, state, country, mountain, route, latitude, longitude, coordinates, elevation_meters, geocode_precision, accident_type, activity, activity_class, inclusion_flag, injury_severity, severity_scale, incident_group_id, mp_route_id, exp_years_climbing, exp_stated_level, exp_first_season, guided, source_url, point_trusted`. No narrative column (`description`, `tags`, `age_range`, `location`).
+
+`point_trusted` is true only for `geocode_precision` `exact`, `crag`, `area` or `park_centroid` (false when unlabelled). `region_fallback` and `unknown` rows keep their coordinates for state or region pooling, but no point-level join (plan 3's `accident_conditions`, Phase 3 spatial features) may use them. A row whose year is a range (`year_source = 'aac_source_id_neighbours'`, `date_precision = 'year'`) must be counted over `[year_lo, year_hi]` in yearly totals (owner rule); the views carry `year_source` for this.
+
+Grants: `app` and `analyst` read both views through `migrator`'s default privileges; `ingest` from plan 3; `trainer` from Phase 3 (D13).
+
+---
+
 ## Key Relationships
 
 Full diagram: [`data_model.png`](../data_model.png) (source `docs/diagrams/data_model.mmd`). The schema is owned by Alembic (`backend/alembic/`). Two more live tables have no SQLAlchemy model: `mp_ticks` (read with raw SQL by the ascent-analytics endpoint) and `area_weekly_weather` (not referenced by `app/`).
@@ -251,7 +278,8 @@ Added by `0004_phase2a_foundation`. Owned by `migrator`; `app` has no `USAGE` on
 | Table | Purpose |
 |-------|---------|
 | `accidents_raw` | Frozen snapshot of `public.accidents` taken by `0004` (primary key on `accident_id`, no other index) before Phase 2a's repair columns existed — the pre-2a shape, for comparison/rollback reference only |
-| `accident_revisions` | One row per field a future accident-repair job would change on an `accidents` row (old value, new value, method, rule version) — the table and model exist from `0004`, but no Phase 2a job writes to it yet |
+| `accident_revisions` | One row per field an accident-repair step changed on an `accidents` row (old value, new value, method, rule version, run id); keyed on `(accident_id, field, rule_version)` so a re-run records nothing twice |
+| `duplicate_decisions` | Added by `0005`. One R5 decision per row pair (`low_id < high_id`): `merge` or `distinct`, `decided_by` `auto` (score band) or `owner` (review CSV), with score, rule version and the R5 run that wrote it. Owner decisions are never re-decided; `ingest` cannot delete one |
 | `ingest_quarantine` | One row per input row an ingest job rejected rather than wrote, with a reason and optional JSON detail — never deleted |
 | `mp_tick_aggregates` | MP-reported ice/mixed tick counts by route/period/style, loaded from the private scraper's export (`app/pipelines/mp_tick_aggregates.py`); INSERT-only, a changed count is quarantined rather than overwritten |
 
