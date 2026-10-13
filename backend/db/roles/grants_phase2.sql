@@ -104,6 +104,17 @@ GRANT UPDATE (mp_route_id) ON public.accidents TO ingest;
 -- fails "permission denied for sequence" without it). USAGE only: no SELECT/UPDATE (setval).
 GRANT USAGE ON SEQUENCE public.accidents_accident_id_seq TO ingest;
 
+-- MP catalog plan (0008). The refresh reads mp_locations' tree and coordinates, and the root
+-- areas' names to recognise US states (never url); Phase 4 Task 24 makes the same widening.
+-- The catalog is upserted, never deleted (FKs pin it to the MP rows). app and analyst read the
+-- new tables and views through migrator's default privileges; trainer gets nothing (D13).
+GRANT SELECT (parent_id, name) ON public.mp_locations TO ingest;
+GRANT SELECT, INSERT, UPDATE ON public.canonical_areas, public.canonical_routes TO ingest;
+GRANT SELECT ON public.scorable_routes TO ingest;
+-- Tick-source seam (DP9): loaders upsert it, never delete.
+GRANT SELECT, INSERT, UPDATE ON internal.route_tick_scrapes TO ingest;
+GRANT SELECT ON internal.route_tick_coverage, internal.route_tick_months TO ingest;
+
 RESET ROLE;
 COMMIT;
 \echo 'phase 2 grants applied'

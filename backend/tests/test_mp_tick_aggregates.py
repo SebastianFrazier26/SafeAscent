@@ -292,3 +292,54 @@ def test_heavy_quarantine_rejects_the_batch_and_writes_nothing(tmp_path, monkeyp
         assert result["status"] == "rejected"
         assert result["rows_upserted"] == 0
         assert asyncio.run(_stored(url)) == []
+
+
+@requires_pg
+def test_loader_writes_the_seam_only_for_complete_routes():
+    from datetime import UTC, date, datetime
+
+    from app.pipelines.mp_tick_aggregates import AggregateRow, complete_through, load
+
+    assert complete_through(datetime(2024, 3, 15, 12, tzinfo=UTC)) == date(2024, 2, 29)
+    seed = ("INSERT INTO mp_locations (mp_id, name) VALUES (900000101, 'Fixture Crag'); "
+            "INSERT INTO mp_routes (mp_route_id, name, location_id, type) VALUES "
+            "(900000001, 'Fixture Ice', 900000101, 'Ice'), (900000002, 'Fixture Mixed', 900000101, 'Mixed')")
+    at = datetime(2024, 3, 15, 12, tzinfo=UTC)
+    rows = [AggregateRow(900000001, "2024-02", "lead", 5, at), AggregateRow(900000001, "total", "all", 5, at),
+            AggregateRow(900000002, "2024-01", "lead", 3, at)]
+    with migrated_db("0008_mp_catalog", seed_sql=seed) as name:
+        async def go():
+            engine = create_async_engine(sa_url(name))
+            try:
+                async with engine.begin() as conn:
+                    await load(conn, rows, run_id=uuid.uuid4(), scrape_run_id="t")
+                    return (await conn.execute(text(
+                        "SELECT mp_route_id, complete, complete_through, total_ticks FROM internal.route_tick_scrapes"))).all()
+            finally:
+                await engine.dispose()
+
+        assert [tuple(r) for r in asyncio.run(go())] == [(900000001, True, date(2024, 2, 29), 5)]
+
+
+@requires_pg
+def test_seam_keeps_the_newest_scrape():
+    from datetime import UTC
+
+    seed = ("INSERT INTO mp_locations (mp_id, name) VALUES (900000101, 'Fixture Crag'); "
+            "INSERT INTO mp_routes (mp_route_id, name, location_id, type) VALUES (900000001, 'Fixture Ice', 900000101, 'Ice')")
+    older, newer = datetime(2024, 3, 15, tzinfo=UTC), datetime(2024, 6, 2, tzinfo=UTC)
+    with migrated_db("0008_mp_catalog", seed_sql=seed) as name:
+        async def go():
+            engine = create_async_engine(sa_url(name))
+            try:
+                for at, n in ((newer, 9), (older, 5)):
+                    async with engine.begin() as conn:
+                        await load(conn, [AggregateRow(900000001, "total", "all", n, at)], run_id=uuid.uuid4(),
+                                   scrape_run_id="t")
+                async with engine.connect() as conn:
+                    return (await conn.execute(text(
+                        "SELECT complete_through, total_ticks FROM internal.route_tick_scrapes"))).all()
+            finally:
+                await engine.dispose()
+
+        assert [tuple(r) for r in asyncio.run(go())] == [(date(2024, 5, 31), 9)]

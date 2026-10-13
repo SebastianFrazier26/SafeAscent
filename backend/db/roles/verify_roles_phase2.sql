@@ -89,7 +89,16 @@ INSERT INTO ingest_privs VALUES
   ('public.weather', 'SELECT'),
   -- Plan 3 (R7): area_weekly_weather SELECT is table-level; UPDATE is column-level (longitude
   -- only), checked below.
-  ('public.area_weekly_weather', 'SELECT');
+  ('public.area_weekly_weather', 'SELECT'),
+  -- MP catalog plan (0008): the catalog tables are upserted, never deleted; mp_locations SELECT
+  -- is column-level, checked below.
+  ('public.canonical_areas', 'SELECT'), ('public.canonical_areas', 'INSERT'), ('public.canonical_areas', 'UPDATE'),
+  ('public.canonical_routes', 'SELECT'), ('public.canonical_routes', 'INSERT'), ('public.canonical_routes', 'UPDATE'),
+  ('public.scorable_routes', 'SELECT'),
+  -- The tick-source seam (DP9) and its two read views.
+  ('internal.route_tick_scrapes', 'SELECT'), ('internal.route_tick_scrapes', 'INSERT'),
+  ('internal.route_tick_scrapes', 'UPDATE'),
+  ('internal.route_tick_coverage', 'SELECT'), ('internal.route_tick_months', 'SELECT');
 
 -- PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views, so extension-owned
 -- relations are skipped throughout, as verify_roles.sql does.
@@ -195,7 +204,8 @@ WITH cols AS (
 )
 INSERT INTO role_checks
 SELECT 'ingest mp_locations column privileges match the expected set: ' || attname,
-       has_column_privilege('ingest', 'public.mp_locations', attnum, 'SELECT') = (attname IN ('mp_id', 'latitude', 'longitude'))
+       has_column_privilege('ingest', 'public.mp_locations', attnum, 'SELECT')
+         = (attname IN ('mp_id', 'parent_id', 'name', 'latitude', 'longitude'))
        AND NOT has_column_privilege('ingest', 'public.mp_locations', attnum, 'UPDATE')
        AND NOT has_column_privilege('ingest', 'public.mp_locations', attnum, 'INSERT')
        AND NOT has_column_privilege('ingest', 'public.mp_locations', attnum, 'REFERENCES')
@@ -234,8 +244,9 @@ FROM cols;
 INSERT INTO role_checks VALUES
   ('accidents_raw column checks ran', EXISTS (SELECT 1 FROM rels WHERE tbl = 'internal.accidents_raw'));
 
--- Plan 2 (0006) and plan 3 (0007): app and analyst read the clean views, the conditions tables
--- and accident_conditions through migrator's default privileges and hold nothing else on them
+-- Plan 2 (0006), plan 3 (0007) and the MP catalog plan (0008): app and analyst read the clean
+-- views, the conditions tables, accident_conditions and the catalog through migrator's default
+-- privileges and hold nothing else on them
 -- (a simple view is auto-updatable, so writes are checked too). ingest's SELECT is in the exact
 -- set above; trainer holds nothing until Phase 3 (D13), per the trainer check above.
 INSERT INTO role_checks
@@ -246,6 +257,10 @@ SELECT 'conditions table exists: ' || t, EXISTS (SELECT 1 FROM rels WHERE tbl = 
 FROM unnest(ARRAY['public.cell_daily_conditions', 'public.grid_bucket_series', 'public.cell_normals_status',
                   'public.cell_climate_normals', 'public.cell_climatology']) AS t
 UNION ALL
+SELECT 'catalog relation exists: ' || t, EXISTS (SELECT 1 FROM rels WHERE tbl = t)
+FROM unnest(ARRAY['public.canonical_areas', 'public.canonical_routes', 'public.scorable_routes',
+                  'internal.route_tick_scrapes', 'internal.route_tick_coverage', 'internal.route_tick_months']) AS t
+UNION ALL
 SELECT g || ' can SELECT ' || r.tbl || ' and nothing else',
        has_table_privilege(g, r.oid, 'SELECT')
        AND NOT (has_table_privilege(g, r.oid, 'INSERT') OR has_table_privilege(g, r.oid, 'UPDATE')
@@ -254,7 +269,8 @@ SELECT g || ' can SELECT ' || r.tbl || ' and nothing else',
 FROM rels r CROSS JOIN unnest(ARRAY['app', 'analyst']) AS g
 WHERE r.tbl IN ('public.accidents_clean', 'public.accidents_clean_daily', 'public.accident_conditions',
                 'public.cell_daily_conditions', 'public.grid_bucket_series', 'public.cell_normals_status',
-                'public.cell_climate_normals', 'public.cell_climatology');
+                'public.cell_climate_normals', 'public.cell_climatology', 'public.canonical_areas',
+                'public.canonical_routes', 'public.scorable_routes');
 
 SELECT check_name, ok FROM role_checks ORDER BY ok, check_name;
 

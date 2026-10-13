@@ -364,9 +364,13 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
     _as(migrator_url, "INSERT INTO internal.accidents_raw (accident_id, source, source_id, date, year, latitude, longitude) "
         "SELECT accident_id, source, source_id, date, year, latitude, longitude FROM accidents")
     _run_real_jobs_as_ingest(ingest, tmp_path, monkeypatch)
+    # The loader, as ingest, also wrote the tick-source seam for its one complete route.
+    assert _fetch_row(fresh_db, "SELECT mp_route_id, complete_through::text, total_ticks "
+                      "FROM internal.route_tick_scrapes") == [900000002, "2026-08-31", 3]
     _as(ingest, "SELECT count(*) FROM accidents")
-    _as(ingest, "SELECT mp_id, latitude, longitude FROM mp_locations")
-    _denied(ingest, "SELECT name FROM mp_locations")
+    _as(ingest, "SELECT mp_id, parent_id, name, latitude, longitude FROM mp_locations")
+    _denied(ingest, "SELECT url FROM mp_locations")
+    _denied(ingest, "SELECT created_at FROM mp_locations")
     _denied(ingest, "SELECT * FROM mp_locations")
     _as(ingest, "UPDATE accidents SET date_precision = 'day' WHERE false")
     _as(ingest, "INSERT INTO internal.accident_revisions (accident_id, field, method, rule_version, run_id) SELECT accident_id, 'f', 'm', 'v', gen_random_uuid() FROM accidents WHERE false")
@@ -443,6 +447,27 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
     _denied(analyst, "BEGIN READ WRITE; DELETE FROM grid_bucket_series WHERE false; COMMIT")
     _denied(app, "UPDATE accidents_clean SET source_url = 'x' WHERE false")
     _denied(analyst, "BEGIN READ WRITE; DELETE FROM accidents_clean_daily WHERE false; COMMIT")
+
+    # MP catalog plan (0008): ingest upserts the catalog and the tick-source seam, never deletes;
+    # app and analyst read the catalog, and app never reads the seam.
+    _as(ingest, "INSERT INTO canonical_areas (area_id, tree_status, coord_precision, catalog_version) "
+        "VALUES (900000100, 'cycle', 'none', 'v') "
+        "ON CONFLICT (area_id) DO UPDATE SET catalog_version = EXCLUDED.catalog_version")
+    _as(ingest, "INSERT INTO canonical_routes (route_id, area_id, type_group, is_boulder, disciplines, "
+        "type_rule_version, scorable, unscorable_reason, facts_sha256, catalog_version) "
+        "VALUES (900000002, 900000100, 'ice', false, '{ice}', 'v', false, 'not_us', 'h', 'v') "
+        "ON CONFLICT (route_id) DO UPDATE SET facts_sha256 = EXCLUDED.facts_sha256")
+    _as(ingest, "SELECT count(*) FROM scorable_routes")
+    _denied(ingest, "DELETE FROM canonical_routes WHERE false")
+    _denied(ingest, "DELETE FROM canonical_areas WHERE false")
+    _as(ingest, "SELECT tick_status FROM internal.route_tick_coverage; SELECT count(*) FROM internal.route_tick_months")
+    _as(ingest, "UPDATE internal.route_tick_scrapes SET updated_at = now() WHERE false")
+    _denied(ingest, "DELETE FROM internal.route_tick_scrapes WHERE false")
+    _as(app, "SELECT count(*) FROM canonical_routes; SELECT count(*) FROM scorable_routes")
+    _as(analyst, "SELECT count(*) FROM canonical_areas; SELECT count(*) FROM internal.route_tick_coverage")
+    _denied(app, "UPDATE canonical_routes SET scorable = scorable WHERE false")
+    _denied(app, "SELECT count(*) FROM internal.route_tick_scrapes")
+    _denied(analyst, "BEGIN READ WRITE; DELETE FROM internal.route_tick_scrapes WHERE false; COMMIT")
 
     _denied(app, "SELECT count(*) FROM internal.mp_tick_aggregates")
     _denied(app, "SELECT count(*) FROM internal.accidents_raw")
@@ -535,7 +560,7 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "GRANT DELETE ON internal.duplicate_decisions TO ingest;"
         "REVOKE DELETE ON public.gnis_summits FROM ingest;"
         "GRANT SELECT ON internal.accidents_raw TO ingest;"
-        "GRANT SELECT (name) ON public.mp_locations TO ingest;"
+        "GRANT SELECT (url) ON public.mp_locations TO ingest;"
         "GRANT SELECT (climber_name) ON public.mp_ticks TO ingest;"
         "GRANT USAGE ON SEQUENCE public.mp_ticks_tick_id_seq TO ingest;"
         "ALTER DEFAULT PRIVILEGES IN SCHEMA internal GRANT SELECT ON TABLES TO ingest;"
@@ -554,7 +579,11 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "REVOKE SELECT ON public.weather FROM ingest;"
         "GRANT INSERT (location) ON public.accidents TO ingest;"
         "REVOKE INSERT (description) ON public.accidents FROM ingest;"
-        "GRANT SELECT ON SEQUENCE public.accidents_accident_id_seq TO ingest;",
+        "GRANT SELECT ON SEQUENCE public.accidents_accident_id_seq TO ingest;"
+        "GRANT DELETE ON public.canonical_routes TO ingest;"
+        "REVOKE UPDATE ON internal.route_tick_scrapes FROM ingest;"
+        "GRANT INSERT ON public.canonical_areas TO app;"
+        "GRANT SELECT ON public.scorable_routes TO trainer;",
     )
     _as(owner_url, "GRANT ingest TO analyst")
     # CREATE without USAGE is enough to create a table, which is why verify checks both.
@@ -569,7 +598,7 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "ingest DELETE on public.gnis_summits matches the expected set",
         "ingest SELECT on internal.accidents_raw matches the expected set",
         "ingest accidents_raw column privileges match the expected set: description",
-        "ingest mp_locations column privileges match the expected set: name",
+        "ingest mp_locations column privileges match the expected set: url",
         "ingest accidents column privileges match the expected set: tz",
         "ingest mp_ticks column privileges match the expected set: climber_name",
         "ingest has nothing on sequence public.mp_ticks_tick_id_seq",
@@ -591,5 +620,9 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "ingest accidents column privileges match the expected set: location",
         "ingest accidents column privileges match the expected set: description",
         "ingest has nothing on sequence public.accidents_accident_id_seq",
+        "ingest DELETE on public.canonical_routes matches the expected set",
+        "ingest UPDATE on internal.route_tick_scrapes matches the expected set",
+        "app can SELECT public.canonical_areas and nothing else",
+        "trainer holds no privilege on public.scorable_routes",
     ):
         assert check in stray.stderr, check

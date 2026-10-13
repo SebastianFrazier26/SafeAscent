@@ -30,7 +30,7 @@ import re
 import sqlite3
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import bindparam, text
@@ -217,6 +217,22 @@ async def existing_counts(conn: AsyncConnection, route_ids: set[int]) -> dict[tu
     return {(int(r), str(p), str(s)): int(n) for r, p, s, n in result.all()}
 
 
+SEAM_UPSERT = text(
+    "INSERT INTO internal.route_tick_scrapes (mp_route_id, source, scraped_at, complete, complete_through, total_ticks, "
+    "loaded_run_id) VALUES (:r, 'mp_scrape', :at, true, :through, :n, :run) "
+    "ON CONFLICT (mp_route_id) DO UPDATE SET scraped_at = EXCLUDED.scraped_at, complete = true, "
+    "complete_through = EXCLUDED.complete_through, total_ticks = EXCLUDED.total_ticks, "
+    "loaded_run_id = EXCLUDED.loaded_run_id, updated_at = now() "
+    "WHERE internal.route_tick_scrapes.scraped_at < EXCLUDED.scraped_at"
+)
+
+
+def complete_through(scraped_at: datetime) -> date:
+    """Last day of the last fully observed month: the month before the scrape's UTC month (D3)."""
+    first = scraped_at.astimezone(UTC).date().replace(day=1)
+    return first - timedelta(days=1)
+
+
 # One multi-row VALUES statement per chunk of this many rows (M3 follow-up, Task 6 review): each
 # row costs 5 bind params (plus 2 shared), and a real export runs to ~35k rows, so an unchunked
 # statement blew past asyncpg's ~32767-argument limit at 6,554 rows. 1000 keeps every statement
@@ -256,6 +272,11 @@ async def load(conn: AsyncConnection, rows: list[AggregateRow], *, run_id: uuid.
             params,
         )
         inserted += len(result.all())
+    totals = [r for r in rows if r.period == "total"]
+    if totals:
+        await conn.execute(SEAM_UPSERT, [
+            {"r": t.mp_route_id, "at": t.scraped_at, "through": complete_through(t.scraped_at), "n": t.tick_count,
+             "run": run_id} for t in totals])
     return inserted
 
 
