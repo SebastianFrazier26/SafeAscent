@@ -54,16 +54,19 @@ INSERT INTO role_checks VALUES
        SELECT 1 FROM pg_default_acl d CROSS JOIN LATERAL aclexplode(d.defaclacl) a
        WHERE a.grantee IN (to_regrole('ingest'), to_regrole('trainer'))));
 
--- The exact table-level privileges ingest holds. Later plans append rows here. mp_ticks is
--- absent on purpose: ingest's SELECT and UPDATE there are column-level (checked below), and a
--- column grant leaves has_table_privilege false.
+-- The exact table-level privileges ingest holds. Later plans append rows here. mp_ticks,
+-- accidents UPDATE and accidents_raw are absent on purpose: those grants are column-level
+-- (checked below), and a column grant leaves has_table_privilege false.
 CREATE TEMP TABLE ingest_privs (tbl text, priv text);
 INSERT INTO ingest_privs VALUES
   ('public.mp_routes', 'SELECT'),
   ('public.source_ingest_log', 'SELECT'), ('public.source_ingest_log', 'INSERT'),
   ('public.source_ingest_log', 'UPDATE'),
   ('internal.mp_tick_aggregates', 'SELECT'), ('internal.mp_tick_aggregates', 'INSERT'),
-  ('internal.ingest_quarantine', 'SELECT'), ('internal.ingest_quarantine', 'INSERT');
+  ('internal.ingest_quarantine', 'SELECT'), ('internal.ingest_quarantine', 'INSERT'),
+  -- Plan 2 (accident repair); mp_locations SELECT is column-level, checked below.
+  ('public.accidents', 'SELECT'),
+  ('internal.accident_revisions', 'SELECT'), ('internal.accident_revisions', 'INSERT');
 
 -- PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views, so extension-owned
 -- relations are skipped throughout, as verify_roles.sql does.
@@ -127,6 +130,56 @@ SELECT 'ingest mp_ticks column privileges match the expected set: ' || attname,
        AND NOT has_column_privilege('ingest', 'public.mp_ticks', attnum, 'INSERT')
        AND NOT has_column_privilege('ingest', 'public.mp_ticks', attnum, 'REFERENCES')
 FROM cols;
+
+-- ingest's column grants from plan 2: UPDATE on accidents exactly the repair columns (never
+-- description, source, source_id or accident_id); SELECT on accidents_raw only the R1/R2 inputs.
+WITH cols AS (
+  SELECT a.attnum, a.attname,
+         a.attname IN ('date', 'year', 'latitude', 'longitude', 'coordinates', 'country', 'date_precision',
+                       'year_source', 'year_lo', 'year_hi', 'geocode_precision', 'geocode_method',
+                       'activity_class', 'activity_rule_version', 'inclusion_flag', 'incident_group_id',
+                       'is_canonical', 'severity_scale', 'excluded_reason', 'source_url', 'updated_at',
+                       'exp_years_climbing', 'exp_stated_level', 'exp_first_season', 'guided', 'exp_rule_version')
+           AS may_update
+  FROM pg_attribute a
+  WHERE a.attrelid = 'public.accidents'::regclass AND a.attnum > 0 AND NOT a.attisdropped
+)
+INSERT INTO role_checks
+SELECT 'ingest accidents column privileges match the expected set: ' || attname,
+       has_column_privilege('ingest', 'public.accidents', attnum, 'UPDATE') = may_update
+       AND NOT has_column_privilege('ingest', 'public.accidents', attnum, 'INSERT')
+       AND NOT has_column_privilege('ingest', 'public.accidents', attnum, 'REFERENCES')
+FROM cols;
+
+WITH cols AS (
+  SELECT a.attnum, a.attname
+  FROM pg_attribute a
+  WHERE a.attrelid = 'public.mp_locations'::regclass AND a.attnum > 0 AND NOT a.attisdropped
+)
+INSERT INTO role_checks
+SELECT 'ingest mp_locations column privileges match the expected set: ' || attname,
+       has_column_privilege('ingest', 'public.mp_locations', attnum, 'SELECT') = (attname IN ('mp_id', 'latitude', 'longitude'))
+       AND NOT has_column_privilege('ingest', 'public.mp_locations', attnum, 'UPDATE')
+       AND NOT has_column_privilege('ingest', 'public.mp_locations', attnum, 'INSERT')
+       AND NOT has_column_privilege('ingest', 'public.mp_locations', attnum, 'REFERENCES')
+FROM cols;
+
+-- By oid from rels, not 'internal.accidents_raw'::regclass: the name lookup needs USAGE on
+-- internal, which the owner running this script may not hold.
+WITH cols AS (
+  SELECT r.oid, a.attnum, a.attname
+  FROM rels r JOIN pg_attribute a ON a.attrelid = r.oid
+  WHERE r.tbl = 'internal.accidents_raw' AND a.attnum > 0 AND NOT a.attisdropped
+)
+INSERT INTO role_checks
+SELECT 'ingest accidents_raw column privileges match the expected set: ' || attname,
+       has_column_privilege('ingest', oid, attnum, 'SELECT') = (attname IN ('accident_id', 'source', 'source_id', 'date', 'year'))
+       AND NOT has_column_privilege('ingest', oid, attnum, 'UPDATE')
+       AND NOT has_column_privilege('ingest', oid, attnum, 'INSERT')
+       AND NOT has_column_privilege('ingest', oid, attnum, 'REFERENCES')
+FROM cols;
+INSERT INTO role_checks VALUES
+  ('accidents_raw column checks ran', EXISTS (SELECT 1 FROM rels WHERE tbl = 'internal.accidents_raw'));
 
 SELECT check_name, ok FROM role_checks ORDER BY ok, check_name;
 
