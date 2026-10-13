@@ -6,6 +6,8 @@
 
 **Revision 3 (2026-10-12):** owner decision DP14: the R10 LLM pass (Task 15) sends the **full accident narrative** (the owner states the accident text all comes from open online sources), alongside the short fields; pick-from-candidates, one audit row per call, the dollar cap and the sample gate are unchanged. DP6, DP8 and DP13 had no owner answer, so their recommended defaults stand as controller rulings (the owner may override): launchd yearly on 2 January plus on demand; the thresholds as written; a Haiku-vs-Sonnet sample.
 
+**Revision 4 (2026-10-13):** the pre-flight scan's 21 findings applied so the plan fits the real code (B1 `ltree` in the role-script tests' owner DB; B2 the EPQS gate test; M1 `area_tree` typing; M2 `links.py` written out; M3 superseded by DP6; M4 Haiku 4.5 with an 8,192-token thinking budget and Sonnet 5 at effort `high`, with the cost ceilings updated; minors m1–m15; m16 is sequencing only, no plan change). Owner decisions of 2026-10-12/13 replace the controller rulings: **DP6** a dedicated Railway cron service holding only the `ingest` credential (Tasks 12–13 rewritten; the launchd wrapper and template are gone); **DP8** auto-link at ≥ 0.80, owner review 0.60–0.80, the gate unchanged; **DP13** Haiku preferred when roughly equivalent; **DP14** full narrative (unchanged). New open owner question **O1** (candidate MP facts sent to Anthropic), `[default pending: O1]`.
+
 **Goal:** Build a thin route catalog on Mountain Project data (`canonical_areas` and `canonical_routes` keyed by the MP ids themselves, with a versioned `type_group` mapper, an `ltree` area path from the `parent_id` chain, a scorable flag, a tick-source seam, and a scheduled refresh), then the Phase 3 MVP-1 similarity features on that catalog (type group, elevation with 100% coverage checked against USGS EPQS, monthly climate normals from plan 3, latitude), then R10 as a near-identity accident→route link on `accidents.mp_route_id`, with an audited, sample-gated LLM pass that picks among our own candidates for the legacy residue.
 
 **Architecture:** `area_tree.py` (pure) turns `mp_locations` rows into root-first paths, US state codes and coordinates with their true source; `route_types.py` (pure) maps the MP type string and grade to a type group; `mp_catalog.py` reads `mp_locations`/`mp_routes`, derives only those columns, and upserts them in one gated transaction. No name, grade, URL or prose is copied: displayable facts stay in the MP tables, where Phase 4's `app/catalog_seam.py` reads them by the same ids. Ticks reach every consumer through one seam, `internal.route_tick_scrapes` (per-route scrape completeness) read through `internal.route_tick_coverage`; the exposure plan only adds a rock loader that writes it. The features half is the 2026-09-28 similarity plan re-pointed at this catalog (`feature_points`, `route_static_features`, the `scoring_unit_features` view as the Phase 3 MVP-1 read contract). `catalog_cycle.py` chains refresh → points → elevation → route table for the scheduled run. R10 is a view (`accident_route_links`): the identity on `accidents.mp_route_id`, plus legacy links that carried a usable MP id, owner decisions, and LLM picks that cleared a measured gate.
@@ -31,15 +33,15 @@ The algorithm work is the owner's top priority, so this plan merges first and ta
 The foundations plan's Global Constraints apply. Also:
 - **Missing is never 0.** A feature, coordinate, tick count or normal that is not known is NULL with a reason column, never 0 and never a default. Ticks are read only through `internal.route_tick_coverage`: a route with no scrape row is `missing` (NULL total, NULL months), a scraped but incomplete route is `scraped`, and only a route whose scrape finished is `complete` as of `complete_through`; months after `complete_through` are missing, never zero. A transient failure (network error, timeout, 5xx, 429) leaves a value unfilled for the next run; only an authoritative "not there" is recorded as missing.
 - **No MP prose, anywhere.** No description, comment, beta, protection or photo field is read, stored, logged, exported, committed or sent to a third party. The catalog copies no names, grades or URLs either; review CSVs (gitignored `data/review/`) may show names and grades, never `url` or prose.
-- **Third-party API calls (the R10 LLM pass only)** send the field set of Task 15 `(decided: DP14)`: the short accident fields, the accident's **full narrative** (`description`; owner decision 2026-10-12: the accident text comes from open online sources), and the candidates' MP facts. Never coordinates, exact dates, URLs or any id (accident, route, area or person); never MP prose; the API key is read only from the exported shell environment, never from `backend/.env`, Railway or GitHub.
+- **Third-party API calls (the R10 LLM pass only)** send the field set of Task 15 `(decided: DP14)`: the short accident fields, the accident's **full narrative** (`description`; owner decision 2026-10-12: the accident text comes from open online sources), and the candidates' MP facts (names, grades, types, area names) `[default pending: O1]`. Never coordinates, exact dates, URLs or any id (accident, route, area or person); never MP prose; the API key is read only from the exported shell environment, never from `backend/.env`, Railway or GitHub.
 - **Test fixtures:** MP-shaped ids only in the synthetic range ≥ 900000000 (the convention in `backend/tests/test_accident_facts.py`, enforced from PR C-1 by `scripts/check_no_mp_data.py`); names are `Fixture …` or US state names, never real MP route or area names. CI never calls the Anthropic API (fake allocator).
 - **Parameterised SQL only.** Values travel as bound parameters (`:name`, arrays via `CAST(:x AS bigint[])`); no SQL string is built from data. The only f-strings in SQL interpolate module constants.
-- **Least privilege.** Grants change only in the Phase 2 three-file lockstep (`create_roles_phase2.sql` is untouched here; `grants_phase2.sql` and `verify_roles_phase2.sql` change together, with `tests/test_roles_phase2.py` green). `ingest` gets column-level SELECT where a table holds anything it does not need; `trainer` gets nothing until Phase 3 (D13); `app` holds nothing in `internal`. No prod database credential is added to Railway, GitHub or any shared host by this plan (DP6).
+- **Least privilege.** Grants change only in the Phase 2 three-file lockstep (`create_roles_phase2.sql` is untouched here; `grants_phase2.sql` and `verify_roles_phase2.sql` change together, with `tests/test_roles_phase2.py` green). `ingest` gets column-level SELECT where a table holds anything it does not need; `trainer` gets nothing until Phase 3 (D13); `app` holds nothing in `internal`. The one prod database credential this plan puts on a shared host is `ingest`'s, on the dedicated Railway cron service `catalog-cycle` only (direct Neon host, verify-full TLS; owner decision DP6, 2026-10-13); nothing goes to GitHub, and no other Railway service gets it.
 - **Route coordinates come only from `location_id` → `mp_locations`.** `mp_routes.latitude/longitude` are never read by this plan (they are NULL in prod).
 - **Catalog rows are never deleted.** `canonical_*` reference `mp_*` by FK (`ON DELETE RESTRICT`); a refresh only inserts and updates.
 - Point keys are computed only in Python (`grid.point_key`) and stored; SQL joins on stored keys, never on formatted coordinates.
 - No DDL in `app/` (`tests/test_no_runtime_ddl.py`); every schema change is a migration run as `migrator`, rehearsed on a Neon branch.
-- Every new module joins the strict mypy allowlist in `backend/pyproject.toml`; models join the models block (the variant without the subclassing-Any check, like `app.models.conditions`).
+- Every new module joins the strict mypy allowlist in `backend/pyproject.toml`; models that subclass `Base` (`app.models.catalog`, `features`, `links`) join the models block (the variant without the subclassing-Any check, like `app.models.conditions`), and `app.models.types` (no `Base` subclass) joins the strict block (m1).
 - New dependencies are exact `==` pins, like the existing `pipelines` group.
 
 ## Decisions
@@ -66,11 +68,11 @@ The foundations plan's Global Constraints apply. Also:
 - D-G **Commitment grade in the MP type string** (`Grade IV`–`Grade VII` as its own comma token) → `alpine`, per spec P2-3. Every type token with ≥ 50 routes must be mapped or explicitly ignored before the mapper is frozen (Task 2 Step 1).
 - D-H `(decided: DP11)` **Refresh gate:** a refresh whose scorable count is more than 3% below the stored catalog's is `rejected` and writes nothing but its log row.
 - D-I `(decided: DP5)` **FK `ON DELETE RESTRICT` to `mp_routes`/`mp_locations`.** The private scrape loader upserts and never deletes MP rows; the owner confirms it in runbook Task 6 Step 0.
-- D-J `(ruled: DP6, controller ruling 2026-10-12, recommended default; the owner may override)` **Scheduled refresh** (Task 12). Ruled: **option A, a launchd job on the owner's Mac**, running `catalog_cycle` **once a year on 2 January** (before the January ERA5 Professional window opens, which plan 3 starts on or after 10 January, so every new point's bucket is `pending` in time to get normals bought that month) **plus on demand** after each scrape load, and a launchd catch-up run when the Mac was asleep at the scheduled time. Prod credentials stay in the main checkout's 0600 `backend/.env.ingest`, beside the scraper and its private data; nothing new holds a prod credential. Alternatives: **B, a Celery beat task on the Railway worker**, which would give the worker (an internet-facing service's sibling, running app code) an `ingest`-level credential that can write accident repair columns, the catalog and conditions; to be acceptable it needs a new narrow role (`catalog_job`, catalog/feature tables only) and the `pipelines` group (`rasterio`, `h3`) in the worker image. **C, a scheduled Railway job service** (cron start command): isolated from the worker, but the same new role and image weight, and a prod write credential on Railway. Both B and C also move the 3DEP/EPQS traffic to Railway egress.
+- D-J `(decided: DP6, owner 2026-10-13)` **Scheduled refresh** (Task 12): a **dedicated Railway cron service**, `catalog-cycle` (`backend/railway-catalog-cycle.toml`, built from `backend/Dockerfile.jobs`), separate from the api, worker and beat services. It runs `catalog_cycle` **once a year on 2 January** (09:00 UTC, before the January ERA5 Professional window opens, which plan 3 starts on or after 10 January, so every new point's bucket is `pending` in time to get normals bought that month) **plus on demand** after each scrape load (`railway cron run`). It holds **only** the `ingest` credential, over verify-full TLS to the **direct (non-pooler) Neon host**; no other service gets it (Task 13 Step 6c checks). Railway auto-deploy stays **off** for it, and its variables are set with `--skip-deploys`. Loading the private scrape data stays local: the scraper, its private files and the tick/MP loaders never run on Railway. This replaces the 2026-10-12 controller ruling (launchd on the owner's Mac), so the launchd wrapper, its template and the worktree-on-`main` install (pre-flight M3) are gone. The owner chose the existing `ingest` role over a new narrower `catalog_job` role; `ingest` can also write accident repair columns, the catalog and conditions, which is why the service is isolated and holds nothing else. 3DEP/EPQS traffic moves to Railway egress.
 - D-K `(decided: DP7)` **Terrain and lithology (v2.2) stay deferred** to a follow-up plan that carries the 2026-09-28 plan's Tasks 6–7 over (they touch only `feature_points`). Their columns are created now in `0009`. Appendix A records the candidate data sources (licence, coverage, resolution, access) for that plan; nothing is fetched now.
 - D-L `(decided: DP12)` **`scoring_unit_features` lists scorable routes only.**
 - D-M `(decided: DP9)` **Tick-source seam.** Table `internal.route_tick_scrapes(mp_route_id PK FK mp_routes, source, scraped_at, complete, complete_through, total_ticks, loaded_run_id)`: one row per route whose ticks some loader has read, written by every tick loader (the existing ice/mixed loader from this plan on, the exposure plan's rock loader later). View `internal.route_tick_coverage(route_id, tick_status ∈ {'missing','scraped','complete'}, complete_through, scraped_at, tick_total)` over every catalog route is the only read path. Monthly counts stay in `internal.mp_tick_aggregates`; a month counts only when it is ≤ `complete_through`. Rock tick loading (and the M9 `period='total'` reload issue) stays in the exposure plan, which adds a loader and nothing else.
-- D-N **R10:** the identity on `accidents.mp_route_id`, legacy links with a usable MP id, owner decisions, and (Task 15) LLM picks. `(ruled: DP8, controller ruling 2026-10-12, recommended default; the owner may override)` auto-link vs owner-review thresholds as written in Task 15; `(ruled: DP13, controller ruling 2026-10-12, recommended default; the owner may override)` model chosen from a Haiku-vs-Sonnet sample; `(decided: DP14)` the full accident narrative is sent with the short fields. Details in Task 15. The legacy `routes`/`mountains` tables and columns stay.
+- D-N **R10:** the identity on `accidents.mp_route_id`, legacy links with a usable MP id, owner decisions, and (Task 15) LLM picks. `(decided: DP8, owner 2026-10-13)` auto-link at confidence ≥ 0.80 behind the unchanged sample gate, owner review for 0.60–0.80, unresolved below 0.60 or on `none`; `(decided: DP13, owner 2026-10-13)` Haiku is preferred whenever its performance is roughly equivalent, chosen from a Haiku-vs-Sonnet sample; `(decided: DP14)` the full accident narrative is sent with the short fields; `[default pending: O1]` the candidates' MP names, grades and types are sent too, pending the owner's confirmation. Details in Task 15. The legacy `routes`/`mountains` tables and columns stay.
 - D-O From the 2026-09-28 similarity plan, kept: point key 5 decimals; 3DEP NAD83 treated as WGS84; `route_static_features.lat` beside the P3 columns; points only from areas with non-boulder routes attached; `slope_deg` = max Horn slope within 200 m; EPQS gate per slope class (median ≤ 2/4/8 m, p90 ≤ 5/10/20 m, ≥ 30 per class, ≥ 180 total, any |Δ| > 100 m fails).
 
 ## Review Focus
@@ -103,7 +105,10 @@ The foundations plan's Global Constraints apply. Also:
 | `backend/app/pipelines/dem.py`, `epqs.py` | Create | 3DEP sampler, EPQS check (carried unchanged). |
 | `backend/app/pipelines/static_features.py` | Create | Points, elevation, route table, EPQS check, CLI. |
 | `backend/app/pipelines/catalog_cycle.py` | Create | Scheduled chain: refresh → points → elevation rounds → routes. |
-| `backend/scripts/catalog_cycle.sh`, `ops/launchd/com.safeascent.catalog-cycle.plist.template` | Create | launchd wrapper and agent template (DP6 option A). |
+| `backend/railway-catalog-cycle.toml`, `backend/Dockerfile.jobs` | Create | Railway cron service for the cycle and its image with the `pipelines` group (DP6). |
+| `scripts/check_compose_matches_railway.py`, `backend/tests/test_check_compose_matches_railway.py` | Modify | Documented exemption for the cron service; every `railway-*.toml` is compared or exempt. |
+| `backend/app/config.py`, `.env.example` | Modify | `HEALTHCHECKS_CATALOG_URL`. |
+| `backend/tests/pgtest.py`, `backend/tests/test_migrations.py` | Modify | Shared `fetch`/`run_on_conn`/`run_on_engine` helpers (m9); `ltree` in the role-script tests' owner DB (B1). |
 | `backend/app/data/repair/legacy_links.py` | Create | R10 plan/apply, review export/import. |
 | `backend/app/data/repair/r10_llm.py` | Create | LLM allocation: request builder, allocator protocol, Claude allocator, audit, cap, sample, gate, apply. |
 | `backend/app/data/repair/__main__.py` | Modify | Register `r10`, `r10-export`, `r10-import`, `r10-llm`. |
@@ -127,7 +132,7 @@ The foundations plan's Global Constraints apply. Also:
 | 4 | 10, 12, 14, Phase 3 | `mp_catalog.refresh(conn, *, run_id, dry_run=False) -> RefreshResult`, `run_logged` | Frozen in Task 4. |
 | 7 | 10, 11, Phase 3 | `feature_points`, `route_static_features`, `scoring_unit_features` (0009) | Frozen in Task 7. |
 | 8 | 9, 10 | `dem.sample_points`, `dem.Elevation`, `dem.TransientTileError`, `dem.read_window` | Carried unchanged. |
-| 10 | 12 | `static_features.upsert_points`, `fill_elevation`, `build_route_features` | Task 12 calls them, never re-implements them. |
+| 10 | 12 | `static_features.run_step` (wraps `upsert_points`, `fill_elevation`, `build_route_features`, `epqs_check`) | Task 10 writes `run_step` (m6); Task 12 calls it, never re-implements it. |
 | 14 | 15 | `legacy_links.LegacyRow`, `Unresolved`, candidate ranking, `accident_legacy_links.method` | Task 15 adds method `llm` in the same migration (Task 14's `0010`). |
 | 1, 7, 14 | Phase 4 Task 24 | `ingest` column SELECT on `mp_locations` | Both add `name`, `parent_id`; this plan lands first, so Phase 4's GRANT is already present and its verify list must keep the union. |
 | 1, 7, 14 | Phase 4 0008–0010 | Alembic chain, test file names | Phase 4 renumbers to 0011–0013 (Migration numbering). |
@@ -142,7 +147,7 @@ The foundations plan's Global Constraints apply. Also:
 
 **Files:**
 - Create: `backend/db/owner/extensions_mp_catalog.sql`, `backend/alembic/versions/0008_mp_catalog.py`, `backend/app/models/types.py`, `backend/app/models/catalog.py`, `backend/tests/test_migration_0008.py`
-- Modify: `backend/app/models/__init__.py`, `backend/app/pipelines/mp_tick_aggregates.py`, `backend/tests/test_mp_tick_aggregates.py`, `backend/pyproject.toml` (mypy), `backend/db/roles/grants_phase2.sql`, `backend/db/roles/verify_roles_phase2.sql`, `backend/alembic/env.py` (only if Step 5 needs it)
+- Modify: `backend/app/models/__init__.py`, `backend/app/pipelines/mp_tick_aggregates.py`, `backend/tests/test_mp_tick_aggregates.py`, `backend/tests/test_migrations.py` (`_owner_db` creates `ltree`, B1), `backend/tests/pgtest.py` (shared `fetch` / `run_on_conn` / `run_on_engine` helpers, m9), `backend/pyproject.toml` (mypy), `backend/db/roles/grants_phase2.sql`, `backend/db/roles/verify_roles_phase2.sql`, `backend/alembic/env.py` (only if Step 5 needs it)
 
 **Interfaces:**
 - Produces (DB, public):
@@ -155,16 +160,59 @@ The foundations plan's Global Constraints apply. Also:
   - View `internal.route_tick_months(route_id, period, style, tick_count)`: monthly counts of `complete` routes for months ≤ `complete_through` only. For those routes and months, an absent row is a real zero; for every other route or month, absence is missing. Consumers never read `internal.mp_tick_aggregates` directly.
 - Produces (Python): `app.models.types.Ltree`; `app.models.catalog.CanonicalArea`, `CanonicalRoute`, `RouteTickScrape`; `mp_tick_aggregates.complete_through(scraped_at: datetime) -> date`, and `mp_tick_aggregates.load` also upserts the seam for every accepted `total` row (newer `scraped_at` wins). The exposure plan's rock loader writes the same table and nothing else changes.
 
+- [ ] **Step 0: Shared DB test helpers (m9)** — append to `backend/tests/pgtest.py` (it already imports `asyncio`), so no later test module re-declares its own `_fetch`/`_run`/`_db`:
+
+```python
+from collections.abc import Awaitable, Callable
+from typing import Any
+
+import asyncpg
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
+
+
+def fetch(name: str, sql: str) -> list[tuple[Any, ...]]:
+    async def go() -> list[tuple[Any, ...]]:
+        conn = await asyncpg.connect(_db_url(name))
+        try:
+            return [tuple(r) for r in await conn.fetch(sql)]
+        finally:
+            await conn.close()
+
+    return asyncio.run(go())
+
+
+def run_on_engine(name: str, fn: Callable[[AsyncEngine], Awaitable[Any]]) -> Any:
+    async def go() -> Any:
+        engine = create_async_engine(sa_url(name))
+        try:
+            return await fn(engine)
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(go())
+
+
+def run_on_conn(name: str, fn: Callable[[AsyncConnection], Awaitable[Any]]) -> Any:
+    """Runs fn in one committed transaction; a SQLAlchemy result comes back as a list of tuples."""
+
+    async def go(engine: AsyncEngine) -> Any:
+        async with engine.begin() as conn:
+            result = await fn(conn)
+            return [tuple(r) for r in result.all()] if hasattr(result, "all") else result
+
+    return run_on_engine(name, go)
+```
+
+Put the imports with the module's existing imports. `run_on_engine` exists for the one caller that needs the engine itself (Task 15's `run_calls` opens a transaction per call); everything else uses `run_on_conn` or `fetch`. Both return plain tuples, so tests compare against tuple literals and index columns by position.
+
 - [ ] **Step 1: Failing test** — `backend/tests/test_migration_0008.py`:
 
 ```python
-import asyncio
-
 import asyncpg
 import pytest
 from alembic import command
 
-from tests.pgtest import migrated_db, pg_url, requires_pg, run_sql
+from tests.pgtest import fetch, migrated_db, requires_pg, run_sql
 from tests.test_migrations import _alembic_cfg
 
 pytestmark = requires_pg
@@ -186,17 +234,6 @@ ROUTES = ("INSERT INTO canonical_routes (route_id, area_id, type_group, is_bould
           "scorable, unscorable_reason, facts_sha256, catalog_version) VALUES ")
 
 
-def _fetch(name: str, sql: str) -> list[asyncpg.Record]:
-    async def go() -> list[asyncpg.Record]:
-        conn = await asyncpg.connect(pg_url(name))
-        try:
-            return await conn.fetch(sql)
-        finally:
-            await conn.close()
-
-    return asyncio.run(go())
-
-
 def test_0008_checks_clean_and_enforces_the_catalog_rules():
     with migrated_db(PIN, seed_sql=MP + AREAS) as name:
         command.check(_alembic_cfg(name))
@@ -214,12 +251,12 @@ def test_scorable_routes_lists_its_columns_and_hides_unscorable():
     with migrated_db(PIN, seed_sql=MP + AREAS) as name:
         run_sql(name, ROUTES + "(900000001, 900000101, 'trad', false, '{trad}', 'rt-mp-v1', true, NULL, 'h', 'v'), "
                                "(900000002, 900000101, NULL, true, '{bouldering}', 'rt-mp-v1', false, 'boulder', 'h', 'v')")
-        cols = [r["column_name"] for r in _fetch(name, "SELECT column_name FROM information_schema.columns "
-                                                       "WHERE table_name = 'scorable_routes' ORDER BY ordinal_position")]
-        rows = _fetch(name, "SELECT route_id, area_path::text AS p, state_code FROM scorable_routes")
+        cols = [r[0] for r in fetch(name, "SELECT column_name FROM information_schema.columns "
+                                          "WHERE table_name = 'scorable_routes' ORDER BY ordinal_position")]
+        rows = fetch(name, "SELECT route_id, area_path::text AS p, state_code FROM scorable_routes")
     assert cols == ["route_id", "area_id", "type_group", "type_rule_version", "area_path", "state_code", "point_key",
                     "coord_precision", "updated_at"]
-    assert [(r["route_id"], r["p"], r["state_code"]) for r in rows] == [(900000001, "900000100.900000101", "CO")]
+    assert rows == [(900000001, "900000100.900000101", "CO")]
 
 
 MP3 = "INSERT INTO mp_routes (mp_route_id, name, location_id, type, grade) VALUES (900000003, 'Fixture Three', 900000101, 'Sport', '5.11a');"
@@ -237,14 +274,14 @@ def test_tick_coverage_has_three_states_and_never_zero():
         run_sql(name, "INSERT INTO internal.mp_tick_aggregates (mp_route_id, period, style, tick_count) VALUES "
                       "(900000001, '2024-02', 'lead', 5), (900000001, '2024-03', 'lead', 2), "
                       "(900000003, '2024-01', 'lead', 3), (900000001, 'total', 'all', 42)")
-        coverage = _fetch(name, "SELECT route_id, tick_status, complete_through::text AS ct, tick_total "
-                                "FROM internal.route_tick_coverage ORDER BY route_id")
-        months = _fetch(name, "SELECT route_id, period, tick_count FROM internal.route_tick_months ORDER BY 1, 2")
+        coverage = fetch(name, "SELECT route_id, tick_status, complete_through::text AS ct, tick_total "
+                               "FROM internal.route_tick_coverage ORDER BY route_id")
+        months = fetch(name, "SELECT route_id, period, tick_count FROM internal.route_tick_months ORDER BY 1, 2")
         with pytest.raises(asyncpg.CheckViolationError):
             run_sql(name, "UPDATE internal.route_tick_scrapes SET complete_through = NULL WHERE mp_route_id = 900000001")
-    assert [tuple(r) for r in coverage] == [
+    assert coverage == [
         (900000001, "complete", "2024-02-29", 42), (900000002, "missing", None, None), (900000003, "scraped", None, None)]
-    assert [tuple(r) for r in months] == [(900000001, "2024-02", 5)]
+    assert months == [(900000001, "2024-02", 5)]
 
 
 def test_existing_accepted_totals_are_backfilled_as_complete():
@@ -253,9 +290,9 @@ def test_existing_accepted_totals_are_backfilled_as_complete():
                       "(900000001, 'total', 'all', 42, '2024-03-15T12:00:00Z'), (900000002, '2024-01', 'lead', 3, "
                       "'2024-03-15T12:00:00Z')")
         command.upgrade(_alembic_cfg(name), PIN)
-        rows = _fetch(name, "SELECT mp_route_id, complete, complete_through::text AS ct, total_ticks "
-                            "FROM internal.route_tick_scrapes ORDER BY 1")
-    assert [tuple(r) for r in rows] == [(900000001, True, "2024-02-29", 42)]
+        rows = fetch(name, "SELECT mp_route_id, complete, complete_through::text AS ct, total_ticks "
+                           "FROM internal.route_tick_scrapes ORDER BY 1")
+    assert rows == [(900000001, True, "2024-02-29", 42)]
 
 
 def test_0008_downgrade_refuses_while_routes_exist():
@@ -486,9 +523,22 @@ class Ltree(UserDefinedType[str]):
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, SmallInteger, Text, func
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    SmallInteger,
+    Text,
+    func,
+)
 from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -584,9 +634,7 @@ class RouteTickScrape(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 ```
 
-(add `from datetime import date, datetime` and `Date, Integer` to the imports.)
-
-Register in `app/models/__init__.py`: `from app.models import catalog  # noqa: F401  (MP route catalog, 0008)`. Add `"app.models.types"` and `"app.models.catalog"` to the strict mypy block (match whatever exemption `app.models.conditions` carries for `declarative_base()`). If `alembic check` reports a type difference on `canonical_areas.path` (reflection reads `ltree` as `NullType`), add to `alembic/env.py`'s `_configure` a `compare_type` callable that returns `False` when the column is named `path` and either side is `Ltree`/`NullType`, and `None` otherwise (default comparison). That is the only acceptable model/DB exemption.
+Register in `app/models/__init__.py`: `from app.models import catalog  # noqa: F401  (MP route catalog, 0008)`. Mypy (m1): `"app.models.catalog"` goes into the **models override block** in `backend/pyproject.toml` (the one listing `app.models.pipeline`, `app.models.reference`, `app.models.conditions`, without `disallow_subclassing_any`, because a `declarative_base()` subclass always trips it); `"app.models.types"` (no `Base` subclass) goes into the **strict block**. If `alembic check` reports a type difference on `canonical_areas.path` (reflection reads `ltree` as `NullType`), add to `alembic/env.py`'s `_configure` a `compare_type` callable that returns `False` when the column is named `path` and either side is `Ltree`/`NullType`, and `None` otherwise (default comparison). That is the only acceptable model/DB exemption.
 
 - [ ] **Step 6: Tick loader writes the seam** — failing test first, appended to `backend/tests/test_mp_tick_aggregates.py`:
 
@@ -671,8 +719,17 @@ GRANT SELECT ON internal.route_tick_coverage, internal.route_tick_months TO inge
 - `ingest_privs` also gains `('internal.route_tick_scrapes', 'SELECT'), ('internal.route_tick_scrapes', 'INSERT'), ('internal.route_tick_scrapes', 'UPDATE'), ('internal.route_tick_coverage', 'SELECT'), ('internal.route_tick_months', 'SELECT')`.
 - The three internal relations are covered by the existing "app holds nothing on internal relation" and "analyst can SELECT" checks (the script's `GRANT SELECT ON ALL TABLES IN SCHEMA internal TO analyst` includes views).
 
+- [ ] **Step 7b: The role-script tests' owner database gets `ltree` (B1)** — five real tests upgrade to `head` as `migrator` (`test_roles_phase2.py` at its `command.upgrade(..., "head")` calls, lines 325, 482, 503 and 528 today, and `test_migrations.py::test_stamp_then_revoke_alembic_version_passes_verify`, line 368). `migrator` lacks CREATE on the database, so 0008's `_ensure_ltree` would raise in all five. In `backend/tests/test_migrations.py::_owner_db`, create `ltree` right after PostGIS, as the superuser fixture does today for PostGIS. This is the prod order: the owner runs `extensions_mp_catalog.sql` before 0008.
+
+```python
+        # PostGIS is not a trusted extension; on Neon it predates the owner's objects too.
+        "CREATE EXTENSION postgis;"
+        # Prod order: the owner runs db/owner/extensions_mp_catalog.sql before 0008 (migrator cannot).
+        "CREATE EXTENSION ltree;",
+```
+
 - [ ] **Step 8: Run** — `cd backend && uv run pytest tests/test_migration_0008.py tests/test_mp_tick_aggregates.py tests/test_migrations.py tests/test_roles_phase2.py -q && uv run mypy && uv run ruff check . ../scripts/` → PASS.
-- [ ] **Step 9: Commit** — `git add backend/db/owner/ backend/alembic/ backend/app/models/ backend/app/pipelines/mp_tick_aggregates.py backend/tests/test_migration_0008.py backend/tests/test_mp_tick_aggregates.py backend/pyproject.toml backend/db/roles/ && git commit -m "feat(db): 0008 MP catalog tables, scorable view, tick-source seam"`
+- [ ] **Step 9: Commit** — `git add backend/db/owner/ backend/alembic/ backend/app/models/ backend/app/pipelines/mp_tick_aggregates.py backend/tests/test_migration_0008.py backend/tests/test_mp_tick_aggregates.py backend/tests/test_migrations.py backend/tests/pgtest.py backend/pyproject.toml backend/db/roles/ && git commit -m "feat(db): 0008 MP catalog tables, scorable view, tick-source seam"`
 
 ---
 
@@ -1079,10 +1136,14 @@ def _source_index(chain: tuple[int, ...], by_id: Mapping[int, LocationRow]) -> i
     return i
 
 
-def _unlocated(row: LocationRow, chain: _Chain | None, status: TreeStatus, state: str | None,
-               issue: str | None) -> AreaNode:
-    path = ".".join(str(a) for a in chain) if isinstance(chain, tuple) else None
-    depth = len(chain) if isinstance(chain, tuple) else None
+def _path_depth(chain: _Chain) -> tuple[str | None, int | None]:
+    if isinstance(chain, str):
+        return None, None
+    return ".".join(str(a) for a in chain), len(chain)
+
+
+def _unlocated(row: LocationRow, chain: _Chain, status: TreeStatus, state: str | None, issue: str | None) -> AreaNode:
+    path, depth = _path_depth(chain)
     return AreaNode(row.mp_id, row.parent_id, path, depth, status, state, None, None, "none", None, None, issue)
 
 
@@ -1092,6 +1153,8 @@ def build_area_tree(rows: Sequence[LocationRow], root_states: Mapping[int, str |
     for area_id, chain in _chains(by_id).items():
         row = by_id[area_id]
         status: TreeStatus
+        state: str | None
+        precision: CoordPrecision
         if isinstance(chain, str):
             status, state = chain, None
         else:
@@ -1114,14 +1177,13 @@ def build_area_tree(rows: Sequence[LocationRow], root_states: Mapping[int, str |
                 continue
             source_id = chain[i]
             precision = "own" if source_id == area_id else "inherited"
-        path = ".".join(str(a) for a in chain) if isinstance(chain, tuple) else None
-        depth = len(chain) if isinstance(chain, tuple) else None
+        path, depth = _path_depth(chain)
         nodes[area_id] = AreaNode(area_id, row.parent_id, path, depth, status, state, pair[0], pair[1], precision,
                                   source_id, point_key(*pair), None)
     return nodes
 ```
 
-`ltree` labels accept digits, so the MP ids serve as labels unchanged. The equality walk compares the raw stored floats, which is exact for a copied pair. Append `"app.pipelines.area_tree"` to the strict mypy block.
+`ltree` labels accept digits, so the MP ids serve as labels unchanged. The equality walk compares the raw stored floats, which is exact for a copied pair. `state` and `precision` are declared before the branches (M1): without the annotation, mypy infers `precision: str` from the tuple assignment and rejects it as `AreaNode.coord_precision: CoordPrecision` under `--strict`. Append `"app.pipelines.area_tree"` to the strict mypy block.
 
 - [ ] **Step 4: Run** — `cd backend && uv run pytest tests/test_area_tree.py tests/test_grid.py -q && uv run mypy` → PASS.
 - [ ] **Step 5: Commit** — `git add backend/app/pipelines/area_tree.py backend/app/pipelines/grid.py backend/tests/test_area_tree.py backend/tests/test_grid.py backend/pyproject.toml && git commit -m "feat(pipelines): MP area tree paths, states, coordinate sources, point keys"`
@@ -1141,15 +1203,13 @@ def build_area_tree(rows: Sequence[LocationRow], root_states: Mapping[int, str |
 - [ ] **Step 1: Failing tests** — `backend/tests/test_mp_catalog.py`:
 
 ```python
-import asyncio
 import uuid
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.pipelines.area_tree import AreaNode
 from app.pipelines.mp_catalog import RouteFacts, classify_route, refresh
-from tests.pgtest import migrated_db, requires_pg, run_sql, sa_url
+from tests.pgtest import migrated_db, requires_pg, run_on_conn, run_sql
 
 PIN = "0008_mp_catalog"
 SEED = """
@@ -1174,25 +1234,12 @@ INSERT INTO mp_routes (mp_route_id, name, location_id, type, grade, latitude, lo
 """
 
 
-def _run(name, fn):
-    async def go():
-        engine = create_async_engine(sa_url(name))
-        try:
-            async with engine.begin() as conn:
-                result = await fn(conn)
-                return result.all() if hasattr(result, "all") else result
-        finally:
-            await engine.dispose()
-
-    return asyncio.run(go())
-
-
 def _refresh(name, dry_run=False):
-    return _run(name, lambda c: refresh(c, run_id=uuid.uuid4(), dry_run=dry_run))
+    return run_on_conn(name, lambda c: refresh(c, run_id=uuid.uuid4(), dry_run=dry_run))
 
 
 def _routes(name):
-    return {tuple(r)[0]: tuple(r)[1:] for r in _run(name, lambda c: c.execute(text(
+    return {r[0]: r[1:] for r in run_on_conn(name, lambda c: c.execute(text(
         "SELECT route_id, type_group, scorable, unscorable_reason, area_id FROM canonical_routes")))}
 
 
@@ -1225,18 +1272,21 @@ def test_refresh_builds_tree_types_and_scorable():
             900000008: ("trad", False, "no_area", 900000300),
             900000009: ("trad", False, "no_area", None),
         }
-        crag = _run(name, lambda c: c.execute(text(
+        crag = run_on_conn(name, lambda c: c.execute(text(
             "SELECT path::text, state_code, coord_precision, coord_source_id, point_key FROM canonical_areas "
             "WHERE area_id = 900000111")))
-        assert [tuple(r) for r in crag] == [
+        assert crag == [
             ("900000100.900000110.900000111", "CO", "inherited", 900000110, "40.20000:-105.30000")]
 
 
 @requires_pg
 def test_route_coordinates_are_never_read():
+    # Route 900000006 carries mp_routes lat/lon; its area 900000113 has none. Nothing may flow upward.
     with migrated_db(PIN, seed_sql=SEED) as name:
         _refresh(name)
-        assert _routes(name)[900000006][2] == "no_coordinates"
+        area = run_on_conn(name, lambda c: c.execute(text(
+            "SELECT lat, lon, point_key, coord_precision FROM canonical_areas WHERE area_id = 900000113")))
+        assert area == [(None, None, None, "none")]
 
 
 @requires_pg
@@ -1276,16 +1326,16 @@ def test_dry_run_writes_nothing():
     with migrated_db(PIN, seed_sql=SEED) as name:
         result = _refresh(name, dry_run=True)
         assert result.counts["routes_scorable"] == 3
-        assert [tuple(r) for r in _run(name, lambda c: c.execute(text("SELECT count(*) FROM canonical_routes")))] == [(0,)]
+        assert run_on_conn(name, lambda c: c.execute(text("SELECT count(*) FROM canonical_routes"))) == [(0,)]
 
 
 @requires_pg
 def test_absent_ticks_read_missing_after_refresh():
     with migrated_db(PIN, seed_sql=SEED) as name:
         _refresh(name)
-        rows = _run(name, lambda c: c.execute(text(
+        rows = run_on_conn(name, lambda c: c.execute(text(
             "SELECT DISTINCT tick_status, tick_total FROM internal.route_tick_coverage")))
-        assert [tuple(r) for r in rows] == [("missing", None)]
+        assert rows == [("missing", None)]
 ```
 
 In the fixture one of three scorable routes going `unknown` is a 33% drop, so the 3% gate rejects it.
@@ -1725,10 +1775,12 @@ def test_tick_seam_never_reads_unscraped_routes_as_counted():
 
 
 def test_last_refresh_ok_and_quarantine_small():
-    [row] = fetch("SELECT status, rows_quarantined FROM source_ingest_log WHERE source = 'mp_catalog' "
-                  "ORDER BY started_at DESC LIMIT 1")
+    [row] = fetch("SELECT status, rows_quarantined, (SELECT count(*) FROM mp_locations) AS n_locations "
+                  "FROM source_ingest_log WHERE source = 'mp_catalog' ORDER BY started_at DESC LIMIT 1")
     print(row)
     assert row["status"] == "ok"
+    # The 1% bound is the owner's to move.
+    assert row["rows_quarantined"] <= 0.01 * row["n_locations"]
 ```
 
 
@@ -1917,7 +1969,7 @@ ANALYST_PSQL -At -c "SELECT state_code, count(*) FROM scorable_routes GROUP BY 1
 ANALYST_PSQL -At -c "SELECT coord_precision, count(*) FROM canonical_areas WHERE EXISTS (SELECT 1 FROM canonical_routes r WHERE r.area_id = canonical_areas.area_id) GROUP BY 1"
 ```
 
-Expected: all cells pass; every state code is a US state or DC; the route-bearing areas split into `own`/`inherited`/`none`. **STOP — owner review:** the agent pastes the dry-run JSON, the reason counts, the unknown share, the inherited/none counts and the per-state counts (counts only, never names). The owner answers DP2/DP3 against these numbers if not answered yet. Only on the owner's written "catalog ok" go on.
+Expected: all cells pass; every state code is a US state or DC; the route-bearing areas split into `own`/`inherited`/`none`. **STOP — owner review:** the agent pastes the dry-run JSON, the reason counts, the unknown share, the inherited/none counts and the per-state counts (counts only, never names). Only on the owner's written "catalog ok" go on.
 
 - [ ] **Step 4 (owner go, then agent): Prod**
 
@@ -1986,13 +2038,11 @@ then `bg_wait ../data/review/logs/mpc1_refresh_prod.log` (with the prod preamble
 - [ ] **Step 1: Failing test** — `backend/tests/test_migration_0009.py`:
 
 ```python
-import asyncio
-
 import asyncpg
 import pytest
 from alembic import command
 
-from tests.pgtest import migrated_db, pg_url, requires_pg, run_sql
+from tests.pgtest import fetch, migrated_db, requires_pg, run_sql
 from tests.test_migrations import _alembic_cfg
 
 pytestmark = requires_pg
@@ -2020,17 +2070,6 @@ INSERT INTO route_static_features (route_id, source, point_key, lat, elevation_m
 """
 
 
-def _fetch(name, sql):
-    async def go():
-        conn = await asyncpg.connect(pg_url(name))
-        try:
-            return await conn.fetch(sql)
-        finally:
-            await conn.close()
-
-    return asyncio.run(go())
-
-
 def test_0009_checks_clean_and_rejects_bad_values():
     with migrated_db(PIN) as name:
         command.check(_alembic_cfg(name))
@@ -2041,10 +2080,10 @@ def test_0009_checks_clean_and_rejects_bad_values():
 
 def test_scoring_unit_features_lists_scorable_routes_with_pending_normals_null():
     with migrated_db(PIN, seed_sql=SEED) as name:
-        rows = _fetch(name, "SELECT unit_id, month, tz, elevation_m, tmax_mean, normals_status "
-                            "FROM scoring_unit_features ORDER BY unit_id, month")
-    assert [r["month"] for r in rows] == list(range(1, 13))
-    assert {(r["unit_id"], r["tz"], r["elevation_m"], r["tmax_mean"], r["normals_status"]) for r in rows} == {
+        rows = fetch(name, "SELECT unit_id, month, tz, elevation_m, tmax_mean, normals_status "
+                           "FROM scoring_unit_features ORDER BY unit_id, month")
+    assert [r[1] for r in rows] == list(range(1, 13))
+    assert {(r[0], r[2], r[3], r[4], r[5]) for r in rows} == {
         (900000001, "America/Denver", 2400.0, None, "pending")}
 
 
@@ -2054,11 +2093,11 @@ def test_complete_normals_are_read_and_pending_ones_are_not():
                       "INSERT INTO cell_climate_normals (grid_bucket, month, tmax_mean, tmin_mean, n_years, "
                       "period_start_year, period_end_year, source, normals_version) SELECT 4024952, m, 10, 0, 10, "
                       "2016, 2025, 'derived_cell_daily_conditions', 'n-v2' FROM generate_series(1, 12) m")
-        pending = _fetch(name, "SELECT DISTINCT tmax_mean FROM scoring_unit_features")
+        pending = fetch(name, "SELECT DISTINCT tmax_mean FROM scoring_unit_features")
         run_sql(name, "UPDATE cell_normals_status SET status = 'complete' WHERE grid_bucket = 4024952")
-        complete = _fetch(name, "SELECT DISTINCT tmax_mean, normals_status FROM scoring_unit_features")
-    assert [r["tmax_mean"] for r in pending] == [None]
-    assert [(r["tmax_mean"], r["normals_status"]) for r in complete] == [(10.0, "complete")]
+        complete = fetch(name, "SELECT DISTINCT tmax_mean, normals_status FROM scoring_unit_features")
+    assert pending == [(None,)]
+    assert complete == [(10.0, "complete")]
 
 
 def test_0009_downgrade_refuses_after_elevation_was_sampled():
@@ -2264,7 +2303,7 @@ class RouteStaticFeatures(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 ```
 
-Register `features` in `app/models/__init__.py`; add `"app.models.features"` to the strict mypy block. Dependencies, exact pins in the existing style (pick the newest release inside the range that `uv` resolves, then rewrite the line to `==`):
+Register `features` in `app/models/__init__.py`; add `"app.models.features"` to the models override block (beside `app.models.catalog` and `app.models.conditions`, m1), not the strict block. Dependencies, exact pins in the existing style (pick the newest release inside the range that `uv` resolves, then rewrite the line to `==`):
 
 ```bash
 cd backend && uv add --group pipelines 'h3>=4.1,<5' 'rasterio>=1.4,<2'
@@ -2656,7 +2695,7 @@ def test_gate_passes_within_class_tolerances():
 def test_gate_needs_180_points_and_every_class():
     assert compare(_rows("flat", 40, 1.0) + _rows("moderate", 30, 1.0) + _rows("steep", 30, 1.0))["passed"] == 0
     assert compare(_rows("flat", 60, 1.0) + _rows("moderate", 120, 1.0))["passed"] == 0
-    steep = _rows("steep", 54, 5.0) + _rows("steep", 6, 25.0)
+    steep = _rows("steep", 53, 5.0) + _rows("steep", 7, 25.0)
     assert compare(_rows("flat", 60, 1.0) + _rows("moderate", 60, 1.0) + steep)["passed"] == 0
 
 
@@ -2666,7 +2705,7 @@ def test_one_gross_error_fails_and_missing_pairs_are_ignored():
     assert compare(rows[:-1] + [("steep", None, 5.0), ("steep", 1000.0, 1001.0)])["compared"] == 180
 ```
 
-In the third `test_gate_needs_180_points_and_every_class` case the steep p90 is 25 m (6 of 60 points), above the 20 m bound.
+In the third `test_gate_needs_180_points_and_every_class` case the steep p90 is 25 m (7 of 60 points), above the 20 m bound. With 6 of 60, `np.percentile(…, 90)` interpolates at position 53.1 and gives 7.0 m, which passes; 7 of 60 puts position 53.1 inside the 25 m run (B2).
 
 - [ ] **Step 2: Run to verify failure** — FAIL.
 
@@ -2810,22 +2849,20 @@ Append `"app.pipelines.epqs"` to strict mypy.
 
 **Interfaces:**
 - Consumes: Task 7 tables; Tasks 8–9 (`dem.sample_points`, `dem.Elevation`, `epqs.EpqsClient`, `compare`, `local_slopes`, `slope_class`, `PER_CLASS_TARGET`, `SLOPE_CLASSES`); `grid.grid_bucket`; `localday.tz_for_point`; `ingest_log.start_run`/`finish_run`/`write_quarantine`; `h3.latlng_to_cell`; Task 4 `mp_catalog.refresh` (tests only).
-- Produces: `FEATURE_VERSION = "f-v1"`, `async upsert_points(conn, *, run_id, report: ValidationReport, tz_lookup: Callable[[float, float], str | None] = tz_for_point) -> int`, `async fill_elevation(conn, *, run_id, sampler=sample_points, limit: int) -> dict[str, int]` (`sampled`, `null`, `retry`), `async build_route_features(conn) -> int`, `async epqs_check(conn, client: EpqsClient, *, sampler=sample_points, seed: int = 42, per_class: int = PER_CLASS_TARGET, probe_batch: int = 500, max_probe: int = 6000) -> dict[str, object]`, CLI `python -m app.pipelines.static_features points|elevation [--limit N]|routes|epqs-check` (`epqs-check` exits 1 when the gate fails).
+- Produces: `FEATURE_VERSION = "f-v1"`, `async upsert_points(conn, *, run_id, report: ValidationReport, tz_lookup: Callable[[float, float], str | None] = tz_for_point) -> int`, `async fill_elevation(conn, *, run_id, sampler=sample_points, limit: int) -> dict[str, int]` (`sampled`, `null`, `retry`), `async build_route_features(conn) -> int`, `async epqs_check(conn, client: EpqsClient, *, sampler=sample_points, seed: int = 42, per_class: int = PER_CLASS_TARGET, probe_batch: int = 500, max_probe: int = 6000) -> dict[str, object]`, `async run_step(engine, step, *, limit: int = 5000) -> dict[str, object]` (one logged step per transaction; the CLI's `_main` and Task 12's cycle both call it, m6), CLI `python -m app.pipelines.static_features points|elevation [--limit N]|routes|epqs-check` (`epqs-check` exits 1 when the gate fails).
 
 - [ ] **Step 1: Failing tests** — `backend/tests/test_static_features.py`:
 
 ```python
-import asyncio
 import uuid
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.pipelines.dem import Elevation
 from app.pipelines.mp_catalog import refresh
 from app.pipelines.static_features import build_route_features, fill_elevation, upsert_points
 from app.pipelines.validate import ValidationReport
-from tests.pgtest import migrated_db, requires_pg, sa_url
+from tests.pgtest import migrated_db, requires_pg, run_on_conn
 
 PIN = "0009_static_features"
 DENVER = "America/Denver"
@@ -2847,21 +2884,8 @@ INSERT INTO mp_routes (mp_route_id, name, location_id, type, grade, pitches, len
 CRAG_KEY, REGION_KEY = "40.12346:-105.65432", "40.60000:-105.80000"
 
 
-def _run(name, fn):
-    async def go():
-        engine = create_async_engine(sa_url(name))
-        try:
-            async with engine.begin() as conn:
-                result = await fn(conn)
-                return [tuple(r) for r in result.all()] if hasattr(result, "all") else result
-        finally:
-            await engine.dispose()
-
-    return asyncio.run(go())
-
-
 def _catalog(name):
-    assert _run(name, lambda c: refresh(c, run_id=uuid.uuid4())).status == "ok"
+    assert run_on_conn(name, lambda c: refresh(c, run_id=uuid.uuid4())).status == "ok"
 
 
 def _points(conn, run_id, tz=DENVER, report=None):
@@ -2872,11 +2896,11 @@ def _points(conn, run_id, tz=DENVER, report=None):
 def test_points_come_from_route_bearing_areas_and_register_buckets():
     with migrated_db(PIN, seed_sql=SEED) as name:
         _catalog(name)
-        assert _run(name, lambda c: _points(c, uuid.uuid4())) == 2
-        keys = _run(name, lambda c: c.execute(text("SELECT point_key FROM feature_points ORDER BY 1")))
+        assert run_on_conn(name, lambda c: _points(c, uuid.uuid4())) == 2
+        keys = run_on_conn(name, lambda c: c.execute(text("SELECT point_key FROM feature_points ORDER BY 1")))
         assert keys == [(CRAG_KEY,), (REGION_KEY,)]
-        status = _run(name, lambda c: c.execute(text("SELECT DISTINCT status FROM cell_normals_status")))
-        series = _run(name, lambda c: c.execute(text("SELECT DISTINCT tz FROM grid_bucket_series")))
+        status = run_on_conn(name, lambda c: c.execute(text("SELECT DISTINCT status FROM cell_normals_status")))
+        series = run_on_conn(name, lambda c: c.execute(text("SELECT DISTINCT tz FROM grid_bucket_series")))
         assert status == [("pending",)] and series == [(DENVER,)]
 
 
@@ -2885,9 +2909,9 @@ def test_unresolvable_timezone_is_quarantined_and_not_registered():
     with migrated_db(PIN, seed_sql=SEED) as name:
         _catalog(name)
         report = ValidationReport("t")
-        _run(name, lambda c: _points(c, uuid.uuid4(), tz=None, report=report))
+        run_on_conn(name, lambda c: _points(c, uuid.uuid4(), tz=None, report=report))
         assert report.quarantined["no_timezone"] == 2
-        rows = _run(name, lambda c: c.execute(text(
+        rows = run_on_conn(name, lambda c: c.execute(text(
             "SELECT (SELECT count(*) FROM feature_points WHERE tz IS NULL), (SELECT count(*) FROM grid_bucket_series)")))
         assert rows == [(2, 0)]
 
@@ -2897,12 +2921,12 @@ def test_elevation_fills_and_routes_get_rows_with_inherited_precision():
     with migrated_db(PIN, seed_sql=SEED) as name:
         _catalog(name)
         run_id = uuid.uuid4()
-        _run(name, lambda c: _points(c, run_id))
-        stats = _run(name, lambda c: fill_elevation(
+        run_on_conn(name, lambda c: _points(c, run_id))
+        stats = run_on_conn(name, lambda c: fill_elevation(
             c, run_id=run_id, sampler=lambda pts: [Elevation(2400.0, "3dep_13", 10.0)] * len(pts), limit=100))
         assert stats == {"sampled": 2, "null": 0, "retry": 0}
-        assert _run(name, build_route_features) == 4
-        rows = _run(name, lambda c: c.execute(text(
+        assert run_on_conn(name, build_route_features) == 4
+        rows = run_on_conn(name, lambda c: c.execute(text(
             "SELECT route_id, pitches, round(length_m)::int, elevation_m, coord_precision, area_path::text "
             "FROM route_static_features ORDER BY route_id")))
         assert rows == [
@@ -2918,10 +2942,10 @@ def test_transient_elevation_is_retried_not_recorded():
     with migrated_db(PIN, seed_sql=SEED) as name:
         _catalog(name)
         run_id = uuid.uuid4()
-        _run(name, lambda c: _points(c, run_id))
-        stats = _run(name, lambda c: fill_elevation(c, run_id=run_id, sampler=lambda pts: [None] * len(pts), limit=100))
+        run_on_conn(name, lambda c: _points(c, run_id))
+        stats = run_on_conn(name, lambda c: fill_elevation(c, run_id=run_id, sampler=lambda pts: [None] * len(pts), limit=100))
         assert stats == {"sampled": 0, "null": 0, "retry": 2}
-        assert _run(name, lambda c: c.execute(text("SELECT count(*) FROM feature_points WHERE dem_source IS NULL"))) == [(2,)]
+        assert run_on_conn(name, lambda c: c.execute(text("SELECT count(*) FROM feature_points WHERE dem_source IS NULL"))) == [(2,)]
 
 
 @requires_pg
@@ -2929,10 +2953,10 @@ def test_nodata_is_recorded_as_null_never_zero():
     with migrated_db(PIN, seed_sql=SEED) as name:
         _catalog(name)
         run_id = uuid.uuid4()
-        _run(name, lambda c: _points(c, run_id))
-        _run(name, lambda c: fill_elevation(
+        run_on_conn(name, lambda c: _points(c, run_id))
+        run_on_conn(name, lambda c: fill_elevation(
             c, run_id=run_id, sampler=lambda pts: [Elevation(None, "nodata", None)] * len(pts), limit=100))
-        assert _run(name, lambda c: c.execute(text(
+        assert run_on_conn(name, lambda c: c.execute(text(
             "SELECT DISTINCT elevation_m, dem_source FROM feature_points"))) == [(None, "nodata")]
 
 
@@ -2940,9 +2964,9 @@ def test_nodata_is_recorded_as_null_never_zero():
 def test_only_scorable_routes_are_scoring_units_and_unlocated_ones_have_no_location():
     with migrated_db(PIN, seed_sql=SEED) as name:
         _catalog(name)
-        _run(name, lambda c: _points(c, uuid.uuid4()))
-        _run(name, build_route_features)
-        units = _run(name, lambda c: c.execute(text(
+        run_on_conn(name, lambda c: _points(c, uuid.uuid4()))
+        run_on_conn(name, build_route_features)
+        units = run_on_conn(name, lambda c: c.execute(text(
             "SELECT unit_id, count(*), min(normals_status) FROM scoring_unit_features GROUP BY 1 ORDER BY 1")))
         assert units == [(900000001, 12, "pending"), (900000002, 12, "pending")]
 
@@ -2953,12 +2977,12 @@ def test_a_route_that_becomes_a_boulder_loses_its_feature_row():
 
     with migrated_db(PIN, seed_sql=SEED) as name:
         _catalog(name)
-        _run(name, lambda c: _points(c, uuid.uuid4()))
-        _run(name, build_route_features)
+        run_on_conn(name, lambda c: _points(c, uuid.uuid4()))
+        run_on_conn(name, build_route_features)
         run_sql(name, "UPDATE mp_routes SET type = 'Boulder' WHERE mp_route_id = 900000005")
         _catalog(name)
-        _run(name, build_route_features)
-        rows = _run(name, lambda c: c.execute(text("SELECT route_id FROM route_static_features ORDER BY 1")))
+        run_on_conn(name, build_route_features)
+        rows = run_on_conn(name, lambda c: c.execute(text("SELECT route_id FROM route_static_features ORDER BY 1")))
         assert rows == [(900000001,), (900000002,), (900000003,)]
 ```
 
@@ -2986,7 +3010,7 @@ from collections.abc import Callable, Sequence
 
 import h3
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncConnection
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from app.pipelines.dem import Elevation, sample_points
 from app.pipelines.epqs import PER_CLASS_TARGET, SLOPE_CLASSES, EpqsClient, compare, local_slopes, slope_class
@@ -3128,32 +3152,40 @@ async def epqs_check(
     return compare(rows) | {"probed": probed, "failed_calls": client.failed_calls}
 
 
-async def _main(args: argparse.Namespace) -> dict[str, object]:
-    from app.pipelines.db import ingest_engine
+async def run_step(engine: AsyncEngine, step: str, *, limit: int = 5000) -> dict[str, object]:
+    """One logged step in its own transaction; the CLI and Task 12's catalog_cycle both call it."""
     from app.pipelines.ingest_log import finish_run, start_run, write_quarantine
 
+    report = ValidationReport(f"static_features:{step}")
+    async with engine.begin() as conn:
+        run_id = await start_run(conn, source=f"static_features:{step}", window_start=None, window_end=None,
+                                 content_sha256=None)
+        result: dict[str, object]
+        if step == "points":
+            result = {"points": await upsert_points(conn, run_id=run_id, report=report)}
+        elif step == "elevation":
+            result = dict(await fill_elevation(conn, run_id=run_id, limit=limit))
+        elif step == "routes":
+            result = {"routes": await build_route_features(conn)}
+        elif step == "epqs-check":
+            result = await epqs_check(conn, EpqsClient())
+        else:
+            raise ValueError(f"unknown step {step!r}")
+        if report.quarantined_total():
+            await write_quarantine(conn, run_id, report)
+        await finish_run(conn, run_id, status="ok", report=report, rows_upserted=0,
+                         problems=[json.dumps(result, default=str)])
+    return result
+
+
+async def _main(args: argparse.Namespace) -> dict[str, object]:
+    from app.pipelines.db import ingest_engine
+
     engine = ingest_engine()
-    report = ValidationReport(f"static_features:{args.step}")
     try:
-        async with engine.begin() as conn:
-            run_id = await start_run(conn, source=f"static_features:{args.step}", window_start=None, window_end=None,
-                                     content_sha256=None)
-            result: dict[str, object]
-            if args.step == "points":
-                result = {"points": await upsert_points(conn, run_id=run_id, report=report)}
-            elif args.step == "elevation":
-                result = dict(await fill_elevation(conn, run_id=run_id, limit=args.limit))
-            elif args.step == "routes":
-                result = {"routes": await build_route_features(conn)}
-            else:
-                result = await epqs_check(conn, EpqsClient())
-            if report.quarantined_total():
-                await write_quarantine(conn, run_id, report)
-            await finish_run(conn, run_id, status="ok", report=report, rows_upserted=0,
-                             problems=[json.dumps(result, default=str)])
+        return await run_step(engine, args.step, limit=args.limit)
     finally:
         await engine.dispose()
-    return result
 
 
 if __name__ == "__main__":
@@ -3167,7 +3199,7 @@ if __name__ == "__main__":
         sys.exit(1)
 ```
 
-Differences from the 2026-09-28 version, all forced by the catalog: points come only from stored `canonical_areas.point_key` (no `mp_locations` pass, no `canonical_areas` UPDATE, so `ingest` needs no write on the catalog); coordinates are re-validated upstream by the catalog (`coord_problem`), so only the timezone can quarantine here; `pitches`/`length_m` are read from `mp_routes` (a fractional or non-positive pitch count is NULL, never rounded or 0); `source` is `'mp'`. The localday registration (plan 3, OQ4) already registered every MP route point, so `REGISTER_STATUS`/`REGISTER_SERIES` normally insert nothing new; they are kept so a point added by a later refresh is never left without a `pending` row. Append `"app.pipelines.static_features"` to the strict mypy block.
+Differences from the 2026-09-28 version, all forced by the catalog: points come only from stored `canonical_areas.point_key` (no `mp_locations` pass, no `canonical_areas` UPDATE, so `ingest` needs no write on the catalog); coordinates are re-validated upstream by the catalog (`coord_problem`), so only the timezone can quarantine here; `pitches`/`length_m` are read from `mp_routes` (a fractional or non-positive pitch count is NULL, never rounded or 0); `source` is `'mp'`. The localday registration (plan 3, OQ4) registered route points through `ROUTE_POINTS_SQL`, which (route lat/lon being NULL in prod) falls back to each route's location and uses the raw, unrounded `mp_locations` pair; a catalog point is the topmost source area's pair (D-C), so most catalog points' buckets are already registered, but nothing guarantees all of them. `REGISTER_STATUS`/`REGISTER_SERIES` are what guarantee every catalog point's bucket a `pending` status row and a series, including points a later refresh adds. Append `"app.pipelines.static_features"` to the strict mypy block.
 
 - [ ] **Step 4: Run** — `cd backend && uv run pytest tests/test_static_features.py -q && uv run mypy` → PASS.
 - [ ] **Step 5: Commit** — `git add backend/app/pipelines/static_features.py backend/tests/test_static_features.py backend/pyproject.toml && git commit -m "feat(pipelines): static features on the MP catalog: points, elevation, route table, EPQS check"`
@@ -3260,53 +3292,27 @@ def test_every_point_bucket_has_a_normals_status_and_complete_means_twelve_real_
 
 ---
 
-### Task 12: Scheduled catalog cycle (DP6) — `catalog_cycle.py`, launchd wrapper and agent template
+### Task 12: Scheduled catalog cycle (DP6) — `catalog_cycle.py`, Railway cron service
 
 **Files:**
-- Create: `backend/app/pipelines/catalog_cycle.py`, `backend/tests/test_catalog_cycle.py`, `backend/scripts/catalog_cycle.sh`, `ops/launchd/com.safeascent.catalog-cycle.plist.template`
-- Modify: `backend/app/pipelines/static_features.py` (extract `run_step`), `backend/pyproject.toml` (mypy), `DEPLOYMENT.md`, `CLAUDE.md`
+- Create: `backend/app/pipelines/catalog_cycle.py`, `backend/tests/test_catalog_cycle.py`, `backend/railway-catalog-cycle.toml`, `backend/Dockerfile.jobs`
+- Modify: `backend/app/config.py` (`HEALTHCHECKS_CATALOG_URL`), `.env.example`, `scripts/check_compose_matches_railway.py` (documented exemption), `backend/tests/test_check_compose_matches_railway.py`, `backend/pyproject.toml` (mypy), `DEPLOYMENT.md`, `CLAUDE.md`
 
 **Interfaces:**
-- Consumes: `mp_catalog.run_logged(engine, *, dry_run) -> RefreshResult` (Task 4); `static_features.run_step(engine, step, *, limit) -> dict[str, object]` (extracted here from Task 10's `_main`, same body, the engine passed in).
-- Produces: `MAX_ELEVATION_ROUNDS = 20`, `ELEVATION_LIMIT = 5000`, `CycleStatus = Literal["ok","rejected","incomplete","failed"]`, `@dataclass CycleResult(status: CycleStatus, steps: dict[str, object])`, `async run_cycle(engine, *, refresh=run_logged, step=run_step, max_rounds: int = MAX_ELEVATION_ROUNDS, epqs: bool = True) -> CycleResult`, CLI `python -m app.pipelines.catalog_cycle run [--skip-epqs] [--max-rounds N]` with exit codes 0 ok, 1 rejected/failed, 2 incomplete (a transient 3DEP outage left points unfilled; the next run retries them).
-- `(ruled: DP6, controller ruling 2026-10-12, recommended default; the owner may override)` The scheduler is option A (launchd on the owner's Mac). The cycle code is scheduler-agnostic: options B and C would call the same `run_cycle`, so choosing them later changes only where it runs and which role it connects as (D-J).
+- Consumes: `mp_catalog.run_logged(engine, *, dry_run) -> RefreshResult` (Task 4); `static_features.run_step(engine, step, *, limit) -> dict[str, object]` (Task 10, m6); `app.healthchecks.ping(url, suffix)`; `settings.INGEST_DATABASE_URL`, `settings.HEALTHCHECKS_CATALOG_URL`.
+- Produces: `MAX_ELEVATION_ROUNDS = 20`, `ELEVATION_LIMIT = 5000`, `CycleStatus = Literal["ok","rejected","incomplete","failed"]`, `@dataclass CycleResult(status: CycleStatus, steps: dict[str, object])`, `async run_cycle(engine, *, refresh=run_logged, step=run_step, max_rounds: int = MAX_ELEVATION_ROUNDS, epqs: bool = True) -> CycleResult`, `require_direct_host(url: str) -> None`, `ping_suffix(status: CycleStatus) -> PingSuffix`, CLI `python -m app.pipelines.catalog_cycle run [--skip-epqs] [--max-rounds N]` with exit codes 0 ok, 1 rejected/failed, 2 incomplete (a transient 3DEP outage left points unfilled; the next run retries them).
+- `(decided: DP6, owner 2026-10-13)` The scheduler is a **dedicated Railway cron service**, `catalog-cycle`, separate from `backend` (api), `celery-worker` and `beat`. It holds **only** the `ingest` credential, over verify-full TLS to the **direct (non-pooler) Neon host**; no other service gets that credential. It runs once a year on 2 January (before plan 3's January ERA5 window) and on demand. Railway auto-deploy stays off for it; its variables are set with `--skip-deploys`. Loading the private scrape data stays local (the scraper and its loader never run on Railway).
 
-- [ ] **Step 1: Extract `run_step`** — in `backend/app/pipelines/static_features.py`, move the body of `_main` into:
-
-```python
-async def run_step(engine: AsyncEngine, step: str, *, limit: int = 5000) -> dict[str, object]:
-    from app.pipelines.ingest_log import finish_run, start_run, write_quarantine
-
-    report = ValidationReport(f"static_features:{step}")
-    async with engine.begin() as conn:
-        run_id = await start_run(conn, source=f"static_features:{step}", window_start=None, window_end=None,
-                                 content_sha256=None)
-        result: dict[str, object]
-        if step == "points":
-            result = {"points": await upsert_points(conn, run_id=run_id, report=report)}
-        elif step == "elevation":
-            result = dict(await fill_elevation(conn, run_id=run_id, limit=limit))
-        elif step == "routes":
-            result = {"routes": await build_route_features(conn)}
-        elif step == "epqs-check":
-            result = await epqs_check(conn, EpqsClient())
-        else:
-            raise ValueError(f"unknown step {step!r}")
-        if report.quarantined_total():
-            await write_quarantine(conn, run_id, report)
-        await finish_run(conn, run_id, status="ok", report=report, rows_upserted=0,
-                         problems=[json.dumps(result, default=str)])
-    return result
-```
-
-and make `_main` open `ingest_engine()`, call `run_step(engine, args.step, limit=args.limit)`, and dispose the engine (add `from sqlalchemy.ext.asyncio import AsyncEngine`). Task 10's tests stay green unchanged.
+- [ ] **Step 1: Consume `run_step`** — Task 10 already wrote `static_features.run_step` with a thin `_main` (m6); this task only imports it. Nothing in `static_features.py` changes.
 
 - [ ] **Step 2: Failing tests** — `backend/tests/test_catalog_cycle.py` (no database, no network: both steps are injected):
 
 ```python
 import asyncio
 
-from app.pipelines.catalog_cycle import run_cycle
+import pytest
+
+from app.pipelines.catalog_cycle import ping_suffix, require_direct_host, run_cycle
 from app.pipelines.mp_catalog import RefreshResult
 
 
@@ -3355,6 +3361,17 @@ def test_points_still_awaiting_3dep_leave_the_cycle_incomplete_not_failed():
 def test_a_failed_epqs_gate_fails_the_cycle():
     step, _ = _steps([{"sampled": 0, "null": 0, "retry": 0}], epqs_passed=0)
     assert asyncio.run(run_cycle(None, refresh=_refresh("ok"), step=step)).status == "failed"
+
+
+def test_the_neon_pooler_host_is_refused_and_the_direct_host_is_not():
+    with pytest.raises(SystemExit, match="pooler"):
+        require_direct_host("postgresql+asyncpg://ingest:x@ep-fixture-123-pooler.us-east-2.aws.neon.tech/db")
+    require_direct_host("postgresql+asyncpg://ingest:x@ep-fixture-123.us-east-2.aws.neon.tech/db")
+
+
+def test_only_an_ok_cycle_pings_success():
+    assert ping_suffix("ok") == ""
+    assert {ping_suffix(s) for s in ("rejected", "incomplete", "failed")} == {"/fail"}
 ```
 
 - [ ] **Step 3: Run to verify failure** — `cd backend && uv run pytest tests/test_catalog_cycle.py -q` → FAIL.
@@ -3366,7 +3383,10 @@ def test_a_failed_epqs_gate_fails_the_cycle():
 register points, sample elevation until nothing is left (or the rounds run out), rebuild the
 route table, and re-run the EPQS gate. It stops at a rejected refresh, so a bad scrape never
 feeds the feature steps. No paid service is called; normals for new buckets are bought by
-plan 3's January window, which is why the yearly run is scheduled before it opens."""
+plan 3's January window, which is why the yearly run is scheduled before it opens.
+
+In production it runs as the Railway cron service `catalog-cycle` (owner decision DP6,
+2026-10-13), the only service holding the ingest credential, on Neon's direct host."""
 
 from __future__ import annotations
 
@@ -3378,8 +3398,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.healthchecks import PingSuffix
 from app.pipelines.mp_catalog import RefreshResult, run_logged
 from app.pipelines.static_features import run_step
 
@@ -3394,6 +3416,17 @@ Step = Callable[..., Awaitable[dict[str, object]]]
 class CycleResult:
     status: CycleStatus
     steps: dict[str, object] = field(default_factory=dict)
+
+
+def require_direct_host(url: str) -> None:
+    # A long single-session job on the direct host (owner decision DP6), never through Neon's
+    # pgbouncer endpoint, whose host carries the "-pooler" suffix.
+    if "-pooler." in (make_url(url).host or ""):
+        raise SystemExit("catalog_cycle: INGEST_DATABASE_URL points at Neon's pooler host; use the direct host")
+
+
+def ping_suffix(status: CycleStatus) -> PingSuffix:
+    return "" if status == "ok" else "/fail"
 
 
 async def run_cycle(
@@ -3436,7 +3469,13 @@ def cli() -> None:
     parser.add_argument("--skip-epqs", action="store_true", help="on-demand runs: skip the ~15-minute EPQS gate")
     parser.add_argument("--max-rounds", type=int, default=MAX_ELEVATION_ROUNDS)
     args = parser.parse_args()
+    from app.config import settings
+    from app.healthchecks import ping
     from app.pipelines.db import ingest_engine
+
+    if settings.INGEST_DATABASE_URL:
+        require_direct_host(settings.INGEST_DATABASE_URL)
+    ping(settings.HEALTHCHECKS_CATALOG_URL, "/start")
 
     async def go() -> CycleResult:
         engine = ingest_engine()
@@ -3445,7 +3484,12 @@ def cli() -> None:
         finally:
             await engine.dispose()
 
-    result = asyncio.run(go())
+    try:
+        result = asyncio.run(go())
+    except BaseException:
+        ping(settings.HEALTHCHECKS_CATALOG_URL, "/fail")
+        raise
+    ping(settings.HEALTHCHECKS_CATALOG_URL, ping_suffix(result.status))
     print(json.dumps({"status": result.status, **result.steps}, sort_keys=True, default=str))
     sys.exit({"ok": 0, "incomplete": 2}.get(result.status, 1))
 
@@ -3454,67 +3498,71 @@ if __name__ == "__main__":
     cli()
 ```
 
-A round that samples nothing ends the loop even with `retry > 0`: those points are waiting on an unreachable tile and another round in the same minute would not help; the yearly or next on-demand run retries them. Append `"app.pipelines.catalog_cycle"` to the strict mypy block.
+A round that samples nothing ends the loop even with `retry > 0`: those points are waiting on an unreachable tile and another round in the same minute would not help; the yearly or next on-demand run retries them. Verify-full TLS needs nothing new here: `ingest_engine` already refuses a remote URL without it (`app.pipelines.db.verified_connect_args`). `ping` never raises (it logs a WARNING and returns `False`), so alerting cannot break the cycle; an unset URL skips the ping. Append `"app.pipelines.catalog_cycle"` to the strict mypy block.
 
-- [ ] **Step 5: launchd wrapper** — `backend/scripts/catalog_cycle.sh` (mode 0755):
+`backend/app/config.py`: add `HEALTHCHECKS_CATALOG_URL: str | None = None` beside `HEALTHCHECKS_BEAT_URL`, and `.env.example` gains `HEALTHCHECKS_CATALOG_URL=` beside `HEALTHCHECKS_BEAT_URL=` (`tests/test_env_example_parity.py` enforces the pair).
 
-```bash
-#!/usr/bin/env bash
-# launchd entry point for the scheduled catalog cycle (DP6 option A). Code runs from a dedicated
-# clean checkout of main; the ingest credential is read in place from the main checkout's 0600
-# env file (SAFEASCENT_ENV_DIR) and lives only in this process's environment, never argv or a log.
-set -euo pipefail
-cd "$(dirname "$0")/.."
-[ "$(git branch --show-current)" = main ] || { echo "catalog_cycle: checkout is not on main: skipped" >&2; exit 3; }
-[ -z "$(git status --porcelain)" ] || { echo "catalog_cycle: checkout is not clean: skipped" >&2; exit 3; }
-env_file="${SAFEASCENT_ENV_DIR:?}/.env.ingest"
-[ "$(stat -f '%Lp' "$env_file")" = 600 ] || { echo "catalog_cycle: $env_file is not mode 600: skipped" >&2; exit 3; }
-set -a; . "$env_file"; set +a
-export DATABASE_URL="${INGEST_DATABASE_URL:?}"
-status=0
-uv run --frozen python -m app.pipelines.catalog_cycle run "$@" || status=$?
-if [ -n "${HEALTHCHECKS_CATALOG_URL:-}" ]; then
-  curl -fsS -m 10 --retry 3 "$HEALTHCHECKS_CATALOG_URL/$status" >/dev/null || true
-fi
-[ "$status" = 0 ] || osascript -e "display notification \"catalog cycle exited $status\" with title \"SafeAscent\"" || true
-exit "$status"
+- [ ] **Step 5: Railway service config** — `backend/railway-catalog-cycle.toml`, in the style of `railway-worker.toml` / `railway-beat.toml`:
+
+```toml
+# Railway: the yearly catalog and features cycle (DP6, owner decision 2026-10-13). A cron
+# service: it starts on the schedule (evaluated in UTC), runs once and exits, and Railway skips a
+# tick while a run is still active. The only service holding the ingest credential (DEPLOYMENT.md).
+
+[build]
+builder = "dockerfile"
+# The pipelines group (h3, rasterio, timezonefinder) is not in the api/worker/beat image.
+dockerfilePath = "Dockerfile.jobs"
+
+[deploy]
+# 2 January 09:00 UTC: before plan 3's January ERA5 Professional window (opens on or after 10 January).
+cronSchedule = "0 9 2 1 *"
+# A rejected or failed cycle is a finding for the owner, not something to retry in a loop.
+restartPolicyType = "never"
+numReplicas = 1
+startCommand = "python -m app.pipelines.catalog_cycle run"
 ```
 
-`HEALTHCHECKS_CATALOG_URL` is optional and read from the same env file; it is not a `Settings` field (the app never reads it), so `.env.example` does not change. The `/$status` suffix is healthchecks.io's exit-code ping (0 = success, anything else = failure).
+`backend/Dockerfile.jobs` is `backend/Dockerfile` with two differences: the builder's sync line is `RUN uv sync --frozen --no-dev --no-install-project` (default groups minus `dev` = `pipelines`; the `llm` group is not a default group, so `anthropic` never lands in this image either), and it has no `EXPOSE`/`CMD` (Railway always passes the start command). Its header comment says it serves only the `catalog-cycle` service and must keep the same base image, uv pin and non-root user as `Dockerfile`. *(Implementer default, flagged for the owner: a second Dockerfile over a build `ARG` in the one Dockerfile, because a Railway build arg would be one more service variable to keep right; the owner may pick the `ARG` instead.)*
 
-`ops/launchd/com.safeascent.catalog-cycle.plist.template` (placeholders are filled at install, Task 13 Step 6; the installed copy lives only in `~/Library/LaunchAgents/`):
+- [ ] **Step 6: Compose/Railway guard — documented exemption** — `scripts/check_compose_matches_railway.py` compares a hard-coded `RAILWAY_CONFIGS` map (`worker`, `beat`) against `docker compose config`; a new `railway-*.toml` that is not listed would go unchecked silently. The cron service gets a **documented exemption**, not a compose profile: compose here mirrors the long-running local stack (`restart: unless-stopped`, local Postgres) and has no scheduler; the job would refuse locally without `INGEST_DATABASE_URL` anyway; and CI's step `[ "$services" = "api beat db frontend redis worker " ]` pins the compose service list, which a new compose service would have to change too. Add to the guard:
 
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>com.safeascent.catalog-cycle</string>
-  <key>ProgramArguments</key>
-  <array><string>__CYCLE_CHECKOUT__/backend/scripts/catalog_cycle.sh</string></array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>SAFEASCENT_ENV_DIR</key><string>__ENV_DIR__</string>
-    <key>PATH</key><string>__PATH__</string>
-  </dict>
-  <key>StartCalendarInterval</key>
-  <dict>
-    <key>Month</key><integer>1</integer>
-    <key>Day</key><integer>2</integer>
-    <key>Hour</key><integer>9</integer>
-    <key>Minute</key><integer>0</integer>
-  </dict>
-  <key>StandardOutPath</key><string>__LOG_DIR__/catalog-cycle.log</string>
-  <key>StandardErrorPath</key><string>__LOG_DIR__/catalog-cycle.err</string>
-</dict>
-</plist>
+```python
+# Railway services with no docker-compose counterpart, and why. Every backend/railway-*.toml must be
+# listed here or in RAILWAY_CONFIGS, so a new service cannot skip the parity check unnoticed.
+NO_COMPOSE_COUNTERPART = {
+    # A yearly cron against prod as ingest; compose has no scheduler. Run it locally with
+    # `uv run python -m app.pipelines.catalog_cycle run`.
+    "catalog-cycle": "backend/railway-catalog-cycle.toml",
+}
+
+
+def unlisted_configs(root: Path) -> list[str]:
+    known = set(RAILWAY_CONFIGS.values()) | set(NO_COMPOSE_COUNTERPART.values())
+    return sorted(
+        str(p.relative_to(root)) for p in (root / "backend").glob("railway-*.toml")
+        if str(p.relative_to(root)) not in known
+    )
 ```
 
-`(ruled: DP6, controller ruling 2026-10-12, recommended default; the owner may override)` cadence: once a year on 2 January, plus on demand (`launchctl kickstart gui/$(id -u)/com.safeascent.catalog-cycle`) after each scrape load. launchd runs a calendar job missed during sleep at the next wake but not one missed while the Mac was powered off (recalled behaviour, not verified this session: Task 13 Step 6 checks it with `launchctl print` after the first scheduled date); the healthchecks.io check (period about one year plus a week of grace, if the service allows a period that long: check when creating it) catches a silent miss.
+and in `main`, `problems += [f"{c} is neither compared with compose nor listed in NO_COMPOSE_COUNTERPART" for c in unlisted_configs(REPO_ROOT)]`. `backend/tests/test_check_compose_matches_railway.py` gains:
 
-- [ ] **Step 6: Run** — `cd backend && uv run pytest tests/test_catalog_cycle.py tests/test_static_features.py -q && uv run mypy && uv run ruff check . ../scripts/ && bash -n scripts/catalog_cycle.sh && plutil -lint ../ops/launchd/com.safeascent.catalog-cycle.plist.template` → PASS (`plutil` checks the XML; the placeholders are valid strings).
-- [ ] **Step 7: Docs** — `DEPLOYMENT.md` "Scheduled jobs": the cycle, its cadence and why (before the January window), the dedicated checkout `~/Developer/SafeAscent-cycle` on `main` (updated by the owner with `git -C ~/Developer/SafeAscent-cycle pull --ff-only` after each merge that touches `app/pipelines`), where logs go, the exit codes, and that no prod credential leaves the Mac. `CLAUDE.md` Commands: `uv run python -m app.pipelines.catalog_cycle run [--skip-epqs] [--max-rounds N]`.
-- [ ] **Step 8: Commit** — `git add backend/app/pipelines/catalog_cycle.py backend/app/pipelines/static_features.py backend/tests/test_catalog_cycle.py backend/scripts/catalog_cycle.sh ops/launchd/ backend/pyproject.toml DEPLOYMENT.md CLAUDE.md && git commit -m "feat(ops): scheduled catalog and features cycle, launchd wrapper and template"`
+```python
+def test_every_railway_config_is_compared_or_exempt():
+    assert guard.unlisted_configs(REPO_ROOT) == []
+
+
+def test_an_unlisted_railway_config_is_reported(tmp_path):
+    (tmp_path / "backend").mkdir()
+    (tmp_path / "backend" / "railway-surprise.toml").write_text("[deploy]\n")
+    assert guard.unlisted_configs(tmp_path) == ["backend/railway-surprise.toml"]
+```
+
+- [ ] **Step 7: Run** — `cd backend && uv run pytest tests/test_catalog_cycle.py tests/test_static_features.py tests/test_check_compose_matches_railway.py tests/test_env_example_parity.py -q && uv run mypy && uv run ruff check . ../scripts/ && python -c "import tomllib; print(tomllib.load(open('railway-catalog-cycle.toml','rb'))['deploy']['cronSchedule'])" && docker build -f Dockerfile.jobs -t safeascent-jobs . && docker run --rm safeascent-jobs python -c 'import h3, rasterio, timezonefinder; print("jobs image ok")'` → PASS, `0 9 2 1 *`, `jobs image ok`. Then `python ../scripts/check_compose_matches_railway.py` from `backend/` → exit 0.
+- [ ] **Step 8: Docs** — `DEPLOYMENT.md`: a row in the Services table (`catalog-cycle` | `backend/railway-catalog-cycle.toml` | `python -m app.pipelines.catalog_cycle run` | cron `0 9 2 1 *` UTC, built from `Dockerfile.jobs`, auto-deploy off, deployed by hand after merges that touch `app/pipelines`); in Environment variables: `INGEST_DATABASE_URL` is set on `catalog-cycle` **only** (direct Neon host, verify-full; never on `backend`, `celery-worker`, `beat` or `frontend`), `DATABASE_URL` on that service is a reference to the same value (Settings requires the field; the job never uses it), and the optional `HEALTHCHECKS_CATALOG_URL`; a "Scheduled jobs" section with the cadence and why (before the January window), on-demand runs, the exit codes, and that loading the private scrape data stays local. `CLAUDE.md`: Commands gains `uv run python -m app.pipelines.catalog_cycle run [--skip-epqs] [--max-rounds N]`; Service topology gains the `catalog-cycle` cron service and the ingest-credential rule.
+- [ ] **Step 9: Commit** — `git add backend/app/pipelines/catalog_cycle.py backend/tests/test_catalog_cycle.py backend/railway-catalog-cycle.toml backend/Dockerfile.jobs backend/app/config.py .env.example scripts/check_compose_matches_railway.py backend/tests/test_check_compose_matches_railway.py backend/pyproject.toml DEPLOYMENT.md CLAUDE.md && git commit -m "feat(ops): yearly catalog and features cycle as a Railway cron service"`
+
+**Railway cost (estimate, not a quote).** Railway bills cron services only while they run. At Railway's usage rates as recalled (about $10 per GB-RAM-month and $20 per vCPU-month, i.e. about $0.00023 per GB-minute and $0.00046 per vCPU-minute; not re-checked this session), a yearly run that refreshes the catalog, samples elevation for the year's new points and runs the ~15-minute EPQS gate (about 30–60 minutes at ≤ 1 GB and ≤ 1 vCPU) costs about **$0.02–0.05**. A worst case (a full re-sample of every point, ~5 hours at 2 GB) is about **$0.30**. Each on-demand run is the same order. DEM reads are inbound traffic; outbound is small JSON. So the service adds **well under $1 a year** in usage; if the plan has a monthly minimum with included usage, it fits inside it. Re-check the rates on Railway's pricing page before relying on this.
 
 ---
 
@@ -3557,11 +3605,30 @@ ANALYST_PSQL -At -c "SELECT normals_status, count(DISTINCT unit_id) FROM scoring
 Expected: every cell passes; the normals line shows how many scorable routes read `complete`/`insufficient` vs `pending`. **STOP — owner review:** the agent pastes the elevation `dem_source` counts, the EPQS class table and the normals split. Pending buckets read as missing until plan 3's next January window (or the current one, if still open, via `era5_window run`); the owner decides whether MVP-1 training waits for them. Only on "features ok" go on.
 
 - [ ] **Step 5 (owner go, then agent): Prod** — gate blocks as Task 6 Step 4: 5a `gate_pass c2_migrate` after checking `../data/review/mpc2_points_branch.json` exists and prod `MIG current` is `0008_mp_catalog`; 5b (`gate_require c2_migrate`) migrate + grants + verify; 5c (no gate needed: idempotent, no paid calls) `mp_catalog refresh`, `static_features points`, `elevation` until `sampled: 0, retry: 0`, `epqs-check` under `bg_start`, `routes`; 5d `VERIFY tests/verify/test_mp_features.py tests/verify/test_mp_catalog.py -q -s` → all pass. Record the prod counts in the PR.
-- [ ] **Step 6 (owner, on the Mac; DP6 option A, ruled): Install the scheduled cycle**
-  - Create the dedicated checkout once: `git -C /Users/sebastianfrazier/Developer/SafeAscent worktree add ../SafeAscent-cycle main` (a worktree on `main`; it never holds env files) and `cd ../SafeAscent-cycle/backend && uv sync --frozen`.
-  - Fill the template: `sed -e "s|__CYCLE_CHECKOUT__|$HOME/Developer/SafeAscent-cycle|" -e "s|__ENV_DIR__|$HOME/Developer/SafeAscent/backend|" -e "s|__PATH__|$(dirname "$(command -v uv)"):/usr/bin:/bin|" -e "s|__LOG_DIR__|$HOME/Library/Logs/SafeAscent|" ops/launchd/com.safeascent.catalog-cycle.plist.template > ~/Library/LaunchAgents/com.safeascent.catalog-cycle.plist`, then `mkdir -p ~/Library/Logs/SafeAscent`, `plutil -lint` it, `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.safeascent.catalog-cycle.plist`.
-  - Optional: create a healthchecks.io check and add `HEALTHCHECKS_CATALOG_URL=<ping url>` to `backend/.env.ingest` (the owner edits it; agents never read or print it).
-  - First run on demand against prod: `launchctl kickstart -p gui/$(id -u)/com.safeascent.catalog-cycle`, then `tail -n 1 ~/Library/Logs/SafeAscent/catalog-cycle.log` → one JSON line with `"status": "ok"` (or `"incomplete"`, with the retry count: rerun later). `launchctl print gui/$(id -u)/com.safeascent.catalog-cycle | grep -E 'state|last exit'` shows the job loaded and its last exit code. After the first 2 January, check the same line again (the missed-while-asleep behaviour is verified here, not assumed).
+- [ ] **Step 6 (owner; DP6 decided 2026-10-13): Create and arm the `catalog-cycle` Railway cron service** — after PR C-2 is merged and 5d passed. Agents never read or print `backend/.env.ingest` or any variable value; every command below prints names, booleans or statuses only.
+  - **6a Service (owner, Railway dashboard):** create service `catalog-cycle` in the SafeAscent project, source = this GitHub repo on `main`, root directory `backend`, config file `backend/railway-catalog-cycle.toml`. Turn **auto-deploy off** for it (it must not deploy on a push to `main`). No public domain, no TCP proxy. Confirm Settings → Cron Schedule shows `0 9 2 1 *` from the toml.
+  - **6b Variables (owner, from the main checkout's `backend/`, values via stdin, never argv):** first confirm the ingest URL's host is Neon's **direct** endpoint (no `-pooler` in the host); if `.env.ingest` holds the pooler host, the owner writes the direct-host URL into a second 0600 file and pipes that instead (the cycle refuses a pooler host at start, Task 12).
+
+```bash
+( set -a; . ./.env.ingest; set +a; printf '%s' "$INGEST_DATABASE_URL" ) \
+  | railway variable set INGEST_DATABASE_URL --stdin --skip-deploys --service catalog-cycle
+railway variable set 'DATABASE_URL=${{INGEST_DATABASE_URL}}' --skip-deploys --service catalog-cycle
+```
+
+`DATABASE_URL` is a Railway reference to the same value (not a second credential): `Settings` requires the field at import, and the job only ever uses `INGEST_DATABASE_URL`. Optional: create a healthchecks.io check (period one year, grace one week, if the service allows a period that long; otherwise a calendar reminder for 3 January) and pipe its ping URL the same way into `HEALTHCHECKS_CATALOG_URL`. Optionally seal `INGEST_DATABASE_URL` in the dashboard so it cannot be read back.
+  - **6c Only this service holds it (owner/agent):** for each of the other services, print a boolean only:
+
+```bash
+for svc in backend celery-worker beat frontend; do
+  railway variable list --service "$svc" --json \
+    | python3 -c 'import json, sys; print(sys.argv[1], "INGEST_DATABASE_URL" in json.load(sys.stdin))' "$svc"
+done
+```
+
+Expected: four `False` lines. (The JSON form carries raw values; the pipe keeps them off the screen. If its shape is not a name→value object, the owner checks the names in the dashboard instead.)
+  - **6d Deploy (owner, by hand):** first deploy from the dashboard (auto-deploy is off). After later merges that touch `app/pipelines`, `railway redeploy --service catalog-cycle --from-source --yes`. Whether a deploy of a cron service also starts a run was not verified this session: check `railway logs --service catalog-cycle` after the first deploy.
+  - **6e First run on demand against prod:** `railway cron run --service catalog-cycle --yes` (Railway's docs list `railway cron run`; the CLI installed here, 5.62.1, has no `cron` command, so run `railway upgrade` first, or use the dashboard's run control). Then `railway logs --service catalog-cycle` → the last line is one JSON object with `"status": "ok"` (or `"incomplete"` with a retry count: run it again later). Exit code 1 (`rejected`/`failed`) is a STOP: paste `status`, `problems` and counts (never names).
+  - **6f After the first 2 January:** the run shows in `railway cron list --service catalog-cycle` and in the healthchecks.io check. On-demand runs after each scrape load use 6e. The scrape itself and its loader stay on the owner's Mac.
 
 ---
 
@@ -3628,18 +3695,16 @@ def test_0010_downgrade_refuses_while_owner_decisions_exist():
 
 ```python
 import argparse
-import asyncio
 import csv
 import uuid
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.data.repair import review
 from app.data.repair.legacy_links import LegacyRow, Link, Unresolved, plan_row, run_r10, run_r10_export, run_r10_import
 from app.pipelines.mp_catalog import refresh
-from tests.pgtest import migrated_db, requires_pg, run_sql, sa_url
+from tests.pgtest import migrated_db, requires_pg, run_on_conn, run_sql
 
 PIN = "0010_accident_route_links"
 SEED = """
@@ -3660,25 +3725,12 @@ INSERT INTO accidents (accident_id, mp_route_id, route_id, mountain_id) VALUES
 """
 
 
-def _run(name, fn):
-    async def go():
-        engine = create_async_engine(sa_url(name))
-        try:
-            async with engine.begin() as conn:
-                result = await fn(conn)
-                return [tuple(r) for r in result.all()] if hasattr(result, "all") else result
-        finally:
-            await engine.dispose()
-
-    return asyncio.run(go())
-
-
 def _ns(**kw):
     return argparse.Namespace(**({"apply": False, "out": None, "review_file": None, "overwrite": False} | kw))
 
 
 def _prepare(name):
-    assert _run(name, lambda c: refresh(c, run_id=uuid.uuid4())).status == "ok"
+    assert run_on_conn(name, lambda c: refresh(c, run_id=uuid.uuid4())).status == "ok"
 
 
 def test_plan_row_rules():
@@ -3697,9 +3749,9 @@ def test_plan_row_rules():
 def test_identity_and_legacy_links_through_the_view():
     with migrated_db(PIN, seed_sql=SEED) as name:
         _prepare(name)
-        out = _run(name, lambda c: run_r10(c, _ns(apply=True)))
+        out = run_on_conn(name, lambda c: run_r10(c, _ns(apply=True)))
         assert out["links"] == {"legacy_mp_id": 1} and out["legacy_conflict"] == 1
-        rows = _run(name, lambda c: c.execute(text(
+        rows = run_on_conn(name, lambda c: c.execute(text(
             "SELECT accident_id, route_id, method FROM accident_route_links ORDER BY accident_id")))
         assert rows == [(1, 900000011, "mp_route_id"), (2, 900000012, "legacy_mp_id")]
 
@@ -3708,9 +3760,9 @@ def test_identity_and_legacy_links_through_the_view():
 def test_unresolved_links_are_recorded_never_guessed():
     with migrated_db(PIN, seed_sql=SEED) as name:
         _prepare(name)
-        before = _run(name, lambda c: c.execute(text("SELECT accident_id, route_id, mountain_id FROM accidents ORDER BY 1")))
-        _run(name, lambda c: run_r10(c, _ns(apply=True)))
-        rows = _run(name, lambda c: c.execute(text(
+        before = run_on_conn(name, lambda c: c.execute(text("SELECT accident_id, route_id, mountain_id FROM accidents ORDER BY 1")))
+        run_on_conn(name, lambda c: run_r10(c, _ns(apply=True)))
+        rows = run_on_conn(name, lambda c: c.execute(text(
             "SELECT accident_id, reason, candidate_route_ids, candidate_area_ids FROM internal.r10_unresolved ORDER BY 1")))
         assert rows == [
             (3, "legacy_route_no_mp_id", [900000012, 900000011], []),
@@ -3719,7 +3771,7 @@ def test_unresolved_links_are_recorded_never_guessed():
             (6, "legacy_mp_id_not_in_catalog", [], []),
             (7, "legacy_route_no_mp_id", [], []),
         ]
-        after = _run(name, lambda c: c.execute(text("SELECT accident_id, route_id, mountain_id FROM accidents ORDER BY 1")))
+        after = run_on_conn(name, lambda c: c.execute(text("SELECT accident_id, route_id, mountain_id FROM accidents ORDER BY 1")))
         assert after == before
 
 
@@ -3727,11 +3779,11 @@ def test_unresolved_links_are_recorded_never_guessed():
 def test_rerun_is_idempotent_and_a_later_mp_route_id_wins():
     with migrated_db(PIN, seed_sql=SEED) as name:
         _prepare(name)
-        first = _run(name, lambda c: run_r10(c, _ns(apply=True)))
-        again = _run(name, lambda c: run_r10(c, _ns(apply=True)))
+        first = run_on_conn(name, lambda c: run_r10(c, _ns(apply=True)))
+        again = run_on_conn(name, lambda c: run_r10(c, _ns(apply=True)))
         assert {k: first[k] for k in ("links", "unresolved")} == {k: again[k] for k in ("links", "unresolved")}
         run_sql(name, "UPDATE accidents SET mp_route_id = 900000011 WHERE accident_id = 2")
-        rows = _run(name, lambda c: c.execute(text("SELECT route_id, method FROM accident_route_links WHERE accident_id = 2")))
+        rows = run_on_conn(name, lambda c: c.execute(text("SELECT route_id, method FROM accident_route_links WHERE accident_id = 2")))
         assert rows == [(900000011, "mp_route_id")]
 
 
@@ -3740,11 +3792,11 @@ def test_owner_decisions_round_trip_and_persist(tmp_path, monkeypatch):
     monkeypatch.setattr(review, "REVIEW_DIR", tmp_path)
     with migrated_db(PIN, seed_sql=SEED) as name:
         _prepare(name)
-        _run(name, lambda c: run_r10(c, _ns(apply=True)))
+        run_on_conn(name, lambda c: run_r10(c, _ns(apply=True)))
         out = tmp_path / "r10.csv"
-        assert _run(name, lambda c: run_r10_export(c, _ns(out=str(out))))["rows"] == 5
+        assert run_on_conn(name, lambda c: run_r10_export(c, _ns(out=str(out))))["rows"] == 5
         with pytest.raises(FileExistsError):
-            _run(name, lambda c: run_r10_export(c, _ns(out=str(out))))
+            run_on_conn(name, lambda c: run_r10_export(c, _ns(out=str(out))))
         with out.open(newline="") as fh:
             rows = list(csv.DictReader(fh))
         assert "url" not in rows[0] and "description" not in rows[0]
@@ -3756,11 +3808,11 @@ def test_owner_decisions_round_trip_and_persist(tmp_path, monkeypatch):
             writer = csv.DictWriter(fh, fieldnames=list(rows[0]))
             writer.writeheader()
             writer.writerows(rows)
-        assert _run(name, lambda c: run_r10_import(c, _ns(review_file=str(out), apply=True))) == {
+        assert run_on_conn(name, lambda c: run_r10_import(c, _ns(review_file=str(out), apply=True))) == {
             "link": 2, "no_link": 3, "applied": True}
-        _run(name, lambda c: run_r10(c, _ns(apply=True)))
-        _run(name, lambda c: run_r10(c, _ns(apply=True)))
-        links = _run(name, lambda c: c.execute(text(
+        run_on_conn(name, lambda c: run_r10(c, _ns(apply=True)))
+        run_on_conn(name, lambda c: run_r10(c, _ns(apply=True)))
+        links = run_on_conn(name, lambda c: c.execute(text(
             "SELECT accident_id, route_id, area_id, method FROM accident_route_links WHERE method = 'owner' ORDER BY 1")))
         assert links == [(3, 900000012, None, "owner"), (4, None, 900000110, "owner")]
 
@@ -3770,9 +3822,9 @@ def test_import_refuses_a_link_to_an_unknown_id(tmp_path, monkeypatch):
     monkeypatch.setattr(review, "REVIEW_DIR", tmp_path)
     with migrated_db(PIN, seed_sql=SEED) as name:
         _prepare(name)
-        _run(name, lambda c: run_r10(c, _ns(apply=True)))
+        run_on_conn(name, lambda c: run_r10(c, _ns(apply=True)))
         out = tmp_path / "r10.csv"
-        _run(name, lambda c: run_r10_export(c, _ns(out=str(out))))
+        run_on_conn(name, lambda c: run_r10_export(c, _ns(out=str(out))))
         with out.open(newline="") as fh:
             rows = list(csv.DictReader(fh))
         for row in rows:
@@ -3782,7 +3834,7 @@ def test_import_refuses_a_link_to_an_unknown_id(tmp_path, monkeypatch):
             writer.writeheader()
             writer.writerows(rows)
         with pytest.raises(ValueError, match="not in the catalog"):
-            _run(name, lambda c: run_r10_import(c, _ns(review_file=str(out), apply=True)))
+            run_on_conn(name, lambda c: run_r10_import(c, _ns(review_file=str(out), apply=True)))
 ```
 
 Candidate order: for accident 3 ("Fixture Dihedral Direct") the name ranks `900000012` first; for accident 5 ("Fixture Arete", whose MP id string is malformed) `900000011` first; accident 7 has no catalog route within 2 km. `review.REVIEW_DIR` is the module constant `_write` checks.
@@ -3920,7 +3972,138 @@ def downgrade() -> None:
     op.drop_table("accident_legacy_links")
 ```
 
-`backend/app/models/links.py` mirrors the four tables (`AccidentLegacyLink`, `R10Unresolved`, `R10LlmCall`, `R10LlmGate`) column for column with the same CHECK names (pattern: `app/models/catalog.py`; `{"schema": "internal"}` in `R10Unresolved.__table_args__`; `ARRAY(BigInteger)` with `server_default="{}"`). Register it in `app/models/__init__.py`; add `"app.models.links"` to the strict mypy block.
+`backend/app/models/links.py` (M2: written out, because `command.check` in `test_migration_0010` needs exact parity with the migration: types, server defaults, FKs, the index and every CHECK name, and three of the four tables live in `internal`):
+
+```python
+"""R10 links on the MP catalog (migration 0010): legacy links, the unresolved residue, and the
+LLM pass's per-call audit and per-(model, prompt version) gate."""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime
+from decimal import Decimal
+
+from sqlalchemy import (
+    REAL,
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    Text,
+    func,
+)
+from sqlalchemy.dialects.postgresql import ARRAY, UUID
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.db.session import Base
+
+
+class AccidentLegacyLink(Base):
+    __tablename__ = "accident_legacy_links"
+    __table_args__ = (
+        CheckConstraint("method IN ('legacy_mp_id', 'owner', 'llm')", name="accident_legacy_links_method_check"),
+        CheckConstraint("num_nonnulls(route_id, area_id) = 1", name="accident_legacy_links_target_check"),
+        CheckConstraint("(method = 'llm') = (llm_call_id IS NOT NULL)", name="accident_legacy_links_llm_check"),
+    )
+
+    accident_id: Mapped[int] = mapped_column(Integer, ForeignKey("accidents.accident_id"), primary_key=True,
+                                             autoincrement=False)
+    route_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("canonical_routes.route_id"))
+    area_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("canonical_areas.area_id"))
+    method: Mapped[str] = mapped_column(Text)
+    r10_version: Mapped[str] = mapped_column(Text)
+    run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    llm_call_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+
+
+class R10Unresolved(Base):
+    __tablename__ = "r10_unresolved"
+    __table_args__ = (
+        CheckConstraint("reason IN ('legacy_route_no_mp_id', 'legacy_mp_id_not_in_catalog', 'legacy_mountain_only')",
+                        name="r10_unresolved_reason_check"),
+        CheckConstraint("owner_decision IS NULL OR owner_decision IN ('link', 'no_link')",
+                        name="r10_unresolved_owner_decision_check"),
+        CheckConstraint("owner_decision IS DISTINCT FROM 'link' OR num_nonnulls(decided_route_id, decided_area_id) = 1",
+                        name="r10_unresolved_link_target_check"),
+        {"schema": "internal"},
+    )
+
+    accident_id: Mapped[int] = mapped_column(Integer, ForeignKey("accidents.accident_id"), primary_key=True,
+                                             autoincrement=False)
+    legacy_route_id: Mapped[int | None] = mapped_column(Integer)
+    legacy_mountain_id: Mapped[int | None] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(Text)
+    candidate_route_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), server_default="{}")
+    candidate_area_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), server_default="{}")
+    owner_decision: Mapped[str | None] = mapped_column(Text)
+    decided_route_id: Mapped[int | None] = mapped_column(BigInteger)
+    decided_area_id: Mapped[int | None] = mapped_column(BigInteger)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    llm_call_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+
+
+class R10LlmCall(Base):
+    __tablename__ = "r10_llm_calls"
+    __table_args__ = (
+        CheckConstraint("candidate_kind IN ('route', 'area')", name="r10_llm_calls_kind_check"),
+        CheckConstraint("status IN ('ok', 'invalid', 'refusal', 'max_tokens', 'error')",
+                        name="r10_llm_calls_status_check"),
+        CheckConstraint("pick_id IS NULL OR pick_id = ANY(candidate_ids)", name="r10_llm_calls_pick_offered_check"),
+        CheckConstraint("status <> 'ok' OR (confidence BETWEEN 0 AND 1 AND (pick_none OR pick_id IS NOT NULL))",
+                        name="r10_llm_calls_ok_check"),
+        CheckConstraint("status = 'ok' OR (pick_id IS NULL AND pick_none IS NULL AND confidence IS NULL)",
+                        name="r10_llm_calls_failed_check"),
+        Index("ix_r10_llm_calls_accident", "accident_id"),
+        {"schema": "internal"},
+    )
+
+    call_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    accident_id: Mapped[int] = mapped_column(Integer, ForeignKey("accidents.accident_id"))
+    model: Mapped[str] = mapped_column(Text)
+    model_reported: Mapped[str | None] = mapped_column(Text)
+    prompt_version: Mapped[str] = mapped_column(Text)
+    payload_fields: Mapped[list[str]] = mapped_column(ARRAY(Text))
+    request_sha256: Mapped[str] = mapped_column(Text)
+    candidate_kind: Mapped[str] = mapped_column(Text)
+    candidate_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger))
+    status: Mapped[str] = mapped_column(Text)
+    pick_id: Mapped[int | None] = mapped_column(BigInteger)
+    pick_none: Mapped[bool | None] = mapped_column(Boolean)
+    confidence: Mapped[float | None] = mapped_column(REAL)
+    reason_code: Mapped[str | None] = mapped_column(Text)
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(10, 6))
+    is_sample: Mapped[bool] = mapped_column(Boolean)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class R10LlmGate(Base):
+    __tablename__ = "r10_llm_gates"
+    __table_args__ = ({"schema": "internal"},)
+
+    gate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    model: Mapped[str] = mapped_column(Text)
+    prompt_version: Mapped[str] = mapped_column(Text)
+    sample_run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    n_checked: Mapped[int] = mapped_column(Integer)
+    n_agree: Mapped[int] = mapped_column(Integer)
+    n_auto_band: Mapped[int] = mapped_column(Integer)
+    n_auto_band_agree: Mapped[int] = mapped_column(Integer)
+    auto_threshold: Mapped[float] = mapped_column(REAL)
+    passed: Mapped[bool] = mapped_column(Boolean)
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+```
+
+Register it in `app/models/__init__.py`; add `"app.models.links"` to the models override block (m1), not the strict block. If `command.check` reports a server-default difference on the two `ARRAY` columns (reflection renders `'{}'::bigint[]`), match the migration's text exactly rather than adding a comparison exemption.
 
 - [ ] **Step 4: Implement R10** — `backend/app/data/repair/legacy_links.py`:
 
@@ -4210,6 +4393,9 @@ Grants (`grants_phase2.sql`, before `RESET ROLE`):
 -- R10 on the MP catalog (0010). Reads the legacy link columns it needs, never anything else
 -- of routes/mountains; never writes accidents. Owner decisions are kept: the unresolved table
 -- has DELETE only for undecided rows a rule has since resolved (the job's WHERE).
+-- Narrow any stray table-level grant back to the column sets below on every rerun (the mp_ticks /
+-- mp_locations pattern; a column REVOKE alone does not remove a table-level grant).
+REVOKE SELECT ON public.routes, public.mountains FROM ingest;
 GRANT SELECT (route_id, name, grade, type, latitude, longitude, mp_route_id) ON public.routes TO ingest;
 GRANT SELECT (mountain_id, name, latitude, longitude) ON public.mountains TO ingest;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.accident_legacy_links TO ingest;
@@ -4231,7 +4417,7 @@ GRANT SELECT, INSERT ON internal.r10_llm_calls, internal.r10_llm_gates TO ingest
 
 Designed like the Phase 4 Jev triage (`2026-10-12-phase4-users-incident-reporting.md` Decision 5, Task 28): **the model classifies, our code decides.** It sees only the candidates Task 14 generated, labelled `A`–`E`, and answers with one of those letters or `none`, a confidence and a reason code, through a JSON schema. It never sees or returns an id; our code maps the letter back, and the database refuses a pick that was not offered (`r10_llm_calls_pick_offered_check`). Every call writes one audit row, committed before the next call, so a crash never loses a paid result. A dollar cap stops the run before the call that would pass it. Nothing is linked until a spot-checked sample for the same pinned model and prompt version passes the gate.
 
-**What leaves our systems `(decided: DP14, owner 2026-10-12)`:** this sends accident facts to the Anthropic API: the accident's year and month, US state, activity class, the legacy short route/mountain/location strings, the accident's **full narrative** (`accidents.description`, untruncated: the owner states the accident text all comes from open online sources), and the candidates' MP names, grades, types and area names. It never sends tags, URLs, coordinates, exact dates, or any id (accident, route, area or person). The narrative goes only into the API request: it is never written to the audit row (which stores `payload_fields` and the request hash, not the payload), a log line, or the spot-check CSV (`review._write` keeps narratives out of review files).
+**What leaves our systems `(decided: DP14, owner 2026-10-12)`:** this sends accident facts to the Anthropic API: the accident's year and month, US state, activity class, the legacy short route/mountain/location strings, the accident's **full narrative** (`accidents.description`, untruncated: the owner states the accident text all comes from open online sources), and the candidates' MP names, grades, types and area names (`[default pending: O1]`: the default keeps sending them; the owner confirms, or chooses grades/types plus letters only). It never sends tags, URLs, coordinates, exact dates, or any id (accident, route, area or person). The narrative goes only into the API request: it is never written to the audit row (which stores `payload_fields` and the request hash, not the payload), a log line, or the spot-check CSV (`review._write` keeps narratives out of review files).
 
 **Files:**
 - Create: `backend/app/data/repair/r10_llm.py`, `backend/tests/test_r10_llm.py`
@@ -4240,9 +4426,9 @@ Designed like the Phase 4 Jev triage (`2026-10-12-phase4-users-incident-reportin
 **Interfaces:**
 - Consumes: Task 14's `internal.r10_unresolved` (`candidate_route_ids`/`candidate_area_ids`, already ranked), `internal.r10_llm_calls`, `internal.r10_llm_gates`, `accident_legacy_links` (method `llm`), `review._write`/`REVIEW_DIR`; `db.ingest_engine`.
 - Produces:
-  - `PROMPT_VERSION = "r10-llm-v1"`; `MODELS = {"haiku": "claude-haiku-4-5-20251001", "sonnet": "claude-sonnet-5"}` (pinned ids exactly as the owner named them); `PRICES_USD_PER_MTOK = {"claude-haiku-4-5-20251001": (1.00, 5.00), "claude-sonnet-5": (2.00, 10.00)}` (input, output; from the Anthropic pricing table as cached on 2026-06-24, **re-checked before every paid run**); `MAX_OUTPUT_TOKENS = 4096`; `LETTERS = ("A","B","C","D","E")`; `ReasonCode = Literal["name_match","name_and_grade_match","location_only","ambiguous","no_match"]`.
-  - `(ruled: DP8, controller ruling 2026-10-12, recommended default; the owner may override)` `AUTO_LINK_CONFIDENCE = 0.90`, `REVIEW_CONFIDENCE = 0.60`, gate `GATE_MIN_CHECKED = 100`, `GATE_MIN_AUTO_BAND = 30`, `GATE_MIN_AUTO_PRECISION = 0.95`.
-  - `@dataclass(frozen=True) Case(accident_id: int, kind: Literal["route","area"], candidate_ids: tuple[int, ...], payload: dict[str, object])`; `PAYLOAD_FIELDS: tuple[str, ...]`; `async build_cases(conn, *, limit: int | None = None) -> list[Case]`.
+  - `PROMPT_VERSION = "r10-llm-v1"`; `MODELS = {"haiku": "claude-haiku-4-5-20251001", "sonnet": "claude-sonnet-5"}` (pinned ids exactly as the owner named them); `PRICES_USD_PER_MTOK = {"claude-haiku-4-5-20251001": (1.00, 5.00), "claude-sonnet-5": (2.00, 10.00)}` (input, output; from the Anthropic pricing table as cached on 2026-06-24, **re-checked before every paid run**); `HAIKU_THINKING_BUDGET = 8192` (extended thinking, `budget_tokens`), `SONNET_EFFORT = "high"` (adaptive thinking), `MAX_OUTPUT_TOKENS = 12288` (must exceed the Haiku budget; M4, the owner's "Haiku high reasoning"); `LETTERS = ("A","B","C","D","E")`; `ReasonCode = Literal["name_match","name_and_grade_match","location_only","ambiguous","no_match"]`.
+  - `(decided: DP8, owner 2026-10-13)` `AUTO_LINK_CONFIDENCE = 0.80`, `REVIEW_CONFIDENCE = 0.60`, gate `GATE_MIN_CHECKED = 100`, `GATE_MIN_AUTO_BAND = 30`, `GATE_MIN_AUTO_PRECISION = 0.95`.
+  - `@dataclass(frozen=True) Case(accident_id: int, kind: Literal["route","area"], candidate_ids: tuple[int, ...], payload: dict[str, object], source_url: str | None = None)` (`source_url` feeds only the spot-check CSV, m5; it is never in the payload); `PAYLOAD_FIELDS: tuple[str, ...]`; `async build_cases(conn, *, limit: int | None = None) -> list[Case]`.
   - `@dataclass(frozen=True) Allocation(status: Literal["ok","invalid","refusal","max_tokens","error"], pick_index: int | None, pick_none: bool | None, confidence: float | None, reason_code: str | None, input_tokens: int | None, output_tokens: int | None, model_reported: str | None)`.
   - `class Allocator(Protocol)`: `model: str`, `async def allocate(self, case: Case) -> Allocation`. `ClaudeAllocator(api_key: str, model: str)` is the only class that calls the API; tests use a fake.
   - `interpret(stop_reason: str | None, text: str | None, n_candidates: int) -> tuple[status, pick_index, pick_none, confidence, reason_code]` (pure).
@@ -4252,19 +4438,17 @@ Designed like the Phase 4 Jev triage (`2026-10-12-phase4-users-incident-reportin
   - `async apply_picks(conn, *, model: str, apply: bool) -> dict[str, object]` (no API calls).
   - CLI `python -m app.data.repair.r10_llm plan | sample --model haiku|sonnet --n N --max-usd X --out CSV [--seed S] | gate --model … --review-file CSV | run --model … --max-usd X | apply --model … [--apply]`. `plan` and `apply` never call the API; `sample` and `run` do and need the key exported in the shell.
 
-- [ ] **Step 1: Verify before build (agent, read-only, one cheap call each; needs the owner's go and an exported key)** — like Phase 4 Task 34 Step 6b, record in the PR description: (1) the current price of both models on the Anthropic pricing page (update `PRICES_USD_PER_MTOK` if it differs); (2) that `claude-haiku-4-5-20251001` with `thinking={"type": "enabled", "budget_tokens": 2048}` and `claude-sonnet-5` with `thinking={"type": "adaptive"}` both accept `output_config={"format": {"type": "json_schema", …}}` together with thinking, by one call each on the synthetic fixture case from the tests (`Fixture …` names only, no real accident). If either rejects the combination, STOP and report: the fallback is a strict tool (`strict: true`, `tool_choice` auto with an instruction), and it is the owner's call. (3) the org's data-retention setting for API calls (whether zero data retention applies), recorded for the owner now that full narratives are sent (DP14). Pin the `anthropic` SDK at the version used here: `cd backend && uv add --group llm 'anthropic>=0.116,<2'`, then rewrite the line to the resolved `==` version and `uv lock`.
+- [ ] **Step 1: Verify before build (agent, read-only, one cheap call each; needs the owner's go and an exported key)** — like Phase 4 Task 34 Step 6b, record in the PR description: (1) the current price of both models on the Anthropic pricing page (update `PRICES_USD_PER_MTOK` if it differs); (2) that `claude-haiku-4-5-20251001` with `max_tokens=12288` and `thinking={"type": "enabled", "budget_tokens": 8192}`, and `claude-sonnet-5` with `max_tokens=12288`, `thinking={"type": "adaptive"}` and `output_config.effort = "high"`, both accept `output_config={"format": {"type": "json_schema", …}}` together with thinking (record each call's `usage.output_tokens`: it calibrates the real per-call cost against the ceiling), by one call each on the synthetic fixture case from the tests (`Fixture …` names only, no real accident). If either rejects the combination, STOP and report: the fallback is a strict tool (`strict: true`, `tool_choice` auto with an instruction), and it is the owner's call. (3) the org's data-retention setting for API calls (whether zero data retention applies), recorded for the owner now that full narratives are sent (DP14). Pin the `anthropic` SDK at the version used here: `cd backend && uv add --group llm 'anthropic>=0.116,<2'`, then rewrite the line to the resolved `==` version and `uv lock`.
 
 - [ ] **Step 2: Failing tests** — `backend/tests/test_r10_llm.py`:
 
 ```python
-import asyncio
 import json
 import uuid
 from pathlib import Path
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.data.repair import review
 from app.data.repair.legacy_links import run_r10
@@ -4273,7 +4457,7 @@ from app.data.repair.r10_llm import (
     compute_gate, interpret, run_calls,
 )
 from app.pipelines.mp_catalog import refresh
-from tests.pgtest import migrated_db, requires_pg, run_sql, sa_url
+from tests.pgtest import fetch, migrated_db, requires_pg, run_on_engine, run_sql
 from tests.test_legacy_links import SEED, _ns
 
 PIN = "0010_accident_route_links"
@@ -4305,11 +4489,11 @@ def test_key_only_from_the_exported_environment(tmp_path):
 
 def test_gate_needs_enough_checks_and_auto_band_precision():
     good = [("900000012", "900000012", 0.95)] * 40 + [("900000011", "900000011", 0.7)] * 60
-    assert compute_gate(good, auto_threshold=0.9)["passed"] is True
+    assert compute_gate(good, auto_threshold=0.8)["passed"] is True
     few = good[:90]
-    assert compute_gate(few, auto_threshold=0.9)["passed"] is False
+    assert compute_gate(few, auto_threshold=0.8)["passed"] is False
     wrong = [("900000012", "none", 0.95)] * 3 + [("900000012", "900000012", 0.95)] * 37 + good[40:]
-    gate = compute_gate(wrong, auto_threshold=0.9)
+    gate = compute_gate(wrong, auto_threshold=0.8)
     assert (gate["n_auto_band"], gate["n_auto_band_agree"], gate["passed"]) == (40, 37, False)
 
 
@@ -4327,22 +4511,12 @@ class FakeAllocator:
         return Allocation(status, idx, none, conf, reason, 1000, 200, self.model)
 
 
-def _db(name, fn):
-    async def go():
-        engine = create_async_engine(sa_url(name))
-        try:
-            return await fn(engine)
-        finally:
-            await engine.dispose()
-    return asyncio.run(go())
-
-
 def _prepared(name):
     async def prep(engine):
         async with engine.begin() as conn:
             await refresh(conn, run_id=uuid.uuid4())
             await run_r10(conn, _ns(apply=True))
-    _db(name, prep)
+    run_on_engine(name, prep)
 
 
 @requires_pg
@@ -4355,7 +4529,7 @@ def test_payload_carries_the_narrative_but_no_ids_coordinates_or_exact_date():
         async def cases(engine):
             async with engine.connect() as conn:
                 return await build_cases(conn)
-        built = {c.accident_id: c for c in _db(name, cases)}
+        built = {c.accident_id: c for c in run_on_engine(name, cases)}
     assert set(built) == {3, 4, 5}
     payload = json.dumps(built[3].payload)
     assert built[3].payload["narrative"] == "NARRATIVE-SENTINEL"
@@ -4377,15 +4551,10 @@ def test_pick_outside_the_candidates_is_invalid_never_linked():
             async with engine.connect() as conn:
                 cases = await build_cases(conn)
             return await run_calls(engine, fake, cases, run_id=uuid.uuid4(), is_sample=False, max_usd=5.0)
-        out = _db(name, go)
+        out = run_on_engine(name, go)
         assert out["status_counts"] == {"invalid": 3}
-        rows = _db(name, lambda e: _fetch(e, "SELECT DISTINCT status, pick_id FROM internal.r10_llm_calls"))
+        rows = fetch(name, "SELECT DISTINCT status, pick_id FROM internal.r10_llm_calls")
         assert rows == [("invalid", None)]
-
-
-async def _fetch(engine, sql):
-    async with engine.connect() as conn:
-        return [tuple(r) for r in (await conn.execute(text(sql))).all()]
 
 
 @requires_pg
@@ -4399,7 +4568,7 @@ def test_cost_cap_stops_before_the_call_that_would_pass_it():
                 cases = await build_cases(conn)
             one = call_ceiling_usd(fake.model, cases[0])
             return await run_calls(engine, fake, cases, run_id=uuid.uuid4(), is_sample=False, max_usd=one * 1.05)
-        out = _db(name, go)
+        out = run_on_engine(name, go)
         assert out["calls"] == 1 and out["stopped_at_cap"] is True
 
 
@@ -4412,12 +4581,12 @@ def test_apply_refuses_without_a_passing_gate_for_this_model_and_prompt():
             async with engine.begin() as conn:
                 return await apply_picks(conn, model="claude-haiku-4-5-20251001", apply=True)
         with pytest.raises(SystemExit, match="no passing gate"):
-            _db(name, go)
+            run_on_engine(name, go)
         run_sql(name, "INSERT INTO internal.r10_llm_gates (gate_id, model, prompt_version, sample_run_id, n_checked, "
                       "n_agree, n_auto_band, n_auto_band_agree, auto_threshold, passed) VALUES "
-                      f"('{uuid.uuid4()}', 'claude-haiku-4-5-20251001', 'r10-llm-v0', '{uuid.uuid4()}', 100, 99, 40, 40, 0.9, true)")
+                      f"('{uuid.uuid4()}', 'claude-haiku-4-5-20251001', 'r10-llm-v0', '{uuid.uuid4()}', 100, 99, 40, 40, 0.8, true)")
         with pytest.raises(SystemExit, match="no passing gate"):
-            _db(name, go)
+            run_on_engine(name, go)
 
 
 @requires_pg
@@ -4436,24 +4605,26 @@ def test_apply_links_the_auto_band_prefills_the_review_band_and_owner_wins():
                 await conn.execute(text(
                     "INSERT INTO internal.r10_llm_gates (gate_id, model, prompt_version, sample_run_id, n_checked, "
                     "n_agree, n_auto_band, n_auto_band_agree, auto_threshold, passed) VALUES (:g, :m, 'r10-llm-v1', "
-                    ":s, 100, 97, 40, 39, 0.9, true)"), {"g": uuid.uuid4(), "m": fake.model, "s": uuid.uuid4()})
+                    ":s, 100, 97, 40, 39, 0.8, true)"), {"g": uuid.uuid4(), "m": fake.model, "s": uuid.uuid4()})
                 return await apply_picks(conn, model=fake.model, apply=True)
-        out = _db(name, go)
+        out = run_on_engine(name, go)
         assert out["linked"] == 1 and out["review_prefilled"] == 1 and out["left_unresolved"] == 1
-        links = _db(name, lambda e: _fetch(e, "SELECT accident_id, route_id, method FROM accident_route_links "
-                                                  "WHERE method = 'llm'"))
+        links = fetch(name, "SELECT accident_id, route_id, method FROM accident_route_links "
+                                                  "WHERE method = 'llm'")
         assert links == [(3, 900000012, "llm")]
+        # m14: the R10 rule version, not the prompt version (that lives on the call row).
+        assert fetch(name, "SELECT r10_version FROM accident_legacy_links WHERE accident_id = 3") == [("r10-mp-v1",)]
         run_sql(name, "UPDATE internal.r10_unresolved SET owner_decision = 'no_link', decided_at = now() "
                       "WHERE accident_id = 3")
 
         async def rerun(engine):
             async with engine.begin() as conn:
                 await run_r10(conn, _ns(apply=True))
-        _db(name, rerun)
-        assert _db(name, lambda e: _fetch(e, "SELECT count(*) FROM accident_legacy_links WHERE accident_id = 3")) == [(0,)]
+        run_on_engine(name, rerun)
+        assert fetch(name, "SELECT count(*) FROM accident_legacy_links WHERE accident_id = 3") == [(0,)]
 ```
 
-Accident 3's first candidate is `900000012` (Task 14 ranking), so `A` maps to it. An auto-linked accident keeps its `r10_unresolved` row (with the call id), so the owner can still veto it in the export; the owner's `no_link` on accident 3 removes the LLM link on the next `r10 --apply`, because owner decisions are applied after the rules.
+Accident 3's first candidate is `900000012` (Task 14 ranking), so `A` maps to it. An auto-linked accident keeps its `r10_unresolved` row (with the call id), so the owner can still veto it in the export; the owner's `no_link` on accident 3 removes the LLM link on the next `r10 --apply`, because owner decisions are applied after the rules. The gate rows in these tests carry `auto_threshold = 0.8`, equal to `AUTO_LINK_CONFIDENCE` (DP8), so `apply_picks`' `auto_threshold <= AUTO_LINK_CONFIDENCE` check accepts the passing one; a 0.9 row would refuse at 0.80. The `mid` answer (0.7) sits in the 0.60–0.80 review band, `low` (0.3) below it.
 
 - [ ] **Step 3: Run to verify failure** — `cd backend && uv run pytest tests/test_r10_llm.py -q` → FAIL (module missing).
 
@@ -4489,14 +4660,20 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from app.data.repair import review
+from app.data.repair.legacy_links import R10_VERSION
 
 PROMPT_VERSION = "r10-llm-v1"
 MODELS = {"haiku": "claude-haiku-4-5-20251001", "sonnet": "claude-sonnet-5"}
 # Input, output USD per million tokens; Anthropic pricing as cached 2026-06-24. Re-check before a paid run.
 PRICES_USD_PER_MTOK = {"claude-haiku-4-5-20251001": (1.00, 5.00), "claude-sonnet-5": (2.00, 10.00)}
-MAX_OUTPUT_TOKENS = 4096
+# The owner asked for "Haiku high reasoning" (DP8): Haiku 4.5 still takes a fixed thinking budget, which
+# must stay below max_tokens; Sonnet 5 takes adaptive thinking at effort "high".
+HAIKU_THINKING_BUDGET = 8192
+SONNET_EFFORT = "high"
+# Budget plus 4096 for the answer; a run that still hits it records max_tokens and links nothing.
+MAX_OUTPUT_TOKENS = 12288
 LETTERS = ("A", "B", "C", "D", "E")
-AUTO_LINK_CONFIDENCE = 0.90
+AUTO_LINK_CONFIDENCE = 0.80
 REVIEW_CONFIDENCE = 0.60
 GATE_MIN_CHECKED = 100
 GATE_MIN_AUTO_BAND = 30
@@ -4537,6 +4714,8 @@ class Case:
     kind: Literal["route", "area"]
     candidate_ids: tuple[int, ...]
     payload: dict[str, object]
+    # For the owner's spot-check CSV only (m5); never part of the payload, never sent.
+    source_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -4597,19 +4776,25 @@ class ClaudeAllocator:
         self._anthropic = anthropic
         self._client = anthropic.AsyncAnthropic(api_key=api_key, max_retries=3, timeout=120.0)
 
-    def _params(self) -> dict[str, object]:
-        fmt = {"format": {"type": "json_schema", "schema": SCHEMA}}
-        if self.model.startswith("claude-haiku-4-5"):
-            return {"thinking": {"type": "enabled", "budget_tokens": 2048}, "output_config": fmt}
-        return {"thinking": {"type": "adaptive"}, "output_config": {**fmt, "effort": "medium"}}
-
     async def allocate(self, case: Case) -> Allocation:
+        content = json.dumps(case.payload, sort_keys=True)
+        # Explicit keyword arguments per model (m15): a **dict[str, object] splat fails strict mypy
+        # against the typed SDK wherever the llm group is installed.
         try:
-            response = await self._client.messages.create(
-                model=self.model, max_tokens=MAX_OUTPUT_TOKENS, system=SYSTEM,
-                messages=[{"role": "user", "content": json.dumps(case.payload, sort_keys=True)}],
-                **self._params(),
-            )
+            if self.model.startswith("claude-haiku-4-5"):
+                response = await self._client.messages.create(
+                    model=self.model, max_tokens=MAX_OUTPUT_TOKENS, system=SYSTEM,
+                    messages=[{"role": "user", "content": content}],
+                    thinking={"type": "enabled", "budget_tokens": HAIKU_THINKING_BUDGET},
+                    output_config={"format": {"type": "json_schema", "schema": SCHEMA}},
+                )
+            else:
+                response = await self._client.messages.create(
+                    model=self.model, max_tokens=MAX_OUTPUT_TOKENS, system=SYSTEM,
+                    messages=[{"role": "user", "content": content}],
+                    thinking={"type": "adaptive"},
+                    output_config={"format": {"type": "json_schema", "schema": SCHEMA}, "effort": SONNET_EFFORT},
+                )
         except (self._anthropic.APIStatusError, self._anthropic.APIConnectionError):
             return Allocation("error", None, None, None, None, None, None, None)
         raw = next((b.text for b in response.content if b.type == "text"), None)
@@ -4620,7 +4805,8 @@ class ClaudeAllocator:
 
 CASES_SQL = text(
     "SELECT u.accident_id, u.candidate_route_ids, u.candidate_area_ids, a.date, a.state, a.activity_class, "
-    "a.route, a.mountain, a.location, a.description, r.name, r.grade, r.type, m.name FROM internal.r10_unresolved u "
+    "a.route, a.mountain, a.location, a.description, r.name, r.grade, r.type, m.name, a.source_url "
+    "FROM internal.r10_unresolved u "
     "JOIN accidents a ON a.accident_id = u.accident_id "
     "LEFT JOIN routes r ON r.route_id = u.legacy_route_id LEFT JOIN mountains m ON m.mountain_id = u.legacy_mountain_id "
     "WHERE u.owner_decision IS NULL AND cardinality(u.candidate_route_ids) + cardinality(u.candidate_area_ids) > 0 "
@@ -4642,7 +4828,7 @@ def _short(value: object, limit: int = 120) -> str | None:
 
 async def build_cases(conn: AsyncConnection, *, limit: int | None = None) -> list[Case]:
     cases: list[Case] = []
-    for a, cr, ca, day, state, activity, route, peak, location, narrative, lname, lgrade, ltype, mname in (
+    for a, cr, ca, day, state, activity, route, peak, location, narrative, lname, lgrade, ltype, mname, url in (
             await conn.execute(CASES_SQL)).all():
         kind: Literal["route", "area"] = "route" if cr else "area"
         ids = tuple(int(i) for i in (cr or ca))[: len(LETTERS)]
@@ -4660,7 +4846,7 @@ async def build_cases(conn: AsyncConnection, *, limit: int | None = None) -> lis
                             "type": _short(facts[c][3], 40), "area": _short(facts[c][4])}
                            for i, c in enumerate(ids)],
         }
-        cases.append(Case(int(a), kind, ids, payload))
+        cases.append(Case(int(a), kind, ids, payload, None if url is None else str(url)))
     return cases if limit is None else cases[:limit]
 
 
@@ -4722,6 +4908,9 @@ def compute_gate(rows: Sequence[tuple[str, str, float]], *, auto_threshold: floa
             "passed": passed}
 
 
+# Both bands record which call the owner's export shows beside the accident (m7: one statement).
+MARK_CALL_SQL = text(
+    "UPDATE internal.r10_unresolved SET llm_call_id = :c WHERE accident_id = :a AND owner_decision IS NULL")
 LATEST_SQL = text(
     "SELECT DISTINCT ON (c.accident_id) c.accident_id, c.call_id, c.pick_id, c.pick_none, c.confidence, c.candidate_kind "
     "FROM internal.r10_llm_calls c JOIN internal.r10_unresolved u ON u.accident_id = c.accident_id "
@@ -4746,16 +4935,12 @@ async def apply_picks(conn: AsyncConnection, *, model: str, apply: bool) -> dict
                     "INSERT INTO accident_legacy_links (accident_id, route_id, area_id, method, r10_version, llm_call_id) "
                     "VALUES (:a, :r, :ar, 'llm', :v, :c) ON CONFLICT (accident_id) DO NOTHING"),
                     {"a": a, "r": pick if kind == "route" else None, "ar": pick if kind == "area" else None,
-                     "v": PROMPT_VERSION, "c": call_id})
-                await conn.execute(text(
-                    "UPDATE internal.r10_unresolved SET llm_call_id = :c WHERE accident_id = :a AND owner_decision IS NULL"),
-                    {"a": a, "c": call_id})
+                     "v": R10_VERSION, "c": call_id})
+                await conn.execute(MARK_CALL_SQL, {"a": a, "c": call_id})
         elif not pick_none and pick is not None and conf >= REVIEW_CONFIDENCE:
             prefilled += 1
             if apply:
-                await conn.execute(text(
-                    "UPDATE internal.r10_unresolved SET llm_call_id = :c WHERE accident_id = :a AND owner_decision IS NULL"),
-                    {"a": a, "c": call_id})
+                await conn.execute(MARK_CALL_SQL, {"a": a, "c": call_id})
         else:
             left += 1
     return {"linked": linked, "review_prefilled": prefilled, "left_unresolved": left, "applied": apply}
@@ -4763,7 +4948,7 @@ async def apply_picks(conn: AsyncConnection, *, model: str, apply: bool) -> dict
 
 The CLI (`cli()` at the bottom of the module) wires the subcommands:
 - `plan` (no calls): `build_cases` on a read connection → case count by kind and the summed `call_ceiling_usd` for each model.
-- `sample` (paid): `api_key_from_environment()`, `ClaudeAllocator(key, MODELS[args.model])`, `random.Random(args.seed or 42).sample(cases, min(args.n, len(cases)))`, `run_calls(..., is_sample=True, max_usd=args.max_usd)`, then writes the spot-check CSV with `review._write` (columns `accident_id`, `run_id`, the payload's short fields (never `narrative`: review files carry no narrative text), each candidate's id/name/grade/area, `llm_answer` (a candidate id or `none`), `llm_confidence`; decision column `owner_answer`). The owner fills `owner_answer` blind to nothing: the LLM answer is shown, which the gate accepts as a spot-check, not a blind relabel (the owner may hide the two LLM columns when labelling).
+- `sample` (paid): `api_key_from_environment()`, `ClaudeAllocator(key, MODELS[args.model])`, `random.Random(args.seed or 42).sample(cases, min(args.n, len(cases)))`, `run_calls(..., is_sample=True, max_usd=args.max_usd)`, then writes the spot-check CSV with `review._write` (columns `accident_id`, `run_id`, `source_url` (the case's `accidents.source_url`, so the owner can open the open-source accident text the model read; `ingest` has table SELECT on `accidents`, m5), the payload's short fields (never `narrative`: review files carry no narrative text), each candidate's id/name/grade/area, `llm_answer` (a candidate id or `none`), `llm_confidence`; decision column `owner_answer`). The owner fills `owner_answer` blind to nothing: the LLM answer is shown, which the gate accepts as a spot-check, not a blind relabel (the owner may hide the two LLM columns when labelling).
 - `gate` (no calls): reads the filled CSV (every row needs `owner_answer` = one of the row's candidate ids or `none`, else the whole import refuses), `compute_gate(..., auto_threshold=AUTO_LINK_CONFIDENCE)`, inserts one `internal.r10_llm_gates` row with the sample's `run_id`, and prints the numbers.
 - `run` (paid): every case with no `ok` call yet for this model and prompt version, `is_sample=False`.
 - `apply` (no calls): `apply_picks(..., apply=args.apply)` in one transaction; dry by default.
@@ -4787,10 +4972,11 @@ and add `"INGLLM app.data.repair.r10_llm plan"` to the helper list `tests/test_r
 - [ ] **Step 6: Docs** — `CLAUDE.md` Commands: `uv run --group llm python -m app.data.repair.r10_llm plan|sample|gate|run|apply` (runbooks: `INGLLM`) (paid steps need `ANTHROPIC_API_KEY` exported in the shell, never in a file). Data rules: "The R10 LLM pass sends the DP14 field set to the Anthropic API: short accident fields, the full accident narrative (owner decision 2026-10-12: open-source accident text) and candidate MP facts; never coordinates, exact dates, URLs or ids. The narrative is never stored in the audit table, logged, or written to a review CSV." `data/DATABASE_STRUCTURE.md`: `internal.r10_llm_calls`, `internal.r10_llm_gates`, method `llm`. `CHANGELOG.md` folds into the C-3 entry.
 - [ ] **Step 7: Commit** — `git add backend/app/data/repair/r10_llm.py backend/tests/test_r10_llm.py backend/scripts/runbook_helpers.sh backend/tests/test_runbook_helpers.py backend/pyproject.toml backend/uv.lock .github/workflows/ci.yml CLAUDE.md data/DATABASE_STRUCTURE.md && git commit -m "feat(repair): sample-gated LLM allocation of the R10 residue among ranked candidates"`
 
-**Rulings (DP8, DP13: controller ruling 2026-10-12, recommended default; the owner may override; DP14: owner decision):**
-- `(ruled: DP8)` thresholds. Auto-link when the pick is a candidate with confidence ≥ 0.90 **and** a passing gate exists for this model and prompt version: ≥ 100 owner-checked sample cases, ≥ 30 of them in the auto band, auto-band precision ≥ 0.95. Prefill the owner-review export at 0.60–0.90. Below 0.60, or `none`, the accident stays unresolved and pooled by its own coordinates. Alternative: no auto-link at all, so every pick only prefills review.
-- `(ruled: DP13)` model. Sample 150 cases on **both** models: worst case about $3.5 for Haiku and $7 for Sonnet at the cached prices (the output ceiling dominates; full narratives add roughly $0.3 and $0.6 of input at ~2k tokens each); in practice much less, since outputs are short. Use Haiku 4.5 unless only Sonnet 5 passes the gate, or Sonnet's auto-band precision is at least 3 points higher.
-- `(decided: DP14)` payload. The short fields above plus the full accident narrative (owner decision 2026-10-12: the accident text comes from open online sources), no redaction step. Still never coordinates, exact dates, URLs or ids.
+**Decisions (DP8, DP13, DP14: owner decisions; O1 open):**
+- `(decided: DP8, owner 2026-10-13)` thresholds. Auto-link when the pick is a candidate with confidence ≥ 0.80 **and** a passing gate exists for this model and prompt version: ≥ 100 owner-checked sample cases, ≥ 30 of them in the auto band (confidence ≥ 0.80), auto-band precision ≥ 0.95 (the sample gate is unchanged; only its band edge moves with the threshold). Prefill the owner-review export at 0.60–0.80. Below 0.60, or `none`, the accident stays unresolved and pooled by its own coordinates. `AUTO_LINK_CONFIDENCE`, the `gate` subcommand's `auto_threshold`, and every test and gate row move to 0.80 together, so `apply_picks` never refuses a 0.80 gate.
+- `(decided: DP13, owner 2026-10-13)` model. Haiku is preferred whenever its performance is roughly equivalent. Sample 150 cases on **both** models, Haiku 4.5 with an 8,192-token extended-thinking budget and Sonnet 5 at effort `high` (M4). Worst case at the cached prices, because `call_ceiling_usd` charges the full 12,288-token output ceiling on every call: about **$10 for Haiku** (150 × ~$0.065) and **$19 for Sonnet** (150 × ~$0.13), full narratives included (~2k input tokens each). In practice much less, since real thinking plus the answer is usually a few thousand tokens: roughly $2–4 for Haiku and $5–9 for Sonnet (estimate; Step 1's two calibration calls replace it with measured tokens). Use Haiku 4.5 unless only Sonnet 5 passes the gate, or Sonnet's auto-band precision is at least 3 points higher.
+- `(decided: DP14, owner 2026-10-12)` payload. The short fields above plus the full accident narrative (owner decision 2026-10-12: the accident text comes from open online sources), no redaction step. Still never coordinates, exact dates, URLs or ids.
+- `[default pending: O1]` **Candidate MP facts sent to Anthropic.** The pass also sends each candidate's MP route or area name, grade and type (and its area name) to the Anthropic API. CLAUDE.md's MP rule allows displaying these facts but not bulk redistribution, and DP14 answered only for the accident text. **Default: keep sending them** (the model cannot pick among candidates it cannot read), pending the owner's confirmation. If the owner declines, the alternative is grades, types and letters only, with names withheld, which needs a new `PROMPT_VERSION` and a fresh sample and gate. Task 16 Step 3b does not start until the owner has answered O1.
 
 ---
 
@@ -4812,7 +4998,7 @@ ANALYST_PSQL -At -c "SELECT count(*) FILTER (WHERE route_id IS NOT NULL), count(
 Expected: the dry run prints `legacy_accidents`, `links: {legacy_mp_id: N}`, `unresolved` by reason, `legacy_conflict` (report any non-zero count to the owner); both applies print the same counts; the view shows `mp_route_id` and `legacy_mp_id` rows; the accidents counts equal the same query run before Step 2 (R10 never writes accidents). The spec's earlier figures (421 direct, 762 needing a matcher) are the comparison: the second group is what lands in `unresolved`.
 
 - [ ] **Step 3 (owner, optional): Review** — only if the owner wants the residue linked (D-N): `ING r10-export --out ../data/review/r10_unresolved.csv`; the owner fills `owner_decision` (`link`/`no_link`) and, for `link`, `decided_kind` (`route`/`area`) and `decided_id` (a candidate's id, or any catalog id); `ING r10-import --review-file ../data/review/r10_unresolved.csv` (dry), then with `--apply`; `ING r10 --apply`. The CSV holds MP names and grades for review only; it stays in gitignored `data/review/` and is never committed or shared.
-- [ ] **Step 3b (owner go, then agent with the key exported in its shell): LLM sample on the branch** — DP14 is decided (full narrative); DP8/DP13 run on their rulings unless the owner overrides them before this step.
+- [ ] **Step 3b (owner go, then agent with the key exported in its shell): LLM sample on the branch** — DP8 (0.80), DP13 (Haiku preferred) and DP14 (full narrative) are owner decisions. **Precondition: the owner has answered O1** (candidate MP names, grades and types sent to Anthropic; default: keep sending). The caps below sit above each model's worst-case ceiling (about $10 and $19 at 12,288 output tokens a call, M4), so the cap never stops a 150-case sample early.
 
 ```bash
 INGLLM app.data.repair.r10_llm plan
@@ -4821,8 +5007,8 @@ INGLLM app.data.repair.r10_llm plan
 Expected (free): case counts by kind and a dollar ceiling per model. Then, for each model being compared (DP13), from a shell where the owner exported `ANTHROPIC_API_KEY` (never written to a file, never echoed):
 
 ```bash
-INGLLM app.data.repair.r10_llm sample --model haiku --n 150 --max-usd 5 --out ../data/review/r10_llm_sample_haiku.csv
-INGLLM app.data.repair.r10_llm sample --model sonnet --n 150 --max-usd 8 --out ../data/review/r10_llm_sample_sonnet.csv
+INGLLM app.data.repair.r10_llm sample --model haiku --n 150 --max-usd 12 --out ../data/review/r10_llm_sample_haiku.csv
+INGLLM app.data.repair.r10_llm sample --model sonnet --n 150 --max-usd 22 --out ../data/review/r10_llm_sample_sonnet.csv
 ```
 
 Expected: `calls` ≤ 150 each, `status_counts` mostly `ok`, `spent_usd` under the cap, `stopped_at_cap: false`. Any `refusal` or `error` count above a handful: STOP and report.
@@ -4863,7 +5049,7 @@ The follow-up v2.2 plan needs per-point slope, aspect (with confidence), litholo
   - Thin catalog with derived columns only (D-B).
   - `type_group`, with toprope/aid to the underlying rock group per ruling R-1 (Task 2).
   - `ltree` path (Tasks 1, 3) and the scorable flag (Task 4).
-  - Scheduled refresh (Task 12; DP6 ruled: launchd yearly on 2 January plus on demand) on top of the CLI refresh path (Task 4).
+  - Scheduled refresh (Task 12; DP6 decided: a Railway cron service, yearly on 2 January plus on demand, holding only the `ingest` credential) on top of the CLI refresh path (Task 4).
   - No matcher: R10 candidates are ranked only, and the LLM picks among them.
   - The seam: MP ids as keys (D-A).
   - Similarity features adapted (Tasks 7–11), with 100% elevation and the EPQS gate (Tasks 8–13).
@@ -4873,17 +5059,17 @@ The follow-up v2.2 plan needs per-point slope, aspect (with confidence), litholo
   - Terrain/lithology deferred, with source research (Appendix A).
   - Similarity pooling unblocked for MVP-1.
 - **Rules:**
-  - Decided calls read `(decided: DPn)`; DP14 is an owner decision (full narrative). DP6, DP8 and DP13 read `(ruled: DPn)`: controller rulings on the recommended defaults, which the owner may override. Plus ruling R-1.
+  - Decided calls read `(decided: DPn)`; DP6, DP8, DP13 and DP14 are owner decisions (2026-10-12/13). One open owner question reads `[default pending: O1]` (candidate MP facts sent to Anthropic). Plus ruling R-1.
   - Missing is NULL with a reason in every new table.
   - Grants are column-level for `mp_locations`, `routes` and `mountains`. `trainer` gets nothing, `app` gets nothing in `internal`, and the LLM audit and gate tables are append-only for `ingest`.
-  - No new prod credential is held anywhere but the owner's Mac (DP6 option A).
+  - The only prod credential on a shared host is `ingest`'s, on the dedicated `catalog-cycle` Railway cron service (DP6); no other service holds it, and Task 13 Step 6c checks.
   - All SQL binds values; no MP prose column is read or sent (Task 5 pins the schemas). The one accident narrative that leaves is DP14's, and Task 15's payload test pins what leaves.
   - Fixtures use ids ≥ 900000000 and `Fixture …`/state names. CI never calls a paid API.
 - **Placeholders:** none in code. The deliberate runtime values are:
   - the dependency pins (`h3`, `rasterio`, `anthropic`, resolved by `uv`);
   - the token vocabulary (Task 2 Step 1);
   - the LLM prices (re-checked in Task 15 Step 1);
-  - the launchd template placeholders (filled at install);
+  - the Railway service settings and variables (set by the owner, Task 13 Step 6);
   - the owner's review decisions.
   
   Task 15's CLI wiring is specified in prose (argument parsing around the functions given in full).
@@ -4894,7 +5080,8 @@ The follow-up v2.2 plan needs per-point slope, aspect (with confidence), litholo
   - `scoring_unit_features` matches its Interfaces, the Task 7 tests and the Task 11 cells.
   - `RouteTickScrape` ↔ `route_tick_scrapes` ↔ the loader's `SEAM_UPSERT`.
   - `Link`/`Unresolved` and the `r10_llm_*` columns match `0010`, the R10 SQL and `AUDIT_SQL`.
-  - `run_step`, `run_logged` and `run_cycle` signatures match between Tasks 4, 10 and 12.
+  - `run_step` (written in Task 10), `run_logged` and `run_cycle` signatures match between Tasks 4, 10 and 12.
+  - `R10Unresolved`, `R10LlmCall`, `R10LlmGate` (schema `internal`) and `AccidentLegacyLink` in `links.py` match `0010` column for column, with the same CHECK and index names.
   - Route ids are `bigint` everywhere.
 - **Carried from the 2026-09-28 plans, unchanged:** the 3DEP sampler and the EPQS gate (Tasks 8–9, verbatim), the point/feature-version scheme, and the normals read rule.
 - **Dropped:** the OpenBeta client, loader, matcher, `mp_facts` and tick sample; `internal.mp_route_links`/`mp_area_links`; uuid catalog keys; the GitHub data workflows; objective rows; and plan 6's legacy drop.
