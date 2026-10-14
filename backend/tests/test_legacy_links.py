@@ -22,10 +22,12 @@ INSERT INTO routes (route_id, name, latitude, longitude, grade, type, mp_route_i
   (56, 'Fixture Dihedral Direct', 40.0005, -105.3, '5.10b', 'Trad', NULL),
   (57, 'Fixture Arete', 40.0005, -105.3, '5.9', 'Trad', '9000x'),
   (58, 'Fixture Gone', 40.0005, -105.3, '5.9', 'Trad', '900000099'),
-  (59, 'Fixture Lonely', 45.0, -110.0, '5.8', 'Trad', NULL);
+  (59, 'Fixture Lonely', 45.0, -110.0, '5.8', 'Trad', NULL),
+  (60, 'Fixture Nowhere', NULL, NULL, '5.8', 'Trad', NULL);
 INSERT INTO accidents (accident_id, mp_route_id, route_id, mountain_id) VALUES
   (1, 900000011, 55, NULL), (2, NULL, 55, NULL), (3, NULL, 56, NULL), (4, NULL, NULL, 7),
-  (5, NULL, 57, NULL), (6, NULL, 58, NULL), (7, NULL, 59, NULL), (8, NULL, NULL, NULL);
+  (5, NULL, 57, NULL), (6, NULL, 58, NULL), (7, NULL, 59, NULL), (8, NULL, NULL, NULL),
+  (9, NULL, 60, NULL);
 """
 
 
@@ -74,13 +76,16 @@ def test_unresolved_links_are_recorded_never_guessed():
         before = run_on_conn(name, lambda c: c.execute(text("SELECT accident_id, route_id, mountain_id FROM accidents ORDER BY 1")))
         run_on_conn(name, lambda c: run_r10(c, _ns(apply=True)))
         rows = run_on_conn(name, lambda c: c.execute(text(
-            "SELECT accident_id, reason, candidate_route_ids, candidate_area_ids FROM internal.r10_unresolved ORDER BY 1")))
+            "SELECT accident_id, reason, candidate_route_ids, candidate_area_ids, candidates_searched "
+            "FROM internal.r10_unresolved ORDER BY 1")))
+        # 7 was searched and found nothing within 2 km; 9 has no coordinates, so it was never searched.
         assert rows == [
-            (3, "legacy_route_no_mp_id", [900000012, 900000011], []),
-            (4, "legacy_mountain_only", [], [900000110]),
-            (5, "legacy_route_no_mp_id", [900000011, 900000012], []),
-            (6, "legacy_mp_id_not_in_catalog", [], []),
-            (7, "legacy_route_no_mp_id", [], []),
+            (3, "legacy_route_no_mp_id", [900000012, 900000011], [], True),
+            (4, "legacy_mountain_only", [], [900000110], True),
+            (5, "legacy_route_no_mp_id", [900000011, 900000012], [], True),
+            (6, "legacy_mp_id_not_in_catalog", [], [], False),
+            (7, "legacy_route_no_mp_id", [], [], True),
+            (9, "legacy_route_no_mp_id", [], [], False),
         ]
         after = run_on_conn(name, lambda c: c.execute(text("SELECT accident_id, route_id, mountain_id FROM accidents ORDER BY 1")))
         assert after == before
@@ -105,12 +110,15 @@ def test_owner_decisions_round_trip_and_persist(tmp_path, monkeypatch):
         _prepare(name)
         run_on_conn(name, lambda c: run_r10(c, _ns(apply=True)))
         out = tmp_path / "r10.csv"
-        assert run_on_conn(name, lambda c: run_r10_export(c, _ns(out=str(out))))["rows"] == 5
+        assert run_on_conn(name, lambda c: run_r10_export(c, _ns(out=str(out))))["rows"] == 6
         with pytest.raises(FileExistsError):
             run_on_conn(name, lambda c: run_r10_export(c, _ns(out=str(out))))
         with out.open(newline="") as fh:
             rows = list(csv.DictReader(fh))
         assert "url" not in rows[0] and "description" not in rows[0]
+        by_id = {row["accident_id"]: row for row in rows}
+        assert (by_id["3"]["candidate_1_id"], by_id["3"]["candidate_1_coord_precision"]) == ("900000012", "own")
+        assert (by_id["7"]["candidates_searched"], by_id["9"]["candidates_searched"]) == ("True", "False")
         for row in rows:
             row["decided_kind"], row["decided_id"], row["owner_decision"] = {
                 "3": ("route", "900000012", "link"), "4": ("area", "900000110", "link")}.get(
@@ -120,7 +128,7 @@ def test_owner_decisions_round_trip_and_persist(tmp_path, monkeypatch):
             writer.writeheader()
             writer.writerows(rows)
         assert run_on_conn(name, lambda c: run_r10_import(c, _ns(review_file=str(out), apply=True))) == {
-            "link": 2, "no_link": 3, "applied": True}
+            "link": 2, "no_link": 4, "applied": True}
         run_on_conn(name, lambda c: run_r10(c, _ns(apply=True)))
         run_on_conn(name, lambda c: run_r10(c, _ns(apply=True)))
         links = run_on_conn(name, lambda c: c.execute(text(
@@ -146,3 +154,18 @@ def test_import_refuses_a_link_to_an_unknown_id(tmp_path, monkeypatch):
             writer.writerows(rows)
         with pytest.raises(ValueError, match="not in the catalog"):
             run_on_conn(name, lambda c: run_r10_import(c, _ns(review_file=str(out), apply=True)))
+
+
+@requires_pg
+def test_a_changed_candidate_set_clears_the_llm_pick():
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        _prepare(name)
+        run_on_conn(name, lambda c: run_r10(c, _ns(apply=True)))
+        run_sql(name, "UPDATE internal.r10_unresolved SET llm_call_id = gen_random_uuid() WHERE accident_id IN (3, 4)")
+        run_sql(name, "INSERT INTO mp_routes (mp_route_id, name, location_id, type, grade) "
+                      "VALUES (900000013, 'Fixture Slab', 900000110, 'Trad', '5.7')")
+        _prepare(name)
+        run_on_conn(name, lambda c: run_r10(c, _ns(apply=True)))
+        rows = run_on_conn(name, lambda c: c.execute(text(
+            "SELECT accident_id, llm_call_id IS NULL FROM internal.r10_unresolved WHERE accident_id IN (3, 4) ORDER BY 1")))
+        assert rows == [(3, True), (4, False)]

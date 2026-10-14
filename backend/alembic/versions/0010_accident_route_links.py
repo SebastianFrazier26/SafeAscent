@@ -20,6 +20,22 @@ SELECT l.accident_id, l.route_id, l.area_id, l.method
 FROM accident_legacy_links l JOIN accidents a ON a.accident_id = l.accident_id
 WHERE a.mp_route_id IS NULL
 """
+# Follow-up 2026-10-14: owner decisions are final in the database too, not only in r10's WHEREs;
+# a stray UPDATE/DELETE by any role (ingest holds both for undecided rows) is refused.
+KEEP_DECISIONS = """
+CREATE FUNCTION internal.r10_unresolved_keep_decisions() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF OLD.owner_decision IS NOT NULL THEN
+    RAISE EXCEPTION 'r10_unresolved: accident % carries an owner decision and cannot be changed', OLD.accident_id
+      USING ERRCODE = 'integrity_constraint_violation';
+  END IF;
+  RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END $$
+"""
+KEEP_DECISIONS_TRIGGER = """
+CREATE TRIGGER r10_unresolved_keep_decisions BEFORE UPDATE OR DELETE ON internal.r10_unresolved
+  FOR EACH ROW EXECUTE FUNCTION internal.r10_unresolved_keep_decisions()
+"""
 
 
 def upgrade() -> None:
@@ -47,6 +63,7 @@ def upgrade() -> None:
         sa.Column("reason", sa.Text(), nullable=False),
         sa.Column("candidate_route_ids", postgresql.ARRAY(sa.BigInteger()), server_default="{}", nullable=False),
         sa.Column("candidate_area_ids", postgresql.ARRAY(sa.BigInteger()), server_default="{}", nullable=False),
+        sa.Column("candidates_searched", sa.Boolean(), server_default=sa.false(), nullable=False),
         sa.Column("owner_decision", sa.Text(), nullable=True),
         sa.Column("decided_route_id", sa.BigInteger(), nullable=True),
         sa.Column("decided_area_id", sa.BigInteger(), nullable=True),
@@ -109,6 +126,8 @@ def upgrade() -> None:
         schema="internal",
     )
     op.execute(VIEW)
+    op.execute(KEEP_DECISIONS)
+    op.execute(KEEP_DECISIONS_TRIGGER)
 
 
 def downgrade() -> None:
@@ -125,5 +144,7 @@ def downgrade() -> None:
     op.drop_index("ix_r10_llm_calls_accident", "r10_llm_calls", schema="internal")
     op.drop_table("r10_llm_calls", schema="internal")
     op.execute("DROP VIEW accident_route_links")
+    op.execute("DROP TRIGGER r10_unresolved_keep_decisions ON internal.r10_unresolved")
+    op.execute("DROP FUNCTION internal.r10_unresolved_keep_decisions()")
     op.drop_table("r10_unresolved", schema="internal")
     op.drop_table("accident_legacy_links")

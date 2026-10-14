@@ -18,6 +18,7 @@ from sqlalchemy import (
     Integer,
     Numeric,
     Text,
+    false,
     func,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, UUID
@@ -64,6 +65,7 @@ class R10Unresolved(Base):
     reason: Mapped[str] = mapped_column(Text)
     candidate_route_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), server_default="{}")
     candidate_area_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), server_default="{}")
+    candidates_searched: Mapped[bool] = mapped_column(Boolean, server_default=false())
     owner_decision: Mapped[str | None] = mapped_column(Text)
     decided_route_id: Mapped[int | None] = mapped_column(BigInteger)
     decided_area_id: Mapped[int | None] = mapped_column(BigInteger)
