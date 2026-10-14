@@ -3,6 +3,8 @@
 MP ids. Synthetic test ids (>= 900000000) are allowed. Stdlib only."""
 from __future__ import annotations
 
+import csv
+import io
 import re
 import subprocess
 import sys
@@ -14,20 +16,35 @@ SCOPES = ("data/", "docs/", "backend/tests/fixtures/")
 # source files, and the guard must not need an exemption).
 HOST = "mountain" + "project" + ".com"
 URL = re.compile(re.escape(HOST) + r"/(?:route|area|v)/\d+", re.IGNORECASE)
-ID_KEY = re.compile(r"""["']?mp_(?:route_|location_)?id["']?\s*[:=]\s*["']?(\d{6,})""", re.IGNORECASE)
+ID_KEYS = ("mp_id", "mp_route_id", "mp_location_id", "location_id", "route_id", "parent_id", "area_id")
+_KEY = r"(?<![A-Za-z0-9_])(?:" + "|".join(ID_KEYS) + r")"
+# An MP id is 6+ digits with no leading zero and stands alone: accident and test ids share these
+# key names but are small, and a UUID literal ('00000000-...', '12345678-...') is not an MP id.
+_ID = r"(?<![\w-])[1-9]\d{5,}(?![\w-])"
+ID_KEY = re.compile(_KEY + r"""["']?\s*[:=]\s*["']?(""" + _ID + ")", re.IGNORECASE)
+ID_LIST = re.compile(_KEY + r"""(?:s["']?\s*[:=]\s*|\s+IN\s*)[\[(]([^\])]*)[\])]""", re.IGNORECASE)
 SYNTHETIC_FLOOR = 900_000_000
 
 
+def _keyed_ids(text: str) -> list[int]:
+    ids = [int(m) for m in ID_KEY.findall(text)]
+    for body in ID_LIST.findall(text):
+        ids += [int(m) for m in re.findall(_ID, body)]
+    return ids
+
+
 def _csv_ids(text: str) -> list[int]:
-    lines = text.splitlines()
-    if not lines:
+    rows = csv.reader(io.StringIO(text))
+    header = next(rows, None)
+    if header is None:
         return []
-    header = [h.strip().lower() for h in lines[0].split(",")]
-    cols = [i for i, h in enumerate(header) if h in ("mp_id", "mp_route_id", "mp_location_id")]
+    keys = {k + s for k in ID_KEYS for s in ("", "s")}
+    cols = [i for i, h in enumerate(header) if h.strip().lower() in keys]
     out: list[int] = []
-    for line in lines[1:]:
-        cells = line.split(",")
-        out += [int(cells[i]) for i in cols if i < len(cells) and cells[i].strip().isdecimal()]
+    for row in rows:
+        for i in cols:
+            if i < len(row):
+                out += [int(m) for m in re.findall(_ID, row[i])]
     return out
 
 
@@ -39,7 +56,7 @@ def violations(paths: Iterable[str], read: Callable[[str], str]) -> list[str]:
         text = read(path)
         if URL.search(text):
             found.append(f"{path}: Mountain Project route/area URL")
-        ids = [int(m) for m in ID_KEY.findall(text)] + (_csv_ids(text) if path.endswith(".csv") else [])
+        ids = _keyed_ids(text) + (_csv_ids(text) if path.endswith(".csv") else [])
         real = [i for i in ids if i < SYNTHETIC_FLOOR]
         if real:
             found.append(f"{path}: {len(real)} real MP id(s)")

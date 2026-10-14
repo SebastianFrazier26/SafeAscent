@@ -27,6 +27,7 @@ def test_unscorable_reasons_and_unknown_share():
     counts = {r["r"]: r["n"] for r in rows}
     print(counts)
     roped_us = counts.get("scorable", 0) + counts.get("unknown_type", 0) + counts.get("no_coordinates", 0)
+    assert roped_us > 0, "no scorable, unknown_type or no_coordinates routes: has mp_catalog refresh run?"
     assert counts.get("unknown_type", 0) / roped_us <= 0.25, "unknown share above the P2-4 25% target: owner review"
 
 
