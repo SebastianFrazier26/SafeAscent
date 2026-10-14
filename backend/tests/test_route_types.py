@@ -49,6 +49,27 @@ def test_no_type_signal_is_unknown():
     assert tg(None) == "unknown"
 
 
+def test_rock_with_no_discipline_flag_is_its_own_group():
+    # Owner decision 2026-10-13: 105,701 MP routes carry only "rock" (sport vs trad unknown).
+    assert tg("Rock") == "rock"
+    assert tg("Trad, Rock") == "trad"
+
+
+def test_rock_with_a_v_grade_is_a_boulder_not_a_rock_route():
+    only = map_type_group(flags_from_mp_type("Rock"), ["V4"])
+    assert (only.type_group, only.is_boulder) == (None, True)
+    assert map_type_group(flags_from_mp_type("Rock"), ["5.9"]).type_group == "rock"
+
+
+def test_sport_still_maps_to_sport():
+    assert tg("Sport") == "sport"
+
+
+def test_toprope_still_takes_the_underlying_rock_group():
+    assert tg("TR") == "trad"
+    assert tg("Top Rope") == "trad"
+
+
 def test_boulders_are_unscored_unless_roped():
     only = map_type_group(flags_from_mp_type("Boulder"), ["V3"])
     assert (only.type_group, only.is_boulder) == (None, True)
@@ -62,6 +83,7 @@ def test_boulders_are_unscored_unless_roped():
     ("Boulder", {"bouldering"}),
     ("Trad, Grade  V", {"trad", "commitment"}),
     ("Trad, 3 pitches, 500 ft", {"trad"}),
+    ("Rock", {"rock"}),
     (None, set()),
 ])
 def test_mp_type_strings(raw, flags):

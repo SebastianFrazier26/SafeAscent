@@ -64,8 +64,9 @@ class CanonicalArea(Base):
 class CanonicalRoute(Base):
     __tablename__ = "canonical_routes"
     __table_args__ = (
-        CheckConstraint("type_group IS NULL OR type_group IN ('sport', 'trad', 'alpine', 'ice', 'mixed', 'unknown')",
-                        name="canonical_routes_type_group_check"),
+        CheckConstraint(
+            "type_group IS NULL OR type_group IN ('sport', 'trad', 'alpine', 'ice', 'mixed', 'rock', 'unknown')",
+            name="canonical_routes_type_group_check"),
         CheckConstraint("unscorable_reason IS NULL OR unscorable_reason IN "
                         "('boulder', 'no_area', 'not_us', 'unknown_type', 'no_coordinates')",
                         name="canonical_routes_reason_check"),

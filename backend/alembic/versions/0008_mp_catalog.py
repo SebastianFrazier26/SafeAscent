@@ -12,7 +12,7 @@ down_revision = "0007_cell_daily_conditions"
 branch_labels = None
 depends_on = None
 
-TYPE_GROUPS = "('sport', 'trad', 'alpine', 'ice', 'mixed', 'unknown')"
+TYPE_GROUPS = "('sport', 'trad', 'alpine', 'ice', 'mixed', 'rock', 'unknown')"
 UNSCORABLE = "('boulder', 'no_area', 'not_us', 'unknown_type', 'no_coordinates')"
 TREE_STATUS = "('us', 'foreign_root', 'cycle', 'orphan_parent')"
 SCORABLE_ROUTES = """

@@ -27,7 +27,8 @@ INSERT INTO mp_routes (mp_route_id, name, location_id, type, grade, latitude, lo
   (900000006, 'Fixture Six', 900000113, 'Trad', '5.7', 40.21, -105.31),
   (900000007, 'Fixture Seven', 900000201, 'Trad', '5.9', NULL, NULL),
   (900000008, 'Fixture Eight', 900000300, 'Trad', '5.9', NULL, NULL),
-  (900000009, 'Fixture Nine', NULL, 'Trad', '5.9', NULL, NULL);
+  (900000009, 'Fixture Nine', NULL, 'Trad', '5.9', NULL, NULL),
+  (900000011, 'Fixture Rock', 900000112, 'Rock', '5.9', NULL, NULL);
 """
 
 
@@ -68,6 +69,7 @@ def test_refresh_builds_tree_types_and_scorable():
             900000007: ("trad", False, "not_us", 900000201),
             900000008: ("trad", False, "no_area", 900000300),
             900000009: ("trad", False, "no_area", None),
+            900000011: ("rock", True, None, 900000112),
         }
         crag = run_on_conn(name, lambda c: c.execute(text(
             "SELECT path::text, state_code, coord_precision, coord_source_id, point_key FROM canonical_areas "
@@ -93,7 +95,7 @@ def test_rerun_is_idempotent_and_a_fact_change_touches_one_route():
         again = _refresh(name)
         assert (again.counts["routes_inserted"], again.counts["routes_changed"]) == (0, 0)
         assert (again.counts["areas_inserted"], again.counts["areas_changed"]) == (0, 0)
-        assert first.counts["routes_inserted"] == 9
+        assert first.counts["routes_inserted"] == 10
         run_sql(name, "UPDATE mp_routes SET type = 'Trad, Grade IV' WHERE mp_route_id = 900000001")
         third = _refresh(name)
         assert (third.counts["routes_inserted"], third.counts["routes_changed"]) == (0, 1)
@@ -122,7 +124,7 @@ def test_scorable_drop_rejects_and_writes_nothing():
 def test_dry_run_writes_nothing():
     with migrated_db(PIN, seed_sql=SEED) as name:
         result = _refresh(name, dry_run=True)
-        assert result.counts["routes_scorable"] == 3
+        assert result.counts["routes_scorable"] == 4
         assert run_on_conn(name, lambda c: c.execute(text("SELECT count(*) FROM canonical_routes"))) == [(0,)]
 
 
