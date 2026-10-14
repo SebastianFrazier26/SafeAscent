@@ -27,6 +27,9 @@ GDAL_ENV = {
     "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif",
     "GDAL_HTTP_MAX_RETRY": "3",
     "GDAL_HTTP_RETRY_DELAY": "2",
+    # Without these a stalled S3 read hangs the run instead of surfacing as a transient error.
+    "GDAL_HTTP_TIMEOUT": "30",
+    "GDAL_HTTP_CONNECTTIMEOUT": "10",
 }
 # S3 answers 403 instead of 404 for a missing key when listing is not public.
 MISSING_STATUS = frozenset({403, 404})
@@ -88,6 +91,7 @@ def open_remote(url: str) -> AbstractContextManager[DatasetReader] | None:
 
 
 def _sample(src: DatasetReader, points: Sequence[tuple[float, float]]) -> list[float | None]:
+    # Points are WGS84 but are used as EPSG:4269 (NAD83) unprojected on purpose: the shift is sub-metre.
     left, bottom, right, top = src.bounds
     coords = [(lon, lat) for lat, lon in points]
     out: list[float | None] = []
@@ -136,15 +140,19 @@ def read_window(
         handle = opener(tile_url(lat, lon, source))
         if handle is None:
             continue
-        with handle as src:
-            row, col = src.index(lon, lat)
-            res_x, res_y = abs(src.res[0]), abs(src.res[1])
-            dx = res_x * 111_320.0 * math.cos(math.radians(lat))
-            dy = res_y * 110_574.0
-            half_r, half_c = int(radius_m / dy) + 2, int(radius_m / dx) + 2
-            win = rasterio.windows.Window(col - half_c, row - half_r, 2 * half_c + 1, 2 * half_r + 1)
-            raw = src.read(1, window=win, boundless=True, masked=True)
-            z = np.ma.filled(raw.astype(np.float64), np.nan)  # type: ignore[no-untyped-call]
-            z[~np.isfinite(z) | (z <= LOW_SENTINEL)] = np.nan
-            return z, dx, dy, (half_r, half_c)
+        # WGS84 lon/lat used as EPSG:4269 without reprojection on purpose: the shift is sub-metre.
+        try:
+            with handle as src:
+                row, col = src.index(lon, lat)
+                res_x, res_y = abs(src.res[0]), abs(src.res[1])
+                dx = res_x * 111_320.0 * math.cos(math.radians(lat))
+                dy = res_y * 110_574.0
+                half_r, half_c = int(radius_m / dy) + 2, int(radius_m / dx) + 2
+                win = rasterio.windows.Window(col - half_c, row - half_r, 2 * half_c + 1, 2 * half_r + 1)
+                raw = src.read(1, window=win, boundless=True, masked=True)
+                z = np.ma.filled(raw.astype(np.float64), np.nan)  # type: ignore[no-untyped-call]
+                z[~np.isfinite(z) | (z <= LOW_SENTINEL)] = np.nan
+                return z, dx, dy, (half_r, half_c)
+        except RasterioIOError as exc:
+            raise TransientTileError(str(exc)[:200]) from None
     return None

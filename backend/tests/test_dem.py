@@ -4,9 +4,11 @@ import httpx
 import numpy as np
 import pytest
 import rasterio
+from rasterio.errors import RasterioIOError
 from rasterio.transform import from_origin
 
 from app.pipelines.dem import (
+    GDAL_ENV,
     TransientTileError,
     _exists,
     read_window,
@@ -214,3 +216,36 @@ def test_read_window_transient_raises(tile):
 
     with pytest.raises(TransientTileError):
         read_window(40.5, -105.5, 500.0, flaky)
+
+
+class _ReadFails:
+    def __init__(self, src):
+        self._src = src
+
+    def __getattr__(self, name):
+        return getattr(self._src, name)
+
+    def read(self, *args, **kwargs):
+        raise RasterioIOError("CURL error: Connection reset by peer")
+
+
+def test_read_window_mid_read_error_is_transient_and_skips_2_arcsecond(tile):
+    tried = []
+
+    @contextmanager
+    def broken(path):
+        with rasterio.open(path) as src:
+            yield _ReadFails(src)
+
+    def opener(url):
+        tried.append(url)
+        return broken(tile)
+
+    with pytest.raises(TransientTileError):
+        read_window(40.5, -105.5, 500.0, opener)
+    assert len(tried) == 1 and "/13/" in tried[0]
+
+
+def test_gdal_http_timeouts_are_bounded():
+    assert int(GDAL_ENV["GDAL_HTTP_TIMEOUT"]) > 0
+    assert int(GDAL_ENV["GDAL_HTTP_CONNECTTIMEOUT"]) > 0
