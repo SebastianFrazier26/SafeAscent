@@ -406,6 +406,68 @@ Grants: `app` and `analyst` read the catalog tables and this view through `migra
 
 ---
 
+### 19. feature_points
+**Purpose:** One row per distinct point (`canonical_areas.point_key` of an area carrying a non-boulder route), so every route sharing a location sees the same sampled terrain. Added by `0009_static_features`; written by `python -m app.pipelines.static_features points|elevation` (`app/pipelines/static_features.py`, `dem.py`).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| point_key | TEXT | Primary key; `lat:lon` at 5 decimals (also `canonical_areas.point_key`) |
+| lat, lon | FLOAT | Parsed back from `point_key` |
+| grid_bucket | INTEGER | Indexed |
+| h3_r5, h3_r7 | TEXT | H3 cells at resolution 5 and 7 |
+| tz | TEXT | IANA timezone (`localday.tz_for_point`); the `points` upsert never overwrites an already-stored value, only fills a NULL one |
+| elevation_m | REAL | 3DEP elevation, metres; NULL until sampled, and NULL forever for a masked cell, a fill value, or a point with no tile at either resolution (never 0) |
+| dem_source | TEXT | `3dep_13` (1/3″, 10 m) or `3dep_2` (2″, 60 m, where 1/3″ has no tile); `nodata` or `no_tile`; or NULL — pending, retried on the next `elevation` run, oldest-attempted first (check). `nodata`/`no_tile` are terminal: a point holding one is never resampled again. Re-queue one (e.g. once USGS publishes a missing tile) as `ingest`: `UPDATE feature_points SET dem_source = NULL, elevation_m = NULL, dem_res_m = NULL WHERE dem_source = 'no_tile'` |
+| dem_res_m | REAL | 10 or 60, matching `dem_source`; NULL alongside a NULL/`nodata`/`no_tile` `dem_source` |
+| slope_deg | REAL | Maximum Horn slope (deg) within 200 m of the point (crag steepness, not the slope at the point); reserved, not yet populated |
+| aspect_deg, aspect_confidence | REAL | Reserved, not yet populated |
+| terrain_version | TEXT | Reserved, not yet populated |
+| lithology, lithology_source | TEXT, TEXT | Reserved (`lithology_source` check allows `macrostrat`/`none`); not yet populated |
+| feature_version | TEXT | `f-v1` |
+| updated_at, run_id | TIMESTAMPTZ, UUID | Bumped by every upsert, including a transient-failure retry touch; the `source_ingest_log` run that last wrote the row |
+
+A transient DEM read error (a stalled S3 fetch, a mid-read failure — `dem.TransientTileError`) leaves `dem_source` NULL rather than storing a wrong or guessed value; the point is retried by a later `elevation` run. `points`/`elevation` never hold a DB transaction while sampling or calling the timezone lookup: each reads in one short transaction, does its I/O with none open, then writes and logs in a second, so a crash mid-sample writes nothing.
+
+---
+
+### 20. route_static_features
+**Purpose:** Per-route static terrain features, source `mp`, Phase 3's static input alongside weather. Added by `0009_static_features`; written only by `python -m app.pipelines.static_features routes`, which refuses to run while any scorable route's area has no `feature_points` row (run `points`, and `elevation`, first). One row per non-boulder `canonical_routes` row; rebuilt (deleted and reinserted) each run for boulders, upserted for the rest.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| route_id | BIGINT | Primary key; FK to `canonical_routes.route_id` |
+| source | TEXT | `mp` (check) |
+| area_path | LTREE | Copied from `canonical_areas.path` |
+| type_group | TEXT | `sport`, `trad`, `alpine`, `ice`, `mixed`, `rock` or `unknown`, or NULL (check; same set as `canonical_routes.type_group`) |
+| point_key | TEXT | FK to `feature_points.point_key`; NULL when the route's area has no point |
+| lat | FLOAT | The point's latitude only (not `lon`) — the full location is reached through `point_key` → `feature_points` |
+| aspect_deg, slope_deg | REAL, REAL | Copied from `feature_points`; `slope_deg` carries the same "maximum Horn slope within 200 m" comment. Reserved, not yet populated (see table 19) |
+| elevation_m | REAL | Copied from `feature_points.elevation_m` |
+| lithology | TEXT | Copied from `feature_points`; reserved, not yet populated |
+| pitches | SMALLINT | From `mp_routes.pitches`, kept only when it's a whole number in `[1, 1000)`; otherwise NULL |
+| length_m | REAL | `mp_routes.length_ft` converted to metres, kept only when positive and at most `static_features.MAX_LENGTH_M` (3000 m); a longer value is a likely typo (feet entered as metres, or extra digits) and is stored NULL, quarantined `implausible_length` rather than kept as a wrong number |
+| h3_r5, grid_bucket, dem_res_m | TEXT, INTEGER, REAL | Copied from `feature_points` |
+| aspect_confidence | REAL | Copied from `feature_points`; reserved, not yet populated |
+| coord_precision | TEXT | `own`/`inherited`, copied from the route's `canonical_areas.coord_precision`; `none` when the route has no point (check: `own`, `inherited` or `none`) |
+| lithology_source | TEXT | Copied from `feature_points`; reserved, not yet populated |
+| feature_version | TEXT | `f-v1` |
+| updated_at | TIMESTAMPTZ | Bumped on every rebuild that changes the row |
+
+Grants (`ingest`, `grants_phase2.sql`): `SELECT, INSERT, UPDATE` on `feature_points`; `SELECT, INSERT, UPDATE, DELETE` on `route_static_features` (`DELETE` only for the boulder rows a `routes` run clears); `SELECT` on `scoring_unit_features`.
+
+---
+
+### 21. scoring_unit_features (view)
+**Purpose:** The Phase 3 MVP-1 read contract — scorable routes only, 12 rows each (one per calendar month), joining static terrain to monthly climate normals. Added by `0009_static_features`.
+
+Columns: `unit_kind` (`'route'`), `unit_id` (= `route_static_features.route_id`), `type_group`, `area_path`, `point_key`, `tz`, `lat`, `elevation_m`, `dem_res_m`, `grid_bucket`, `coord_precision`, `month` (1–12), `tmax_mean`, `tmin_mean`, `precip_mm`, `snowfall_cm`, `freeze_thaw_days`, `normals_status`, `feature_version`.
+
+Built from `route_static_features` joined to `canonical_routes` (restricted to `scorable`), `feature_points` (for `tz`), a `generate_series(1, 12)` month spine, and `cell_climate_normals` only where `cell_normals_status.status` is `complete` or `insufficient` — otherwise every normals column reads NULL, never an interpolated or zero value. `normals_status` is `no_location` when the route has no `grid_bucket`, else the bucket's `cell_normals_status.status`, defaulting to `pending` when the bucket isn't registered there yet (a route in a brand-new grid bucket). A bucket stays `pending` until the next Open-Meteo Professional window's normals run fills it (`DEPLOYMENT.md`, Data jobs). This view only reads normals computed by plan 3's `app/pipelines/normals.py`; it does not compute or trigger them. Scoring itself is unchanged by this PR — "zero local accidents never means safe" (characteristically-similar-route borrowing) stays a Phase 3 matter.
+
+Grants: `ingest` reads it (`grants_phase2.sql`); `app`/`analyst`/`trainer` grants are a Phase 3 decision, not made by this PR.
+
+---
+
 ## Key Relationships
 
 Full diagram: [`data_model.png`](../data_model.png) (source `docs/diagrams/data_model.mmd`). The schema is owned by Alembic (`backend/alembic/`). Two more live tables have no SQLAlchemy model: `mp_ticks` (read with raw SQL by the ascent-analytics endpoint) and `area_weekly_weather` (not referenced by `app/`).
