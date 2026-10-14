@@ -133,6 +133,7 @@ module = [
     "app.pipelines.r6_verify",
     "app.pipelines.accident_facts",
     "app.pipelines.dem",
+    "app.pipelines.epqs",
     "app.models.types",
 ]
 ignore_errors = false
