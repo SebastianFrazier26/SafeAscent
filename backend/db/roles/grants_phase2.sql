@@ -122,6 +122,20 @@ GRANT SELECT, INSERT, UPDATE ON public.feature_points TO ingest;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.route_static_features TO ingest;
 GRANT SELECT ON public.scoring_unit_features TO ingest;
 
+-- R10 on the MP catalog (0010). Reads the legacy link columns it needs, never anything else
+-- of routes/mountains; never writes accidents. Owner decisions are kept: the unresolved table
+-- has DELETE only for undecided rows a rule has since resolved (the job's WHERE).
+-- Narrow any stray table-level grant back to the column sets below on every rerun (the mp_ticks /
+-- mp_locations pattern; a column REVOKE alone does not remove a table-level grant).
+REVOKE SELECT ON public.routes, public.mountains FROM ingest;
+GRANT SELECT (route_id, name, grade, type, latitude, longitude, mp_route_id) ON public.routes TO ingest;
+GRANT SELECT (mountain_id, name, latitude, longitude) ON public.mountains TO ingest;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.accident_legacy_links TO ingest;
+GRANT SELECT ON public.accident_route_links TO ingest;
+GRANT SELECT, INSERT, UPDATE, DELETE ON internal.r10_unresolved TO ingest;
+-- LLM pass (Task 15): the audit and the gates are append-only; a paid call is never rewritten.
+GRANT SELECT, INSERT ON internal.r10_llm_calls, internal.r10_llm_gates TO ingest;
+
 RESET ROLE;
 COMMIT;
 \echo 'phase 2 grants applied'

@@ -31,7 +31,8 @@ INSERT INTO route_static_features (route_id, source, point_key, lat, elevation_m
 
 
 def test_0009_checks_clean_and_rejects_bad_values():
-    with migrated_db(PIN) as name:
+    # At head, not PIN: alembic check compares every model to the DB and refuses a DB behind head.
+    with migrated_db() as name:
         command.check(_alembic_cfg(name))
         with pytest.raises(asyncpg.CheckViolationError):
             run_sql(name, "INSERT INTO feature_points (point_key, lat, lon, grid_bucket, h3_r5, h3_r7, dem_source, "

@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### R10 accident route links (PR C-3) — 2026-10-14
+
+- R10 on the MP catalog (PR C-3): `accident_route_links` view (identity on `accidents.mp_route_id` plus legacy MP ids and owner decisions), `internal.r10_unresolved` review.
+- Migration `0010_accident_route_links`: `accident_legacy_links` (one target, route or area; `method` `legacy_mp_id`/`owner`/`llm`), `internal.r10_unresolved` (the legacy residue with ranked candidates and the owner's decision), and `internal.r10_llm_calls`/`internal.r10_llm_gates` for the later LLM pass. A later `accidents.mp_route_id` always wins in the view. Downgrade refuses while any of the four tables holds a row.
+- Repair steps `r10` (links only legacy routes whose MP id is in the catalog; never links by name, never writes `accidents`), `r10-export --out` and `r10-import --review-file [--apply]` (owner decisions persist across reruns).
+- `ingest` gains column-level `SELECT` on the legacy link columns of `routes`/`mountains`, read/write on `accident_legacy_links`/`internal.r10_unresolved`, and append-only `SELECT, INSERT` on the two LLM tables.
+
 ### MP similarity features (PR C-2) — 2026-10-14
 
 - MP similarity features (PR C-2): 0009 `feature_points`, `route_static_features`, `scoring_unit_features`; 3DEP elevation with the EPQS gate; `h3`, `rasterio` in the `pipelines` group.

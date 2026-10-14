@@ -104,7 +104,17 @@ INSERT INTO ingest_privs VALUES
   ('public.feature_points', 'SELECT'), ('public.feature_points', 'INSERT'), ('public.feature_points', 'UPDATE'),
   ('public.route_static_features', 'SELECT'), ('public.route_static_features', 'INSERT'),
   ('public.route_static_features', 'UPDATE'), ('public.route_static_features', 'DELETE'),
-  ('public.scoring_unit_features', 'SELECT');
+  ('public.scoring_unit_features', 'SELECT'),
+  -- R10 (0010): legacy links are rebuilt, the unresolved residue is refreshed (DELETE only for
+  -- undecided rows a rule resolved); the LLM audit and gates are append-only. routes and
+  -- mountains SELECT is column-level, checked below.
+  ('public.accident_legacy_links', 'SELECT'), ('public.accident_legacy_links', 'INSERT'),
+  ('public.accident_legacy_links', 'UPDATE'), ('public.accident_legacy_links', 'DELETE'),
+  ('public.accident_route_links', 'SELECT'),
+  ('internal.r10_unresolved', 'SELECT'), ('internal.r10_unresolved', 'INSERT'),
+  ('internal.r10_unresolved', 'UPDATE'), ('internal.r10_unresolved', 'DELETE'),
+  ('internal.r10_llm_calls', 'SELECT'), ('internal.r10_llm_calls', 'INSERT'),
+  ('internal.r10_llm_gates', 'SELECT'), ('internal.r10_llm_gates', 'INSERT');
 
 -- PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views, so extension-owned
 -- relations are skipped throughout, as verify_roles.sql does.
@@ -217,6 +227,35 @@ SELECT 'ingest mp_locations column privileges match the expected set: ' || attna
        AND NOT has_column_privilege('ingest', 'public.mp_locations', attnum, 'REFERENCES')
 FROM cols;
 
+-- R10 (0010): ingest reads only the legacy link columns of routes and mountains, never writes.
+WITH cols AS (
+  SELECT a.attnum, a.attname
+  FROM pg_attribute a
+  WHERE a.attrelid = 'public.routes'::regclass AND a.attnum > 0 AND NOT a.attisdropped
+)
+INSERT INTO role_checks
+SELECT 'ingest routes column privileges match the expected set: ' || attname,
+       has_column_privilege('ingest', 'public.routes', attnum, 'SELECT')
+         = (attname IN ('route_id', 'name', 'grade', 'type', 'latitude', 'longitude', 'mp_route_id'))
+       AND NOT has_column_privilege('ingest', 'public.routes', attnum, 'UPDATE')
+       AND NOT has_column_privilege('ingest', 'public.routes', attnum, 'INSERT')
+       AND NOT has_column_privilege('ingest', 'public.routes', attnum, 'REFERENCES')
+FROM cols;
+
+WITH cols AS (
+  SELECT a.attnum, a.attname
+  FROM pg_attribute a
+  WHERE a.attrelid = 'public.mountains'::regclass AND a.attnum > 0 AND NOT a.attisdropped
+)
+INSERT INTO role_checks
+SELECT 'ingest mountains column privileges match the expected set: ' || attname,
+       has_column_privilege('ingest', 'public.mountains', attnum, 'SELECT')
+         = (attname IN ('mountain_id', 'name', 'latitude', 'longitude'))
+       AND NOT has_column_privilege('ingest', 'public.mountains', attnum, 'UPDATE')
+       AND NOT has_column_privilege('ingest', 'public.mountains', attnum, 'INSERT')
+       AND NOT has_column_privilege('ingest', 'public.mountains', attnum, 'REFERENCES')
+FROM cols;
+
 -- Plan 3 (R7): ingest's only write on area_weekly_weather is UPDATE longitude; SELECT is
 -- table-level (checked in ingest_privs above), so every column already has it.
 WITH cols AS (
@@ -266,7 +305,9 @@ UNION ALL
 SELECT 'catalog relation exists: ' || t, EXISTS (SELECT 1 FROM rels WHERE tbl = t)
 FROM unnest(ARRAY['public.canonical_areas', 'public.canonical_routes', 'public.scorable_routes',
                   'internal.route_tick_scrapes', 'internal.route_tick_coverage', 'internal.route_tick_months',
-                  'public.feature_points', 'public.route_static_features', 'public.scoring_unit_features']) AS t
+                  'public.feature_points', 'public.route_static_features', 'public.scoring_unit_features',
+                  'public.accident_legacy_links', 'public.accident_route_links', 'internal.r10_unresolved',
+                  'internal.r10_llm_calls', 'internal.r10_llm_gates']) AS t
 UNION ALL
 SELECT g || ' can SELECT ' || r.tbl || ' and nothing else',
        has_table_privilege(g, r.oid, 'SELECT')
@@ -278,7 +319,8 @@ WHERE r.tbl IN ('public.accidents_clean', 'public.accidents_clean_daily', 'publi
                 'public.cell_daily_conditions', 'public.grid_bucket_series', 'public.cell_normals_status',
                 'public.cell_climate_normals', 'public.cell_climatology', 'public.canonical_areas',
                 'public.canonical_routes', 'public.scorable_routes', 'public.feature_points',
-                'public.route_static_features', 'public.scoring_unit_features');
+                'public.route_static_features', 'public.scoring_unit_features', 'public.accident_legacy_links',
+                'public.accident_route_links');
 
 SELECT check_name, ok FROM role_checks ORDER BY ok, check_name;
 

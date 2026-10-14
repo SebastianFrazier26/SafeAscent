@@ -120,6 +120,7 @@ module = [
     "app.data.repair.dedupe",
     "app.data.repair.experience",
     "app.data.repair.area_weekly",
+    "app.data.repair.legacy_links",
     "app.pipelines.textsim",
     "app.pipelines.geo",
     "app.pipelines.gnis",
@@ -172,7 +173,7 @@ strict_equality = true
 # disallow_subclassing_any; everything else strict still applies.
 [[tool.mypy.overrides]]
 module = ["app.models.pipeline", "app.models.reference", "app.models.conditions", "app.models.catalog",
-          "app.models.features"]
+          "app.models.features", "app.models.links"]
 ignore_errors = false
 disallow_any_generics = true
 disallow_untyped_calls = true

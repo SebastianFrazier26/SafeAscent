@@ -13,7 +13,7 @@ from alembic import command
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.data.repair import activity, dates, dedupe, experience, geocode, review, severity
+from app.data.repair import activity, dates, dedupe, experience, geocode, legacy_links, review, severity
 from app.data.repair.checks import record_check
 from app.data.repair.framework import LOCATION, Change, run_step
 from app.pipelines import accident_facts, cell_conditions, gnis, localday, mp_tick_aggregates, mp_ticks_quarantine
@@ -482,6 +482,47 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
     _denied(app, "UPDATE feature_points SET tz = NULL WHERE false")
     _denied(analyst, "BEGIN READ WRITE; DELETE FROM route_static_features WHERE false; COMMIT")
 
+    # R10 (0010): ingest reads only the legacy link columns, never writes accidents; the LLM audit
+    # and gates are append-only; app and analyst read the links, app never the residue.
+    _as(ingest, "SELECT route_id, name, grade, type, latitude, longitude, mp_route_id FROM routes; "
+        "SELECT mountain_id, name, latitude, longitude FROM mountains")
+    _denied(ingest, "SELECT mountain_name FROM routes")
+    _denied(ingest, "SELECT elevation_ft FROM mountains")
+    _denied(ingest, "UPDATE routes SET name = name WHERE false")
+    _denied(ingest, "UPDATE accidents SET route_id = route_id WHERE false")
+    _as(ingest, "SELECT count(*) FROM internal.r10_llm_calls; SELECT count(*) FROM internal.r10_llm_gates")
+    _denied(ingest, "UPDATE internal.r10_llm_calls SET status = status WHERE false")
+    _denied(ingest, "DELETE FROM internal.r10_llm_gates WHERE false")
+    _as(owner_url, "INSERT INTO routes (route_id, name, latitude, longitude, mp_route_id) "
+        "VALUES (900000055, 'Fixture Legacy', 40.0, -105.0, NULL); "
+        "UPDATE accidents SET route_id = 900000055 WHERE accident_id = 900000001")
+    monkeypatch.setattr(review, "REVIEW_DIR", tmp_path)
+    r10_csv = tmp_path / "r10-roles.csv"
+
+    async def r10() -> tuple[dict[str, object], ...]:
+        engine = create_async_engine(ingest.replace("postgresql://", "postgresql+asyncpg://", 1))
+        try:
+            async with engine.begin() as conn:
+                first = await legacy_links.run_r10(conn, argparse.Namespace(apply=True))
+                exported = await legacy_links.run_r10_export(conn, argparse.Namespace(out=str(r10_csv), overwrite=False))
+            r10_csv.write_text("accident_id,owner_decision\n900000001,no_link\n", encoding="utf-8")
+            async with engine.begin() as conn:
+                imported = await legacy_links.run_r10_import(conn, argparse.Namespace(review_file=str(r10_csv),
+                                                                                      apply=True))
+                again = await legacy_links.run_r10(conn, argparse.Namespace(apply=True))
+            return first, exported, imported, again
+        finally:
+            await engine.dispose()
+
+    r10_first, r10_export, r10_import, r10_again = asyncio.run(r10())
+    assert r10_first["unresolved"] == {"legacy_route_no_mp_id": 1} and r10_export["rows"] == 1
+    assert r10_import == {"link": 0, "no_link": 1, "applied": True} and r10_again["owner_decided"] == 1
+    _as(app, "SELECT count(*) FROM accident_route_links; SELECT count(*) FROM accident_legacy_links")
+    _as(analyst, "SELECT count(*) FROM accident_route_links; SELECT count(*) FROM internal.r10_unresolved")
+    _denied(app, "SELECT count(*) FROM internal.r10_unresolved")
+    _denied(app, "UPDATE accident_legacy_links SET method = method WHERE false")
+    _denied(analyst, "BEGIN READ WRITE; DELETE FROM accident_legacy_links WHERE false; COMMIT")
+
     _denied(app, "SELECT count(*) FROM internal.mp_tick_aggregates")
     _denied(app, "SELECT count(*) FROM internal.accidents_raw")
     _as(app, "SELECT count(*) FROM source_ingest_log")
@@ -599,7 +640,13 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "GRANT SELECT ON public.scorable_routes TO trainer;"
         "GRANT DELETE ON public.feature_points TO ingest;"
         "GRANT INSERT ON public.route_static_features TO app;"
-        "GRANT SELECT ON public.scoring_unit_features TO trainer;",
+        "GRANT SELECT ON public.scoring_unit_features TO trainer;"
+        "GRANT SELECT (mountain_name) ON public.routes TO ingest;"
+        "GRANT SELECT ON public.mountains TO ingest;"
+        "GRANT UPDATE ON internal.r10_llm_calls TO ingest;"
+        "GRANT DELETE ON internal.r10_llm_gates TO ingest;"
+        "GRANT INSERT ON public.accident_legacy_links TO app;"
+        "GRANT SELECT ON public.accident_route_links TO trainer;",
     )
     _as(owner_url, "GRANT ingest TO analyst")
     # CREATE without USAGE is enough to create a table, which is why verify checks both.
@@ -643,5 +690,11 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "ingest DELETE on public.feature_points matches the expected set",
         "app can SELECT public.route_static_features and nothing else",
         "trainer holds no privilege on public.scoring_unit_features",
+        "ingest routes column privileges match the expected set: mountain_name",
+        "ingest SELECT on public.mountains matches the expected set",
+        "ingest UPDATE on internal.r10_llm_calls matches the expected set",
+        "ingest DELETE on internal.r10_llm_gates matches the expected set",
+        "app can SELECT public.accident_legacy_links and nothing else",
+        "trainer holds no privilege on public.accident_route_links",
     ):
         assert check in stray.stderr, check

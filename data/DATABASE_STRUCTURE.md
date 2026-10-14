@@ -468,6 +468,24 @@ Grants: `ingest` reads it (`grants_phase2.sql`); `app`/`analyst`/`trainer` grant
 
 ---
 
+### 22. accident_legacy_links
+**Purpose:** R10's links for accidents whose `accidents.mp_route_id` is NULL. Added by `0010_accident_route_links`; written only by the `r10` repair step (`app/data/repair/legacy_links.py`), which never writes `accidents`.
+
+Columns: `accident_id` (PK, FK `accidents`), `route_id` (FK `canonical_routes`) or `area_id` (FK `canonical_areas`) — exactly one is set, `method` (`legacy_mp_id`: the legacy `routes.mp_route_id` was all digits and named a catalog route; `owner`: an owner decision from `internal.r10_unresolved`; `llm`: the later LLM pass, which must carry `llm_call_id`), `r10_version` (`r10-mp-v1`), `run_id`, `updated_at`, `llm_call_id`. Nothing is ever linked by name matching.
+
+Grants (`ingest`): `SELECT, INSERT, UPDATE, DELETE` (`legacy_mp_id` rows are rebuilt each run; an owner `no_link` removes a link). `app`/`analyst` read it.
+
+---
+
+### 23. accident_route_links (view)
+**Purpose:** The one place to read an accident's MP link. Added by `0010_accident_route_links`.
+
+Columns: `accident_id`, `route_id`, `area_id`, `method`. Every accident whose `mp_route_id` has a `canonical_routes` row, as `method = 'mp_route_id'` (the identity: R11 rows and later promotions appear with no job run), plus `accident_legacy_links` rows for accidents whose `mp_route_id` is NULL — a later `mp_route_id` always wins over a legacy, owner or LLM link. Accidents with no row here (including every `internal.r10_unresolved` accident) are still pooled incidents, placed by their own coordinates.
+
+Grants: `ingest`, `app` and `analyst` read it.
+
+---
+
 ## Key Relationships
 
 Full diagram: [`data_model.png`](../data_model.png) (source `docs/diagrams/data_model.mmd`). The schema is owned by Alembic (`backend/alembic/`). Two more live tables have no SQLAlchemy model: `mp_ticks` (read with raw SQL by the ascent-analytics endpoint) and `area_weekly_weather` (not referenced by `app/`).
@@ -504,6 +522,9 @@ Added by `0004_phase2a_foundation`. Owned by `migrator`; `app` has no `USAGE` on
 | `route_tick_scrapes` | Added by `0008`. The tick-source seam (DP9): one row per MP route whose ticks were scraped (`source = 'mp_scrape'`), with `scraped_at`, `complete`, `complete_through` (the last fully observed month's last day; set exactly when `complete`) and `total_ticks` (only when `complete`). FK to `mp_routes`; loaders upsert, never delete. `0008` backfilled it from `mp_tick_aggregates` only for routes whose stored months (plus that run's quarantined partial/future months) sum to the stored total |
 | `route_tick_coverage` (view) | Every `canonical_routes` route with its `tick_status`: `complete`, `scraped` (incomplete), or `missing` (never scraped). `tick_total` is set only for `complete` routes, so an unscraped route never reads as zero ticks |
 | `route_tick_months` (view) | Monthly tick counts (`route_id, period, style, tick_count`) only for completely scraped routes, and only for months up to their `complete_through` |
+| `r10_unresolved` | Added by `0010`. Accidents with a legacy `route_id`/`mountain_id` that R10 could not link: `reason` (`legacy_route_no_mp_id`, `legacy_mp_id_not_in_catalog`, `legacy_mountain_only`), up to 5 ranked `candidate_route_ids` (non-boulder routes in areas within 2 km, by name similarity then distance) or `candidate_area_ids` (located areas within 3 km), and the owner's optional `owner_decision` (`link` with exactly one `decided_route_id`/`decided_area_id`, or `no_link`) from `r10-export`/`r10-import`. Decided rows are never refreshed or deleted by `r10`; undecided rows are refreshed each run and removed once a rule resolves them. Unresolved accidents remain pooled incidents placed by their own coordinates |
+| `r10_llm_calls` | Added by `0010` for the later LLM pass: one append-only audit row per call (model, prompt version, payload field names and request hash — no text, offered candidate ids, status, pick, confidence, tokens, cost). The database refuses a pick that was not offered |
+| `r10_llm_gates` | Added by `0010`: one append-only gate decision per (model, prompt version) sample run |
 
 ---
 
