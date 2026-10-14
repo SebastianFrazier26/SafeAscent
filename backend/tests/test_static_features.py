@@ -1,5 +1,8 @@
 import math
+import threading
 import uuid
+
+import pytest
 
 from sqlalchemy import text
 
@@ -9,7 +12,7 @@ from app.pipelines.grid import grid_bucket, point_key
 from app.pipelines.mp_catalog import refresh
 from app.pipelines.static_features import build_route_features, epqs_check, fill_elevation, run_step, upsert_points
 from app.pipelines.validate import ValidationReport
-from tests.pgtest import fetch, migrated_db, requires_pg, run_on_conn, run_on_engine
+from tests.pgtest import fetch, migrated_db, requires_pg, run_on_conn, run_on_engine, run_sql
 
 PIN = "0009_static_features"
 DENVER = "America/Denver"
@@ -71,7 +74,7 @@ def test_elevation_fills_and_routes_get_rows_with_inherited_precision():
         run_on_conn(name, lambda c: _points(c, run_id))
         stats = run_on_conn(name, lambda c: fill_elevation(
             c, run_id=run_id, sampler=lambda pts: [Elevation(2400.0, "3dep_13", 10.0)] * len(pts), limit=100))
-        assert stats == {"sampled": 2, "null": 0, "retry": 0}
+        assert stats == {"sampled": 2, "nodata": 0, "no_tile": 0, "retry": 0}
         assert run_on_conn(name, build_route_features) == 4
         rows = run_on_conn(name, lambda c: c.execute(text(
             "SELECT route_id, pitches, round(length_m)::int, elevation_m, coord_precision, area_path::text "
@@ -91,7 +94,7 @@ def test_transient_elevation_is_retried_not_recorded():
         run_id = uuid.uuid4()
         run_on_conn(name, lambda c: _points(c, run_id))
         stats = run_on_conn(name, lambda c: fill_elevation(c, run_id=run_id, sampler=lambda pts: [None] * len(pts), limit=100))
-        assert stats == {"sampled": 0, "null": 0, "retry": 2}
+        assert stats == {"sampled": 0, "nodata": 0, "no_tile": 0, "retry": 2}
         assert run_on_conn(name, lambda c: c.execute(text("SELECT count(*) FROM feature_points WHERE dem_source IS NULL"))) == [(2,)]
 
 
@@ -101,8 +104,9 @@ def test_nodata_is_recorded_as_null_never_zero():
         _catalog(name)
         run_id = uuid.uuid4()
         run_on_conn(name, lambda c: _points(c, run_id))
-        run_on_conn(name, lambda c: fill_elevation(
+        stats = run_on_conn(name, lambda c: fill_elevation(
             c, run_id=run_id, sampler=lambda pts: [Elevation(None, "nodata", None)] * len(pts), limit=100))
+        assert stats == {"sampled": 2, "nodata": 2, "no_tile": 0, "retry": 0}
         assert run_on_conn(name, lambda c: c.execute(text(
             "SELECT DISTINCT elevation_m, dem_source FROM feature_points"))) == [(None, "nodata")]
 
@@ -120,8 +124,6 @@ def test_only_scorable_routes_are_scoring_units_and_unlocated_ones_have_no_locat
 
 @requires_pg
 def test_a_route_that_becomes_a_boulder_loses_its_feature_row():
-    from tests.pgtest import run_sql
-
     with migrated_db(PIN, seed_sql=SEED) as name:
         _catalog(name)
         run_on_conn(name, lambda c: _points(c, uuid.uuid4()))
@@ -144,12 +146,12 @@ def test_a_transient_point_stays_pending_beside_filled_ones_and_fills_next_run()
             return [None if lat > 40.5 else Elevation(2400.0, "3dep_13", 10.0) for lat, _ in pts]
 
         stats = run_on_conn(name, lambda c: fill_elevation(c, run_id=run_id, sampler=half, limit=100))
-        assert stats == {"sampled": 1, "null": 0, "retry": 1}
+        assert stats == {"sampled": 1, "nodata": 0, "no_tile": 0, "retry": 1}
         rows = fetch(name, "SELECT point_key, elevation_m, dem_source FROM feature_points ORDER BY 1")
         assert rows == [(CRAG_KEY, 2400.0, "3dep_13"), (REGION_KEY, None, None)]
         stats = run_on_conn(name, lambda c: fill_elevation(
             c, run_id=run_id, sampler=lambda pts: [Elevation(2900.0, "3dep_13", 10.0)] * len(pts), limit=100))
-        assert stats == {"sampled": 1, "null": 0, "retry": 0}
+        assert stats == {"sampled": 1, "nodata": 0, "no_tile": 0, "retry": 0}
         assert fetch(name, "SELECT count(*) FROM feature_points WHERE dem_source IS NULL") == [(0,)]
 
 
@@ -233,3 +235,135 @@ def test_epqs_run_step_logs_per_class_counts_and_a_rejected_gate():
     assert result["passed"] == 0 and status == "rejected"
     assert "epqs class steep: attempted 80, failed 20, compared 60" in problems
     assert "in class steep exceeds 0.20" in problems
+
+
+def _open_transactions(name):
+    """Sessions on this database sitting inside a transaction, read from another thread so a
+    sampler can call it while the job's event loop is blocked on it."""
+    out = []
+    sql = (f"SELECT count(*) FROM pg_stat_activity WHERE datname = '{name}' "
+           "AND state LIKE 'idle in transaction%' AND pid <> pg_backend_pid()")
+    t = threading.Thread(target=lambda: out.append(fetch(name, sql)[0][0]))
+    t.start()
+    t.join()
+    return out[0]
+
+
+@requires_pg
+def test_elevation_step_samples_with_no_transaction_open():
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        _catalog(name)
+        run_on_conn(name, lambda c: _points(c, uuid.uuid4()))
+        seen = []
+
+        def sampler(pts):
+            seen.append(_open_transactions(name))
+            return [Elevation(2400.0, "3dep_13", 10.0)] * len(pts)
+
+        result = run_on_engine(name, lambda e: run_step(e, "elevation", sampler=sampler))
+        assert seen == [0] and result == {"sampled": 2, "nodata": 0, "no_tile": 0, "retry": 0}
+        assert fetch(name, "SELECT status, rows_upserted FROM source_ingest_log "
+                           "WHERE source = 'static_features:elevation'") == [("ok", 2)]
+
+
+@requires_pg
+def test_epqs_step_probes_with_no_transaction_open():
+    with migrated_db(PIN, seed_sql=_epqs_seed()) as name:
+        seen = []
+
+        class Watching(FakeEpqs):
+            def elevation(self, lat, lon):
+                if not self.calls:
+                    seen.append(_open_transactions(name))
+                return super().elevation(lat, lon)
+
+        def sampler(pts):
+            seen.append(_open_transactions(name))
+            return _plane(pts)
+
+        result = run_on_engine(name, lambda e: run_step(e, "epqs-check", epqs_client=Watching(), sampler=sampler))
+        assert result["passed"] == 1 and seen and set(seen) == {0}
+
+
+@requires_pg
+def test_a_crash_mid_sample_writes_nothing():
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        _catalog(name)
+        run_on_conn(name, lambda c: _points(c, uuid.uuid4()))
+
+        def boom(pts):
+            raise OSError("connection reset")
+
+        with pytest.raises(OSError):
+            run_on_engine(name, lambda e: run_step(e, "elevation", sampler=boom))
+        assert fetch(name, "SELECT count(*) FROM feature_points WHERE dem_source IS NOT NULL") == [(0,)]
+        assert fetch(name, "SELECT count(*) FROM source_ingest_log WHERE source = 'static_features:elevation'") == [(0,)]
+
+
+@requires_pg
+def test_routes_before_points_refuses_loudly():
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        _catalog(name)
+        with pytest.raises(RuntimeError, match="run the points step before routes"):
+            run_on_conn(name, build_route_features)
+        assert fetch(name, "SELECT count(*) FROM route_static_features") == [(0,)]
+
+
+@requires_pg
+def test_points_that_keep_erroring_do_not_starve_the_queue():
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        _catalog(name)
+        run_id = uuid.uuid4()
+        run_on_conn(name, lambda c: _points(c, run_id))
+        tried = []
+
+        def flaky(pts):
+            tried.extend(pts)
+            return [None] * len(pts)
+
+        for _ in range(2):
+            run_on_conn(name, lambda c: fill_elevation(c, run_id=run_id, sampler=flaky, limit=1))
+        assert [round(lat, 1) for lat, _ in tried] == [40.1, 40.6]
+
+
+@requires_pg
+def test_a_stored_timezone_is_not_requarantined_when_the_lookup_fails():
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        _catalog(name)
+        run_on_conn(name, lambda c: _points(c, uuid.uuid4()))
+        report = ValidationReport("t")
+        run_on_conn(name, lambda c: _points(c, uuid.uuid4(), tz=None, report=report))
+        assert report.quarantined_total() == 0 and report.accepted == 2
+        assert fetch(name, "SELECT DISTINCT tz FROM feature_points") == [(DENVER,)]
+        again = ValidationReport("t")
+        run_sql(name, "UPDATE feature_points SET tz = NULL WHERE point_key = '" + CRAG_KEY + "'")
+        run_on_conn(name, lambda c: _points(c, uuid.uuid4(), tz=None, report=again))
+        assert dict(again.quarantined) == {"no_timezone": 1}
+
+
+@requires_pg
+def test_no_tile_is_counted_apart_from_nodata():
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        _catalog(name)
+        run_id = uuid.uuid4()
+        run_on_conn(name, lambda c: _points(c, run_id))
+
+        def mixed(pts):
+            return [Elevation(None, "no_tile", None) if lat > 40.5 else Elevation(None, "nodata", None) for lat, _ in pts]
+
+        stats = run_on_conn(name, lambda c: fill_elevation(c, run_id=run_id, sampler=mixed, limit=100))
+        assert stats == {"sampled": 2, "nodata": 1, "no_tile": 1, "retry": 0}
+
+
+@requires_pg
+def test_implausible_length_is_null_and_quarantined():
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        run_sql(name, "UPDATE mp_routes SET length_ft = 20000 WHERE mp_route_id = 900000002; "
+                      "UPDATE mp_routes SET length_ft = 9842 WHERE mp_route_id = 900000005")
+        _catalog(name)
+        run_on_conn(name, lambda c: _points(c, uuid.uuid4()))
+        report = ValidationReport("t")
+        run_on_conn(name, lambda c: build_route_features(c, report))
+        rows = fetch(name, "SELECT route_id, round(length_m)::int FROM route_static_features ORDER BY 1")
+        assert rows == [(900000001, 91), (900000002, None), (900000003, None), (900000005, 3000)]
+        assert dict(report.quarantined) == {"implausible_length": 1} and report.issues[0].row_ref == "900000002"

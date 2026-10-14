@@ -2,7 +2,11 @@
 catalog. Points are the stored canonical_areas.point_key of areas that carry a non-boulder
 route; a point's coordinates are parsed back from its key, so every consumer sees the same
 5-decimal location. Transient DEM failures leave a point unfilled for the next run.
-Missing is never 0: unknown elevation, slope and aspect stay NULL."""
+Missing is never 0: unknown elevation, slope and aspect stay NULL.
+
+run_step never holds a DB transaction across network I/O (3DEP, EPQS): it reads in one short
+transaction, samples with no transaction open, then writes and logs in another, so a crash
+mid-sample writes nothing."""
 
 from __future__ import annotations
 
@@ -33,6 +37,9 @@ from app.pipelines.localday import tz_for_point
 from app.pipelines.validate import ValidationReport
 
 FEATURE_VERSION = "f-v1"
+# Longer than any single route; MP lengths past this are typos (feet entered as metres, extra digits).
+MAX_LENGTH_M = 3000.0
+FT_TO_M = 0.3048
 
 Sampler = Callable[[Sequence[tuple[float, float]]], list[Elevation | None]]
 
@@ -53,12 +60,28 @@ REGISTER_SERIES = text(
     "INSERT INTO grid_bucket_series (grid_bucket, tz) SELECT DISTINCT grid_bucket, tz FROM feature_points "
     "WHERE tz IS NOT NULL ON CONFLICT (grid_bucket, tz) DO NOTHING"
 )
+STORED_TZ_SQL = text("SELECT point_key, tz FROM feature_points WHERE tz IS NOT NULL")
+# Least recently attempted first: a transient failure bumps updated_at (see RETRY_TOUCH), so points
+# that keep erroring go to the back of the queue instead of filling every --limit batch.
 PENDING_SQL = text(
-    "SELECT point_key, lat, lon FROM feature_points WHERE dem_source IS NULL ORDER BY point_key LIMIT :n"
+    "SELECT point_key, lat, lon FROM feature_points WHERE dem_source IS NULL ORDER BY updated_at, point_key LIMIT :n"
 )
 ELEVATION_UPDATE = text(
     "UPDATE feature_points SET elevation_m = :e, dem_source = :s, dem_res_m = :r, updated_at = now(), "
-    "run_id = :run WHERE point_key = :k"
+    "run_id = :run WHERE point_key = :k AND dem_source IS NULL"
+)
+RETRY_TOUCH = text(
+    "UPDATE feature_points SET updated_at = clock_timestamp() WHERE point_key = ANY(:keys) AND dem_source IS NULL"
+)
+MISSING_POINTS_SQL = text(
+    "SELECT count(*), min(r.route_id) FROM canonical_routes r JOIN canonical_areas a ON a.area_id = r.area_id "
+    "WHERE r.scorable AND (a.point_key IS NULL "
+    "OR NOT EXISTS (SELECT 1 FROM feature_points p WHERE p.point_key = a.point_key))"
+)
+IMPLAUSIBLE_LENGTH_SQL = text(
+    "SELECT r.route_id, m.length_ft FROM canonical_routes r JOIN mp_routes m ON m.mp_route_id = r.route_id "
+    "WHERE NOT r.is_boulder AND m.length_ft IS NOT NULL AND m.length_ft <> 0 "
+    "AND NOT (m.length_ft > 0 AND m.length_ft * :ft <= :max_m) ORDER BY r.route_id"
 )
 EPQS_POINTS_SQL = text(
     "SELECT lat, lon, elevation_m FROM feature_points WHERE elevation_m IS NOT NULL ORDER BY point_key"
@@ -78,10 +101,12 @@ async def upsert_points(
     tz_lookup: Callable[[float, float], str | None] = tz_for_point,
 ) -> int:
     keys = sorted(str(k) for (k,) in (await conn.execute(POINTS_SQL)).all())
+    stored = {str(k): str(z) for k, z in (await conn.execute(STORED_TZ_SQL)).all()}
     rows: list[dict[str, object]] = []
     for key in keys:
         lat, lon = _parse_key(key)
-        tz = tz_lookup(lat, lon)
+        # A stored zone is kept (the upsert never overwrites it), so only a point with none is judged.
+        tz = stored.get(key) or tz_lookup(lat, lon)
         if tz is None:
             report.quarantine(key, "no_timezone")
         else:
@@ -95,6 +120,40 @@ async def upsert_points(
     return len(rows)
 
 
+Pending = list[tuple[str, float, float]]
+
+
+async def pending_points(conn: AsyncConnection, limit: int) -> Pending:
+    return [(str(k), float(la), float(lo)) for k, la, lo in (await conn.execute(PENDING_SQL, {"n": limit})).all()]
+
+
+def sample_pending(todo: Pending, sampler: Sampler) -> list[Elevation | None]:
+    values = sampler([(la, lo) for _, la, lo in todo]) if todo else []
+    if len(values) != len(todo):
+        raise ValueError(f"sampler returned {len(values)} values for {len(todo)} points")
+    return values
+
+
+async def write_elevation(
+    conn: AsyncConnection, *, run_id: uuid.UUID, todo: Pending, values: Sequence[Elevation | None]
+) -> dict[str, int]:
+    """Store sampled values. A None is a transient DEM error: the point keeps dem_source NULL and
+    is retried on a later run, after every point attempted less recently.
+
+    'nodata' and 'no_tile' are terminal: such a point is never sampled again. To re-queue them
+    (e.g. after USGS publishes a missing tile), run as ingest:
+    UPDATE feature_points SET dem_source = NULL, elevation_m = NULL, dem_res_m = NULL WHERE dem_source = 'no_tile';"""
+    done = [(k, v) for (k, _, _), v in zip(todo, values, strict=True) if v is not None]
+    retry = [k for (k, _, _), v in zip(todo, values, strict=True) if v is None]
+    if done:
+        await conn.execute(ELEVATION_UPDATE, [{"e": v.elevation_m, "s": v.dem_source, "r": v.dem_res_m, "run": run_id,
+                                               "k": k} for k, v in done])
+    if retry:
+        await conn.execute(RETRY_TOUCH, {"keys": retry})
+    return {"sampled": len(done), "nodata": sum(1 for _, v in done if v.dem_source == "nodata"),
+            "no_tile": sum(1 for _, v in done if v.dem_source == "no_tile"), "retry": len(retry)}
+
+
 async def fill_elevation(
     conn: AsyncConnection,
     *,
@@ -102,19 +161,10 @@ async def fill_elevation(
     sampler: Sampler = sample_points,
     limit: int,
 ) -> dict[str, int]:
-    todo = [(str(k), float(la), float(lo)) for k, la, lo in (await conn.execute(PENDING_SQL, {"n": limit})).all()]
-    if not todo:
-        return {"sampled": 0, "null": 0, "retry": 0}
-    values = sampler([(la, lo) for _, la, lo in todo])
-    if len(values) != len(todo):
-        raise ValueError(f"sampler returned {len(values)} values for {len(todo)} points")
-    # A None is a transient DEM error: the point keeps dem_source NULL and is retried next run.
-    done = [(k, v) for (k, _, _), v in zip(todo, values) if v is not None]
-    if done:
-        await conn.execute(ELEVATION_UPDATE, [{"e": v.elevation_m, "s": v.dem_source, "r": v.dem_res_m, "run": run_id,
-                                               "k": k} for k, v in done])
-    return {"sampled": len(done), "null": sum(1 for _, v in done if v.elevation_m is None),
-            "retry": len(todo) - len(done)}
+    """Single-connection form for tests and callers that own the transaction; it samples inside
+    that transaction. run_step splits the same three calls across two short transactions."""
+    todo = await pending_points(conn, limit)
+    return await write_elevation(conn, run_id=run_id, todo=todo, values=sample_pending(todo, sampler))
 
 
 BUILD_SQL = text("""
@@ -124,7 +174,7 @@ INSERT INTO route_static_features (route_id, source, area_path, type_group, poin
 SELECT r.route_id, 'mp', a.path, r.type_group, p.point_key, p.lat, p.aspect_deg, p.slope_deg, p.elevation_m,
        p.lithology,
        CASE WHEN m.pitches >= 1 AND m.pitches < 1000 AND m.pitches = trunc(m.pitches) THEN m.pitches::smallint END,
-       CASE WHEN m.length_ft > 0 THEN (m.length_ft * 0.3048)::real END,
+       CASE WHEN m.length_ft > 0 AND m.length_ft * :ft <= :max_m THEN (m.length_ft * :ft)::real END,
        p.h3_r5, p.grid_bucket, p.dem_res_m, p.aspect_confidence,
        CASE WHEN p.point_key IS NULL THEN 'none' ELSE a.coord_precision END, p.lithology_source, :v, now()
 FROM canonical_routes r
@@ -142,14 +192,52 @@ ON CONFLICT (route_id) DO UPDATE SET source = EXCLUDED.source, area_path = EXCLU
 """)
 
 
-async def build_route_features(conn: AsyncConnection) -> int:
+async def build_route_features(conn: AsyncConnection, report: ValidationReport | None = None) -> int:
+    """Refuses while any scorable route's point is missing from feature_points: building then
+    would mark located routes 'none'/no_location. Run the points step first. A length outside
+    (0, MAX_LENGTH_M] is stored NULL and quarantined as implausible_length (0 is "not given")."""
+    missing, example = (await conn.execute(MISSING_POINTS_SQL)).one()
+    if missing:
+        raise RuntimeError(f"{missing} scorable route(s) have no feature point (e.g. route {example}); "
+                           "run the points step before routes")
+    params = {"ft": FT_TO_M, "max_m": MAX_LENGTH_M}
+    bad = (await conn.execute(IMPLAUSIBLE_LENGTH_SQL, params)).all()
     await conn.execute(text(
         "DELETE FROM route_static_features f USING canonical_routes r WHERE r.route_id = f.route_id AND r.is_boulder"))
-    return int((await conn.execute(BUILD_SQL, {"v": FEATURE_VERSION})).rowcount)
+    built = int((await conn.execute(BUILD_SQL, params | {"v": FEATURE_VERSION})).rowcount)
+    if report is not None:
+        for route_id, length_ft in bad:
+            report.quarantine(str(route_id), "implausible_length", length_m=f"{float(length_ft) * FT_TO_M:.0f}")
+        for _ in range(built - len(bad)):
+            report.accept()
+    return built
 
 
 async def epqs_check(
     conn: AsyncConnection,
+    client: EpqsClient,
+    *,
+    sampler: Sampler = sample_points,
+    seed: int = 42,
+    per_class: int = PER_CLASS_TARGET,
+    probe_batch: int = 500,
+    max_probe: int = 6000,
+) -> dict[str, object]:
+    """Single-connection form of load_epqs_points + epqs_sample (for tests); run_step does not
+    hold a transaction while probing."""
+    return epqs_sample(await load_epqs_points(conn), client, sampler=sampler, seed=seed, per_class=per_class,
+                       probe_batch=probe_batch, max_probe=max_probe)
+
+
+EpqsPoints = list[tuple[float, float, float]]
+
+
+async def load_epqs_points(conn: AsyncConnection) -> EpqsPoints:
+    return [(float(la), float(lo), float(e)) for la, lo, e in (await conn.execute(EPQS_POINTS_SQL)).all()]
+
+
+def epqs_sample(
+    points: EpqsPoints,
     client: EpqsClient,
     *,
     sampler: Sampler = sample_points,
@@ -163,7 +251,7 @@ async def epqs_check(
     each slope class holds per_class points, so the same table and seed pick the same points.
     passed requires compare()'s gate and, per class, an EPQS failure share of at most
     epqs.MAX_FAILURE_SHARE (failure_guard)."""
-    points = [(float(la), float(lo), float(e)) for la, lo, e in (await conn.execute(EPQS_POINTS_SQL)).all()]
+    points = list(points)
     random.Random(seed).shuffle(points)
     chosen: dict[str, list[tuple[float, float, float]]] = {name: [] for name, _, _ in SLOPE_CLASSES}
     probed = 0
@@ -203,12 +291,24 @@ async def run_step(
     engine: AsyncEngine, step: str, *, limit: int = 5000, epqs_client: EpqsClient | None = None,
     sampler: Sampler = sample_points,
 ) -> dict[str, object]:
-    """One logged step in its own transaction; the CLI and Task 12's catalog_cycle both call it."""
+    """One logged step; the CLI and Task 12's catalog_cycle both call it. Network steps read in
+    one short transaction, do their I/O with none open, then write and log in a second."""
     from app.pipelines.ingest_log import RunStatus, finish_run, start_run, write_quarantine
 
     if step not in ("points", "elevation", "routes", "epqs-check"):
         raise ValueError(f"unknown step {step!r}")
     report = ValidationReport(f"static_features:{step}")
+    todo: Pending = []
+    values: list[Elevation | None] = []
+    epqs_result: dict[str, object] = {}
+    if step == "elevation":
+        async with engine.connect() as conn:
+            todo = await pending_points(conn, limit)
+        values = sample_pending(todo, sampler)
+    elif step == "epqs-check":
+        async with engine.connect() as conn:
+            points = await load_epqs_points(conn)
+        epqs_result = epqs_sample(points, epqs_client or EpqsClient(), sampler=sampler)
     async with engine.begin() as conn:
         run_id = await start_run(conn, source=f"static_features:{step}", window_start=None, window_end=None,
                                  content_sha256=None)
@@ -218,14 +318,14 @@ async def run_step(
             upserted = await upsert_points(conn, run_id=run_id, report=report)
             result = {"points": upserted}
         elif step == "elevation":
-            stats = await fill_elevation(conn, run_id=run_id, sampler=sampler, limit=limit)
+            stats = await write_elevation(conn, run_id=run_id, todo=todo, values=values)
             upserted = stats["sampled"]
             result = dict(stats)
         elif step == "routes":
-            upserted = await build_route_features(conn)
+            upserted = await build_route_features(conn, report)
             result = {"routes": upserted}
         else:
-            result = await epqs_check(conn, epqs_client or EpqsClient(), sampler=sampler)
+            result = epqs_result
         if report.quarantined_total():
             await write_quarantine(conn, run_id, report)
         # A failed EPQS gate is logged 'rejected' so nothing downstream reads the run as a pass.
