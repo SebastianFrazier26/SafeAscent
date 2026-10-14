@@ -1890,7 +1890,7 @@ Run `python scripts/check_no_mp_data.py` on the tree. If it flags an existing fi
 
 ---
 
-### Task 6: OWNER/AGENT RUNBOOK — PR C-1: `ltree`, migrate `0008`, first refresh (branch, then prod)
+### Task 6: OWNER/AGENT RUNBOOK — the one migration window: `ltree`, migrate `0008`–`0010`, roles, first refresh (branch, then prod)
 
 Follows the plan-2/plan-3 runbook pattern (`2026-09-28-phase2a-conditions-refresh.md` Task 12): the same Shell state, Secrets, Long runs and Gates rules apply verbatim, summarised here.
 - **Shell state.** `TARGET_HOST` is explicit: a branch host or the literal `production`; the helpers refuse while it is unset. An agent runs every block in a fresh shell, so on the branch it runs the re-entry block first. No block defines a helper; `ING`, `INGMOD`, `MIG`, `OWNER_PSQL`, `ANALYST_PSQL`, `VERIFY`, `save_once`, `gate_pass`, `gate_require`, `bg_start`, `bg_wait`, `branch_host` come from `scripts/runbook_helpers.sh`.
@@ -1925,8 +1925,8 @@ cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_hel
 - [ ] **Step 0 (owner, then agent): Loader behaviour, checkout, tools**
   - **Owner confirms in writing** how the private scrape writes `mp_routes`/`mp_locations` on prod: upsert only, never `DELETE`/`TRUNCATE` (D-I). If it deletes, STOP: `0008`'s FKs would make the next load fail; the owner picks between changing the loader and DP5's alternative (no FK).
   - Agent: as plan 3 Task 12 Step 0 — the main checkout is clean, the review worktree for this PR is removed (never `--force`), the main checkout is on `feat/mp-catalog`, then:
-  - **Checkout (2026-10-15, final re-review).** Tasks 6, 13 and 16 all run from the main checkout on `feat/mp-catalog` before it merges, or on `main` once it has. Either way that checkout carries 0008, 0009 **and** 0010, so its alembic head is `0010_accident_route_links`: every runbook upgrades to an explicit revision (`MIG upgrade 0008_mp_catalog`, `0009_static_features`, `0010_accident_route_links`), never `head`, and every revision check accepts the id with or without ` (head)`.
-  - **Open, needs a ruling before a staged run (2026-10-15).** On that checkout `MIG check` compares against the 0010 models, and `grants_phase2.sql`/`verify_roles_phase2.sql` grant and check 0009/0010 relations unconditionally, so at 0008 or 0009 they fail (`alembic check` reports the missing tables; `GRANT` on a relation that does not exist errors). The `MIG check`/grants/verify lines in Tasks 6 and 13 therefore STOP as written. Options for the coordinator/owner: (a) take prod 0008→0010 in one window and run grants/verify once at 0010; (b) make the two role scripts skip relations that do not exist yet (a code change); (c) run Tasks 6/13 from checkouts pinned at their stage (those commits lack the later fixes). Until ruled, a STOP at those lines is expected, not a fault.
+  - **Checkout (2026-10-15, final re-review).** Tasks 6, 13 and 16 all run from the main checkout on `feat/mp-catalog` before it merges, or on `main` once it has. That checkout carries 0008, 0009 and 0010, so its alembic head is `0010_accident_route_links`; the runbook upgrades to that explicit revision, never `head`, and every revision check accepts the id with or without ` (head)`.
+  - **One window (2026-10-15 controller ruling).** The branch ships 0008, 0009 and 0010 together, so prod migrates once, here: `ltree`, `MIG upgrade 0010_accident_route_links`, the role scripts, then `MIG check` (which compares against the 0010 models, so it is only meaningful at 0010). Tasks 13 and 16 keep only their data steps and require prod at `0010_accident_route_links`; neither migrates nor runs the role scripts.
 
 ```bash
 cd /Users/sebastianfrazier/Developer/SafeAscent/backend
@@ -1953,15 +1953,15 @@ Then run the re-entry block, then:
 ```bash
 MIG current
 OWNER_PSQL -q -f db/owner/extensions_mp_catalog.sql
-MIG upgrade 0008_mp_catalog
+MIG upgrade 0010_accident_route_links
 MIG current
-MIG check
 OWNER_PSQL -q -f db/roles/grants_phase2.sql
 OWNER_PSQL -q -f db/roles/verify_roles.sql
 OWNER_PSQL -q -f db/roles/verify_roles_phase2.sql
+MIG check
 ```
 
-Expected, in order: the first `MIG current` prints `0007_cell_daily_conditions` without `(head)` (this plan merges before Phase 4); `ltree present`; then `0008_mp_catalog` (this checkout's head is 0010, so no `(head)`); `No new upgrade operations detected.` (see the open item in Step 0); `phase 2 grants applied`, `ALL ROLE CHECKS PASSED`, `ALL PHASE 2 ROLE CHECKS PASSED`. If Phase 4's `verify_roles_phase4.sql` exists on this branch, run it too and expect `ALL PHASE 4 ROLE CHECKS PASSED`. Anything else: STOP.
+Expected, in order: the first `MIG current` prints `0007_cell_daily_conditions` without `(head)` (this plan merges before Phase 4); `ltree present`; then `0010_accident_route_links (head)`; `phase 2 grants applied`, `ALL ROLE CHECKS PASSED`, `ALL PHASE 2 ROLE CHECKS PASSED`; `No new upgrade operations detected.` If Phase 4's `verify_roles_phase4.sql` exists on this branch, run it too and expect `ALL PHASE 4 ROLE CHECKS PASSED`. Anything else: STOP.
 
 - [ ] **Step 2 (owner/agent): Dry run, then refresh on the branch**
 
@@ -2030,7 +2030,7 @@ sys.exit(0 if ok else 1)' ) || { echo "ingest URL is not the direct Neon host: S
 
 Expected: `0007_cell_daily_conditions`, `ingest direct host: True`, `GATE OK: c1_migrate`.
 
-4a-snap — snapshot `pre-mpc-1` immediately before the migration (the phase2a pattern, `2026-09-28-phase2a-conditions-refresh.md` Step 6b). Run once; if neonctl says the branch exists, stop and ask the owner (never recreate it):
+4a-snap — snapshot `pre-mpc-1` immediately before the one migration window (0008–0010) (the phase2a pattern, `2026-09-28-phase2a-conditions-refresh.md` Step 6b). Run once; if neonctl says the branch exists, stop and ask the owner (never recreate it):
 
 ```bash
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc1_prod || exit 1
@@ -2044,7 +2044,7 @@ Expected: `0007_cell_daily_conditions`, `ingest direct host: True`, `GATE OK: c1
 
 Expected: parent `br-restless-bar-ajw5zy4b` and `GATE OK: snapshot`. Record the id and `created_at` in the PR.
 
-4b — `ltree`, migrate, grants (expected output as Step 1):
+4b — `ltree`, migrate to 0010, roles, check (expected output as Step 1):
 
 ```bash
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc1_prod || exit 1
@@ -2052,17 +2052,17 @@ Expected: parent `br-restless-bar-ajw5zy4b` and `GATE OK: snapshot`. Record the 
   gate_require c1_migrate || exit 1
   gate_require snapshot || exit 1
   OWNER_PSQL -q -f db/owner/extensions_mp_catalog.sql || exit 1
-  MIG upgrade 0008_mp_catalog || exit 1
+  MIG upgrade 0010_accident_route_links || exit 1
   cur="$(MIG current)" || exit 1
   printf '%s\n' "$cur"
   case "$cur" in
-    0008_mp_catalog | "0008_mp_catalog (head)") ;;
-    *) echo "prod is not at 0008_mp_catalog: STOP" >&2; exit 1 ;;
+    0010_accident_route_links | "0010_accident_route_links (head)") ;;
+    *) echo "prod is not at 0010_accident_route_links: STOP" >&2; exit 1 ;;
   esac
-  MIG check || exit 1
   OWNER_PSQL -q -f db/roles/grants_phase2.sql || exit 1
   OWNER_PSQL -q -f db/roles/verify_roles.sql || exit 1
   OWNER_PSQL -q -f db/roles/verify_roles_phase2.sql || exit 1
+  MIG check || exit 1
   gate_pass c1_migrated )
 ```
 
@@ -2092,7 +2092,7 @@ EOF
   bg_start ../data/review/logs/mpc1_refresh_prod.log INGMOD app.pipelines.mp_catalog refresh )
 ```
 
-then `bg_wait ../data/review/logs/mpc1_refresh_prod.log` (with the prod preamble) until `finished ok`, then `VERIFY tests/verify/test_mp_catalog.py -q -s` with the prod preamble → all pass. The PR description records the prod counts. The code deploys after 4b (models map tables that now exist).
+then `bg_wait ../data/review/logs/mpc1_refresh_prod.log` (with the prod preamble) until `finished ok`, then `VERIFY tests/verify/test_mp_catalog.py -q -s` with the prod preamble → all pass. The PR description records the prod counts. The code deploys after 4b (models map tables that now exist). Prod is now at `0010_accident_route_links`, which Tasks 13 and 16 require.
 
 ---
 
@@ -3648,12 +3648,23 @@ def test_an_unlisted_railway_config_is_reported(tmp_path):
 
 ---
 
-### Task 13: OWNER/AGENT RUNBOOK — PR C-2: migrate `0009`, points, elevation, EPQS gate, route table
+### Task 13: OWNER/AGENT RUNBOOK — PR C-2 data: points, elevation, EPQS gate, route table (prod already at `0010`)
 
 Same rules, re-entry block and prod preamble as Task 6, with `B=mpc-2-rehearsal` and `GATE_DIR=../data/review/gates_mpc2_prod`. Nothing here calls Open-Meteo or spends money; 3DEP and EPQS are free public services.
 
-- [ ] **Step 0 (agent):** main checkout on `feat/mp-catalog`, or `main` once it has merged (as Task 6 Step 0, including its checkout and open notes); `uv sync --frozen`; `uv run python -c 'import h3, rasterio; print("features deps ok")'` → `features deps ok`.
-- [ ] **Step 1 (owner/agent): Branch `mpc-2-rehearsal` from `production`** (prod must already be at `0008_mp_catalog` with a refreshed catalog); then `MIG current` (`0008_mp_catalog`, with or without `(head)`), `MIG upgrade 0009_static_features` (then `MIG current` → `0009_static_features`; never `upgrade head`, which on this checkout goes to 0010), `MIG check`, `grants_phase2.sql`, `verify_roles.sql`, `verify_roles_phase2.sql` → the same pass lines as Task 6 Step 1.
+- [ ] **Step 0 (agent):** main checkout on `feat/mp-catalog`, or `main` once it has merged (as Task 6 Step 0, including its checkout and one-window notes); `uv sync --frozen`; `uv run python -c 'import h3, rasterio; print("features deps ok")'` → `features deps ok`.
+- [ ] **Step 1 (owner/agent): Branch `mpc-2-rehearsal` from `production`** (Task 6 is done: prod is at `0010_accident_route_links` with a refreshed catalog). Task 6 Step 1's `neonctl branches create` with `B=mpc-2-rehearsal`, then the re-entry block, then a positive check. No migration and no role scripts here (one window, 2026-10-15 controller ruling):
+
+```bash
+( cur="$(MIG current)" || exit 1
+  printf '%s\n' "$cur"
+  case "$cur" in
+    0010_accident_route_links | "0010_accident_route_links (head)") echo "branch at 0010" ;;
+    *) echo "branch is not at 0010_accident_route_links: STOP" >&2; exit 1 ;;
+  esac )
+```
+
+Expected: `0010_accident_route_links (head)`, `branch at 0010`.
 - [ ] **Step 2 (owner/agent): Refresh, points, elevation on the branch**
 
 The refresh runs under `bg_start`/`bg_wait` as in Task 6 (one transaction that can outlast the 10-minute tool cap; revised 2026-10-15):
@@ -3705,7 +3716,7 @@ Expected: every cell passes; the elevation cell accepts no `pending` point and a
 
 - [ ] **Step 5 (owner go, then agent): Prod** — Task 6 Step 4's block pattern (revised 2026-10-15, final review: every prod write block starts with `gate_require`; there is no ungated prod block). Blocks after a `bg_start` use the Task 6 prod preamble with `GATE_DIR=../data/review/gates_mpc2_prod` for their `bg_wait`.
 
-5a — gate (read-only): branch evidence, prod positively at `0008_mp_catalog`, ingest on the direct host:
+5a — gate (read-only): branch evidence, prod positively at `0010_accident_route_links` (Task 6 migrated it; this task never migrates), ingest on the direct host:
 
 ```bash
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
@@ -3714,8 +3725,8 @@ Expected: every cell passes; the elevation cell accepts no `pending` point and a
   cur="$(MIG current)" || exit 1
   printf '%s\n' "$cur"
   case "$cur" in
-    0008_mp_catalog | "0008_mp_catalog (head)") ;;
-    *) echo "prod is not at 0008_mp_catalog: STOP" >&2; exit 1 ;;
+    0010_accident_route_links | "0010_accident_route_links (head)") ;;
+    *) echo "prod is not at 0010_accident_route_links (run Task 6 first): STOP" >&2; exit 1 ;;
   esac
   ( set -a; . ./.env.ingest; set +a
     python3 -c 'import os, sys, urllib.parse as u
@@ -3723,17 +3734,17 @@ h = (u.urlsplit(os.environ.get("INGEST_DATABASE_URL", "")).hostname or "").lower
 ok = h.startswith("ep-") and "-pooler." not in h
 print("ingest direct host:", ok)
 sys.exit(0 if ok else 1)' ) || { echo "ingest URL is not the direct Neon host: STOP" >&2; exit 1; }
-  gate_pass c2_migrate )
+  gate_pass c2_ready )
 ```
 
-Expected: `0008_mp_catalog`, `ingest direct host: True`, `GATE OK: c2_migrate`.
+Expected: `0010_accident_route_links (head)`, `ingest direct host: True`, `GATE OK: c2_ready`.
 
-5a-snap — snapshot `pre-mpc-2` (run once; if it exists, stop and ask the owner):
+5b — snapshot `pre-mpc-2` before the data writes (run once; if it exists, stop and ask the owner):
 
 ```bash
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
   # PRODUCTION snapshot
-  gate_require c2_migrate || exit 1
+  gate_require c2_ready || exit 1
   snap="$(neonctl branches create --project-id still-morning-74008008 --name pre-mpc-2 --parent production --no-secrets --output json \
     | python3 -c 'import json,sys; b=json.load(sys.stdin)["branch"]; print(b["id"], b["name"], b["parent_id"], b["created_at"])')" || exit 1
   printf '%s\n' "$snap"
@@ -3742,35 +3753,13 @@ Expected: `0008_mp_catalog`, `ingest direct host: True`, `GATE OK: c2_migrate`.
 
 Expected: parent `br-restless-bar-ajw5zy4b` and `GATE OK: snapshot`. Record the id and `created_at` in the PR.
 
-5b — migrate, grants, verify:
-
-```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
-  # PRODUCTION
-  gate_require c2_migrate || exit 1
-  gate_require snapshot || exit 1
-  MIG upgrade 0009_static_features || exit 1
-  cur="$(MIG current)" || exit 1
-  printf '%s\n' "$cur"
-  case "$cur" in
-    0009_static_features | "0009_static_features (head)") ;;
-    *) echo "prod is not at 0009_static_features: STOP" >&2; exit 1 ;;
-  esac
-  MIG check || exit 1
-  OWNER_PSQL -q -f db/roles/grants_phase2.sql || exit 1
-  OWNER_PSQL -q -f db/roles/verify_roles.sql || exit 1
-  OWNER_PSQL -q -f db/roles/verify_roles_phase2.sql || exit 1
-  gate_pass c2_migrated )
-```
-
-Expected: the Step 1 pass lines, ending `GATE OK: c2_migrated`.
-
 5c — refresh prod, in the background:
 
 ```bash
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
   # PRODUCTION
-  gate_require c2_migrated || exit 1
+  gate_require c2_ready || exit 1
+  gate_require snapshot || exit 1
   bg_start ../data/review/logs/mpc2_refresh_prod.log INGMOD app.pipelines.mp_catalog refresh )
 ```
 
@@ -3779,7 +3768,7 @@ then `bg_wait ../data/review/logs/mpc2_refresh_prod.log` (with the prod preamble
 ```bash
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
   # PRODUCTION
-  gate_require c2_migrated || exit 1
+  gate_require snapshot || exit 1
   grep -q '^RUNBOOK_EXIT=0$' ../data/review/logs/mpc2_refresh_prod.log || { echo "prod refresh has not finished ok" >&2; exit 1; }
   save_once ../data/review/mpc2_points_prod.json INGMOD app.pipelines.static_features points || exit 1
   python3 - <<'EOF' || exit 1
@@ -5225,24 +5214,24 @@ and add `"INGLLM app.data.repair.r10_llm plan"` to the helper list `tests/test_r
 
 ---
 
-### Task 16: OWNER/AGENT RUNBOOK — PR C-3: migrate `0010`, R10, optional review
+### Task 16: OWNER/AGENT RUNBOOK — PR C-3 data: R10, optional review, prod-only LLM pass (prod already at `0010`)
 
 Same rules, re-entry block and prod preamble as Task 6, with `B=mpc-3-rehearsal` and `GATE_DIR=../data/review/gates_mpc3_prod`.
 
 **Paid LLM work runs on prod only (owner ruling, 2026-10-15, final review).** The cumulative cap ledger (`source_ingest_log`) and the gate (`internal.r10_llm_gates`, plus the sample's `internal.r10_llm_calls` rows the gate reads) live in whichever database `TARGET_HOST` names, so paying on the branch and again on prod would double the exposure, a re-created branch would copy prod's ledger and reset its own cap, and a branch gate cannot be reused on prod. So the branch rehearsal runs only the free steps (`r10`, `r10-export`, `r10-import`, and `r10_llm plan`); `probe`, `sample`, `gate`, `run` and `apply` run once, on prod, in Step 5. The order there is fixed: 3a-verify (owner sign-off, `gate_pass llm_verify`) → `sample` → owner spot-check → `gate` → `run` → `apply`. Every paid block starts with `gate_require llm_verify`, and `r10_llm run` itself refuses unless the latest gate for that model and prompt version passed.
 
-- [ ] **Step 1 (owner/agent): Branch** from `production` (prod at `0009_static_features`, catalog refreshed); Task 6 Step 1's `neonctl branches create` with `B=mpc-3-rehearsal`, then the re-entry block, then a positive check before upgrading (revised 2026-10-15):
+- [ ] **Step 1 (owner/agent): Branch** from `production` (Task 6 is done: prod at `0010_accident_route_links`, catalog refreshed); Task 6 Step 1's `neonctl branches create` with `B=mpc-3-rehearsal`, then the re-entry block, then a positive check. Runs from the main checkout on `feat/mp-catalog`, or `main` once merged (Task 6 Step 0). No migration and no role scripts here (one window, 2026-10-15 controller ruling):
 
 ```bash
 ( cur="$(MIG current)" || exit 1
   printf '%s\n' "$cur"
   case "$cur" in
-    0009_static_features | "0009_static_features (head)") echo "branch at 0009" ;;
-    *) echo "branch is not at 0009_static_features: STOP" >&2; exit 1 ;;
+    0010_accident_route_links | "0010_accident_route_links (head)") echo "branch at 0010" ;;
+    *) echo "branch is not at 0010_accident_route_links: STOP" >&2; exit 1 ;;
   esac )
 ```
 
-Runs from the main checkout on `feat/mp-catalog`, or `main` once merged (Task 6 Step 0). Expected: `0009_static_features` (no `(head)` on this checkout), `branch at 0009`. Then `MIG upgrade 0010_accident_route_links` → `MIG current` prints `0010_accident_route_links (head)`; `MIG check`; `OWNER_PSQL -q -f db/roles/grants_phase2.sql`; both verify scripts pass.
+Expected: `0010_accident_route_links (head)`, `branch at 0010`.
 - [ ] **Step 2 (owner/agent): Dry run, apply, idempotence**
 
 ```bash
@@ -5257,7 +5246,7 @@ Expected: the dry run prints `legacy_accidents`, `links: {legacy_mp_id: N}`, `un
 
 - [ ] **Step 3 (owner, optional): Review on the branch (free)** — only if the owner wants the residue linked (D-N): `ING r10-export --out ../data/review/r10_unresolved.csv`; the owner fills `owner_decision` (`link`/`no_link`) and, for `link`, `decided_kind` (`route`/`area`) and `decided_id` (a candidate's id, or any catalog id); `ING r10-import --review-file ../data/review/r10_unresolved.csv` (dry), then with `--apply`; `ING r10 --apply`. The CSV holds MP names and grades for review only; it stays in gitignored `data/review/` and is never committed or shared.
 - [ ] **Step 3-plan (agent, free): size the LLM pass on the branch** — `INGLLM app.data.repair.r10_llm plan` prints case counts by kind and a dollar ceiling per model; no API call, no key needed. Nothing paid runs on the branch: no `probe`, `sample` or `run` (see the ruling above).
-- [ ] **Step 4 (owner go, then agent): Prod migrate and R10** — Task 6 Step 4's block pattern (revised 2026-10-15, final review).
+- [ ] **Step 4 (owner go, then agent): Prod R10** — Task 6 Step 4's block pattern (revised 2026-10-15, final review). Prod was migrated to 0010 in Task 6; this step only checks it.
 
 4a — gate (read-only):
 
@@ -5268,8 +5257,8 @@ Expected: the dry run prints `legacy_accidents`, `links: {legacy_mp_id: N}`, `un
   cur="$(MIG current)" || exit 1
   printf '%s\n' "$cur"
   case "$cur" in
-    0009_static_features | "0009_static_features (head)") ;;
-    *) echo "prod is not at 0009_static_features: STOP" >&2; exit 1 ;;
+    0010_accident_route_links | "0010_accident_route_links (head)") ;;
+    *) echo "prod is not at 0010_accident_route_links (run Task 6 first): STOP" >&2; exit 1 ;;
   esac
   ( set -a; . ./.env.ingest; set +a
     python3 -c 'import os, sys, urllib.parse as u
@@ -5277,17 +5266,17 @@ h = (u.urlsplit(os.environ.get("INGEST_DATABASE_URL", "")).hostname or "").lower
 ok = h.startswith("ep-") and "-pooler." not in h
 print("ingest direct host:", ok)
 sys.exit(0 if ok else 1)' ) || { echo "ingest URL is not the direct Neon host: STOP" >&2; exit 1; }
-  gate_pass c3_migrate )
+  gate_pass c3_ready )
 ```
 
-Expected: `0009_static_features`, `ingest direct host: True`, `GATE OK: c3_migrate`.
+Expected: `0010_accident_route_links (head)`, `ingest direct host: True`, `GATE OK: c3_ready`.
 
-4a-snap — snapshot `pre-mpc-3` (run once; if it exists, stop and ask the owner):
+4b — snapshot `pre-mpc-3` before the R10 writes (run once; if it exists, stop and ask the owner):
 
 ```bash
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
   # PRODUCTION snapshot
-  gate_require c3_migrate || exit 1
+  gate_require c3_ready || exit 1
   snap="$(neonctl branches create --project-id still-morning-74008008 --name pre-mpc-3 --parent production --no-secrets --output json \
     | python3 -c 'import json,sys; b=json.load(sys.stdin)["branch"]; print(b["id"], b["name"], b["parent_id"], b["created_at"])')" || exit 1
   printf '%s\n' "$snap"
@@ -5296,33 +5285,13 @@ Expected: `0009_static_features`, `ingest direct host: True`, `GATE OK: c3_migra
 
 Expected: parent `br-restless-bar-ajw5zy4b` and `GATE OK: snapshot`. Record the id and `created_at` in the PR.
 
-4b — migrate, grants, verify:
-
-```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
-  # PRODUCTION
-  gate_require c3_migrate || exit 1
-  gate_require snapshot || exit 1
-  MIG upgrade 0010_accident_route_links || exit 1
-  cur="$(MIG current)" || exit 1
-  printf '%s\n' "$cur"
-  case "$cur" in
-    0010_accident_route_links | "0010_accident_route_links (head)") ;;
-    *) echo "prod is not at 0010_accident_route_links: STOP" >&2; exit 1 ;;
-  esac
-  MIG check || exit 1
-  OWNER_PSQL -q -f db/roles/grants_phase2.sql || exit 1
-  OWNER_PSQL -q -f db/roles/verify_roles.sql || exit 1
-  OWNER_PSQL -q -f db/roles/verify_roles_phase2.sql || exit 1
-  gate_pass c3_migrated )
-```
-
 4c — gate: the prod dry run's `links` and `unresolved` totals are within 1% of the branch's:
 
 ```bash
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
   # PRODUCTION (read-only dry run)
-  gate_require c3_migrated || exit 1
+  gate_require c3_ready || exit 1
+  gate_require snapshot || exit 1
   save_once ../data/review/mpc3_r10_dry_prod.json ING r10 || exit 1
   python3 - <<'EOF' || exit 1
 import json
@@ -5356,7 +5325,7 @@ EOF
 ```bash
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
   # PRODUCTION (paid: one fixture call per model)
-  gate_require c3_migrated || exit 1
+  gate_require c3_ready || exit 1
   INGLLM app.data.repair.r10_llm probe --model haiku --max-usd 12 || exit 1
   INGLLM app.data.repair.r10_llm probe --model sonnet --max-usd 22 )
 ```
@@ -5406,7 +5375,7 @@ Expected: `calls` ≤ 150 each, `status_counts` mostly `ok`, `spent_usd` under t
 
 Expected per model: `n_checked`, agreement, auto-band precision and `passed`. `gate` reads the sample's audit rows from this database and saves each spot-check answer as an R10 owner decision (`link` to the answered route or area, or `no_link` for `none`) whether or not the gate passes, leaving any earlier owner decision as it was (`owner_decisions_recorded`/`owner_decisions_skipped`), so a sampled accident never needs deciding twice and `apply` never overrides it.
 
-  **Owner note: an answer of `none` is final.** `gate` saves it as an owner `no_link`, and the database trigger `r10_unresolved_keep_decisions` refuses any later UPDATE or DELETE of a decided row. Neither `r10-import`, a rerun nor the agent can turn it into a link later; linking such an accident would need a migration-level override (a new migration, run as `migrator`, that changes the row past the trigger). `gate` refuses a blank `owner_answer` (every row needs an offered id or `none`), so answer `none` only when the owner is sure no offered candidate is right; for a doubtful row, pick the best candidate only if the owner would accept it as the final link. The owner picks the model (DP13) from these numbers; a model whose latest gate did not pass cannot `run` or `apply`.
+  **Owner note: every spot-check row needs an offered id or `none`, and `none` is final.** `gate` refuses a blank `owner_answer`, so no row can be left open. It saves `none` as an owner `no_link`, and the database trigger `r10_unresolved_keep_decisions` refuses any later UPDATE or DELETE of a decided row: neither `r10-import`, an `r10` rerun nor the agent can turn it into a link later. Linking such an accident afterwards would need a migration-level override (a new migration, run as `migrator`, that changes the row past the trigger). So answer `none` only when the owner is sure no offered candidate is right, and pick a candidate only if the owner accepts it as the final link.
 
 5d — **run** (paid; resumable: rerun until no case is left or the cap stops it; report `skipped_attempt_limit` and `error_counts`):
 
