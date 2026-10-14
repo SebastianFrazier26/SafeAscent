@@ -2,7 +2,8 @@ import asyncio
 
 import pytest
 
-from app.pipelines.catalog_cycle import ping_suffix, require_direct_host, run_cycle
+from app.pipelines.catalog_cycle import ping_suffix, run_cycle
+from app.pipelines.db import require_direct_host
 from app.pipelines.mp_catalog import RefreshResult
 
 
@@ -54,10 +55,18 @@ def test_a_failed_epqs_gate_fails_the_cycle_before_routes_are_rebuilt():
     assert "routes" not in calls
 
 
-def test_points_awaiting_3dep_skip_the_gate_and_routes_when_the_gate_is_on():
+def test_points_awaiting_3dep_still_get_the_gate_and_routes_but_stay_incomplete():
+    # A3: a pending point no longer holds back a year of route rows; its elevation stays NULL.
     step, calls = _steps([{"sampled": 0, "null": 0, "retry": 7}])
     result = asyncio.run(run_cycle(None, refresh=_refresh("ok"), step=step))
-    assert result.status == "incomplete" and calls == ["points", "elevation"]
+    assert result.status == "incomplete" and ping_suffix(result.status) == "/fail"
+    assert calls == ["points", "elevation", "epqs-check", "routes"]
+
+
+def test_a_failed_gate_still_blocks_routes_while_points_are_pending():
+    step, calls = _steps([{"sampled": 0, "null": 0, "retry": 7}], epqs_passed=0)
+    result = asyncio.run(run_cycle(None, refresh=_refresh("ok"), step=step))
+    assert result.status == "failed" and "routes" not in calls
 
 
 def test_running_out_of_rounds_with_points_left_is_incomplete_not_ok():
@@ -86,6 +95,9 @@ def test_the_neon_pooler_host_is_refused_and_the_direct_host_is_not():
     with pytest.raises(SystemExit, match="pooler"):
         require_direct_host("postgresql+asyncpg://ingest:x@ep-fixture-123-pooler.us-east-2.aws.neon.tech/db")
     require_direct_host("postgresql+asyncpg://ingest:x@ep-fixture-123.us-east-2.aws.neon.tech/db")
+    # S2: host names are case-insensitive.
+    with pytest.raises(SystemExit, match="pooler"):
+        require_direct_host("postgresql+asyncpg://ingest:x@EP-FIXTURE-123-POOLER.us-east-2.aws.neon.tech/db")
 
 
 def test_only_an_ok_cycle_pings_success():
@@ -141,15 +153,17 @@ def test_cli_refuses_the_pooler_host_before_connecting_and_pings_fail(monkeypatc
     from app.config import settings
     from app.pipelines import catalog_cycle, db
 
-    def no_engine():
+    def no_engine(*args, **kwargs):
         raise AssertionError("connected despite a pooler host")
 
-    monkeypatch.setattr(settings, "INGEST_DATABASE_URL",
+    # db.settings, the object ingest_engine reads (test_config_and_admin_routes reloads app.config).
+    monkeypatch.setattr(db.settings, "INGEST_DATABASE_URL",
                         "postgresql+asyncpg://ingest:x@ep-fixture-123-pooler.us-east-2.aws.neon.tech/db")
     pings = []
     monkeypatch.setattr(settings, "HEALTHCHECKS_CATALOG_URL", "https://hc.example/catalog")
     monkeypatch.setattr(healthchecks, "ping", lambda url, suffix="": pings.append(suffix) or True)
-    monkeypatch.setattr(db, "ingest_engine", no_engine)
+    # S2: the refusal lives in ingest_engine itself, before an engine is built.
+    monkeypatch.setattr(db, "create_async_engine", no_engine)
     monkeypatch.setattr("sys.argv", ["catalog_cycle", "run"])
     with pytest.raises(SystemExit, match="pooler"):
         catalog_cycle.cli()
@@ -171,13 +185,31 @@ def test_cli_malformed_url_pings_fail_and_never_prints_the_url(monkeypatch, caps
     from app.pipelines import catalog_cycle, db
 
     pings = []
-    monkeypatch.setattr(settings, "INGEST_DATABASE_URL", "not a url :: hunter2-secret")
+    monkeypatch.setattr(db.settings, "INGEST_DATABASE_URL", "not a url :: hunter2-secret")
     monkeypatch.setattr(settings, "HEALTHCHECKS_CATALOG_URL", "https://hc.example/catalog")
     monkeypatch.setattr(healthchecks, "ping", lambda url, suffix="": pings.append(suffix) or True)
-    monkeypatch.setattr(db, "ingest_engine", lambda: pytest.fail("connected with a malformed URL"))
+    monkeypatch.setattr(db, "create_async_engine", lambda *a, **k: pytest.fail("connected with a malformed URL"))
     monkeypatch.setattr("sys.argv", ["catalog_cycle", "run"])
     with pytest.raises(SystemExit) as exited:
         catalog_cycle.cli()
     out = capsys.readouterr()
     assert "hunter2" not in str(exited.value) + out.out + out.err
     assert pings == ["/start", "/fail"]
+
+
+def test_cli_pins_the_httpx_logger_to_warning(monkeypatch):
+    """S4: httpx's INFO request line would carry the healthchecks URL."""
+    import logging
+
+    from app import healthchecks
+    from app.config import settings
+    from app.pipelines import catalog_cycle, db
+
+    logging.getLogger("httpx").setLevel(logging.INFO)
+    monkeypatch.setattr(settings, "HEALTHCHECKS_CATALOG_URL", "https://hc.example/catalog")
+    monkeypatch.setattr(healthchecks, "ping", lambda url, suffix="": True)
+    monkeypatch.setattr(db.settings, "INGEST_DATABASE_URL", "not a url")
+    monkeypatch.setattr("sys.argv", ["catalog_cycle", "run"])
+    with pytest.raises(SystemExit):
+        catalog_cycle.cli()
+    assert logging.getLogger("httpx").level == logging.WARNING

@@ -125,3 +125,30 @@ def test_failure_guard_passes_at_10_percent_and_at_exactly_20():
     assert failure_guard(_with_failures("flat", 80, 16))[1] == []
     assert failure_guard(_with_failures("flat", 80, 17))[1] != []
     assert failure_guard([("steep", 1000.0, math.nan)])[0]["steep"]["failed"] == 1
+
+
+def test_tolerances_follow_the_dem_source():
+    """3dep_2 (2-arc-second) points get the wider bounds; 3dep_13 keeps the metre test."""
+    rows = _rows("flat", 60, 1.0) + _rows("moderate", 60, 1.0) + _rows("steep", 59, 1.0) + [("steep", 1000.0, 1150.0)]
+    one_coarse = ["3dep_13"] * 179 + ["3dep_2"]
+    assert compare(rows)["gross"] == 1
+    coarse = compare(rows, one_coarse)
+    assert (coarse["gross"], coarse["passed"], coarse["classes"]["steep"]["n_3dep_2"]) == (0, 1, 1)
+    flat_4m = _rows("flat", 60, 4.0) + _rows("moderate", 60, 1.0) + _rows("steep", 60, 1.0)
+    assert compare(flat_4m)["passed"] == 0
+    assert compare(flat_4m, ["3dep_2"] * 60 + ["3dep_13"] * 120)["passed"] == 1
+    with pytest.raises(ValueError, match="sources"):
+        compare(rows, ["3dep_13"])
+
+
+def test_epqs_requests_identify_the_project():
+    from app.pipelines import USER_AGENT
+
+    seen = []
+
+    def handler(request):
+        seen.append(request.headers["User-Agent"])
+        return httpx.Response(200, json={"value": 1650.0})
+
+    assert _client(handler).elevation(40.0, -105.3) == 1650.0
+    assert seen == [USER_AGENT]

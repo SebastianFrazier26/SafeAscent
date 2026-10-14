@@ -11,6 +11,7 @@ from __future__ import annotations
 import ssl
 
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -39,8 +40,21 @@ def verified_connect_args(url: str) -> dict[str, object]:
     return args
 
 
+def require_direct_host(url: str) -> None:
+    # Every ingest job runs on the direct host (owner decision DP6), never through Neon's pgbouncer
+    # endpoint (host suffix "-pooler"): session advisory locks and long transactions need one backend.
+    try:
+        host = (make_url(url).host or "").lower()
+    except ArgumentError:
+        # SQLAlchemy's message quotes the whole URL, password included; never echo it.
+        raise SystemExit("INGEST_DATABASE_URL is not a valid URL") from None
+    if "-pooler." in host:
+        raise SystemExit("INGEST_DATABASE_URL points at Neon's pooler host; use the direct host")
+
+
 def ingest_engine() -> AsyncEngine:
     url = settings.INGEST_DATABASE_URL
     if not url:
         raise SystemExit("INGEST_DATABASE_URL is not set (the ingest role's URL); see DEPLOYMENT.md")
+    require_direct_host(url)
     return create_async_engine(url, poolclass=NullPool, connect_args=verified_connect_args(url))

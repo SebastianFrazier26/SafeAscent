@@ -74,3 +74,39 @@ def test_uuid_literals_under_id_keys_are_not_mp_ids():
     assert run({"docs/a.md": "WHERE route_id = '00000000-0000-0000-0000-0000000000b2'"}) == []
     assert run({"docs/a.md": "WHERE area_id = '12345678-aaaa-bbbb-cccc-0000000000b3'"}) == []
     assert run({"docs/a.md": f"WHERE area_id = '{BELOW_FLOOR}'"})
+
+
+def test_prefixed_and_numbered_snake_keys_are_flagged():
+    """S1: the R10 sheets and audit rows name ids with a prefix the old exact-key match missed."""
+    for key in ("decided_id", "candidate_1_id", "legacy_route_id", "decided_route_id", "pick_id", "owner_answer"):
+        assert run({"docs/k.md": f"{key} = {BELOW_FLOOR}"}), key
+        assert run({"docs/k.md": f"{key}: {FAKE}"}) == [], key
+    assert run({"backend/tests/fixtures/x.json": f'{{"candidate_route_ids": [{BELOW_FLOOR}]}}'})
+
+
+def test_camel_case_keys_are_flagged():
+    for key in ("mpRouteId", "routeId", "decidedAreaId", "mpId", "locationIds"):
+        assert run({"docs/k.md": f'"{key}": {BELOW_FLOOR}'}), key
+        assert run({"docs/k.md": f'"{key}": {FAKE}'}) == [], key
+    assert run({"docs/k.md": f'"routeIds": [{FAKE}, {BELOW_FLOOR}]'})
+
+
+def test_csv_headers_match_by_suffix():
+    for header in ("decided_id", "candidate_3_id", "legacy_route_id", "mpRouteId", "llm_pick"):
+        assert run({"data/review/r.csv": f"accident_id,{header}\n1,{BELOW_FLOOR}\n"}), header
+        assert run({"data/review/r.csv": f"accident_id,{header}\n1,{FAKE}\n"}) == [], header
+    assert run({"data/review/r.csv": f"accident_id,note\n{BELOW_FLOOR},x\n"}) == []
+
+
+def test_accident_ids_stay_out_of_the_key_set():
+    assert run({"docs/a.md": f"accident_id = {BELOW_FLOOR}, accidentId: {BELOW_FLOOR}"}) == []
+
+
+def test_user_and_photo_urls_are_flagged():
+    assert run({"docs/a.md": f"https://www.{HOST}/user/{FAKE}/someone"})
+    assert run({"docs/a.md": f"https://www.{HOST}/photo/{FAKE}"})
+
+
+def test_test_modules_are_in_scope():
+    assert run({"backend/tests/test_x.py": f"route_id = {BELOW_FLOOR}"})
+    assert run({"backend/tests/verify/test_x.py": f"mp_route_id={BELOW_FLOOR}"})

@@ -102,10 +102,11 @@ def test_existing_accepted_totals_are_backfilled_as_complete_only_without_gaps()
         command.upgrade(_alembic_cfg(name), PIN)
         rows = fetch(name, "SELECT mp_route_id, complete, complete_through::text AS ct, total_ticks "
                            "FROM internal.route_tick_scrapes ORDER BY 1")
-    # 900000001: its scrape-month ticks were quarantined partial, so 40 + 2 = 42 is whole.
+    # 900000001: its scrape-month ticks were quarantined partial, so 40 + 2 = 42 is whole; the stored
+    # total is the counted months' sum, 40, so it equals route_tick_months (A4).
     # 900000004: 02:00 at +05:00 on 1 March is still February in UTC.
     # 900000005 (a counted month quarantined, though its months still sum to 3) and 900000006 (months 3 != total 9) read missing.
-    assert rows == [(900000001, True, "2024-02-29", 42), (900000004, True, "2024-01-31", 5)]
+    assert rows == [(900000001, True, "2024-02-29", 40), (900000004, True, "2024-01-31", 5)]
 
 
 def test_0008_downgrade_refuses_while_any_catalog_or_seam_row_exists():

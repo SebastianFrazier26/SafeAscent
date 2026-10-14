@@ -10,7 +10,7 @@ down_revision = "0009_static_features"
 branch_labels = None
 depends_on = None
 
-REASONS = "('legacy_route_no_mp_id', 'legacy_mp_id_not_in_catalog', 'legacy_mountain_only')"
+REASONS = "('legacy_route_no_mp_id', 'legacy_mp_id_not_in_catalog', 'legacy_mountain_only', 'not_in_catalog')"
 VIEW = """
 CREATE VIEW accident_route_links AS
 SELECT a.accident_id, a.mp_route_id AS route_id, NULL::bigint AS area_id, 'mp_route_id'::text AS method
@@ -18,7 +18,7 @@ FROM accidents a JOIN canonical_routes r ON r.route_id = a.mp_route_id
 UNION ALL
 SELECT l.accident_id, l.route_id, l.area_id, l.method
 FROM accident_legacy_links l JOIN accidents a ON a.accident_id = l.accident_id
-WHERE a.mp_route_id IS NULL
+WHERE a.mp_route_id IS NULL OR NOT EXISTS (SELECT 1 FROM canonical_routes r WHERE r.route_id = a.mp_route_id)
 """
 # Follow-up 2026-10-14: owner decisions are final in the database too, not only in r10's WHEREs;
 # a stray UPDATE/DELETE by any role (ingest holds both for undecided rows) is refused.

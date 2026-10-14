@@ -322,6 +322,16 @@ WHERE r.tbl IN ('public.accidents_clean', 'public.accidents_clean_daily', 'publi
                 'public.route_static_features', 'public.scoring_unit_features', 'public.accident_legacy_links',
                 'public.accident_route_links');
 
+-- 0010: owner decisions on internal.r10_unresolved are final only while this trigger exists and
+-- fires ('O' = enabled in origin mode); ingest holds UPDATE/DELETE on the table (final review S7).
+INSERT INTO role_checks VALUES
+  ('r10_unresolved keep-decisions trigger exists and is enabled',
+   EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+           -- Catalog joins, not to_regclass: the verifying role may hold no USAGE on internal.
+           WHERE n.nspname = 'internal' AND c.relname = 'r10_unresolved'
+           AND t.tgname = 'r10_unresolved_keep_decisions' AND t.tgenabled = 'O' AND NOT t.tgisinternal));
+
 SELECT check_name, ok FROM role_checks ORDER BY ok, check_name;
 
 DO $$

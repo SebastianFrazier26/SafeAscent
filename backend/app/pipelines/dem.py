@@ -1,6 +1,7 @@
 """USGS 3DEP elevation (public domain) sampled from remote Cloud-Optimized GeoTIFFs: only
 the blocks under our points are fetched. 1/3″ first, 2″ where 1/3″ has no tile (the
-remaining Alaska gaps). Masked cells, fill values and missing tiles are NULL, never 0.
+remaining Alaska gaps) or where a 1/3″ tile exists but is masked at the point (partial
+coverage at coasts, borders and in Alaska; final review minor, 2026-10-14). Masked cells, fill values and missing tiles are NULL, never 0.
 A tile that cannot be read for any reason other than 'does not exist' raises
 TransientTileError, and its points stay unfilled for the next run."""
 
@@ -20,6 +21,8 @@ from numpy.typing import NDArray
 from rasterio.errors import RasterioIOError
 from rasterio.io import DatasetReader
 
+from app.pipelines import USER_AGENT
+
 TILE_BASE = "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation"
 RES: dict[str, tuple[str, float]] = {"3dep_13": ("13", 10.0), "3dep_2": ("2", 60.0)}
 GDAL_ENV = {
@@ -30,6 +33,7 @@ GDAL_ENV = {
     # Without these a stalled S3 read hangs the run instead of surfacing as a transient error.
     "GDAL_HTTP_TIMEOUT": "30",
     "GDAL_HTTP_CONNECTTIMEOUT": "10",
+    "GDAL_HTTP_USERAGENT": USER_AGENT,
 }
 # S3 answers 403 instead of 404 for a missing key when listing is not public.
 MISSING_STATUS = frozenset({403, 404})
@@ -64,7 +68,8 @@ def tile_url(lat: float, lon: float, source: str) -> str:
 
 def _exists(url: str, *, transport: httpx.BaseTransport | None = None) -> bool:
     try:
-        with httpx.Client(transport=transport, timeout=20.0, follow_redirects=True) as client:
+        with httpx.Client(transport=transport, timeout=20.0, follow_redirects=True,
+                          headers={"User-Agent": USER_AGENT}) as client:
             status = client.head(url).status_code
     except httpx.HTTPError as exc:
         raise TransientTileError(type(exc).__name__) from None
@@ -111,23 +116,30 @@ def sample_points(points: Sequence[tuple[float, float]], opener: Opener = open_r
         by_tile[tile_name(lat, lon)].append(i)
     for indices in by_tile.values():
         lat0, lon0 = points[indices[0]]
+        # Per point: None = no tile read yet, "nodata" = a tile was read but is masked there.
+        found: dict[int, Elevation] = {}
+        any_tile = False
         try:
             for source in ("3dep_13", "3dep_2"):
+                todo = [i for i in indices if i not in found]
+                if not todo:
+                    break
                 handle = opener(tile_url(lat0, lon0, source))
                 if handle is None:
                     continue
+                any_tile = True
                 with handle as src:
-                    values = _sample(src, [points[i] for i in indices])
+                    values = _sample(src, [points[i] for i in todo])
                 _, res_m = RES[source]
-                for i, v in zip(indices, values):
-                    result[i] = Elevation(v, source, res_m) if v is not None else Elevation(None, "nodata", None)
-                break
-            else:
-                for i in indices:
-                    result[i] = Elevation(None, "no_tile", None)
+                for i, v in zip(todo, values):
+                    if v is not None:
+                        found[i] = Elevation(v, source, res_m)
         except (TransientTileError, RasterioIOError):
             for i in indices:
                 result[i] = None
+            continue
+        for i in indices:
+            result[i] = found.get(i) or Elevation(None, "nodata" if any_tile else "no_tile", None)
     return result
 
 

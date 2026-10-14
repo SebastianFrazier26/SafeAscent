@@ -479,7 +479,8 @@ async def run_calls(engine: AsyncEngine, allocator: Allocator, cases: Sequence[C
                     # (counts toward MAX_ATTEMPTS, settled at the ceiling) before the error propagates.
                     alloc = Allocation("error", None, None, None, None, None, None, None, type(exc).__name__)
                     await _audit(engine, ledger, allocator, case, alloc, None, ceiling, run_id, is_sample)
-                    raise
+                    # Final review S3: only the class name leaves, never a message that could quote the request.
+                    raise SystemExit(f"allocate failed: {type(exc).__name__}") from None
                 cost = _cost(allocator.model, alloc)
                 statuses[alloc.status] += 1
                 if alloc.error_class is not None:
@@ -680,14 +681,22 @@ async def write_sample_csv(conn: AsyncConnection, run_id: uuid.UUID, out: Path) 
 
 
 GATE_CALLS_SQL = text(
-    "SELECT accident_id, candidate_ids, pick_id, pick_none, confidence, confidence >= CAST(:t AS real) "
+    "SELECT accident_id, candidate_ids, pick_id, pick_none, confidence, confidence >= CAST(:t AS real), "
+    "candidate_kind "
     "FROM internal.r10_llm_calls "
     "WHERE run_id = :run AND model = :m AND prompt_version = :pv AND is_sample AND status = 'ok'"
 )
 
 
+@dataclass(frozen=True)
+class OwnerAnswer:
+    accident_id: int
+    kind: str
+    answer: str
+
+
 async def gate_rows(conn: AsyncConnection, review_file: Path, *, model: str
-                    ) -> tuple[uuid.UUID, list[tuple[str, str, float]], list[bool]]:
+                    ) -> tuple[uuid.UUID, list[tuple[str, str, float]], list[bool], list[OwnerAnswer]]:
     """The owner's answers come from the file; the model's answers and the offered ids come from
     the audit rows, so an edited llm_answer column cannot move the gate."""
     with review_file.open(newline="", encoding="utf-8-sig") as fh:
@@ -699,12 +708,13 @@ async def gate_rows(conn: AsyncConnection, review_file: Path, *, model: str
         run_id = uuid.UUID(runs.pop())
     except ValueError as exc:
         raise ValueError("the review file's run_id is not a UUID") from exc
-    calls = {int(a): (tuple(int(i) for i in ids), pick, pick_none, float(conf), bool(flag))
-             for a, ids, pick, pick_none, conf, flag in (await conn.execute(
+    calls = {int(a): (tuple(int(i) for i in ids), pick, pick_none, float(conf), bool(flag), str(kind))
+             for a, ids, pick, pick_none, conf, flag, kind in (await conn.execute(
                  GATE_CALLS_SQL, {"run": run_id, "m": model, "pv": PROMPT_VERSION,
                                   "t": AUTO_LINK_CONFIDENCE})).all()}
     rows: list[tuple[str, str, float]] = []
     flags: list[bool] = []
+    answers: list[OwnerAnswer] = []
     seen: set[int] = set()
     for number, row in enumerate(filled, start=2):
         raw_id = (row.get("accident_id") or "").strip()
@@ -713,22 +723,55 @@ async def gate_rows(conn: AsyncConnection, review_file: Path, *, model: str
         if int(raw_id) in seen:
             raise ValueError(f"line {number}: duplicate accident_id {raw_id}")
         seen.add(int(raw_id))
-        ids, pick, pick_none, conf, flag = calls[int(raw_id)]
+        ids, pick, pick_none, conf, flag, kind = calls[int(raw_id)]
         owner = (row.get("owner_answer") or "").strip().lower()
         if owner != "none" and not (owner.isdecimal() and int(owner) in ids):
             raise ValueError(f"line {number}: owner_answer must be one of the offered ids {list(ids)} or none")
         rows.append((_llm_answer(pick, pick_none), owner, conf))
         flags.append(flag)
+        answers.append(OwnerAnswer(int(raw_id), kind, owner))
     # Dropping the rows the model got wrong would inflate precision (review M3).
     missing = sorted(set(calls) - seen)
     if missing:
         raise ValueError(f"{len(missing)} ok calls of run {run_id} are missing from the file (first: {missing[:5]})")
-    return run_id, rows, flags
+    return run_id, rows, flags, answers
+
+
+# The owner's spot-check answers are formal R10 decisions (final review A1): a sampled accident the
+# owner judged is never left for apply to auto-link, and is not asked again in r10-export.
+DECIDE_SQL = text(
+    "UPDATE internal.r10_unresolved u SET owner_decision = d.d, decided_route_id = d.r, decided_area_id = d.ar, "
+    "decided_at = now() FROM unnest(CAST(:a AS integer[]), CAST(:d AS text[]), CAST(:r AS bigint[]), "
+    "CAST(:ar AS bigint[])) AS d(a, d, r, ar) WHERE u.accident_id = d.a AND u.owner_decision IS NULL "
+    "RETURNING u.accident_id"
+)
+
+
+async def record_owner_answers(conn: AsyncConnection, answers: Sequence[OwnerAnswer]) -> dict[str, int]:
+    routes = frozenset(int(r) for (r,) in (await conn.execute(text("SELECT route_id FROM canonical_routes"))).all())
+    areas = frozenset(int(a) for (a,) in (await conn.execute(text("SELECT area_id FROM canonical_areas"))).all())
+    rows: list[dict[str, object]] = []
+    for ans in answers:
+        if ans.answer == "none":
+            rows.append({"a": ans.accident_id, "d": "no_link", "r": None, "ar": None})
+            continue
+        target = int(ans.answer)
+        if target not in (routes if ans.kind == "route" else areas):
+            raise ValueError(f"accident {ans.accident_id}: {ans.kind} {target} is no longer in the catalog")
+        rows.append({"a": ans.accident_id, "d": "link", "r": target if ans.kind == "route" else None,
+                     "ar": target if ans.kind == "area" else None})
+    updated: set[int] = set()
+    if rows:
+        updated = {int(a) for (a,) in (await conn.execute(
+            DECIDE_SQL, {k: [r[k] for r in rows] for k in ("a", "d", "r", "ar")})).all()}
+    # Already decided (the owner's earlier word stands) or no longer unresolved.
+    return {"owner_decisions_recorded": len(updated), "owner_decisions_skipped": len(rows) - len(updated)}
 
 
 async def record_gate(conn: AsyncConnection, *, model: str, run_id: uuid.UUID,
-                      rows: Sequence[tuple[str, str, float]], auto_flags: Sequence[bool] | None = None
-                      ) -> dict[str, object]:
+                      rows: Sequence[tuple[str, str, float]], auto_flags: Sequence[bool] | None = None,
+                      answers: Sequence[OwnerAnswer] = ()) -> dict[str, object]:
+    decided = await record_owner_answers(conn, answers)
     gate = compute_gate(rows, auto_threshold=AUTO_LINK_CONFIDENCE, auto_flags=auto_flags)
     await conn.execute(text(
         "INSERT INTO internal.r10_llm_gates (gate_id, model, prompt_version, sample_run_id, n_checked, n_agree, "
@@ -737,7 +780,7 @@ async def record_gate(conn: AsyncConnection, *, model: str, run_id: uuid.UUID,
         {"g": uuid.uuid4(), "m": model, "pv": PROMPT_VERSION, "run": run_id, "n": gate["n_checked"],
          "agree": gate["n_agree"], "band": gate["n_auto_band"], "band_agree": gate["n_auto_band_agree"],
          "t": AUTO_LINK_CONFIDENCE, "passed": gate["passed"]})
-    return gate | {"model": model, "prompt_version": PROMPT_VERSION, "sample_run_id": str(run_id)}
+    return gate | decided | {"model": model, "prompt_version": PROMPT_VERSION, "sample_run_id": str(run_id)}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -787,8 +830,9 @@ async def _main(args: argparse.Namespace) -> dict[str, object]:
                                     for name, m in MODELS.items()}}
         if args.command == "gate":
             async with engine.begin() as conn:
-                run_id, rows, flags = await gate_rows(conn, Path(args.review_file), model=MODELS[args.model])
-                return await record_gate(conn, model=MODELS[args.model], run_id=run_id, rows=rows, auto_flags=flags)
+                run_id, rows, flags, answers = await gate_rows(conn, Path(args.review_file), model=MODELS[args.model])
+                return await record_gate(conn, model=MODELS[args.model], run_id=run_id, rows=rows, auto_flags=flags,
+                                         answers=answers)
         if args.command == "apply":
             async with engine.begin() as conn:
                 return await apply_picks(conn, model=MODELS[args.model], apply=bool(args.apply))
@@ -814,6 +858,10 @@ async def _main(args: argparse.Namespace) -> dict[str, object]:
                 n_rows = await write_sample_csv(conn, run_id, out)
             return result | {"review_rows": n_rows, "out": str(out)}
         async with engine.connect() as conn:
+            # Final review A2: no full paid run before the spot-check has passed for this model and prompt.
+            if not (await conn.execute(GATE_SQL, {"m": allocator.model, "pv": PROMPT_VERSION,
+                                                  "t": AUTO_LINK_CONFIDENCE})).scalar():
+                raise SystemExit(f"no passing gate for {allocator.model} / {PROMPT_VERSION}: run sample and gate first")
             called = {int(a) for (a,) in (await conn.execute(
                 CALLED_SQL, {"m": allocator.model, "pv": PROMPT_VERSION})).all()}
         todo = [c for c in cases if c.accident_id not in called]

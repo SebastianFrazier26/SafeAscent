@@ -79,13 +79,13 @@ jobs:
         run: |
           docker build -t safeascent-backend:ci .
           docker run --rm -e DATABASE_URL="$DATABASE_URL" safeascent-backend:ci \
-            python -c "import app.main, app.celery_app"
+            python -c "import app.main, app.celery_app; import importlib.util as u; assert u.find_spec('anthropic') is None, 'anthropic in the API image'; assert u.find_spec('rasterio') is None, 'rasterio in the API image'"
 
       - name: Build jobs image and smoke-test imports
         run: |
           docker build -f Dockerfile.jobs -t safeascent-jobs:ci .
           docker run --rm -e DATABASE_URL="$DATABASE_URL" safeascent-jobs:ci \
-            python -c "import h3, rasterio, timezonefinder, app.pipelines.catalog_cycle; import importlib.util as u; assert u.find_spec('pytest') is None"
+            python -c "import h3, rasterio, timezonefinder, app.pipelines.catalog_cycle; import importlib.util as u; assert u.find_spec('pytest') is None; assert u.find_spec('anthropic') is None, 'anthropic in the jobs image'"
 
   frontend:
     runs-on: ubuntu-latest
@@ -139,7 +139,7 @@ jobs:
       - name: No scraper code (D9)
         run: python scripts/check_no_scrapers.py
 
-      - name: No Mountain Project data in data/docs/fixtures
+      - name: No Mountain Project data in data/docs/tests
         run: python scripts/check_no_mp_data.py
 
       - name: docker-compose mirrors the Railway services

@@ -219,7 +219,13 @@ async def existing_counts(conn: AsyncConnection, route_ids: set[int]) -> dict[tu
 
 SEAM_UPSERT = text(
     "INSERT INTO internal.route_tick_scrapes (mp_route_id, source, scraped_at, complete, complete_through, total_ticks, "
-    "loaded_run_id) VALUES (:r, 'mp_scrape', :at, :complete, :through, :n, :run) "
+    "loaded_run_id) VALUES (:r, 'mp_scrape', :at, :complete, :through, "
+    # Final review A4 (2026-10-14): the total is the stored months' sum over the counted range, not
+    # the export's total. Stored months keep their first-scrape counts, so the export's total drifts
+    # from them once MP backdates or deletes ticks; tick_total and route_tick_months must agree.
+    "CASE WHEN :complete THEN (SELECT coalesce(sum(m.tick_count), 0) FROM internal.mp_tick_aggregates m "
+    "WHERE m.mp_route_id = :r AND m.period <> 'total' "
+    "AND to_date(m.period || '-01', 'YYYY-MM-DD') <= CAST(:through AS date)) END, :run) "
     "ON CONFLICT (mp_route_id) DO UPDATE SET scraped_at = EXCLUDED.scraped_at, complete = EXCLUDED.complete, "
     "complete_through = EXCLUDED.complete_through, total_ticks = EXCLUDED.total_ticks, "
     "loaded_run_id = EXCLUDED.loaded_run_id, updated_at = now() "
@@ -249,7 +255,9 @@ def seam_rows(totals: list[RouteTotal], monthly: list[MonthlyRow], report: Valid
     at their first-scrape counts (owner decision 2026-10-02, only new keys load); advancing is
     still true for them. A route is complete only if every month inside its counted range was
     accepted and its months sum to its total: otherwise an absent month would read as a real
-    zero, so it is written as scraped (never complete), with no total."""
+    zero, so it is written as scraped (never complete), with no total. A complete route's stored
+    total is the sum of its stored months over the counted range (write_seam, final review A4), not
+    the export's total_ticks carried here."""
     rejected_totals = {i.row_ref for i in report.issues if i.row_ref.endswith(":total")}
     gappy = {
         int(i.row_ref.split(":", 1)[0])
@@ -272,7 +280,7 @@ async def write_seam(conn: AsyncConnection, scrapes: list[RouteScrape], *, run_i
     if scrapes:
         await conn.execute(SEAM_UPSERT, [
             {"r": s.mp_route_id, "at": s.scraped_at, "complete": s.complete,
-             "through": complete_through(s.scraped_at) if s.complete else None, "n": s.total_ticks, "run": run_id}
+             "through": complete_through(s.scraped_at) if s.complete else None, "run": run_id}
             for s in scrapes])
 
 

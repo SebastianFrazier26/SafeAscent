@@ -29,16 +29,17 @@ def test_commitment_token_in_the_type_string_is_alpine():
 
 
 def test_v_scale_and_uiaa_grades_are_never_commitment():
-    assert tg("Trad", ["V4"]) == "trad"
+    # A V grade is never a commitment grade; since rt-mp-v3 it makes the route a boulder.
+    assert tg("Trad", ["V4"]) is None
     assert tg("Sport", ["VI+"]) == "sport"
     assert tg("Trad", ["5.10a V"]) == "alpine"
 
 
 def test_toprope_and_aid_take_the_underlying_rock_group():
-    # Ruling R-1 (P3:56): the underlying rock group; with no sport/trad flag and no bolt data, trad.
-    assert tg("TR") == "trad"
-    assert tg("Aid") == "trad"
-    assert tg("TR, Aid") == "trad"
+    # A5 (rt-mp-v3): with no sport/trad flag and no bolt data, sport or trad is unknown: rock.
+    assert tg("TR") == "rock"
+    assert tg("Aid") == "rock"
+    assert tg("TR, Aid") == "rock"
     assert tg("Sport, TR") == "sport"
     assert tg("Trad, Aid") == "trad"
     assert tg("TR", ["WI3"]) == "ice"
@@ -58,8 +59,8 @@ def test_rock_with_no_discipline_flag_is_its_own_group():
 def test_rock_precedence_is_overridden_by_any_other_discipline_flag():
     # The rock group applies only when no other discipline flag is present (I2).
     assert tg("Sport, Rock") == "sport"
-    assert tg("TR, Rock") == "trad"
-    assert tg("Aid, Rock") == "trad"
+    assert tg("TR, Rock") == "rock"
+    assert tg("Aid, Rock") == "rock"
     assert tg("Ice, Rock") == "ice"
 
 
@@ -86,8 +87,8 @@ def test_sport_still_maps_to_sport():
 
 
 def test_toprope_still_takes_the_underlying_rock_group():
-    assert tg("TR") == "trad"
-    assert tg("Top Rope") == "trad"
+    assert tg("TR") == "rock"
+    assert tg("Top Rope") == "rock"
 
 
 def test_boulders_are_unscored_unless_roped():
@@ -108,3 +109,9 @@ def test_boulders_are_unscored_unless_roped():
 ])
 def test_mp_type_strings(raw, flags):
     assert flags_from_mp_type(raw) == flags
+
+
+@pytest.mark.parametrize("type_str", ["Trad", "Sport", "TR", "Ice", "Mixed", "Alpine", "Trad, Boulder", "unknown"])
+def test_a_v_grade_means_a_boulder_in_every_branch(type_str):
+    only = map_type_group(flags_from_mp_type(type_str), ["V3"])
+    assert (only.type_group, only.is_boulder) == (None, True)

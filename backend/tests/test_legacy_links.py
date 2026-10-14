@@ -8,7 +8,7 @@ from sqlalchemy import text
 from app.data.repair import review
 from app.data.repair.legacy_links import LegacyRow, Link, plan_row, run_r10, run_r10_export, run_r10_import
 from app.pipelines.mp_catalog import refresh
-from tests.pgtest import migrated_db, requires_pg, run_on_conn, run_sql
+from tests.pgtest import fetch, migrated_db, requires_pg, run_on_conn, run_sql
 
 PIN = "0010_accident_route_links"
 SEED = """
@@ -49,6 +49,7 @@ def test_plan_row_rules():
     assert plan_row(LegacyRow(6, None, 58, None, "900000099", **base), catalog).reason == "legacy_mp_id_not_in_catalog"
     assert plan_row(LegacyRow(4, None, None, 7, None, **base), catalog).reason == "legacy_mountain_only"
     assert plan_row(LegacyRow(8, None, None, None, None, **base), catalog) is None
+    assert plan_row(LegacyRow(10, 900000013, None, None, None, **base), catalog).reason == "not_in_catalog"
 
 
 @requires_pg
@@ -169,3 +170,21 @@ def test_a_changed_candidate_set_clears_the_llm_pick():
         rows = run_on_conn(name, lambda c: c.execute(text(
             "SELECT accident_id, llm_call_id IS NULL FROM internal.r10_unresolved WHERE accident_id IN (3, 4) ORDER BY 1")))
         assert rows == [(3, True), (4, False)]
+
+
+@requires_pg
+def test_an_mp_route_id_missing_from_the_catalog_is_residue_not_dropped():
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        _prepare(name)
+        run_sql(name, "INSERT INTO mp_routes (mp_route_id, name, location_id, type, grade) VALUES "
+                      "(900000013, 'Fixture Late', 900000110, 'Trad', '5.8');"
+                      "INSERT INTO accidents (accident_id, mp_route_id) VALUES (10, 900000013)")
+        out = run_on_conn(name, lambda c: run_r10(c, _ns(apply=True)))
+        assert out["unresolved"]["not_in_catalog"] == 1
+        assert fetch(name, "SELECT reason, candidates_searched FROM internal.r10_unresolved WHERE accident_id = 10") == [
+            ("not_in_catalog", False)]
+        _prepare(name)
+        run_on_conn(name, lambda c: run_r10(c, _ns(apply=True)))
+        assert fetch(name, "SELECT count(*) FROM internal.r10_unresolved WHERE accident_id = 10") == [(0,)]
+        assert fetch(name, "SELECT route_id, method FROM accident_route_links WHERE accident_id = 10") == [
+            (900000013, "mp_route_id")]

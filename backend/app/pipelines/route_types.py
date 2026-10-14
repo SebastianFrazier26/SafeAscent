@@ -1,8 +1,8 @@
 """P2-3/P2-4 type groups from MP route facts, first match wins: mixed, ice, alpine, trad,
-sport, then toprope/aid by their underlying rock group (P3:56, ruling R-1), else rock (owner
-2026-10-13: MP type "rock" with no other discipline flag, for the 105,701 rock routes with
-sport/trad unknown), else unknown (stored, never scored). MP has no bolt count, so a toprope- or
-aid-only route with no sport or trad flag maps to trad. Boulder-only routes, and a rock route
+sport, else rock (owner 2026-10-13: MP type "rock" with no other discipline flag, for the 105,701
+rock routes with sport/trad unknown), else unknown (stored, never scored). MP has no bolt count,
+so a toprope- or aid-only route (incl. "Rock, TR") is rock too: sport or trad unknown (final review
+A5, rt-mp-v3, 2026-10-14; ruling R-1 had mapped it to trad). Boulder-only routes, and any route
 with a V grade, get no type group and are never scored."""
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
-TYPE_RULE_VERSION = "rt-mp-v2"
+TYPE_RULE_VERSION = "rt-mp-v3"
 TypeGroup = Literal["sport", "trad", "alpine", "ice", "mixed", "rock", "unknown"]
 FLAGS = frozenset(
     {"trad", "sport", "tr", "aid", "alpine", "snow", "ice", "mixed", "bouldering", "commitment", "rock"}
@@ -26,8 +26,8 @@ _MIXED = re.compile(r"(?<![A-Za-z])M\d", re.I)
 _ICE = re.compile(r"\b(?:WI|AI)\s?\d", re.I)
 _NA_GRADE = re.compile(r"(?<![\w.])5\.\d|\b(?:WI|AI)\s?\d|(?<![A-Za-z])M\d|(?<![A-Za-z])[AC]\d", re.I)
 _COMMITMENT_GRADE = re.compile(r"(?:^|\s)(IV|V|VI|VII)(?=\s|$)")
-# The rock group is the owner's decision (2026-10-13). Grading a "rock" route on the V-scale
-# (boulder: "V4", "VB", "V-easy") is a controller ruling: unscorable as a boulder, not rock.
+# The rock group is the owner's decision (2026-10-13). A V-scale grade ("V4", "VB", "V-easy") means
+# a boulder whatever the type flags (owner rule; rt-mp-v3 widened it from rock-only routes).
 _V_GRADE = re.compile(r"(?<![A-Za-z])V(?:\d+|-easy|B)\b", re.I)
 
 
@@ -61,7 +61,7 @@ def map_type_group(flags: Iterable[str], grades: Iterable[str | None]) -> TypeRe
     grade_list = [g for g in grades if g]
     text = " ".join(grade_list)
     disciplines = tuple(sorted(f - {"commitment"}))
-    if "bouldering" in f and not (f & ROPED):
+    if "bouldering" in f and not (f & ROPED) or any(_V_GRADE.search(g) for g in grade_list):
         return TypeResult(None, True, disciplines)
     group: TypeGroup
     if "mixed" in f or _MIXED.search(text):
@@ -74,11 +74,7 @@ def map_type_group(flags: Iterable[str], grades: Iterable[str | None]) -> TypeRe
         group = "trad"
     elif "sport" in f:
         group = "sport"
-    elif f & {"tr", "aid"}:
-        group = "trad"
-    elif "rock" in f:
-        if any(_V_GRADE.search(g) for g in grade_list):
-            return TypeResult(None, True, disciplines)
+    elif f & {"tr", "aid", "rock"}:
         group = "rock"
     else:
         group = "unknown"

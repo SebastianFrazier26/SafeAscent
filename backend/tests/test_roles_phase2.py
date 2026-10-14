@@ -674,7 +674,8 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "GRANT UPDATE ON internal.r10_llm_calls TO ingest;"
         "GRANT DELETE ON internal.r10_llm_gates TO ingest;"
         "GRANT INSERT ON public.accident_legacy_links TO app;"
-        "GRANT SELECT ON public.accident_route_links TO trainer;",
+        "GRANT SELECT ON public.accident_route_links TO trainer;"
+        "ALTER TABLE internal.r10_unresolved DISABLE TRIGGER r10_unresolved_keep_decisions;",
     )
     _as(owner_url, "GRANT ingest TO analyst")
     # CREATE without USAGE is enough to create a table, which is why verify checks both.
@@ -684,6 +685,7 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
     assert stray.returncode != 0
     for check in (
         "ingest DELETE on public.source_ingest_log matches the expected set",
+        "r10_unresolved keep-decisions trigger exists and is enabled",
         "ingest UPDATE on internal.mp_tick_aggregates matches the expected set",
         "ingest DELETE on internal.duplicate_decisions matches the expected set",
         "ingest DELETE on public.gnis_summits matches the expected set",

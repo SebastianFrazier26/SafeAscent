@@ -14,6 +14,7 @@ from collections.abc import Callable, Sequence
 import httpx
 import numpy as np
 
+from app.pipelines import USER_AGENT
 from app.pipelines.dem import Elevation
 
 EPQS_URL = "https://epqs.nationalmap.gov/v1/json"
@@ -21,9 +22,19 @@ NODATA = -1_000_000.0
 MIN_COMPARED = 180
 MIN_PER_CLASS = 30
 PER_CLASS_TARGET = 80
-GROSS_M = 100.0
 SLOPE_CLASSES: tuple[tuple[str, float, float], ...] = (("flat", 0.0, 10.0), ("moderate", 10.0, 30.0), ("steep", 30.0, 91.0))
-TOLERANCE_M: dict[str, tuple[float, float]] = {"flat": (2.0, 5.0), "moderate": (4.0, 10.0), "steep": (8.0, 20.0)}
+# Tolerances by the DEM a point was sampled from (final review minor, 2026-10-14). 3dep_2 (2″,
+# ~60 m posts, mostly Alaska) is judged against EPQS's best DEM like 3dep_13 (1/3″, ~10 m), but a
+# 60 m cell averages six times the ground, so its error grows with slope: roughly 2.5x the 1/3″
+# median/p90 per class, and a gross bound of 200 m (60 m of run at a 45° slope is ~60 m of rise,
+# plus the cell's own averaging). A class passes when the median and p90 of each pair's
+# |Δ| / its own source's bound are at most 1, which for 3dep_13-only rows is the plain metre test.
+DEFAULT_SOURCE = "3dep_13"
+GROSS_M: dict[str, float] = {"3dep_13": 100.0, "3dep_2": 200.0}
+TOLERANCE_M: dict[str, dict[str, tuple[float, float]]] = {
+    "3dep_13": {"flat": (2.0, 5.0), "moderate": (4.0, 10.0), "steep": (8.0, 20.0)},
+    "3dep_2": {"flat": (5.0, 12.5), "moderate": (10.0, 25.0), "steep": (20.0, 50.0)},
+}
 NEIGHBOUR_M = 15.0
 # Controller ruling (2026-10-14): EPQS failing mostly on one kind of terrain inside a class
 # would let the gate pass on a biased subset, so a class with more failures than this fails closed.
@@ -42,7 +53,7 @@ class EpqsClient:
         retries: int = 3,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
-        self._client = httpx.Client(transport=transport, timeout=timeout_s)
+        self._client = httpx.Client(transport=transport, timeout=timeout_s, headers={"User-Agent": USER_AGENT})
         self._pause = pause_s
         self._retries = retries
         self._sleep = sleep
@@ -99,29 +110,36 @@ def local_slopes(points: Sequence[tuple[float, float]], sampler: Sampler) -> lis
     return out
 
 
-def compare(rows: Sequence[tuple[str, float | None, float | None]]) -> dict[str, object]:
-    by: dict[str, list[float]] = defaultdict(list)
+def compare(rows: Sequence[tuple[str, float | None, float | None]],
+            sources: Sequence[str] | None = None) -> dict[str, object]:
+    """sources[i] is the dem_source of rows[i] (default: all 3dep_13)."""
+    if sources is not None and len(sources) != len(rows):
+        raise ValueError(f"{len(sources)} sources for {len(rows)} rows")
+    srcs = list(sources) if sources is not None else [DEFAULT_SOURCE] * len(rows)
+    by: dict[str, list[tuple[float, str]]] = defaultdict(list)
     gross = 0
-    for cls, dem, ref in rows:
+    for (cls, dem, ref), src in zip(rows, srcs, strict=True):
         if dem is None or ref is None or not (math.isfinite(dem) and math.isfinite(ref)):
             continue
         d = abs(dem - ref)
-        by[cls].append(d)
-        gross += int(d > GROSS_M)
+        by[cls].append((d, src))
+        gross += int(d > GROSS_M[src])
     compared = sum(len(v) for v in by.values())
     ok = compared >= MIN_COMPARED and gross == 0
     classes: dict[str, dict[str, float | int | None]] = {}
     for cls, _, _ in SLOPE_CLASSES:
-        diffs = by.get(cls, [])
-        if len(diffs) < MIN_PER_CLASS:
-            classes[cls] = {"n": len(diffs), "median": None, "p90": None, "passed": 0}
+        pairs = by.get(cls, [])
+        if len(pairs) < MIN_PER_CLASS:
+            classes[cls] = {"n": len(pairs), "median": None, "p90": None, "passed": 0}
             ok = False
             continue
-        median = statistics.median(diffs)
-        p90 = float(np.percentile(diffs, 90))
-        max_median, max_p90 = TOLERANCE_M[cls]
-        passed = median <= max_median and p90 <= max_p90
-        classes[cls] = {"n": len(diffs), "median": round(median, 2), "p90": round(p90, 2), "passed": int(passed)}
+        diffs = [d for d, _ in pairs]
+        median_ratio = statistics.median(d / TOLERANCE_M[src][cls][0] for d, src in pairs)
+        p90_ratio = float(np.percentile([d / TOLERANCE_M[src][cls][1] for d, src in pairs], 90))
+        passed = median_ratio <= 1.0 and p90_ratio <= 1.0
+        classes[cls] = {"n": len(pairs), "median": round(statistics.median(diffs), 2),
+                        "p90": round(float(np.percentile(diffs, 90)), 2),
+                        "n_3dep_2": sum(1 for _, src in pairs if src == "3dep_2"), "passed": int(passed)}
         ok = ok and passed
     return {"compared": compared, "gross": gross, "classes": classes, "passed": int(ok)}
 

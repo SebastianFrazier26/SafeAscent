@@ -1,3 +1,4 @@
+import asyncio
 import json
 import uuid
 from types import SimpleNamespace
@@ -220,7 +221,8 @@ def test_spend_is_on_record_before_the_call_goes_out_and_a_crash_is_an_audited_a
         async def go(engine):
             cases = await _cases(engine)
             crashing = Crashing(engine, run_id)
-            with pytest.raises(RuntimeError, match="connection dropped"):
+            # S3: only the class name surfaces, never the exception's message.
+            with pytest.raises(SystemExit, match="^allocate failed: RuntimeError$"):
                 await run_calls(engine, crashing, cases, run_id=run_id, is_sample=False, max_usd=5.0)
             return call_ceiling_usd(Crashing.model, cases[0]), crashing.in_flight_usd, cases[0].accident_id
         ceiling, in_flight, first = run_on_engine(name, go)
@@ -389,11 +391,17 @@ def test_gate_reads_the_models_answers_from_the_audit_not_the_file(tmp_path, mon
 
         async def gate(engine):
             async with engine.begin() as conn:
-                rid, rows, flags = await gate_rows(conn, sheet, model=fake.model)
-                return await record_gate(conn, model=fake.model, run_id=rid, rows=rows, auto_flags=flags)
+                rid, rows, flags, answers = await gate_rows(conn, sheet, model=fake.model)
+                return await record_gate(conn, model=fake.model, run_id=rid, rows=rows, auto_flags=flags,
+                                         answers=answers)
         out = run_on_engine(name, gate)
         assert (out["n_checked"], out["n_agree"], out["n_auto_band"], out["n_auto_band_agree"]) == (3, 2, 2, 1)
         assert out["passed"] is False
+        # A1: the owner's answers stand as formal decisions even when the gate fails.
+        assert out["owner_decisions_recorded"] == 3
+        assert fetch(name, "SELECT accident_id, owner_decision, decided_route_id FROM internal.r10_unresolved "
+                           "WHERE accident_id IN (3, 4, 5) ORDER BY 1") == [
+            (3, "link", offered[3][1]), (4, "no_link", None), (5, "link", offered[5][0])]
         assert fetch(name, "SELECT passed, auto_threshold FROM internal.r10_llm_gates") == [(False, pytest.approx(0.8))]
         # A gate the gate step itself recorded opens apply: auto_threshold is REAL, 0.8 is not exact.
         passing = [("900000012", "900000012", 0.95)] * 40 + [("none", "none", 0.9)] * 60
@@ -402,7 +410,8 @@ def test_gate_reads_the_models_answers_from_the_audit_not_the_file(tmp_path, mon
             async with engine.begin() as conn:
                 await record_gate(conn, model=fake.model, run_id=run_id, rows=passing)
                 return await apply_picks(conn, model=fake.model, apply=True)
-        assert run_on_engine(name, passing_gate)["linked"] == 2
+        # Every sampled accident now carries the owner's decision, so apply links none of them.
+        assert run_on_engine(name, passing_gate)["linked"] == 0
 
         # The latest gate decides (M2): a later failing gate revokes the pass.
         async def revoked(engine):
@@ -783,3 +792,61 @@ def test_assert_held_refuses_a_live_connection_without_the_lock():
 def test_the_ledger_itself_refuses_a_bad_cap(bad):
     with pytest.raises(SystemExit, match="finite"):
         r10_llm._Ledger(None, uuid.uuid4(), FakeAllocator.model, bad, None)
+
+
+@requires_pg
+def test_gate_keeps_the_owners_none_over_a_confident_llm_pick(tmp_path, monkeypatch):
+    """A1: a sampled accident the owner marked none, which the model picked at >= 0.80, is never linked."""
+    monkeypatch.setattr(review, "REVIEW_DIR", tmp_path)
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        _prepared(name)
+        fake = FakeAllocator({})
+        run_id = uuid.uuid4()
+
+        async def go(engine):
+            await run_calls(engine, fake, [c for c in await _cases(engine) if c.accident_id == 3], run_id=run_id,
+                            is_sample=True, max_usd=5.0)
+        run_on_engine(name, go)
+        sheet = tmp_path / "sample.csv"
+        sheet.write_text(f"accident_id,run_id,owner_answer\n3,{run_id},none\n", encoding="utf-8")
+
+        async def gate_then_apply(engine):
+            async with engine.begin() as conn:
+                rid, rows, flags, answers = await gate_rows(conn, sheet, model=fake.model)
+                assert flags == [True]
+                await record_gate(conn, model=fake.model, run_id=rid, rows=rows, auto_flags=flags, answers=answers)
+            async with engine.begin() as conn:
+                await conn.execute(text(_gate_row()))
+            async with engine.begin() as conn:
+                return await apply_picks(conn, model=fake.model, apply=True)
+        assert run_on_engine(name, gate_then_apply)["linked"] == 0
+        assert fetch(name, "SELECT count(*) FROM accident_legacy_links WHERE accident_id = 3") == [(0,)]
+        assert fetch(name, "SELECT owner_decision FROM internal.r10_unresolved WHERE accident_id = 3") == [("no_link",)]
+
+
+@requires_pg
+def test_run_refuses_without_a_passing_gate(monkeypatch):
+    """A2: the latest gate for the model and prompt must have passed before a full paid run."""
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app.pipelines import db
+    from tests.pgtest import sa_url
+
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        _prepared(name)
+        fake = FakeAllocator({})
+        # Patched at the module _main imports from, not via settings: other tests rebind app.config.
+        monkeypatch.setattr(db, "ingest_engine", lambda: create_async_engine(sa_url(name)))
+        monkeypatch.setattr(r10_llm, "api_key_from_environment", lambda: "test-key")
+        monkeypatch.setattr(r10_llm, "ClaudeAllocator", lambda key, model: fake)
+        argv = ["run", "--model", "haiku", "--max-usd", "1"]
+        with pytest.raises(SystemExit, match="no passing gate"):
+            asyncio.run(r10_llm._main(r10_llm.build_parser().parse_args(argv)))
+        run_sql(name, _gate_row())
+        run_sql(name, _gate_row(passed=False))
+        with pytest.raises(SystemExit, match="no passing gate"):
+            asyncio.run(r10_llm._main(r10_llm.build_parser().parse_args(argv)))
+        assert fake.seen == []
+        run_sql(name, _gate_row())
+        out = asyncio.run(r10_llm._main(r10_llm.build_parser().parse_args(argv)))
+        assert out["calls"] == 3 and len(fake.seen) == 3

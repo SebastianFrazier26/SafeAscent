@@ -367,3 +367,27 @@ def test_implausible_length_is_null_and_quarantined():
         rows = fetch(name, "SELECT route_id, round(length_m)::int FROM route_static_features ORDER BY 1")
         assert rows == [(900000001, 91), (900000002, None), (900000003, None), (900000005, 3000)]
         assert dict(report.quarantined) == {"implausible_length": 1} and report.issues[0].row_ref == "900000002"
+
+
+@requires_pg
+def test_points_skip_areas_with_no_scorable_route():
+    seed = SEED + (
+        "INSERT INTO mp_locations (mp_id, name, parent_id, latitude, longitude) VALUES "
+        "(900000115, 'Fixture Unknowns', 900000110, 40.8, -105.95);"
+        "INSERT INTO mp_routes (mp_route_id, name, location_id, type, grade) VALUES "
+        "(900000006, 'Fixture Six', 900000115, 'unknown', '5.8');")
+    with migrated_db(PIN, seed_sql=seed) as name:
+        _catalog(name)
+        assert run_on_conn(name, lambda c: _points(c, uuid.uuid4())) == 2
+        assert fetch(name, "SELECT count(*) FROM feature_points WHERE point_key = '40.80000:-105.95000'") == [(0,)]
+
+
+@requires_pg
+def test_scorable_routes_on_a_point_with_no_timezone_are_reported_in_the_run_log():
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        _catalog(name)
+        result = run_on_engine(name, lambda e: run_step(e, "points", tz_lookup=lambda la, lo: None))
+        [(problems,)] = fetch(name, "SELECT validation_report->>'problems' FROM source_ingest_log "
+                                    "WHERE source = 'static_features:points'")
+    assert result["scorable_routes_no_tz"] == 2 and result["scorable_routes_no_tz_example"] == 900000001
+    assert '\\"scorable_routes_no_tz\\": 2' in problems

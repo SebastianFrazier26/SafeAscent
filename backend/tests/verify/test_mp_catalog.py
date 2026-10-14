@@ -50,3 +50,11 @@ def test_last_refresh_ok_and_quarantine_small():
     assert row["status"] == "ok"
     # The 1% bound is the owner's to move.
     assert row["rows_quarantined"] <= 0.01 * row["n_locations"]
+
+
+def test_tick_total_is_the_month_sum_for_every_complete_route():
+    # Final review A4: the stored total is the counted months' sum, so the two always agree.
+    [row] = fetch("SELECT count(*) AS n FROM internal.route_tick_coverage c WHERE c.tick_status = 'complete' "
+                  "AND c.tick_total IS DISTINCT FROM (SELECT coalesce(sum(m.tick_count), 0) "
+                  "FROM internal.route_tick_months m WHERE m.route_id = c.route_id)")
+    assert row["n"] == 0

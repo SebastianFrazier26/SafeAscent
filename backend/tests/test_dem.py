@@ -249,3 +249,32 @@ def test_read_window_mid_read_error_is_transient_and_skips_2_arcsecond(tile):
 def test_gdal_http_timeouts_are_bounded():
     assert int(GDAL_ENV["GDAL_HTTP_TIMEOUT"]) > 0
     assert int(GDAL_ENV["GDAL_HTTP_CONNECTTIMEOUT"]) > 0
+
+
+def test_a_point_masked_in_an_existing_one_third_tile_falls_back_to_2_arcsecond(tmp_path):
+    """Per point, not per tile: the 1/3-arc-second tile is masked at one point, 2 arc-seconds has it."""
+    masked = _write(tmp_path / "13.tif", nodata=-999999.0)
+    full = tmp_path / "2.tif"
+    with rasterio.open(masked) as src:
+        profile = src.profile
+    with rasterio.open(full, "w", **profile) as dst:
+        dst.write(np.full((100, 100), 1700.0, dtype="float32"), 1)
+    hole, ok = sample_points([(40.95, -105.95), (40.5, -105.5)], opener_for({"/13/": masked, "/2/": full}))
+    assert hole is not None and (hole.elevation_m, hole.dem_source, hole.dem_res_m) == (1700.0, "3dep_2", 60.0)
+    assert ok is not None and (ok.elevation_m, ok.dem_source) == (1650.0, "3dep_13")
+    [still] = sample_points([(40.95, -105.95)], opener_for({"/13/": masked, "/2/": masked}))
+    assert still is not None and (still.elevation_m, still.dem_source) == (None, "nodata")
+
+
+def test_3dep_requests_identify_the_project():
+    from app.pipelines import USER_AGENT
+
+    seen = []
+
+    def handler(request):
+        seen.append(request.headers["User-Agent"])
+        return httpx.Response(200)
+
+    assert _exists("https://example.invalid/t.tif", transport=httpx.MockTransport(handler)) is True
+    assert seen == [USER_AGENT] and USER_AGENT.startswith("SafeAscent/") and "github.com" in USER_AGENT
+    assert GDAL_ENV["GDAL_HTTP_USERAGENT"] == USER_AGENT

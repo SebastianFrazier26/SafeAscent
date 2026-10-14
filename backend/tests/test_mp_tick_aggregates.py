@@ -382,17 +382,38 @@ def test_a_rescrape_advances_the_seam_and_reveals_newly_closed_months(tmp_path, 
         monkeypatch.setattr(loader, "ingest_engine", lambda: create_async_engine(url))
         assert asyncio.run(main(first, today=TODAY, max_quarantine_share=1.0, dry_run=False))["status"] == "ok"
         assert asyncio.run(_seam_state(url)) == (
-            [(R1, datetime(2026, 8, 20, tzinfo=UTC), True, date(2026, 7, 31), 4)], [(R1, "2026-06", 3)])
+            [(R1, datetime(2026, 8, 20, tzinfo=UTC), True, date(2026, 7, 31), 3)], [(R1, "2026-06", 3)])
         again = asyncio.run(main(second, today=TODAY, max_quarantine_share=1.0, dry_run=False))
         assert again["status"] == "ok" and again["stats"]["already_loaded_changed"] == 1
         assert asyncio.run(_seam_state(url)) == (
-            [(R1, datetime(2026, 9, 20, tzinfo=UTC), True, date(2026, 8, 31), 6)],
+            [(R1, datetime(2026, 9, 20, tzinfo=UTC), True, date(2026, 8, 31), 4)],
             [(R1, "2026-06", 3), (R1, "2026-08", 1)])
         # An older export loaded afterwards never rolls the seam back.
         older = _export(tmp_path, [(R1, "2026-06", "lead", 3)], [(R1, 3, 1)], scraped_at="2026-07-10T00:00:00+00:00",
                         name="older.sqlite")
         assert asyncio.run(main(older, today=TODAY, max_quarantine_share=1.0, dry_run=False))["status"] == "ok"
         assert asyncio.run(_seam_state(url))[0][0][3] == date(2026, 8, 31)
+
+
+@requires_pg
+def test_a_rescrape_with_a_changed_old_month_keeps_the_total_equal_to_the_stored_months(tmp_path, monkeypatch):
+    """A4: MP backdates and deletes ticks, so the export's total drifts from the frozen months."""
+    from datetime import UTC
+
+    first = _export(tmp_path, [(R1, "2026-06", "lead", 3)], [(R1, 3, 1)],
+                    scraped_at="2026-08-20T00:00:00+00:00", name="first.sqlite")
+    second = _export(tmp_path, [(R1, "2026-06", "lead", 5), (R1, "2026-08", "lead", 1), (R1, "2026-09", "lead", 2)],
+                     [(R1, 8, 1)], scraped_at="2026-09-20T00:00:00+00:00", name="second.sqlite")
+    with migrated_db(seed_sql=_seed_ice_route()) as name:
+        url = sa_url(name)
+        monkeypatch.setattr(loader, "ingest_engine", lambda: create_async_engine(url))
+        assert asyncio.run(main(first, today=TODAY, max_quarantine_share=1.0, dry_run=False))["status"] == "ok"
+        again = asyncio.run(main(second, today=TODAY, max_quarantine_share=1.0, dry_run=False))
+        assert again["status"] == "ok" and again["stats"]["already_loaded_changed"] == 2
+        scrapes, months = asyncio.run(_seam_state(url))
+    assert months == [(R1, "2026-06", 3), (R1, "2026-08", 1)]
+    assert scrapes == [(R1, datetime(2026, 9, 20, tzinfo=UTC), True, date(2026, 8, 31), 4)]
+    assert scrapes[0][4] == sum(n for _, _, n in months)
 
 
 @requires_pg

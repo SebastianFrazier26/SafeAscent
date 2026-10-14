@@ -33,7 +33,9 @@ LEGACY_SQL = text(
     "SELECT a.accident_id, a.mp_route_id, a.route_id, a.mountain_id, r.mp_route_id, r.name, r.latitude, r.longitude, "
     "m.name, m.latitude, m.longitude FROM accidents a "
     "LEFT JOIN routes r ON r.route_id = a.route_id LEFT JOIN mountains m ON m.mountain_id = a.mountain_id "
-    "WHERE a.route_id IS NOT NULL OR a.mountain_id IS NOT NULL ORDER BY a.accident_id"
+    "WHERE a.route_id IS NOT NULL OR a.mountain_id IS NOT NULL "
+    "OR (a.mp_route_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM canonical_routes c WHERE c.route_id = a.mp_route_id)) "
+    "ORDER BY a.accident_id"
 )
 CATALOG_IDS_SQL = text("SELECT route_id FROM canonical_routes")
 ROUTE_BOX_SQL = text(
@@ -90,6 +92,10 @@ def _legacy_id(raw: str | None) -> int | None:
 
 def plan_row(row: LegacyRow, catalog_ids: frozenset[int]) -> Link | Unresolved | None:
     if row.mp_route_id is not None:
+        # An MP id the catalog has not picked up yet has no identity link; it is residue, not
+        # silently dropped (final review minor, 2026-10-14). The next refresh resolves it.
+        if row.mp_route_id not in catalog_ids:
+            return Unresolved(row.accident_id, row.legacy_route_id, row.legacy_mountain_id, "not_in_catalog")
         return None
     if row.legacy_route_id is not None:
         mp_id = _legacy_id(row.legacy_mp_id)

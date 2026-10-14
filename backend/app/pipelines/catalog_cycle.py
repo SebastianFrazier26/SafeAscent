@@ -1,9 +1,13 @@
 """The scheduled catalog and features cycle (DP6): refresh the catalog from the MP tables,
 register points, sample elevation until nothing is left (or the rounds run out), rebuild the
 route table only after the EPQS gate passes. It stops at a rejected refresh, so a bad scrape
-never feeds the feature steps, and at a failed gate or unfinished elevation, so
-route_static_features never holds un-gated elevations. No paid service is called; normals for new buckets are bought by
-plan 3's January window, which is why the yearly run is scheduled before it opens.
+never feeds the feature steps, at a failed gate, and while points remain unsampled. Points that
+are only pending (a transient 3DEP error) do not block the routes step (final review A3, 2026-10-14):
+the gate judges the sampled points, the pending ones stay NULL (missing, never 0), and the run
+reports `incomplete` so the ping fails until a later run fills them. With --skip-epqs the route
+table is rebuilt un-gated; that flag is for on-demand runs only. No paid service is called; normals
+for new buckets are bought by plan 3's January window, which is why the yearly run is scheduled
+before it opens.
 
 In production it runs as the Railway cron service `catalog-cycle` (owner decision DP6,
 2026-10-13), the only service holding the ingest credential, on Neon's direct host."""
@@ -13,13 +17,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
-from sqlalchemy.engine import make_url
-from sqlalchemy.exc import ArgumentError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.healthchecks import PingSuffix
@@ -37,18 +40,6 @@ Step = Callable[..., Awaitable[dict[str, object]]]
 class CycleResult:
     status: CycleStatus
     steps: dict[str, object] = field(default_factory=dict)
-
-
-def require_direct_host(url: str) -> None:
-    # A long single-session job on the direct host (owner decision DP6), never through Neon's
-    # pgbouncer endpoint, whose host carries the "-pooler" suffix.
-    try:
-        host = make_url(url).host or ""
-    except ArgumentError:
-        # SQLAlchemy's message quotes the whole URL, password included; never echo it.
-        raise SystemExit("INGEST_DATABASE_URL is not a valid URL") from None
-    if "-pooler." in host:
-        raise SystemExit("catalog_cycle: INGEST_DATABASE_URL points at Neon's pooler host; use the direct host")
 
 
 def ping_suffix(status: CycleStatus) -> PingSuffix:
@@ -89,9 +80,6 @@ async def run_cycle(
     if retry:
         out.status = "incomplete"
     if epqs:
-        if retry:
-            # The gate samples elevations; it waits until no point is pending, and so do routes.
-            return out
         gate = await step(engine, "epqs-check", limit=ELEVATION_LIMIT)
         out.steps["epqs"] = gate
         if gate.get("passed") != 1:
@@ -114,6 +102,8 @@ def cli() -> None:
     parser.add_argument("--skip-epqs", action="store_true", help="on-demand runs: skip the ~15-minute EPQS gate")
     parser.add_argument("--max-rounds", type=_positive_int, default=MAX_ELEVATION_ROUNDS)
     args = parser.parse_args()
+    # Final review S4: httpx logs each request URL at INFO, and the ping URL is the check's credential.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     from app.config import settings
     from app.healthchecks import ping
     from app.pipelines.db import ingest_engine
@@ -128,8 +118,6 @@ def cli() -> None:
             await engine.dispose()
 
     try:
-        if settings.INGEST_DATABASE_URL:
-            require_direct_host(settings.INGEST_DATABASE_URL)
         result = asyncio.run(go())
     except BaseException:
         ping(settings.HEALTHCHECKS_CATALOG_URL, "/fail")

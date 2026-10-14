@@ -1,6 +1,7 @@
 """Static features per distinct point and the per-route table Phase 3 reads, on the MP
-catalog. Points are the stored canonical_areas.point_key of areas that carry a non-boulder
-route; a point's coordinates are parsed back from its key, so every consumer sees the same
+catalog. Points are the stored canonical_areas.point_key of areas that carry a scorable route
+(final review minor, 2026-10-14: an unscorable-only area would register a normals bucket and
+burn DEM reads no scored route uses); a point's coordinates are parsed back from its key, so every consumer sees the same
 5-decimal location. Transient DEM failures leave a point unfilled for the next run.
 Missing is never 0: unknown elevation, slope and aspect stay NULL.
 
@@ -45,7 +46,7 @@ Sampler = Callable[[Sequence[tuple[float, float]]], list[Elevation | None]]
 
 POINTS_SQL = text(
     "SELECT DISTINCT a.point_key FROM canonical_areas a WHERE a.point_key IS NOT NULL "
-    "AND EXISTS (SELECT 1 FROM canonical_routes r WHERE r.area_id = a.area_id AND NOT r.is_boulder)"
+    "AND EXISTS (SELECT 1 FROM canonical_routes r WHERE r.area_id = a.area_id AND r.scorable)"
 )
 POINT_UPSERT = text(
     "INSERT INTO feature_points (point_key, lat, lon, grid_bucket, h3_r5, h3_r7, tz, feature_version, run_id) "
@@ -70,6 +71,11 @@ ELEVATION_UPDATE = text(
     "UPDATE feature_points SET elevation_m = :e, dem_source = :s, dem_res_m = :r, updated_at = now(), "
     "run_id = :run WHERE point_key = :k AND dem_source IS NULL"
 )
+# A scorable route on a point with no timezone cannot be served daily conditions (keyed by tz).
+NO_TZ_ROUTES_SQL = text(
+    "SELECT count(*), min(r.route_id) FROM canonical_routes r JOIN canonical_areas a ON a.area_id = r.area_id "
+    "JOIN feature_points p ON p.point_key = a.point_key WHERE r.scorable AND p.tz IS NULL"
+)
 RETRY_TOUCH = text(
     "UPDATE feature_points SET updated_at = clock_timestamp() WHERE point_key = ANY(:keys) AND dem_source IS NULL"
 )
@@ -83,8 +89,10 @@ IMPLAUSIBLE_LENGTH_SQL = text(
     "WHERE NOT r.is_boulder AND m.length_ft IS NOT NULL AND m.length_ft <> 0 "
     "AND NOT (m.length_ft > 0 AND m.length_ft * :ft <= :max_m) ORDER BY r.route_id"
 )
+# Only sampled points with a value: pending ones (dem_source NULL) are excluded (final review A3).
 EPQS_POINTS_SQL = text(
-    "SELECT lat, lon, elevation_m FROM feature_points WHERE elevation_m IS NOT NULL ORDER BY point_key"
+    "SELECT lat, lon, elevation_m, dem_source FROM feature_points "
+    "WHERE elevation_m IS NOT NULL AND dem_source IN ('3dep_13', '3dep_2') ORDER BY point_key"
 )
 
 
@@ -229,11 +237,11 @@ async def epqs_check(
                        probe_batch=probe_batch, max_probe=max_probe)
 
 
-EpqsPoints = list[tuple[float, float, float]]
+EpqsPoints = list[tuple[float, float, float, str]]
 
 
 async def load_epqs_points(conn: AsyncConnection) -> EpqsPoints:
-    return [(float(la), float(lo), float(e)) for la, lo, e in (await conn.execute(EPQS_POINTS_SQL)).all()]
+    return [(float(la), float(lo), float(e), str(src)) for la, lo, e, src in (await conn.execute(EPQS_POINTS_SQL)).all()]
 
 
 def epqs_sample(
@@ -253,21 +261,22 @@ def epqs_sample(
     epqs.MAX_FAILURE_SHARE (failure_guard)."""
     points = list(points)
     random.Random(seed).shuffle(points)
-    chosen: dict[str, list[tuple[float, float, float]]] = {name: [] for name, _, _ in SLOPE_CLASSES}
+    chosen: dict[str, list[tuple[float, float, float, str]]] = {name: [] for name, _, _ in SLOPE_CLASSES}
     probed = 0
     for i in range(0, min(len(points), max_probe), probe_batch):
         batch = points[i : min(i + probe_batch, max_probe)]
         probed += len(batch)
-        for (la, lo, e), slope in zip(batch, local_slopes([(la, lo) for la, lo, _ in batch], sampler)):
+        for (la, lo, e, src), slope in zip(batch, local_slopes([(p[0], p[1]) for p in batch], sampler)):
             if slope is None:
                 continue
             cls = slope_class(slope)
             if len(chosen[cls]) < per_class:
-                chosen[cls].append((la, lo, e))
+                chosen[cls].append((la, lo, e, src))
         if all(len(v) >= per_class for v in chosen.values()):
             break
-    rows = [(cls, e, client.elevation(la, lo)) for cls, pts in chosen.items() for la, lo, e in pts]
-    result = compare(rows)
+    picked = [(cls, la, lo, e, src) for cls, pts in chosen.items() for la, lo, e, src in pts]
+    rows = [(cls, e, client.elevation(la, lo)) for cls, la, lo, e, _ in picked]
+    result = compare(rows, [src for *_, src in picked])
     counts, bias_problems = failure_guard(rows)
     passed = int(result["passed"] == 1 and not bias_problems)
     return result | {"passed": passed, "epqs_counts": counts, "bias_problems": bias_problems, "probed": probed,
@@ -289,7 +298,7 @@ def _log_problems(step: str, result: dict[str, object]) -> list[str]:
 
 async def run_step(
     engine: AsyncEngine, step: str, *, limit: int = 5000, epqs_client: EpqsClient | None = None,
-    sampler: Sampler = sample_points,
+    sampler: Sampler = sample_points, tz_lookup: Callable[[float, float], str | None] = tz_for_point,
 ) -> dict[str, object]:
     """One logged step; the CLI and Task 12's catalog_cycle both call it. Network steps read in
     one short transaction, do their I/O with none open, then write and log in a second."""
@@ -315,8 +324,11 @@ async def run_step(
         result: dict[str, object]
         upserted = 0
         if step == "points":
-            upserted = await upsert_points(conn, run_id=run_id, report=report)
-            result = {"points": upserted}
+            upserted = await upsert_points(conn, run_id=run_id, report=report, tz_lookup=tz_lookup)
+            no_tz, example = (await conn.execute(NO_TZ_ROUTES_SQL)).one()
+            result = {"points": upserted, "scorable_routes_no_tz": int(no_tz)}
+            if no_tz:
+                result["scorable_routes_no_tz_example"] = int(example)
         elif step == "elevation":
             stats = await write_elevation(conn, run_id=run_id, todo=todo, values=values)
             upserted = stats["sampled"]

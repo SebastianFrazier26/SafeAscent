@@ -49,7 +49,8 @@ class AccidentLegacyLink(Base):
 class R10Unresolved(Base):
     __tablename__ = "r10_unresolved"
     __table_args__ = (
-        CheckConstraint("reason IN ('legacy_route_no_mp_id', 'legacy_mp_id_not_in_catalog', 'legacy_mountain_only')",
+        CheckConstraint("reason IN ('legacy_route_no_mp_id', 'legacy_mp_id_not_in_catalog', 'legacy_mountain_only', "
+                        "'not_in_catalog')",
                         name="r10_unresolved_reason_check"),
         CheckConstraint("owner_decision IS NULL OR owner_decision IN ('link', 'no_link')",
                         name="r10_unresolved_owner_decision_check"),

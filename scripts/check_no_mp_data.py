@@ -11,24 +11,36 @@ import sys
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
-SCOPES = ("data/", "docs/", "backend/tests/fixtures/")
+SCOPES = ("data/", "docs/", "backend/tests/")
 # Assembled from parts so this repo file never spells the host (check_no_scrapers.py bans it in
 # source files, and the guard must not need an exemption).
 HOST = "mountain" + "project" + ".com"
-URL = re.compile(re.escape(HOST) + r"/(?:route|area|v)/\d+", re.IGNORECASE)
-ID_KEYS = ("mp_id", "mp_route_id", "mp_location_id", "location_id", "route_id", "parent_id", "area_id")
-_KEY = r"(?<![A-Za-z0-9_])(?:" + "|".join(ID_KEYS) + r")"
+# A climber profile or photo page is as identifying as a route page.
+URL = re.compile(re.escape(HOST) + r"/(?:route|area|v|user|photo)/\d+", re.IGNORECASE)
+ID_KEYS = ("mp_id", "mp_route_id", "mp_location_id", "location_id", "route_id", "parent_id", "area_id",
+           "decided_id", "pick_id", "candidate_id", "llm_pick", "llm_answer", "owner_answer")
+# Any snake_case prefix carries the id too (decided_route_id, legacy_route_id, candidate_route_ids),
+# and the R10 sheets number their candidates (candidate_1_id). accident_id ends in none of these.
+_SNAKE = r"(?:[a-z0-9]+_)*(?:" + "|".join(ID_KEYS) + r"|candidate_\d+_id)"
+_KEY = r"(?<![A-Za-z0-9_])" + _SNAKE
+# camelCase keys (mpRouteId, routeId, decidedAreaId): matched case-sensitively, so prose is untouched.
+_CAMEL = r"(?<![A-Za-z0-9_])(?:[a-z][A-Za-z0-9]*)?(?:mp|Mp|route|Route|area|Area|location|Location|parent|Parent|decided|Decided|pick|Pick)Ids?"
 # An MP id is 6+ digits with no leading zero and stands alone: accident and test ids share these
 # key names but are small, and a UUID literal ('00000000-...', '12345678-...') is not an MP id.
 _ID = r"(?<![\w-])[1-9]\d{5,}(?![\w-])"
-ID_KEY = re.compile(_KEY + r"""["']?\s*[:=]\s*["']?(""" + _ID + ")", re.IGNORECASE)
-ID_LIST = re.compile(_KEY + r"""(?:s["']?\s*[:=]\s*|\s+IN\s*)[\[(]([^\])]*)[\])]""", re.IGNORECASE)
+_VALUE = r"""["']?\s*[:=]\s*["']?(""" + _ID + ")"
+_LIST = r"""(?:s["']?\s*[:=]\s*|\s+IN\s*)[\[(]([^\])]*)[\])]"""
+ID_KEY = re.compile(_KEY + _VALUE, re.IGNORECASE)
+ID_LIST = re.compile(_KEY + _LIST, re.IGNORECASE)
+CAMEL_KEY = re.compile(_CAMEL + _VALUE)
+CAMEL_LIST = re.compile(_CAMEL + r"""["']?\s*[:=]\s*[\[(]([^\])]*)[\])]""")
+HEADER = re.compile(r"(?:" + _SNAKE + r")s?|" + _CAMEL[len(r"(?<![A-Za-z0-9_])"):])
 SYNTHETIC_FLOOR = 900_000_000
 
 
 def _keyed_ids(text: str) -> list[int]:
-    ids = [int(m) for m in ID_KEY.findall(text)]
-    for body in ID_LIST.findall(text):
+    ids = [int(m) for m in ID_KEY.findall(text) + CAMEL_KEY.findall(text)]
+    for body in ID_LIST.findall(text) + CAMEL_LIST.findall(text):
         ids += [int(m) for m in re.findall(_ID, body)]
     return ids
 
@@ -38,8 +50,9 @@ def _csv_ids(text: str) -> list[int]:
     header = next(rows, None)
     if header is None:
         return []
-    keys = {k + s for k in ID_KEYS for s in ("", "s")}
-    cols = [i for i, h in enumerate(header) if h.strip().lower() in keys]
+    # By suffix, like the text keys: decided_id, candidate_3_id, legacy_route_id, mpRouteId.
+    cols = [i for i, h in enumerate(header) if HEADER.fullmatch(h.strip())
+            or re.fullmatch(_SNAKE + "s?", h.strip().lower())]
     out: list[int] = []
     for row in rows:
         for i in cols:

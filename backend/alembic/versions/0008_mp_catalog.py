@@ -42,7 +42,9 @@ WHERE t.period <> 'total' AND to_date(t.period || '-01', 'YYYY-MM-DD') <= s.comp
 # complete only when nothing inside its counted range was quarantined in the run that loaded its
 # total and its stored months plus that run's quarantined partial/future months sum to the total
 # (the loader's seam_rows rule): otherwise an absent month would read as a real zero, so the route
-# is left out and reads missing until a reload writes it.
+# is left out and reads missing until a reload writes it. total_ticks is the stored months' sum over
+# the counted range, not the export's total (final review A4, 2026-10-14), so tick_total and
+# route_tick_months always agree.
 TICK_BACKFILL = """
 WITH t AS (
   SELECT a.mp_route_id, a.tick_count, a.scraped_at, a.loaded_run_id,
@@ -52,18 +54,20 @@ WITH t AS (
 ), q AS (
   SELECT q.run_id, split_part(q.row_ref, ':', 1) AS route_ref, q.row_ref, q.reason, q.detail
   FROM internal.ingest_quarantine q WHERE q.source = 'mp_tick_aggregates'
+), s AS (
+  SELECT t.*, (SELECT coalesce(sum(m.tick_count), 0) FROM internal.mp_tick_aggregates m
+               WHERE m.mp_route_id = t.mp_route_id AND m.period <> 'total'
+                 AND to_date(m.period || '-01', 'YYYY-MM-DD') <= t.through) AS stored_sum
+  FROM t
 )
 INSERT INTO internal.route_tick_scrapes (mp_route_id, source, scraped_at, complete, complete_through, total_ticks,
   loaded_run_id)
-SELECT t.mp_route_id, 'mp_scrape', t.scraped_at, true, t.through, t.tick_count, t.loaded_run_id
-FROM t
+SELECT t.mp_route_id, 'mp_scrape', t.scraped_at, true, t.through, t.stored_sum, t.loaded_run_id
+FROM s t
 WHERE NOT EXISTS (
         SELECT 1 FROM q WHERE q.run_id = t.loaded_run_id AND q.route_ref = t.mp_route_id::text
           AND split_part(q.row_ref, ':', 2) <> 'total' AND q.reason NOT IN ('partial_month', 'future_month'))
-  AND t.tick_count =
-        (SELECT coalesce(sum(m.tick_count), 0) FROM internal.mp_tick_aggregates m
-         WHERE m.mp_route_id = t.mp_route_id AND m.period <> 'total'
-           AND to_date(m.period || '-01', 'YYYY-MM-DD') <= t.through)
+  AND t.tick_count = t.stored_sum
         + (SELECT coalesce(sum((q.detail ->> 'n')::int), 0) FROM q
            WHERE q.run_id = t.loaded_run_id AND q.route_ref = t.mp_route_id::text
              AND q.reason IN ('partial_month', 'future_month'))
