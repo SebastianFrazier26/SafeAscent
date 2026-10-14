@@ -7,12 +7,13 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from app.data.repair import review
+from app.data.repair import r10_llm, review
 from app.data.repair.legacy_links import run_r10, run_r10_export
 from app.data.repair.r10_llm import (
     AUDIT_SQL, AUTO_LINK_CONFIDENCE, HAIKU_THINKING_BUDGET, MAX_OUTPUT_TOKENS, PAYLOAD_FIELDS, PROMPT_VERSION,
     SAMPLE_COLUMNS, Allocation, Case, api_key_from_environment, apply_picks, build_cases, call_ceiling_usd,
-    compute_gate, gate_rows, interpret, record_gate, run_calls, sample_rows,
+    compute_gate, gate_rows, interpret, ledger_sha, sample_cases, probe_call, record_gate, run_calls, run_lock, sample_rows,
+    write_sample_csv,
 )
 from app.pipelines.mp_catalog import refresh
 from tests.pgtest import fetch, migrated_db, requires_pg, run_on_engine, run_sql
@@ -38,23 +39,26 @@ def test_interpret_maps_letters_and_refuses_anything_else():
 
 
 def test_key_only_from_the_exported_environment(tmp_path, monkeypatch):
-    env_file = tmp_path / ".env"
-    env_file.write_text("DATABASE_URL=x\n")
+    (tmp_path / ".env").write_text("DATABASE_URL=x\n")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "exported")
-    assert api_key_from_environment(env_file=env_file) == "exported"
+    assert api_key_from_environment(env_dir=tmp_path) == "exported"
     monkeypatch.delenv("ANTHROPIC_API_KEY")
     with pytest.raises(SystemExit, match="export ANTHROPIC_API_KEY"):
-        api_key_from_environment(env_file=env_file)
-    assert api_key_from_environment({"ANTHROPIC_API_KEY": "k"}, env_file) == "k"
+        api_key_from_environment(env_dir=tmp_path)
+    assert api_key_from_environment({"ANTHROPIC_API_KEY": "k"}, tmp_path) == "k"
     assert api_key_from_environment({"ANTHROPIC_API_KEY": "k"}, tmp_path / "missing") == "k"
     with pytest.raises(SystemExit, match="export ANTHROPIC_API_KEY"):
-        api_key_from_environment({}, env_file)
-    env_file.write_text("ANTHROPIC_API_KEY=leaked\n")
-    with pytest.raises(SystemExit, match="must not be in"):
-        api_key_from_environment({"ANTHROPIC_API_KEY": "k"}, env_file)
-    env_file.write_text("X=1\n  export ANTHROPIC_API_KEY = leaked\n")
-    with pytest.raises(SystemExit, match="must not be in"):
-        api_key_from_environment({"ANTHROPIC_API_KEY": "k"}, env_file)
+        api_key_from_environment({}, tmp_path)
+
+
+@pytest.mark.parametrize("name", [".env", ".env.ingest", ".env.local"])
+@pytest.mark.parametrize("line", ["ANTHROPIC_API_KEY=leaked-sentinel", "  export ANTHROPIC_API_KEY = leaked-sentinel"])
+def test_key_in_any_backend_env_file_is_refused_without_echoing_it(tmp_path, name, line):
+    (tmp_path / ".env").write_text("DATABASE_URL=x\n")
+    (tmp_path / name).write_text(f"X=1\n{line}\n")
+    with pytest.raises(SystemExit, match=f"must not be in .*{name.replace('.', '[.]')}") as caught:
+        api_key_from_environment({"ANTHROPIC_API_KEY": "k"}, tmp_path)
+    assert "leaked-sentinel" not in str(caught.value)
 
 
 def test_gate_needs_enough_checks_and_auto_band_precision():
@@ -70,6 +74,9 @@ def test_gate_needs_enough_checks_and_auto_band_precision():
     # 0.80 itself is in the auto band (DP8).
     edge = [("900000012", "900000012", 0.80)] * 30 + [("none", "none", 0.9)] * 70
     assert compute_gate(edge, auto_threshold=AUTO_LINK_CONFIDENCE)["n_auto_band"] == 30
+    # The database's band flags, when given, decide membership (M1).
+    flags = [False] * 30 + [True] * 70
+    assert compute_gate(edge, auto_threshold=AUTO_LINK_CONFIDENCE, auto_flags=flags)["n_auto_band"] == 0
 
 
 class FakeAllocator:
@@ -353,7 +360,9 @@ def test_gate_reads_the_models_answers_from_the_audit_not_the_file(tmp_path, mon
     monkeypatch.setattr(review, "REVIEW_DIR", tmp_path)
     with migrated_db(PIN, seed_sql=SEED) as name:
         _prepared(name)
-        fake = FakeAllocator({4: json.dumps({"choice": "none", "confidence": 0.9, "reason_code": "no_match"})})
+        # 5 answers at exactly 0.80: the auto band's edge, compared in SQL as REAL (M1).
+        fake = FakeAllocator({4: json.dumps({"choice": "none", "confidence": 0.9, "reason_code": "no_match"}),
+                              5: json.dumps({"choice": "A", "confidence": 0.80, "reason_code": "name_match"})})
         run_id = uuid.uuid4()
 
         async def go(engine):
@@ -370,8 +379,8 @@ def test_gate_reads_the_models_answers_from_the_audit_not_the_file(tmp_path, mon
 
         async def gate(engine):
             async with engine.begin() as conn:
-                rid, rows = await gate_rows(conn, sheet, model=fake.model)
-                return await record_gate(conn, model=fake.model, run_id=rid, rows=rows)
+                rid, rows, flags = await gate_rows(conn, sheet, model=fake.model)
+                return await record_gate(conn, model=fake.model, run_id=rid, rows=rows, auto_flags=flags)
         out = run_on_engine(name, gate)
         assert (out["n_checked"], out["n_agree"], out["n_auto_band"], out["n_auto_band_agree"]) == (3, 2, 2, 1)
         assert out["passed"] is False
@@ -384,6 +393,18 @@ def test_gate_reads_the_models_answers_from_the_audit_not_the_file(tmp_path, mon
                 await record_gate(conn, model=fake.model, run_id=run_id, rows=passing)
                 return await apply_picks(conn, model=fake.model, apply=True)
         assert run_on_engine(name, passing_gate)["linked"] == 2
+
+        # The latest gate decides (M2): a later failing gate revokes the pass.
+        async def revoked(engine):
+            async with engine.begin() as conn:
+                await record_gate(conn, model=fake.model, run_id=run_id, rows=passing[:50])
+                return await apply_picks(conn, model=fake.model, apply=True)
+        with pytest.raises(SystemExit, match="no passing gate"):
+            run_on_engine(name, revoked)
+        # Every ok call of the run must be in the file (M3).
+        sheet.write_text(f"accident_id,run_id,owner_answer\n3,{run_id},none\n4,{run_id},none\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="1 ok calls of run .* missing"):
+            run_on_engine(name, gate)
         sheet.write_text(f"accident_id,run_id,owner_answer\n3,{run_id},900000099\n", encoding="utf-8")
         with pytest.raises(ValueError, match="offered ids"):
             run_on_engine(name, gate)
@@ -444,3 +465,209 @@ def test_claude_allocator_request_shape_with_a_mocked_client():
     with pytest.raises(SystemExit, match="not pinned"):
         ClaudeAllocator("test-key-not-real", "claude-unpinned")
 
+    # I2: the SDK never retries on its own; one attempt is one audited, capped call.
+    fresh = ClaudeAllocator("test-key-not-real", "claude-haiku-4-5-20251001")
+    assert fresh._client.max_retries == 0 and fresh._client.timeout == 600.0
+
+    import anthropic
+    import httpx2
+
+    async def times_out(**kwargs):
+        raise anthropic.APITimeoutError(request=httpx2.Request("POST", "https://api.invalid/v1/messages"))
+
+    async def other_model(**kwargs):
+        return SimpleNamespace(content=[SimpleNamespace(type="text", text=OK)], stop_reason="end_turn",
+                               usage=SimpleNamespace(input_tokens=900, output_tokens=300), model="claude-other")
+
+    fresh._client = SimpleNamespace(messages=SimpleNamespace(create=times_out))
+    assert asyncio.run(fresh.allocate(case)) == Allocation("error", None, None, None, None, None, None, None,
+                                                            "APITimeoutError")
+    fresh._client = SimpleNamespace(messages=SimpleNamespace(create=other_model))
+    assert asyncio.run(fresh.allocate(case)) == Allocation("error", None, None, None, None, 900, 300, "claude-other",
+                                                            "ModelMismatch")
+
+
+
+async def _calls(engine, allocator, *, max_usd=5.0, is_sample=False, run_id=None):
+    return await run_calls(engine, allocator, await _cases(engine), run_id=run_id or uuid.uuid4(),
+                           is_sample=is_sample, max_usd=max_usd)
+
+
+@requires_pg
+def test_the_cap_is_cumulative_across_runs_for_a_model_and_prompt():
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        _prepared(name)
+        fake = WorstCase({})
+
+        async def go(engine):
+            cases = await _cases(engine)
+            cap = call_ceiling_usd(fake.model, cases[0]) * 1.5
+            first = await run_calls(engine, fake, cases[:1], run_id=uuid.uuid4(), is_sample=False, max_usd=cap)
+            second = await run_calls(engine, fake, cases[1:], run_id=uuid.uuid4(), is_sample=False, max_usd=cap)
+            return first, second
+        first, second = run_on_engine(name, go)
+        assert first["calls"] == 1 and first["stopped_at_cap"] is False
+        assert second["calls"] == 0 and second["stopped_at_cap"] is True
+        assert second["spent_before_usd"] == pytest.approx(first["spent_usd"], abs=1e-4)
+        # Failed and running rows count too: a run that died after its request went out was still billed.
+        run_sql(name, "INSERT INTO source_ingest_log (run_id, source, status, content_sha256, cost_units) VALUES "
+                      f"('{uuid.uuid4()}', 'r10_llm', 'failed', '{ledger_sha(fake.model)}', 99)")
+        assert run_on_engine(name, lambda e: _calls(e, FakeAllocator({}), max_usd=99.0))["calls"] == 0
+        # Another model's spend is its own.
+        sonnet = FakeAllocator({})
+        sonnet.model = "claude-sonnet-5"
+        assert run_on_engine(name, lambda e: _calls(e, sonnet, max_usd=5.0))["calls"] == 3
+
+
+@requires_pg
+def test_a_second_run_refuses_while_another_holds_the_lock():
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        _prepared(name)
+
+        async def go(engine):
+            async with run_lock(engine):
+                with pytest.raises(SystemExit, match="holds the spend lock"):
+                    await _calls(engine, FakeAllocator({}))
+            return await _calls(engine, FakeAllocator({}))
+        assert run_on_engine(name, go)["calls"] == 3
+        assert fetch(name, "SELECT count(*) FROM source_ingest_log WHERE source = 'r10_llm'") == [(1,)]
+
+
+class Failing(FakeAllocator):
+    async def allocate(self, case):
+        self.seen.append(case)
+        return Allocation("error", None, None, None, None, None, None, None, "APITimeoutError")
+
+
+@requires_pg
+def test_a_case_is_attempted_at_most_twice():
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        _prepared(name)
+        fake = Failing({})
+
+        async def go(engine):
+            return [await _calls(engine, fake) for _ in range(3)]
+        first, second, third = run_on_engine(name, go)
+        assert first["error_counts"] == {"APITimeoutError": 3} and second["calls"] == 3
+        assert third["calls"] == 0 and third["skipped_attempt_limit"] == 3 and len(fake.seen) == 6
+        assert fetch(name, "SELECT max(n) FROM (SELECT count(*) AS n FROM internal.r10_llm_calls "
+                           "GROUP BY accident_id) t") == [(2,)]
+
+
+class WrongModel(FakeAllocator):
+    async def allocate(self, case):
+        self.seen.append(case)
+        return Allocation("error", None, None, None, None, 1000, 200, "claude-haiku-4-5-other", "ModelMismatch")
+
+
+@requires_pg
+def test_a_reply_from_another_model_is_audited_then_stops_the_run():
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        _prepared(name)
+        with pytest.raises(SystemExit, match="not the pinned"):
+            run_on_engine(name, lambda e: _calls(e, WrongModel({})))
+        assert fetch(name, "SELECT status, model_reported FROM internal.r10_llm_calls") == [
+            ("error", "claude-haiku-4-5-other")]
+        assert fetch(name, "SELECT status FROM source_ingest_log WHERE source = 'r10_llm'") == [("failed",)]
+
+
+@requires_pg
+def test_apply_counts_a_link_only_when_it_was_inserted(monkeypatch):
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        _prepared(name)
+        fake = FakeAllocator({})
+        run_on_engine(name, lambda e: _calls(e, fake))
+        run_sql(name, _gate_row())
+        # As if accident 3 got linked between apply's read and its insert: drop the read's own
+        # already-linked filter so the insert meets the conflict.
+        monkeypatch.setattr(r10_llm, "LATEST_SQL", text(r10_llm.LATEST_SQL.text.replace(
+            "AND NOT EXISTS (SELECT 1 FROM accident_legacy_links l WHERE l.accident_id = c.accident_id)", "")))
+        run_sql(name, "INSERT INTO accident_legacy_links (accident_id, route_id, method, r10_version) "
+                      "VALUES (3, 900000012, 'owner', 'r10-mp-v1')")
+
+        async def apply(engine):
+            async with engine.begin() as conn:
+                return await apply_picks(conn, model=fake.model, apply=True)
+        assert run_on_engine(name, apply)["linked"] == 2
+        assert fetch(name, "SELECT method FROM accident_legacy_links WHERE accident_id = 3") == [("owner",)]
+
+
+@requires_pg
+def test_sample_csv_is_rebuilt_from_the_audit_rows(tmp_path, monkeypatch):
+    monkeypatch.setattr(review, "REVIEW_DIR", tmp_path)
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        run_sql(name, f"UPDATE accidents SET description = '{SENTINEL}' WHERE accident_id IN (3, 4, 5)")
+        _prepared(name)
+        run_id = uuid.uuid4()
+        run_on_engine(name, lambda e: _calls(e, FakeAllocator({}), is_sample=True, run_id=run_id))
+
+        async def rebuild(engine):
+            async with engine.connect() as conn:
+                return await write_sample_csv(conn, run_id, tmp_path / "again.csv")
+        assert run_on_engine(name, rebuild) == 3
+        body = (tmp_path / "again.csv").read_text()
+        assert SENTINEL not in body
+        with (tmp_path / "again.csv").open(newline="") as fh:
+            rows = list(csv.DictReader(fh))
+        assert {(r["accident_id"], r["llm_answer"]) for r in rows} == {
+            (r["accident_id"], r["candidate_1_id"]) for r in rows}
+        run_sql(name, "UPDATE internal.r10_unresolved SET candidate_route_ids = '{900000011}' WHERE accident_id = 3")
+        (tmp_path / "again.csv").unlink()
+        with pytest.raises(SystemExit, match="cannot be spot-checked"):
+            run_on_engine(name, rebuild)
+
+
+@requires_pg
+def test_probe_spends_into_the_ledger_without_an_audit_row():
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        out = run_on_engine(name, lambda e: probe_call(e, FakeAllocator({}), max_usd=1.0))
+        assert out["status"] == "ok" and out["pick_index"] == 0 and out["cost_usd"] <= out["ceiling_usd"]
+        assert fetch(name, "SELECT count(*) FROM internal.r10_llm_calls") == [(0,)]
+        (usd,), = fetch(name, "SELECT cost_units FROM source_ingest_log WHERE source = 'r10_llm' AND status = 'ok'")
+        assert float(usd) == pytest.approx(out["cost_usd"], abs=1e-6)
+        with pytest.raises(SystemExit, match="would pass the cap"):
+            run_on_engine(name, lambda e: probe_call(e, FakeAllocator({}), max_usd=out["cost_usd"]))
+
+
+@pytest.mark.parametrize("argv", [["sample", "--model", "haiku", "--n", "1", "--max-usd", "12.01", "--out", "x.csv"],
+                                  ["run", "--model", "sonnet", "--max-usd", "22.5"],
+                                  ["probe", "--model", "haiku", "--max-usd", "-1"]])
+def test_max_usd_above_the_owners_cap_is_refused_before_anything_runs(argv, monkeypatch):
+    import asyncio
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    with pytest.raises(SystemExit, match="owner's cap"):
+        asyncio.run(r10_llm._main(r10_llm.build_parser().parse_args(argv)))
+
+
+@requires_pg
+def test_sample_never_repicks_a_case_already_called_for_the_model():
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        _prepared(name)
+
+        async def go(engine):
+            cases = await _cases(engine)
+            await run_calls(engine, FakeAllocator({}), cases[:2], run_id=uuid.uuid4(), is_sample=True, max_usd=5.0)
+            async with engine.connect() as conn:
+                haiku = await sample_cases(conn, cases, model=FakeAllocator.model, n=10, seed=1)
+                sonnet = await sample_cases(conn, cases, model="claude-sonnet-5", n=10, seed=1)
+            return [c.accident_id for c in haiku], {c.accident_id for c in sonnet}, [c.accident_id for c in cases]
+        haiku, sonnet, all_ids = run_on_engine(name, go)
+        assert haiku == all_ids[2:] and sonnet == set(all_ids)
+
+
+@requires_pg
+def test_bands_compare_as_real_even_where_real_rounds_down(monkeypatch):
+    # float32(0.7) = 0.69999999: a threshold compared as double would drop a 0.7 answer out of its band.
+    monkeypatch.setattr(r10_llm, "AUTO_LINK_CONFIDENCE", 0.7)
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        _prepared(name)
+        at = json.dumps({"choice": "A", "confidence": 0.7, "reason_code": "name_match"})
+        fake = FakeAllocator({3: at, 4: at, 5: at})
+        run_on_engine(name, lambda e: _calls(e, fake))
+        run_sql(name, _gate_row(threshold=0.7))
+
+        async def apply(engine):
+            async with engine.begin() as conn:
+                return await apply_picks(conn, model=fake.model, apply=True)
+        assert run_on_engine(name, apply)["linked"] == 3
