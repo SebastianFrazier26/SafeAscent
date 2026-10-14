@@ -33,12 +33,12 @@ def test_cycle_stops_when_the_refresh_is_rejected():
     assert result.status == "rejected" and calls == []
 
 
-def test_elevation_runs_until_nothing_is_left_then_routes_and_epqs():
+def test_elevation_runs_until_nothing_is_left_then_the_gate_then_routes():
     step, calls = _steps([{"sampled": 5000, "null": 0, "retry": 0}, {"sampled": 12, "null": 1, "retry": 0},
                           {"sampled": 0, "null": 0, "retry": 0}])
     result = asyncio.run(run_cycle(None, refresh=_refresh("ok"), step=step))
     assert result.status == "ok"
-    assert calls == ["points", "elevation", "elevation", "elevation", "routes", "epqs-check"]
+    assert calls == ["points", "elevation", "elevation", "elevation", "epqs-check", "routes"]
 
 
 def test_points_still_awaiting_3dep_leave_the_cycle_incomplete_not_failed():
@@ -48,9 +48,38 @@ def test_points_still_awaiting_3dep_leave_the_cycle_incomplete_not_failed():
     assert result.steps["elevation_retry_left"] == 7
 
 
-def test_a_failed_epqs_gate_fails_the_cycle():
-    step, _ = _steps([{"sampled": 0, "null": 0, "retry": 0}], epqs_passed=0)
+def test_a_failed_epqs_gate_fails_the_cycle_before_routes_are_rebuilt():
+    step, calls = _steps([{"sampled": 0, "null": 0, "retry": 0}], epqs_passed=0)
     assert asyncio.run(run_cycle(None, refresh=_refresh("ok"), step=step)).status == "failed"
+    assert "routes" not in calls
+
+
+def test_points_awaiting_3dep_skip_the_gate_and_routes_when_the_gate_is_on():
+    step, calls = _steps([{"sampled": 0, "null": 0, "retry": 7}])
+    result = asyncio.run(run_cycle(None, refresh=_refresh("ok"), step=step))
+    assert result.status == "incomplete" and calls == ["points", "elevation"]
+
+
+def test_running_out_of_rounds_with_points_left_is_incomplete_not_ok():
+    step, calls = _steps([{"sampled": 5000, "null": 0, "retry": 0}] * 2)
+    result = asyncio.run(run_cycle(None, refresh=_refresh("ok"), step=step, max_rounds=2))
+    assert result.status == "incomplete"
+    assert calls == ["points", "elevation", "elevation"]
+
+
+def test_max_rounds_below_one_is_refused_before_anything_runs():
+    step, calls = _steps([])
+    with pytest.raises(ValueError, match="max_rounds"):
+        asyncio.run(run_cycle(None, refresh=_refresh("ok"), step=step, max_rounds=0))
+    assert calls == []
+
+
+def test_a_malformed_url_is_refused_without_echoing_it():
+    url = "not a url :: hunter2-secret"
+    with pytest.raises(SystemExit) as exited:
+        require_direct_host(url)
+    assert str(exited.value) == "INGEST_DATABASE_URL is not a valid URL"
+    assert exited.value.__cause__ is None and exited.value.__suppress_context__
 
 
 def test_the_neon_pooler_host_is_refused_and_the_direct_host_is_not():
@@ -107,7 +136,8 @@ def test_cli_exit_code_and_ping_follow_the_cycle_status(monkeypatch, status, cod
     assert exited.value.code == code and pings == ["/start", last_ping]
 
 
-def test_cli_refuses_the_pooler_host_before_connecting(monkeypatch):
+def test_cli_refuses_the_pooler_host_before_connecting_and_pings_fail(monkeypatch):
+    from app import healthchecks
     from app.config import settings
     from app.pipelines import catalog_cycle, db
 
@@ -116,7 +146,38 @@ def test_cli_refuses_the_pooler_host_before_connecting(monkeypatch):
 
     monkeypatch.setattr(settings, "INGEST_DATABASE_URL",
                         "postgresql+asyncpg://ingest:x@ep-fixture-123-pooler.us-east-2.aws.neon.tech/db")
+    pings = []
+    monkeypatch.setattr(settings, "HEALTHCHECKS_CATALOG_URL", "https://hc.example/catalog")
+    monkeypatch.setattr(healthchecks, "ping", lambda url, suffix="": pings.append(suffix) or True)
     monkeypatch.setattr(db, "ingest_engine", no_engine)
     monkeypatch.setattr("sys.argv", ["catalog_cycle", "run"])
     with pytest.raises(SystemExit, match="pooler"):
         catalog_cycle.cli()
+    assert pings == ["/start", "/fail"]
+
+
+def test_cli_max_rounds_below_one_is_a_usage_error(monkeypatch):
+    from app.pipelines import catalog_cycle
+
+    monkeypatch.setattr("sys.argv", ["catalog_cycle", "run", "--max-rounds", "0"])
+    with pytest.raises(SystemExit) as exited:
+        catalog_cycle.cli()
+    assert exited.value.code == 2
+
+
+def test_cli_malformed_url_pings_fail_and_never_prints_the_url(monkeypatch, capsys):
+    from app import healthchecks
+    from app.config import settings
+    from app.pipelines import catalog_cycle, db
+
+    pings = []
+    monkeypatch.setattr(settings, "INGEST_DATABASE_URL", "not a url :: hunter2-secret")
+    monkeypatch.setattr(settings, "HEALTHCHECKS_CATALOG_URL", "https://hc.example/catalog")
+    monkeypatch.setattr(healthchecks, "ping", lambda url, suffix="": pings.append(suffix) or True)
+    monkeypatch.setattr(db, "ingest_engine", lambda: pytest.fail("connected with a malformed URL"))
+    monkeypatch.setattr("sys.argv", ["catalog_cycle", "run"])
+    with pytest.raises(SystemExit) as exited:
+        catalog_cycle.cli()
+    out = capsys.readouterr()
+    assert "hunter2" not in str(exited.value) + out.out + out.err
+    assert pings == ["/start", "/fail"]

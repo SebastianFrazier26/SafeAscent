@@ -1,7 +1,8 @@
 """The scheduled catalog and features cycle (DP6): refresh the catalog from the MP tables,
 register points, sample elevation until nothing is left (or the rounds run out), rebuild the
-route table, and re-run the EPQS gate. It stops at a rejected refresh, so a bad scrape never
-feeds the feature steps. No paid service is called; normals for new buckets are bought by
+route table only after the EPQS gate passes. It stops at a rejected refresh, so a bad scrape
+never feeds the feature steps, and at a failed gate or unfinished elevation, so
+route_static_features never holds un-gated elevations. No paid service is called; normals for new buckets are bought by
 plan 3's January window, which is why the yearly run is scheduled before it opens.
 
 In production it runs as the Railway cron service `catalog-cycle` (owner decision DP6,
@@ -18,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.healthchecks import PingSuffix
@@ -40,7 +42,12 @@ class CycleResult:
 def require_direct_host(url: str) -> None:
     # A long single-session job on the direct host (owner decision DP6), never through Neon's
     # pgbouncer endpoint, whose host carries the "-pooler" suffix.
-    if "-pooler." in (make_url(url).host or ""):
+    try:
+        host = make_url(url).host or ""
+    except ArgumentError:
+        # SQLAlchemy's message quotes the whole URL, password included; never echo it.
+        raise SystemExit("INGEST_DATABASE_URL is not a valid URL") from None
+    if "-pooler." in host:
         raise SystemExit("catalog_cycle: INGEST_DATABASE_URL points at Neon's pooler host; use the direct host")
 
 
@@ -56,6 +63,8 @@ async def run_cycle(
     max_rounds: int = MAX_ELEVATION_ROUNDS,
     epqs: bool = True,
 ) -> CycleResult:
+    if max_rounds < 1:
+        raise ValueError("max_rounds must be at least 1")
     out = CycleResult("ok")
     refreshed = await refresh(engine, dry_run=False)
     out.steps["refresh"] = {"status": refreshed.status, "problems": refreshed.problems, **refreshed.counts}
@@ -70,30 +79,45 @@ async def run_cycle(
         retry = int(str(got.get("retry", 0)))
         if int(str(got.get("sampled", 0))) == 0:
             break
+    else:
+        # Every round still sampled something: points remain unsampled, so neither the gate
+        # nor the route table may run on a partial set. The next run carries on.
+        out.steps["elevation_rounds_exhausted"] = max_rounds
+        out.status = "incomplete"
+        return out
     out.steps["elevation_retry_left"] = retry
-    out.steps["routes"] = await step(engine, "routes", limit=ELEVATION_LIMIT)
     if retry:
         out.status = "incomplete"
-    if epqs and retry == 0:
+    if epqs:
+        if retry:
+            # The gate samples elevations; it waits until no point is pending, and so do routes.
+            return out
         gate = await step(engine, "epqs-check", limit=ELEVATION_LIMIT)
         out.steps["epqs"] = gate
         if gate.get("passed") != 1:
             out.status = "failed"
+            return out
+    out.steps["routes"] = await step(engine, "routes", limit=ELEVATION_LIMIT)
     return out
+
+
+def _positive_int(value: str) -> int:
+    n = int(value)
+    if n < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return n
 
 
 def cli() -> None:
     parser = argparse.ArgumentParser(prog="python -m app.pipelines.catalog_cycle")
     parser.add_argument("cmd", choices=["run"])
     parser.add_argument("--skip-epqs", action="store_true", help="on-demand runs: skip the ~15-minute EPQS gate")
-    parser.add_argument("--max-rounds", type=int, default=MAX_ELEVATION_ROUNDS)
+    parser.add_argument("--max-rounds", type=_positive_int, default=MAX_ELEVATION_ROUNDS)
     args = parser.parse_args()
     from app.config import settings
     from app.healthchecks import ping
     from app.pipelines.db import ingest_engine
 
-    if settings.INGEST_DATABASE_URL:
-        require_direct_host(settings.INGEST_DATABASE_URL)
     ping(settings.HEALTHCHECKS_CATALOG_URL, "/start")
 
     async def go() -> CycleResult:
@@ -104,6 +128,8 @@ def cli() -> None:
             await engine.dispose()
 
     try:
+        if settings.INGEST_DATABASE_URL:
+            require_direct_host(settings.INGEST_DATABASE_URL)
         result = asyncio.run(go())
     except BaseException:
         ping(settings.HEALTHCHECKS_CATALOG_URL, "/fail")

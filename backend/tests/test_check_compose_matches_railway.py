@@ -51,3 +51,8 @@ def test_an_unlisted_railway_config_is_reported(tmp_path):
     (tmp_path / "backend").mkdir()
     (tmp_path / "backend" / "railway-surprise.toml").write_text("[deploy]\n")
     assert guard.unlisted_configs(tmp_path) == ["backend/railway-surprise.toml"]
+
+
+def test_every_exempt_config_exists():
+    for path in guard.NO_COMPOSE_COUNTERPART.values():
+        assert (REPO_ROOT / path).is_file(), path

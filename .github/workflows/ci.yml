@@ -81,6 +81,12 @@ jobs:
           docker run --rm -e DATABASE_URL="$DATABASE_URL" safeascent-backend:ci \
             python -c "import app.main, app.celery_app"
 
+      - name: Build jobs image and smoke-test imports
+        run: |
+          docker build -f Dockerfile.jobs -t safeascent-jobs:ci .
+          docker run --rm -e DATABASE_URL="$DATABASE_URL" safeascent-jobs:ci \
+            python -c "import h3, rasterio, timezonefinder, app.pipelines.catalog_cycle; import importlib.util as u; assert u.find_spec('pytest') is None"
+
   frontend:
     runs-on: ubuntu-latest
     defaults:
