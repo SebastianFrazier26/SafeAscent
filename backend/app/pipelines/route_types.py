@@ -17,7 +17,7 @@ TypeGroup = Literal["sport", "trad", "alpine", "ice", "mixed", "rock", "unknown"
 FLAGS = frozenset(
     {"trad", "sport", "tr", "aid", "alpine", "snow", "ice", "mixed", "bouldering", "commitment", "rock"}
 )
-ROPED = FLAGS - {"bouldering"}
+ROPED = FLAGS - {"bouldering", "rock"}
 _ALIASES = {"boulder": "bouldering", "top rope": "tr", "toprope": "tr"}
 # Known MP type tokens that carry no type-group signal (Task 2 Step 1 profile).
 IGNORED_TOKENS = frozenset({"unknown", "grade i", "grade ii", "grade iii"})
@@ -26,9 +26,9 @@ _MIXED = re.compile(r"(?<![A-Za-z])M\d", re.I)
 _ICE = re.compile(r"\b(?:WI|AI)\s?\d", re.I)
 _NA_GRADE = re.compile(r"(?<![\w.])5\.\d|\b(?:WI|AI)\s?\d|(?<![A-Za-z])M\d|(?<![A-Za-z])[AC]\d", re.I)
 _COMMITMENT_GRADE = re.compile(r"(?:^|\s)(IV|V|VI|VII)(?=\s|$)")
-# A bare "V\d" is the boulder (V-scale) grade; a "rock" route graded on it is a controller
-# ruling (owner 2026-10-13): unscorable as a boulder, not stored as rock.
-_V_GRADE = re.compile(r"(?<![A-Za-z])V\d", re.I)
+# The rock group is the owner's decision (2026-10-13). Grading a "rock" route on the V-scale
+# (boulder: "V4", "VB", "V-easy") is a controller ruling: unscorable as a boulder, not rock.
+_V_GRADE = re.compile(r"(?<![A-Za-z])V(?:\d+|-easy|B)\b", re.I)
 
 
 @dataclass(frozen=True)

@@ -153,7 +153,7 @@ The foundations plan's Global Constraints apply. Also:
 **Interfaces:**
 - Produces (DB, public):
   - `canonical_areas(area_id bigint PK REFERENCES mp_locations(mp_id), parent_id bigint NULL, path ltree NULL, depth smallint NULL, tree_status text NOT NULL CHECK IN ('us','foreign_root','cycle','orphan_parent'), state_code text NULL, lat double precision NULL, lon double precision NULL, coord_precision text NOT NULL CHECK IN ('own','inherited','none'), coord_source_id bigint NULL, point_key text NULL, catalog_version text NOT NULL, first_seen_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), run_id uuid NULL)`; CHECKs: `(path IS NOT NULL) = (tree_status IN ('us','foreign_root'))`, `(state_code IS NOT NULL) = (tree_status = 'us')`, `state_code IS NULL OR state_code ~ '^[A-Z]{2}$'`, `(lat IS NULL) = (lon IS NULL)`, `(coord_precision = 'none') = (lat IS NULL)`, `(coord_precision = 'none') = (coord_source_id IS NULL)`, `(point_key IS NULL) = (lat IS NULL)`; GiST index on `path`; index on `point_key`.
-  - `canonical_routes(route_id bigint PK REFERENCES mp_routes(mp_route_id), area_id bigint NULL REFERENCES canonical_areas, type_group text NULL CHECK IN ('sport','trad','alpine','ice','mixed','unknown'), is_boulder boolean NOT NULL, disciplines text[] NOT NULL, type_rule_version text NOT NULL, scorable boolean NOT NULL, unscorable_reason text NULL CHECK IN ('boulder','no_area','not_us','unknown_type','no_coordinates'), facts_sha256 text NOT NULL, catalog_version text NOT NULL, first_seen_at, updated_at, run_id)`; CHECKs `scorable = (unscorable_reason IS NULL)` and `(is_boulder AND type_group IS NULL AND NOT scorable) OR (NOT is_boulder AND type_group IS NOT NULL)`; index on `area_id`.
+  - `canonical_routes(route_id bigint PK REFERENCES mp_routes(mp_route_id), area_id bigint NULL REFERENCES canonical_areas, type_group text NULL CHECK IN ('sport','trad','alpine','ice','mixed','rock','unknown'), is_boulder boolean NOT NULL, disciplines text[] NOT NULL, type_rule_version text NOT NULL, scorable boolean NOT NULL, unscorable_reason text NULL CHECK IN ('boulder','no_area','not_us','unknown_type','no_coordinates'), facts_sha256 text NOT NULL, catalog_version text NOT NULL, first_seen_at, updated_at, run_id)`; CHECKs `scorable = (unscorable_reason IS NULL)` and `(is_boulder AND type_group IS NULL AND NOT scorable) OR (NOT is_boulder AND type_group IS NOT NULL)`; index on `area_id`. (`rock` added, owner 2026-10-13: Task 2.)
   - View `scorable_routes(route_id, area_id, type_group, type_rule_version, area_path, state_code, point_key, coord_precision, updated_at)`: explicit column list, scorable routes only.
 - Produces (DB, internal) — **the tick-source seam** `(decided: DP9)`, the only contract tick consumers and loaders use:
   - `internal.route_tick_scrapes(mp_route_id bigint PK REFERENCES mp_routes ON DELETE RESTRICT, source text NOT NULL CHECK IN ('mp_scrape'), scraped_at timestamptz NOT NULL, complete boolean NOT NULL, complete_through date NULL, total_ticks integer NULL CHECK (total_ticks >= 0), loaded_run_id uuid NULL, updated_at timestamptz NOT NULL DEFAULT now())`; CHECKs `complete = (complete_through IS NOT NULL)` and `complete OR total_ticks IS NULL`. One row per route some loader has read. `complete_through` is the last day of the last fully observed month (the month before the scrape's UTC month). Backfilled in the migration from the accepted ice/mixed totals already in `internal.mp_tick_aggregates`.
@@ -348,7 +348,7 @@ down_revision = "0007_cell_daily_conditions"
 branch_labels = None
 depends_on = None
 
-TYPE_GROUPS = "('sport', 'trad', 'alpine', 'ice', 'mixed', 'unknown')"
+TYPE_GROUPS = "('sport', 'trad', 'alpine', 'ice', 'mixed', 'rock', 'unknown')"
 UNSCORABLE = "('boulder', 'no_area', 'not_us', 'unknown_type', 'no_coordinates')"
 TREE_STATUS = "('us', 'foreign_root', 'cycle', 'orphan_parent')"
 SCORABLE_ROUTES = """
@@ -585,8 +585,9 @@ class CanonicalArea(Base):
 class CanonicalRoute(Base):
     __tablename__ = "canonical_routes"
     __table_args__ = (
-        CheckConstraint("type_group IS NULL OR type_group IN ('sport', 'trad', 'alpine', 'ice', 'mixed', 'unknown')",
-                        name="canonical_routes_type_group_check"),
+        CheckConstraint(
+            "type_group IS NULL OR type_group IN ('sport', 'trad', 'alpine', 'ice', 'mixed', 'rock', 'unknown')",
+            name="canonical_routes_type_group_check"),
         CheckConstraint("unscorable_reason IS NULL OR unscorable_reason IN "
                         "('boulder', 'no_area', 'not_us', 'unknown_type', 'no_coordinates')",
                         name="canonical_routes_reason_check"),
@@ -741,7 +742,7 @@ GRANT SELECT ON internal.route_tick_coverage, internal.route_tick_months TO inge
 - Modify: `backend/pyproject.toml` (mypy)
 
 **Interfaces:**
-- Produces: `TYPE_RULE_VERSION = "rt-mp-v1"`, `TypeGroup = Literal["sport","trad","alpine","ice","mixed","unknown"]`, `FLAGS: frozenset[str]` (`trad, sport, tr, aid, alpine, snow, ice, mixed, bouldering, commitment`), `@dataclass(frozen=True) TypeResult(type_group: TypeGroup | None, is_boulder: bool, disciplines: tuple[str, ...])`, `flags_from_mp_type(type_str: str | None) -> set[str]`, `map_type_group(flags: Iterable[str], grades: Iterable[str | None]) -> TypeResult`.
+- Produces: `TYPE_RULE_VERSION = "rt-mp-v2"`, `TypeGroup = Literal["sport","trad","alpine","ice","mixed","rock","unknown"]`, `FLAGS: frozenset[str]` (`trad, sport, tr, aid, alpine, snow, ice, mixed, bouldering, commitment, rock`), `@dataclass(frozen=True) TypeResult(type_group: TypeGroup | None, is_boulder: bool, disciplines: tuple[str, ...])`, `flags_from_mp_type(type_str: str | None) -> set[str]`, `map_type_group(flags: Iterable[str], grades: Iterable[str | None]) -> TypeResult`. (`rock`, `rt-mp-v2`: owner decision 2026-10-13, below.)
 
 - [ ] **Step 1: Profile the MP type vocabulary (owner/agent, read-only, prod analyst; needs the owner's go)** — run from the main checkout's `backend/` (role env files live only there; never copy them into a worktree):
 
@@ -838,9 +839,11 @@ def test_mp_type_strings(raw, flags):
 
 ```python
 """P2-3/P2-4 type groups from MP route facts, first match wins: mixed, ice, alpine, trad,
-sport, then toprope/aid by their underlying rock group (P3:56, ruling R-1), else unknown
-(stored, never scored). MP has no bolt count, so a toprope- or aid-only route with no sport
-or trad flag maps to trad. Boulder-only routes get no type group and are never scored."""
+sport, then toprope/aid by their underlying rock group (P3:56, ruling R-1), else rock (owner
+2026-10-13: MP type "rock" with no other discipline flag, for the 105,701 rock routes with
+sport/trad unknown), else unknown (stored, never scored). MP has no bolt count, so a toprope- or
+aid-only route with no sport or trad flag maps to trad. Boulder-only routes, and a rock route
+with a V grade, get no type group and are never scored."""
 
 from __future__ import annotations
 
@@ -849,10 +852,12 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
-TYPE_RULE_VERSION = "rt-mp-v1"
-TypeGroup = Literal["sport", "trad", "alpine", "ice", "mixed", "unknown"]
-FLAGS = frozenset({"trad", "sport", "tr", "aid", "alpine", "snow", "ice", "mixed", "bouldering", "commitment"})
-ROPED = FLAGS - {"bouldering"}
+TYPE_RULE_VERSION = "rt-mp-v2"
+TypeGroup = Literal["sport", "trad", "alpine", "ice", "mixed", "rock", "unknown"]
+FLAGS = frozenset(
+    {"trad", "sport", "tr", "aid", "alpine", "snow", "ice", "mixed", "bouldering", "commitment", "rock"}
+)
+ROPED = FLAGS - {"bouldering", "rock"}
 _ALIASES = {"boulder": "bouldering", "top rope": "tr", "toprope": "tr"}
 # Known MP type tokens that carry no type-group signal (Task 2 Step 1 profile).
 IGNORED_TOKENS = frozenset({"unknown", "grade i", "grade ii", "grade iii"})
@@ -861,6 +866,9 @@ _MIXED = re.compile(r"(?<![A-Za-z])M\d", re.I)
 _ICE = re.compile(r"\b(?:WI|AI)\s?\d", re.I)
 _NA_GRADE = re.compile(r"(?<![\w.])5\.\d|\b(?:WI|AI)\s?\d|(?<![A-Za-z])M\d|(?<![A-Za-z])[AC]\d", re.I)
 _COMMITMENT_GRADE = re.compile(r"(?:^|\s)(IV|V|VI|VII)(?=\s|$)")
+# The rock group is the owner's decision (2026-10-13). Grading a "rock" route on the V-scale
+# (boulder: "V4", "VB", "V-easy") is a controller ruling: unscorable as a boulder, not rock.
+_V_GRADE = re.compile(r"(?<![A-Za-z])V(?:\d+|-easy|B)\b", re.I)
 
 
 @dataclass(frozen=True)
@@ -908,10 +916,20 @@ def map_type_group(flags: Iterable[str], grades: Iterable[str | None]) -> TypeRe
         group = "sport"
     elif f & {"tr", "aid"}:
         group = "trad"
+    elif "rock" in f:
+        if any(_V_GRADE.search(g) for g in grade_list):
+            return TypeResult(None, True, disciplines)
+        group = "rock"
     else:
         group = "unknown"
     return TypeResult(group, False, disciplines)
 ```
+
+**Rock group (owner 2026-10-13), applied after review:** `rock` is excluded from `ROPED` (I1) so
+`"Boulder, Rock"` with no grade still rules a boulder, not a scorable rock route; the rock
+branch sits last in the precedence chain (I2: `"Sport, Rock"` → `sport`, `"TR, Rock"`/`"Aid,
+Rock"` → `trad`, `"Ice, Rock"` → `ice`); `_V_GRADE` also matches `VB` and `V-easy` (Minor 1,
+controller ruling). `backend/.superpowers/sdd/.../task-2-report.md` has the mutation checks.
 
 `IGNORED_TOKENS` documents the profiled tokens that are deliberately ignored; extend it (never `FLAGS`) with any other signal-free token Step 1 printed with ≥ 50 routes. Commitment grades are checked per grade string, never on the joined text. Append `"app.pipelines.route_types"` to the strict mypy block.
 
@@ -1860,7 +1878,7 @@ if __name__ == "__main__":
 Run `python scripts/check_no_mp_data.py` on the tree. If it flags an existing file, replace the id with a synthetic one or remove the URL in that file (never widen the guard), and list the files fixed in the PR description.
 
 - [ ] **Step 4: Docs** —
-- `CHANGELOG.md` (dated the merge day): "MP route catalog (PR C-1): `canonical_areas`/`canonical_routes` keyed by MP ids (0008, `ltree` owner script), `rt-mp-v1` type mapper, `scorable_routes`, `internal.route_tick_scrapes`/`route_tick_coverage`/`route_tick_months` (the tick-source seam), `mp_catalog refresh`, MP-data CI guard."
+- `CHANGELOG.md` (dated the merge day): "MP route catalog (PR C-1): `canonical_areas`/`canonical_routes` keyed by MP ids (0008, `ltree` owner script), `rt-mp-v2` type mapper with the `rock` group (owner 2026-10-13: a "rock"-only MP route with no other discipline flag scores as `rock`; a V-graded one is a boulder), `scorable_routes`, `internal.route_tick_scrapes`/`route_tick_coverage`/`route_tick_months` (the tick-source seam), `mp_catalog refresh`, MP-data CI guard."
 - `CLAUDE.md` Commands: `uv run python -m app.pipelines.mp_catalog refresh [--dry-run]` in the pipeline-jobs list. Database: `0008_mp_catalog` (catalog tables, `scorable_routes`, `internal.route_tick_coverage`; downgrade refuses while `canonical_routes` holds rows; needs `backend/db/owner/extensions_mp_catalog.sql` first). Data rules: replace "OpenBeta climb/area data is CC0 …" with "MP is the primary route source (owner decision 2026-10-12); OpenBeta is not used." and add "`scripts/check_no_mp_data.py` (CI `guards`) fails on MP route/area URLs or real MP ids in `data/`, `docs/`, `backend/tests/fixtures/`. Catalog tables hold derived columns only; names and grades are read from `mp_routes`/`mp_locations`."
 - `DEPLOYMENT.md` Data jobs: run `mp_catalog refresh` after every private scrape load (the loader must upsert, never delete, MP rows: FKs refuse deletes); Task 12 adds the scheduled cycle that runs it).
 - `data/DATABASE_STRUCTURE.md`: the two tables, both views, the coordinate-precision meanings, the scorable reasons, the tick-coverage rule, and that `ingest` reads `mp_locations (mp_id, parent_id, name, latitude, longitude)`.
@@ -1958,9 +1976,14 @@ INGMOD app.pipelines.mp_catalog refresh
 ```
 
 Expected:
-- Dry run: `status: ok`, `routes: 168055` (or the current `mp_routes` count), `areas` ≈ 45K, `stored_scorable: 0`, `routes_by_type_group` with `unknown` near the 4,176 'unknown' type strings (TR/aid-only routes are `trad` under ruling R-1), `areas_by_coord.inherited` in the thousands (owner measured 5,471 copied pairs; state-level copies land in `none`).
+- Dry run: `status: ok`, `routes: 168055` (or the current `mp_routes` count), `areas` ≈ 45K, `stored_scorable: 0`, `routes_by_type_group` with `rock` ≈ 105,701 (owner decision 2026-10-13: MP routes typed only "rock", sport vs trad unknown) and `unknown` far smaller than the pre-rock 4,176 'unknown' type strings (TR/aid-only routes are `trad` under ruling R-1), `areas_by_coord.inherited` in the thousands (owner measured 5,471 copied pairs; state-level copies land in `none`).
 - Refresh: `finished ok`, then one JSON line with `routes_inserted` = `routes`, `areas_inserted` = `areas`, the same scorable count as the dry run, and `quarantined` listing only `cycle`/`orphan_parent` and coordinate reasons with small counts.
 - The second refresh prints `routes_inserted: 0, routes_changed: 0, areas_inserted: 0, areas_changed: 0` (idempotent).
+- On a catalog already populated under an earlier `TYPE_RULE_VERSION` (e.g. upgrading to `rt-mp-v2` after a prior `rt-mp-v1` run), the first refresh under the new version instead reports `routes_changed` ≈ `routes` and `routes_inserted: 0`: `TYPE_RULE_VERSION` is part of every row's `facts_sha256`, so a rule bump touches every route once, in the one gated transaction.
+
+```bash
+OWNER_PSQL -At -c "VACUUM ANALYZE canonical_routes"
+```
 
 - [ ] **Step 3 (owner/agent, then STOP for the owner): Acceptance on the branch**
 

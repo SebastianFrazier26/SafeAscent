@@ -46,6 +46,8 @@ def test_classify_route_reason_precedence():
     nowhere = AreaNode(2, None, "2", 2, "us", "CO", None, None, "none", None, None, "missing_coords")
     areas = {1: us, 2: nowhere}
     assert classify_route(RouteFacts(9, 1, "Boulder", "V2"), areas).unscorable_reason == "boulder"
+    # Minor 3: rock with a V grade is ruled a boulder, same reason as the flag-based case.
+    assert classify_route(RouteFacts(9, 1, "Rock", "V3"), areas).unscorable_reason == "boulder"
     assert classify_route(RouteFacts(9, None, "Trad", "5.9"), areas).unscorable_reason == "no_area"
     assert classify_route(RouteFacts(9, 2, "unknown", "5.9"), areas).unscorable_reason == "unknown_type"
     assert classify_route(RouteFacts(9, 2, "Trad", "5.9"), areas).unscorable_reason == "no_coordinates"

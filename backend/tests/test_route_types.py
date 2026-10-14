@@ -55,10 +55,30 @@ def test_rock_with_no_discipline_flag_is_its_own_group():
     assert tg("Trad, Rock") == "trad"
 
 
+def test_rock_precedence_is_overridden_by_any_other_discipline_flag():
+    # The rock group applies only when no other discipline flag is present (I2).
+    assert tg("Sport, Rock") == "sport"
+    assert tg("TR, Rock") == "trad"
+    assert tg("Aid, Rock") == "trad"
+    assert tg("Ice, Rock") == "ice"
+
+
 def test_rock_with_a_v_grade_is_a_boulder_not_a_rock_route():
     only = map_type_group(flags_from_mp_type("Rock"), ["V4"])
     assert (only.type_group, only.is_boulder) == (None, True)
     assert map_type_group(flags_from_mp_type("Rock"), ["5.9"]).type_group == "rock"
+
+
+def test_v_grade_boulder_forms_are_all_recognized():
+    # Controller ruling: "VB" and "V-easy" are boulder grades too (Minor 1).
+    assert map_type_group(flags_from_mp_type("Rock"), ["VB"]).is_boulder is True
+    assert map_type_group(flags_from_mp_type("Rock"), ["V-easy"]).is_boulder is True
+
+
+def test_boulder_flag_with_rock_and_no_other_discipline_is_a_boulder():
+    # I1: "Boulder, Rock" must not fall through to the scorable rock group.
+    only = map_type_group(flags_from_mp_type("Boulder, Rock"), [])
+    assert (only.type_group, only.is_boulder) == (None, True)
 
 
 def test_sport_still_maps_to_sport():
