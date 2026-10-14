@@ -1,0 +1,16 @@
+# Railway: the yearly catalog and features cycle (DP6, owner decision 2026-10-13). A cron
+# service: it starts on the schedule (evaluated in UTC), runs once and exits, and Railway skips a
+# tick while a run is still active. The only service holding the ingest credential (DEPLOYMENT.md).
+
+[build]
+builder = "dockerfile"
+# The pipelines group (h3, rasterio, timezonefinder) is not in the api/worker/beat image.
+dockerfilePath = "Dockerfile.jobs"
+
+[deploy]
+# 2 January 09:00 UTC: before plan 3's January ERA5 Professional window (opens on or after 10 January).
+cronSchedule = "0 9 2 1 *"
+# A rejected or failed cycle is a finding for the owner, not something to retry in a loop.
+restartPolicyType = "never"
+numReplicas = 1
+startCommand = "python -m app.pipelines.catalog_cycle run"

@@ -35,7 +35,7 @@ dev = [
     "fakeredis==2.38.0",
 ]
 # Data-job dependencies (local days now; later plans append). Not in the API image: the
-# Dockerfile syncs with --no-group pipelines.
+# Dockerfile syncs with --no-group pipelines; Dockerfile.jobs (catalog-cycle cron) includes it.
 pipelines = [
     "h3==4.5.0",
     "rasterio==1.5.2",
@@ -135,6 +135,7 @@ module = [
     "app.pipelines.dem",
     "app.pipelines.epqs",
     "app.pipelines.static_features",
+    "app.pipelines.catalog_cycle",
     "app.models.types",
 ]
 ignore_errors = false

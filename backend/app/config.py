@@ -55,6 +55,7 @@ class Settings(BaseSettings):
 
     HEALTHCHECKS_NIGHTLY_URL: str | None = None
     HEALTHCHECKS_BEAT_URL: str | None = None
+    HEALTHCHECKS_CATALOG_URL: str | None = None
     WORKER_HEARTBEAT_TTL_SECONDS: int = 120
 
     # Phase 2 data jobs connect as the least-privilege ingest role; never set on the API.

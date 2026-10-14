@@ -15,10 +15,11 @@ One repo; each Railway service builds from its own root directory and config fil
 | API | `backend` | `backend/railway.toml` | `uvicorn app.main:app --host 0.0.0.0 --port 8000` (Dockerfile default) | Healthcheck `/health`. Worker liveness is `/health/worker`, deliberately not the Railway healthcheck, so a worker outage doesn't take the API down |
 | Worker | `celery-worker` | `backend/railway-worker.toml` | `celery -A app.celery_app worker --loglevel=info --concurrency=2 -E` | One replica. Runs the nightly job and the beat heartbeat task |
 | Beat | `beat` (**owner creates it**) | `backend/railway-beat.toml` | `celery -A app.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule` | Exactly one replica; a second double-schedules every task |
+| Catalog cycle | `catalog-cycle` (**owner creates it**) | `backend/railway-catalog-cycle.toml` | `python -m app.pipelines.catalog_cycle run` | Cron `0 9 2 1 *` (UTC), built from `backend/Dockerfile.jobs`. Auto-deploy off; deployed by hand after merges that touch `app/pipelines`. See Scheduled jobs |
 | Frontend | `frontend` | `frontend/railway.toml` | nginx serving the Vite build | Healthcheck `/health`. `MAINTENANCE_MODE` build arg, see below |
 | Redis | Railway Redis | — | — | Celery broker, result backend, and score cache |
 
-The API, worker, and beat all build from `backend/Dockerfile` (Python 3.12, uv, non-root). The frontend builds from `frontend/Dockerfile` (Node 22 build, nginx serve).
+The API, worker, and beat all build from `backend/Dockerfile` (Python 3.12, uv, non-root). `catalog-cycle` builds from `backend/Dockerfile.jobs`: the same image plus the `pipelines` dependency group (h3, rasterio, timezonefinder), which the API image leaves out. The frontend builds from `frontend/Dockerfile` (Node 22 build, nginx serve).
 
 Domains: `safeascent.us` (frontend), `www.safeascent.us` (301 to the apex), `api.safeascent.us` (API). TLS is Railway's automatic certificates.
 
@@ -37,6 +38,9 @@ Worker notes for the relaunch:
 - `REDIS_URL` (or the per-purpose `CACHE_REDIS_URL` / `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND`, which fall back to it).
 - `ENVIRONMENT` unset or `production`. `ENABLE_ADMIN_ROUTES` off except for a deliberate admin session. `CORS_ORIGINS` unset (defaults to the production origins).
 - `HEALTHCHECKS_NIGHTLY_URL` and `HEALTHCHECKS_BEAT_URL` on the worker (both tasks run there). An unset URL skips the ping with a WARNING.
+- `INGEST_DATABASE_URL` on `catalog-cycle` **only**: the `ingest` role on Neon's **direct** host (not the `-pooler` host; `catalog_cycle` refuses it), with verify-full TLS (`app.db.ssl` builds the verifying context; `ingest_engine` refuses a URL whose `ssl`/`sslmode` asks for anything weaker). Never set it on `backend`, `celery-worker`, `beat` or `frontend`. Set it as a Railway variable (with `--skip-deploys`), never in a file.
+- `DATABASE_URL` on `catalog-cycle` is a Railway reference to that same `INGEST_DATABASE_URL` value: `Settings` requires the field, and the job never uses it.
+- `HEALTHCHECKS_CATALOG_URL` (optional) on `catalog-cycle`: `/start`, then success only for an `ok` cycle, `/fail` otherwise.
 - Frontend build args: `VITE_API_BASE_URL` (the API's `/api/v1` URL), `VITE_MAPBOX_TOKEN` (public token), `MAINTENANCE_MODE`.
 - `MIGRATOR_DATABASE_URL` is set on **no** service. It lives only in the owner's gitignored `backend/.env.migrator`, for the explicit migration step.
 
@@ -96,6 +100,17 @@ Revoked and expired tasks are logged at ERROR; expired ones are counted per task
 The beat check proves both that beat scheduled the task and that the worker consumed it, so a dead consumer alerts within 75 minutes.
 
 `GET /health/worker` returns 200 while the worker's Redis heartbeat is fresh (`WORKER_HEARTBEAT_TTL_SECONDS`, default 120s) and 503 when it is missing or Redis is unreachable. Caveat: the heartbeat proves the consumer loop is turning only under the prefork pool on the Redis broker, which is what the worker runs. With `-P gevent`/`eventlet`, or when the consume socket dies silently, the heartbeat can stay fresh; the `safeascent-beat` healthchecks.io check is what catches those.
+
+## Scheduled jobs
+
+`catalog-cycle` (owner decision DP6, 2026-10-13) is a Railway cron service: it starts on its schedule, runs `python -m app.pipelines.catalog_cycle run` once and exits; Railway skips a tick while a run is still active, and `restartPolicyType = "never"` means a failed run is reported, not retried.
+
+- **Cadence:** yearly, 2 January 09:00 UTC (`0 9 2 1 *`). It runs before plan 3's January ERA5 window opens (on or after 10 January), so the window buys normals for the buckets the year's new routes added.
+- **Order:** `mp_catalog` refresh, then `static_features` points, elevation (repeated until a round samples nothing, at most 20 rounds), routes, then the EPQS gate. A rejected refresh stops the cycle before any feature step; a step that raises stops it at that step (routes refuses while any point is missing).
+- **On demand:** run the service from the Railway dashboard, or locally from `backend/` as `ingest`: `uv run python -m app.pipelines.catalog_cycle run [--skip-epqs] [--max-rounds N]`. `--skip-epqs` skips the ~15-minute EPQS gate.
+- **Exit codes:** `0` ok; `1` rejected refresh, failed EPQS gate, or a step that raised; `2` incomplete (a transient 3DEP outage left points unsampled; the next run retries them). The run prints one JSON line with every step's counts.
+- **Private data stays local.** The MP scraper and its loader never run on Railway; the cycle only reads the `mp_*` tables they filled.
+- **Cost (estimate, 2026-10-13, not re-checked):** Railway bills a cron service only while it runs; a yearly run is a few cents, well under $1 a year with on-demand runs.
 
 ## Maintenance mode
 
