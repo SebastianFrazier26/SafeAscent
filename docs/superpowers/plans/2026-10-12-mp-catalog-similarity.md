@@ -58,6 +58,8 @@ The foundations plan's Global Constraints apply. Also:
 
 **Coordinator ruling R-1 (2026-10-12; the owner may override):** toprope and aid map to the underlying rock group, per P3:56. With `sport` or `trad` in the type string that group is used; a toprope/aid-only route maps to `trad` (MP has no bolt data, and aid and gear-protected toprope lines are trad-protected far more often than bolted; a TR-only sport line is mislabelled `trad`, which the owner accepted as the cost of following P3:56 over the earlier `unknown` default).
 
+**R-1 revised (2026-10-15, final review; `TYPE_RULE_VERSION = "rt-mp-v3"`):** a route whose only discipline evidence is toprope or aid now maps to `rock` (sport or trad, unknown), not `trad`: with no bolt data that is exactly what `rock` means (owner group of 2026-10-13). `sport`/`trad` in the type string still win. A V grade means a boulder everywhere, not only on a `rock`-only route. The Task 2 code and tests below show the `rt-mp-v2` rule they were written against; the shipped mapper is `rt-mp-v3`.
+
 **Decisions this plan makes:**
 - D-A `(decided: DP1)` **Catalog keys are the MP ids.** `canonical_areas.area_id` = `mp_locations.mp_id`, `canonical_routes.route_id` = `mp_routes.mp_route_id` (bigint, FK). Phase 4's `RouteRef(kind="mp_route", id=…)`, its FKs to `mp_routes`, the live app's route ids and Phase 3's `route_id` are one id space.
 - D-B **Derived columns only.** Names, grades, pitches, lengths stay in `mp_routes`/`mp_locations`; the catalog holds what is computed from them (`type_group`, `scorable`, `path`, `state_code`, coordinates and their source, `point_key`) plus `facts_sha256`, so a refresh can report fact changes that did not move a derived column.
@@ -82,7 +84,7 @@ The foundations plan's Global Constraints apply. Also:
 2. **A crag that copied its state's coordinates, or a region's coordinates two levels up** — expect `none` for the state copy and `inherited` with the region as `coord_source_id` for the other (Task 3 `test_inherited_coordinates_resolve_to_their_true_source`).
 3. **A scrape load that blanks the type string of 10% of routes** — expect the refresh `rejected`, the catalog unchanged and a `rejected` log row (Task 4 `test_scorable_drop_rejects_and_writes_nothing`); the scheduled cycle then stops before the feature steps (Task 12 `test_cycle_stops_when_the_refresh_is_rejected`).
 4. **A route never scraped, a route scraped but not finished, a month after the scrape** — expect `missing`/`scraped`/`complete as of`, and no zero for any of them (Task 1 `test_tick_coverage_has_three_states_and_never_zero`, `test_loader_writes_the_seam_only_for_complete_routes`).
-5. **"TR" or "Aid" alone, "Trad, Boulder", "Ice, Mixed, Alpine", "unknown" with grade "WI3"** — expect `trad` (R-1), `trad` (not a boulder), `mixed`, `ice` (Task 2 tests).
+5. **"TR" or "Aid" alone, "Trad, Boulder", "Ice, Mixed, Alpine", "unknown" with grade "WI3"** — expect `rock` (R-1 as revised 2026-10-15), `trad` (not a boulder), `mixed`, `ice` (Task 2 tests).
 6. **A DEM tile that times out, or a nodata cell** — expect the point left unfilled for the next run, and `nodata` with NULL elevation, never 0 (Task 8, carried tests).
 7. **A scorable route whose point has no normals yet** — expect 12 `scoring_unit_features` rows with NULL normals and `normals_status = 'pending'` (Task 7).
 8. **A legacy accident link with no MP id** — expect an `internal.r10_unresolved` row with ranked candidate ids, no link, legacy columns untouched (Task 14 `test_unresolved_links_are_recorded_never_guessed`).
@@ -1976,14 +1978,20 @@ INGMOD app.pipelines.mp_catalog refresh
 ```
 
 Expected:
-- Dry run: `status: ok`, `routes: 168055` (or the current `mp_routes` count), `areas` ≈ 45K, `stored_scorable: 0`, `routes_by_type_group` with `rock` ≈ 105,701 (owner decision 2026-10-13: MP routes typed only "rock", sport vs trad unknown) and `unknown` far smaller than the pre-rock 4,176 'unknown' type strings (TR/aid-only routes are `trad` under ruling R-1), `areas_by_coord.inherited` in the thousands (owner measured 5,471 copied pairs; state-level copies land in `none`).
+- Dry run: `status: ok`, `routes: 168055` (or the current `mp_routes` count), `areas` ≈ 45K, `stored_scorable: 0`, `routes_by_type_group` with `rock` ≈ 105,701 (owner decision 2026-10-13: MP routes typed only "rock", sport vs trad unknown) and `unknown` far smaller than the pre-rock 4,176 'unknown' type strings (TR/aid-only routes are `rock` under `rt-mp-v3`, R-1 as revised 2026-10-15), `areas_by_coord.inherited` in the thousands (owner measured 5,471 copied pairs; state-level copies land in `none`).
 - Refresh: `finished ok`, then one JSON line with `routes_inserted` = `routes`, `areas_inserted` = `areas`, the same scorable count as the dry run, and `quarantined` listing only `cycle`/`orphan_parent` and coordinate reasons with small counts.
 - The second refresh prints `routes_inserted: 0, routes_changed: 0, areas_inserted: 0, areas_changed: 0` (idempotent).
-- On a catalog already populated under an earlier `TYPE_RULE_VERSION` (e.g. upgrading to `rt-mp-v2` after a prior `rt-mp-v1` run), the first refresh under the new version instead reports `routes_changed` ≈ `routes` and `routes_inserted: 0`: `TYPE_RULE_VERSION` is part of every row's `facts_sha256`, so a rule bump touches every route once, in the one gated transaction.
+- On a catalog already populated under an earlier `TYPE_RULE_VERSION` (e.g. upgrading to `rt-mp-v3` after a prior `rt-mp-v2` run), the first refresh under the new version instead reports `routes_changed` ≈ `routes` and `routes_inserted: 0`: `TYPE_RULE_VERSION` is part of every row's `facts_sha256`, so a rule bump touches every route once, in the one gated transaction.
+
+`canonical_routes` is owned by `migrator`, and a `VACUUM` by a role that does not own the table only prints `WARNING: ... skipping` and exits 0. The owner holds `SET` on `migrator` (the same membership `grants_phase2.sql` uses), so the block switches role first; each `-c` is its own transaction, which `VACUUM` needs. A `skipping` line is a failure (revised 2026-10-15, final review):
 
 ```bash
-OWNER_PSQL -At -c "VACUUM ANALYZE canonical_routes"
+( out="$(OWNER_PSQL -At -v ON_ERROR_STOP=1 -c "SET ROLE migrator" -c "VACUUM ANALYZE canonical_routes" 2>&1)" || { printf '%s\n' "$out" >&2; exit 1; }
+  case "$out" in *skipping*) printf '%s\n' "$out" >&2; echo "VACUUM skipped canonical_routes: STOP" >&2; exit 1 ;; esac
+  echo "canonical_routes vacuumed as migrator" )
 ```
+
+Expected: `canonical_routes vacuumed as migrator`.
 
 - [ ] **Step 3 (owner/agent, then STOP for the owner): Acceptance on the branch**
 
@@ -1997,29 +2005,68 @@ Expected: all cells pass; every state code is a US state or DC; the route-bearin
 
 - [ ] **Step 4 (owner go, then agent): Prod**
 
-4a — gate (read-only):
+4a — gate (read-only). It fails closed (revised 2026-10-15, final review): a `MIG current` that errors (missing `.env.migrator`, network, wrong `TARGET_HOST`) stops the block instead of passing it, and prod must positively read `0007_cell_daily_conditions`, not merely "not 0008". It also asserts the ingest URL is Neon's direct host (every ingest job refuses a `-pooler.` host too; this catches it before the gate):
 
 ```bash
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc1_prod || exit 1
+  # PRODUCTION (read-only)
   [ -s ../data/review/mpc1_refresh_branch.json ] || { echo "no branch evidence" >&2; exit 1; }
-  if MIG current | grep -q '0008_mp_catalog'; then echo "prod already at 0008" >&2; exit 1; fi
+  cur="$(MIG current)" || exit 1
+  printf '%s\n' "$cur"
+  case "$cur" in
+    0007_cell_daily_conditions) ;;
+    *) echo "prod is not at 0007_cell_daily_conditions: STOP" >&2; exit 1 ;;
+  esac
+  ( set -a; . ./.env.ingest; set +a
+    python3 -c 'import os, sys, urllib.parse as u
+h = (u.urlsplit(os.environ.get("INGEST_DATABASE_URL", "")).hostname or "").lower()
+ok = h.startswith("ep-") and "-pooler." not in h
+print("ingest direct host:", ok)
+sys.exit(0 if ok else 1)' ) || { echo "ingest URL is not the direct Neon host: STOP" >&2; exit 1; }
   gate_pass c1_migrate )
 ```
+
+Expected: `0007_cell_daily_conditions`, `ingest direct host: True`, `GATE OK: c1_migrate`.
+
+4a-snap — snapshot `pre-mpc-1` immediately before the migration (the phase2a pattern, `2026-09-28-phase2a-conditions-refresh.md` Step 6b). Run once; if neonctl says the branch exists, stop and ask the owner (never recreate it):
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc1_prod || exit 1
+  # PRODUCTION snapshot
+  gate_require c1_migrate || exit 1
+  snap="$(neonctl branches create --project-id still-morning-74008008 --name pre-mpc-1 --parent production --no-secrets --output json \
+    | python3 -c 'import json,sys; b=json.load(sys.stdin)["branch"]; print(b["id"], b["name"], b["parent_id"], b["created_at"])')" || exit 1
+  printf '%s\n' "$snap"
+  case "$snap" in *" pre-mpc-1 br-restless-bar-ajw5zy4b "*) gate_pass snapshot ;; *) echo "snapshot parent is not production: STOP" >&2; exit 1 ;; esac )
+```
+
+Expected: parent `br-restless-bar-ajw5zy4b` and `GATE OK: snapshot`. Record the id and `created_at` in the PR.
 
 4b — `ltree`, migrate, grants (expected output as Step 1):
 
 ```bash
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc1_prod || exit 1
+  # PRODUCTION
   gate_require c1_migrate || exit 1
-  OWNER_PSQL -q -f db/owner/extensions_mp_catalog.sql && MIG upgrade head && MIG check \
-    && OWNER_PSQL -q -f db/roles/grants_phase2.sql && OWNER_PSQL -q -f db/roles/verify_roles.sql \
-    && OWNER_PSQL -q -f db/roles/verify_roles_phase2.sql )
+  gate_require snapshot || exit 1
+  OWNER_PSQL -q -f db/owner/extensions_mp_catalog.sql || exit 1
+  MIG upgrade head || exit 1
+  cur="$(MIG current)" || exit 1
+  printf '%s\n' "$cur"
+  [ "$cur" = "0008_mp_catalog (head)" ] || { echo "prod is not at 0008_mp_catalog (head): STOP" >&2; exit 1; }
+  MIG check || exit 1
+  OWNER_PSQL -q -f db/roles/grants_phase2.sql || exit 1
+  OWNER_PSQL -q -f db/roles/verify_roles.sql || exit 1
+  OWNER_PSQL -q -f db/roles/verify_roles_phase2.sql || exit 1
+  gate_pass c1_migrated )
 ```
 
 4c — gate: the prod dry run must match the branch within new scrape rows:
 
 ```bash
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc1_prod || exit 1
+  # PRODUCTION (read-only dry run)
+  gate_require c1_migrated || exit 1
   save_once ../data/review/mpc1_dry_prod.json INGMOD app.pipelines.mp_catalog refresh --dry-run || exit 1
   python3 - <<'EOF' || exit 1
 import json
@@ -3322,6 +3369,8 @@ def test_every_point_bucket_has_a_normals_status_and_complete_means_twelve_real_
 
 ### Task 12: Scheduled catalog cycle (DP6) — `catalog_cycle.py`, Railway cron service
 
+**Revised 2026-10-15 (final review; the code below is the first draft, kept as written).** The shipped cycle runs the EPQS gate **before** routes (416b031), and a failed gate blocks the rebuild. When the elevation rounds run out with points still to sample, it stops without the gate or routes. When the only points left are pending a transient 3DEP retry, the gate runs over the sampled points and, if it passes, routes are rebuilt with NULL elevation for the pending ones; the run reports `incomplete` (exit 2) and pings `/fail`. `--skip-epqs` skips the gate, so a run with it rebuilds `route_static_features` from elevations no gate has checked: the module docstring's "never holds un-gated elevations" holds only for runs without `--skip-epqs` (and not for a standalone `static_features routes`). It is for on-demand runs only; the cron start command never passes it. `require_direct_host` now guards every ingest job, not only this one.
+
 **Files:**
 - Create: `backend/app/pipelines/catalog_cycle.py`, `backend/tests/test_catalog_cycle.py`, `backend/railway-catalog-cycle.toml`, `backend/Dockerfile.jobs`
 - Modify: `backend/app/config.py` (`HEALTHCHECKS_CATALOG_URL`), `.env.example`, `scripts/check_compose_matches_railway.py` (documented exemption), `backend/tests/test_check_compose_matches_railway.py`, `backend/pyproject.toml` (mypy), `DEPLOYMENT.md`, `CLAUDE.md`
@@ -3602,13 +3651,22 @@ Same rules, re-entry block and prod preamble as Task 6, with `B=mpc-2-rehearsal`
 - [ ] **Step 1 (owner/agent): Branch `mpc-2-rehearsal` from `production`** (prod must already be at `0008_mp_catalog` with a refreshed catalog); then `MIG current` (`0008_mp_catalog`), `MIG upgrade head` (`0009_static_features (head)`), `MIG check`, `grants_phase2.sql`, `verify_roles.sql`, `verify_roles_phase2.sql` → the same pass lines as Task 6 Step 1.
 - [ ] **Step 2 (owner/agent): Refresh, points, elevation on the branch**
 
+The refresh runs under `bg_start`/`bg_wait` as in Task 6 (one transaction that can outlast the 10-minute tool cap; revised 2026-10-15):
+
 ```bash
-INGMOD app.pipelines.mp_catalog refresh
+bg_start ../data/review/logs/mpc2_refresh_branch.log INGMOD app.pipelines.mp_catalog refresh
+```
+
+```bash
+bg_wait ../data/review/logs/mpc2_refresh_branch.log
+```
+
+```bash
 save_once ../data/review/mpc2_points_branch.json INGMOD app.pipelines.static_features points
 INGMOD app.pipelines.static_features elevation --limit 5000
 ```
 
-Expected: the refresh prints `status: ok` (usually `routes_changed: 0`); `points` ≈ the number of distinct route-bearing area keys (tens of thousands; fewer than route-bearing areas, since inherited areas share their source's point), with `quarantined` only `no_timezone` in single digits. Repeat the `elevation` line until it prints `"sampled": 0, "retry": 0`. If `retry` stays above 0 across three runs an hour apart, STOP and report the counts (a 3DEP outage, not missing data).
+Expected: the refresh log ends `finished ok` with `status: ok` (usually `routes_changed: 0`; on a catalog first refreshed under `rt-mp-v2`, `routes_changed` ≈ `routes` once, the `rt-mp-v3` bump); `points` ≈ the number of distinct point keys of areas that hold a **scorable** route (tens of thousands; fewer than those areas, since inherited areas share their source's point; areas with only boulder, `not_us`, `unknown_type` or `no_coordinates` routes get no point), with `quarantined` only `no_timezone` in single digits. Repeat the `elevation` line until it prints `"sampled": 0, "retry": 0`. The 2″ fallback is per point: a point the 1/3″ tile covers but masks is retried at 2″ before it is recorded `nodata`. If `retry` stays above 0 across three runs an hour apart, STOP and report the counts (a 3DEP outage, not missing data).
 
 - [ ] **Step 3 (owner/agent): EPQS gate on the branch**
 
@@ -3620,30 +3678,178 @@ bg_start ../data/review/logs/mpc2_epqs_branch.log INGMOD app.pipelines.static_fe
 bg_wait ../data/review/logs/mpc2_epqs_branch.log
 ```
 
-Expected (≈ 240 EPQS calls at ≥ 1 s each plus retries; allow 15 minutes): `finished ok`, JSON with `"passed": 1`, `compared ≥ 180`, `gross: 0`, each class `passed: 1`. A failure exits 1: STOP and share the class table and the failing `point_key`s (never names). A class with `n < 30` means too few points of that slope class were found in `probed`: STOP; the agent raises `max_probe` in a follow-up commit, never the tolerances.
+Expected (≈ 240 EPQS calls at ≥ 1 s each plus retries; allow 15 minutes): `finished ok`, JSON with `"passed": 1`, `compared ≥ 180`, `gross: 0`, each class `passed: 1`. Tolerances depend on each point's `dem_source`: `3dep_2` (60 m) points are judged against wider bounds than `3dep_13`, so a steep 2″ point does not trip the 1/3″ limits. A failure exits 1: STOP and share the class table and the failing `point_key`s (never names). A class with `n < 30` means too few points of that slope class were found in `probed`: STOP; the agent raises `max_probe` in a follow-up commit, never the tolerances.
 
 - [ ] **Step 4 (owner/agent, then STOP for the owner): Route table and acceptance**
 
 ```bash
-INGMOD app.pipelines.static_features routes
+bg_start ../data/review/logs/mpc2_routes_branch.log INGMOD app.pipelines.static_features routes
+```
+
+```bash
+bg_wait ../data/review/logs/mpc2_routes_branch.log
+```
+
+```bash
 VERIFY tests/verify/test_mp_features.py tests/verify/test_mp_catalog.py -q -s
+ANALYST_PSQL -At -c "SELECT coalesce(dem_source, 'pending'), count(*) FROM feature_points GROUP BY 1 ORDER BY 1"
 ANALYST_PSQL -At -c "SELECT normals_status, count(DISTINCT unit_id) FROM scoring_unit_features GROUP BY 1"
 ```
 
-Expected: every cell passes; the normals line shows how many scorable routes read `complete`/`insufficient` vs `pending`. **STOP — owner review:** the agent pastes the elevation `dem_source` counts, the EPQS class table and the normals split. Pending buckets read as missing until plan 3's next January window (or the current one, if still open, via `era5_window run`); the owner decides whether MVP-1 training waits for them. Only on "features ok" go on.
+Expected: every cell passes; the elevation cell accepts no `pending` point and at most 2% `nodata` plus `no_tile` together (terminal: NULL elevation, never 0); the normals line shows how many scorable routes read `complete`/`insufficient` vs `pending`. **STOP — owner review:** the agent pastes the elevation `dem_source` counts, the EPQS class table and the normals split. Pending buckets read as missing until plan 3's next January window (or the current one, if still open, via `era5_window run`); the owner decides whether MVP-1 training waits for them. Only on "features ok" go on.
 
-- [ ] **Step 5 (owner go, then agent): Prod** — gate blocks as Task 6 Step 4: 5a `gate_pass c2_migrate` after checking `../data/review/mpc2_points_branch.json` exists and prod `MIG current` is `0008_mp_catalog`; 5b (`gate_require c2_migrate`) migrate + grants + verify; 5c (no gate needed: idempotent, no paid calls) `mp_catalog refresh`, `static_features points`, `elevation` until `sampled: 0, retry: 0`, `epqs-check` under `bg_start`, `routes`; 5d `VERIFY tests/verify/test_mp_features.py tests/verify/test_mp_catalog.py -q -s` → all pass. Record the prod counts in the PR.
+- [ ] **Step 5 (owner go, then agent): Prod** — Task 6 Step 4's block pattern (revised 2026-10-15, final review: every prod write block starts with `gate_require`; there is no ungated prod block). Blocks after a `bg_start` use the Task 6 prod preamble with `GATE_DIR=../data/review/gates_mpc2_prod` for their `bg_wait`.
+
+5a — gate (read-only): branch evidence, prod positively at `0008_mp_catalog`, ingest on the direct host:
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
+  # PRODUCTION (read-only)
+  [ -s ../data/review/mpc2_points_branch.json ] || { echo "no branch evidence" >&2; exit 1; }
+  cur="$(MIG current)" || exit 1
+  printf '%s\n' "$cur"
+  case "$cur" in
+    0008_mp_catalog) ;;
+    *) echo "prod is not at 0008_mp_catalog: STOP" >&2; exit 1 ;;
+  esac
+  ( set -a; . ./.env.ingest; set +a
+    python3 -c 'import os, sys, urllib.parse as u
+h = (u.urlsplit(os.environ.get("INGEST_DATABASE_URL", "")).hostname or "").lower()
+ok = h.startswith("ep-") and "-pooler." not in h
+print("ingest direct host:", ok)
+sys.exit(0 if ok else 1)' ) || { echo "ingest URL is not the direct Neon host: STOP" >&2; exit 1; }
+  gate_pass c2_migrate )
+```
+
+Expected: `0008_mp_catalog`, `ingest direct host: True`, `GATE OK: c2_migrate`.
+
+5a-snap — snapshot `pre-mpc-2` (run once; if it exists, stop and ask the owner):
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
+  # PRODUCTION snapshot
+  gate_require c2_migrate || exit 1
+  snap="$(neonctl branches create --project-id still-morning-74008008 --name pre-mpc-2 --parent production --no-secrets --output json \
+    | python3 -c 'import json,sys; b=json.load(sys.stdin)["branch"]; print(b["id"], b["name"], b["parent_id"], b["created_at"])')" || exit 1
+  printf '%s\n' "$snap"
+  case "$snap" in *" pre-mpc-2 br-restless-bar-ajw5zy4b "*) gate_pass snapshot ;; *) echo "snapshot parent is not production: STOP" >&2; exit 1 ;; esac )
+```
+
+Expected: parent `br-restless-bar-ajw5zy4b` and `GATE OK: snapshot`. Record the id and `created_at` in the PR.
+
+5b — migrate, grants, verify:
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
+  # PRODUCTION
+  gate_require c2_migrate || exit 1
+  gate_require snapshot || exit 1
+  MIG upgrade head || exit 1
+  cur="$(MIG current)" || exit 1
+  printf '%s\n' "$cur"
+  [ "$cur" = "0009_static_features (head)" ] || { echo "prod is not at 0009_static_features (head): STOP" >&2; exit 1; }
+  MIG check || exit 1
+  OWNER_PSQL -q -f db/roles/grants_phase2.sql || exit 1
+  OWNER_PSQL -q -f db/roles/verify_roles.sql || exit 1
+  OWNER_PSQL -q -f db/roles/verify_roles_phase2.sql || exit 1
+  gate_pass c2_migrated )
+```
+
+Expected: the Step 1 pass lines, ending `GATE OK: c2_migrated`.
+
+5c — refresh prod, in the background:
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
+  # PRODUCTION
+  gate_require c2_migrated || exit 1
+  bg_start ../data/review/logs/mpc2_refresh_prod.log INGMOD app.pipelines.mp_catalog refresh )
+```
+
+then `bg_wait ../data/review/logs/mpc2_refresh_prod.log` (with the prod preamble) until `finished ok`. Then points, gated on the branch's count (within 1%; prod may hold a few newer scrape rows):
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
+  # PRODUCTION
+  gate_require c2_migrated || exit 1
+  grep -q '^RUNBOOK_EXIT=0$' ../data/review/logs/mpc2_refresh_prod.log || { echo "prod refresh has not finished ok" >&2; exit 1; }
+  save_once ../data/review/mpc2_points_prod.json INGMOD app.pipelines.static_features points || exit 1
+  python3 - <<'EOF' || exit 1
+import json
+b = json.load(open("../data/review/mpc2_points_branch.json"))["points"]
+p = json.load(open("../data/review/mpc2_points_prod.json"))["points"]
+assert abs(p - b) <= 0.01 * b, (b, p)
+print("prod points match branch", b, p)
+EOF
+  gate_pass c2_points )
+```
+
+5d — elevation; run this block again until it prints `"sampled": 0` and `"retry": 0` (the Step 2 STOP rule for a lingering `retry` applies):
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
+  # PRODUCTION
+  gate_require c2_points || exit 1
+  INGMOD app.pipelines.static_features elevation --limit 5000 )
+```
+
+5e — EPQS gate on prod, in the background:
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
+  # PRODUCTION
+  gate_require c2_points || exit 1
+  bg_start ../data/review/logs/mpc2_epqs_prod.log INGMOD app.pipelines.static_features epqs-check )
+```
+
+then `bg_wait ../data/review/logs/mpc2_epqs_prod.log` (prod preamble), then the gate, which also re-checks that no point is pending:
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
+  # PRODUCTION (read-only)
+  gate_require c2_points || exit 1
+  grep -q '^RUNBOOK_EXIT=0$' ../data/review/logs/mpc2_epqs_prod.log || { echo "EPQS check did not exit 0: STOP" >&2; exit 1; }
+  save_once ../data/review/mpc2_epqs_prod.json grep '^{' ../data/review/logs/mpc2_epqs_prod.log || exit 1
+  python3 - <<'EOF' || exit 1
+import json
+r = json.load(open("../data/review/mpc2_epqs_prod.json"))
+assert r["passed"] == 1 and r["gross"] == 0 and r["compared"] >= 180, (r["passed"], r["gross"], r["compared"])
+assert all(c["passed"] == 1 for c in r["classes"].values()), {k: c["passed"] for k, c in r["classes"].items()}
+print("EPQS gate passed", r["compared"])
+EOF
+  pending="$(ANALYST_PSQL -At -c "SELECT count(*) FROM feature_points WHERE dem_source IS NULL")" || exit 1
+  [ "$pending" = 0 ] || { echo "$pending points still pending: run 5d again" >&2; exit 1; }
+  gate_pass c2_epqs )
+```
+
+5f — route table, in the background:
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
+  # PRODUCTION
+  gate_require c2_epqs || exit 1
+  bg_start ../data/review/logs/mpc2_routes_prod.log INGMOD app.pipelines.static_features routes )
+```
+
+then `bg_wait ../data/review/logs/mpc2_routes_prod.log` (prod preamble) until `finished ok`, then `VERIFY tests/verify/test_mp_features.py tests/verify/test_mp_catalog.py -q -s` with the prod preamble → all pass. Record the prod counts in the PR.
 - [ ] **Step 6 (owner; DP6 decided 2026-10-13): Create and arm the `catalog-cycle` Railway cron service** — after PR C-2 is merged and 5d passed. Agents never read or print `backend/.env.ingest` or any variable value; every command below prints names, booleans or statuses only.
   - **6a Service (owner, Railway dashboard):** create service `catalog-cycle` in the SafeAscent project, source = this GitHub repo on `main`, root directory `backend`, config file `backend/railway-catalog-cycle.toml`. Turn **auto-deploy off** for it (it must not deploy on a push to `main`). No public domain, no TCP proxy. Confirm Settings → Cron Schedule shows `0 9 2 1 *` from the toml.
-  - **6b Variables (owner, from the main checkout's `backend/`, values via stdin, never argv):** first confirm the ingest URL's host is Neon's **direct** endpoint (no `-pooler` in the host); if `.env.ingest` holds the pooler host, the owner writes the direct-host URL into a second 0600 file and pipes that instead (the cycle refuses a pooler host at start, Task 12).
+  - **6b Variables (owner, from the main checkout's `backend/`, values via stdin, never argv):** first confirm the ingest URL's host is Neon's **direct** endpoint. This block prints one boolean and nothing else:
+
+```bash
+( set -a; . ./.env.ingest; set +a
+  python3 -c 'import os, urllib.parse as u; print("-pooler." in (u.urlsplit(os.environ["INGEST_DATABASE_URL"]).hostname or "").lower())' )
+```
+
+Expected: `False`. `True` means `.env.ingest` holds the pooler host: the owner writes the direct-host URL into a second 0600 file and pipes that instead (every ingest job, the cycle included, refuses a pooler host at start). Then:
 
 ```bash
 ( set -a; . ./.env.ingest; set +a; printf '%s' "$INGEST_DATABASE_URL" ) \
   | railway variable set INGEST_DATABASE_URL --stdin --skip-deploys --service catalog-cycle
-railway variable set 'DATABASE_URL=${{INGEST_DATABASE_URL}}' --skip-deploys --service catalog-cycle
+railway variable set 'DATABASE_URL=postgresql+asyncpg://unused@invalid.invalid/unused' --skip-deploys --service catalog-cycle
 ```
 
-`DATABASE_URL` is a Railway reference to the same value (not a second credential): `Settings` requires the field at import, and the job only ever uses `INGEST_DATABASE_URL`. Optional: create a healthchecks.io check (period one year, grace one week, if the service allows a period that long; otherwise a calendar reminder for 3 January) and pipe its ping URL the same way into `HEALTHCHECKS_CATALOG_URL`. Optionally seal `INGEST_DATABASE_URL` in the dashboard so it cannot be read back.
+`DATABASE_URL` is deliberately inert (revised 2026-10-15, final review), never `${{INGEST_DATABASE_URL}}`: `Settings` requires the field at import, the job only ever uses `INGEST_DATABASE_URL`, and a reference would install the credential a second time, where any code path that reads `DATABASE_URL` (the app session engine, a settings dump) would connect as `ingest`. An inert value fails closed (`DEPLOYMENT.md`). Optional: create a healthchecks.io check (period one year, grace one week, if the service allows a period that long; otherwise a calendar reminder for 3 January) and pipe its ping URL the same way into `HEALTHCHECKS_CATALOG_URL`. Optionally seal `INGEST_DATABASE_URL` in the dashboard so it cannot be read back.
   - **6c Only this service holds it (owner/agent):** for each of the other services, print a boolean only:
 
 ```bash
@@ -3655,7 +3861,7 @@ done
 
 Expected: four `False` lines. (The JSON form carries raw values; the pipe keeps them off the screen. If its shape is not a name→value object, the owner checks the names in the dashboard instead.)
   - **6d Deploy (owner, by hand):** first deploy from the dashboard (auto-deploy is off). After later merges that touch `app/pipelines`, `railway redeploy --service catalog-cycle --from-source --yes`. Whether a deploy of a cron service also starts a run was not verified this session: check `railway logs --service catalog-cycle` after the first deploy.
-  - **6e First run on demand against prod:** `railway cron run --service catalog-cycle --yes` (Railway's docs list `railway cron run`; the CLI installed here, 5.62.1, has no `cron` command, so run `railway upgrade` first, or use the dashboard's run control). Then `railway logs --service catalog-cycle` → the last line is one JSON object with `"status": "ok"` (or `"incomplete"` with a retry count: run it again later). Exit code 1 (`rejected`/`failed`) is a STOP: paste `status`, `problems` and counts (never names).
+  - **6e First run on demand against prod:** `railway cron run --service catalog-cycle --yes` (Railway's docs list `railway cron run`; the CLI installed here, 5.62.1, has no `cron` command, so run `railway upgrade` first, or use the dashboard's run control). Then `railway logs --service catalog-cycle` → the last line is one JSON object with `"status": "ok"`, or `"incomplete"` with a retry count: some points are still pending after the elevation rounds. An incomplete run still rebuilds the route table when the EPQS gate passes over the points it has (pending points read NULL elevation, never 0), pings `/fail`, and exits 2; run it again later to fill them. A failed gate blocks the rebuild. Exit code 1 (`rejected`/`failed`) is a STOP: paste `status`, `problems` and counts (never names).
   - **6f After the first 2 January:** the run shows in `railway cron list --service catalog-cycle` and in the healthchecks.io check. On-demand runs after each scrape load use 6e. The scrape itself and its loader stay on the owner's Mac.
 
 ---
@@ -5015,7 +5221,20 @@ and add `"INGLLM app.data.repair.r10_llm plan"` to the helper list `tests/test_r
 
 Same rules, re-entry block and prod preamble as Task 6, with `B=mpc-3-rehearsal` and `GATE_DIR=../data/review/gates_mpc3_prod`.
 
-- [ ] **Step 1 (owner/agent): Branch** from `production` (prod at `0009_static_features`, catalog refreshed); `MIG upgrade head` → `0010_accident_route_links (head)`; `MIG check`; grants; both verify scripts pass.
+**Paid LLM work runs on prod only (owner ruling, 2026-10-15, final review).** The cumulative cap ledger (`source_ingest_log`) and the gate (`internal.r10_llm_gates`, plus the sample's `internal.r10_llm_calls` rows the gate reads) live in whichever database `TARGET_HOST` names, so paying on the branch and again on prod would double the exposure, a re-created branch would copy prod's ledger and reset its own cap, and a branch gate cannot be reused on prod. So the branch rehearsal runs only the free steps (`r10`, `r10-export`, `r10-import`, and `r10_llm plan`); `probe`, `sample`, `gate`, `run` and `apply` run once, on prod, in Step 5. The order there is fixed: 3a-verify (owner sign-off, `gate_pass llm_verify`) → `sample` → owner spot-check → `gate` → `run` → `apply`. Every paid block starts with `gate_require llm_verify`, and `r10_llm run` itself refuses unless the latest gate for that model and prompt version passed.
+
+- [ ] **Step 1 (owner/agent): Branch** from `production` (prod at `0009_static_features`, catalog refreshed); Task 6 Step 1's `neonctl branches create` with `B=mpc-3-rehearsal`, then the re-entry block, then a positive check before upgrading (revised 2026-10-15):
+
+```bash
+( cur="$(MIG current)" || exit 1
+  printf '%s\n' "$cur"
+  case "$cur" in
+    0009_static_features) echo "branch at 0009" ;;
+    *) echo "branch is not at 0009_static_features: STOP" >&2; exit 1 ;;
+  esac )
+```
+
+Expected: `0009_static_features` (no `(head)`), `branch at 0009`. Then `MIG upgrade head` → `0010_accident_route_links (head)`; `MIG check`; `OWNER_PSQL -q -f db/roles/grants_phase2.sql`; both verify scripts pass.
 - [ ] **Step 2 (owner/agent): Dry run, apply, idempotence**
 
 ```bash
@@ -5028,30 +5247,184 @@ ANALYST_PSQL -At -c "SELECT count(*) FILTER (WHERE route_id IS NOT NULL), count(
 
 Expected: the dry run prints `legacy_accidents`, `links: {legacy_mp_id: N}`, `unresolved` by reason, `legacy_conflict` (report any non-zero count to the owner); both applies print the same counts; the view shows `mp_route_id` and `legacy_mp_id` rows; the accidents counts equal the same query run before Step 2 (R10 never writes accidents). The spec's earlier figures (421 direct, 762 needing a matcher) are the comparison: the second group is what lands in `unresolved`.
 
-- [ ] **Step 3 (owner, optional): Review** — only if the owner wants the residue linked (D-N): `ING r10-export --out ../data/review/r10_unresolved.csv`; the owner fills `owner_decision` (`link`/`no_link`) and, for `link`, `decided_kind` (`route`/`area`) and `decided_id` (a candidate's id, or any catalog id); `ING r10-import --review-file ../data/review/r10_unresolved.csv` (dry), then with `--apply`; `ING r10 --apply`. The CSV holds MP names and grades for review only; it stays in gitignored `data/review/` and is never committed or shared.
-- [ ] **Step 3a-verify (owner go, then agent with the key exported in its shell): HARD GATE before any paid `sample`** — Task 15 Step 1, made a runbook step (review I5). Record everything in `../data/review/gates_mpc3_prod/r10_llm_verify.md` (date of each check, never the key). Any STOP below ends Task 16's LLM work until the owner rules.
+- [ ] **Step 3 (owner, optional): Review on the branch (free)** — only if the owner wants the residue linked (D-N): `ING r10-export --out ../data/review/r10_unresolved.csv`; the owner fills `owner_decision` (`link`/`no_link`) and, for `link`, `decided_kind` (`route`/`area`) and `decided_id` (a candidate's id, or any catalog id); `ING r10-import --review-file ../data/review/r10_unresolved.csv` (dry), then with `--apply`; `ING r10 --apply`. The CSV holds MP names and grades for review only; it stays in gitignored `data/review/` and is never committed or shared.
+- [ ] **Step 3-plan (agent, free): size the LLM pass on the branch** — `INGLLM app.data.repair.r10_llm plan` prints case counts by kind and a dollar ceiling per model; no API call, no key needed. Nothing paid runs on the branch: no `probe`, `sample` or `run` (see the ruling above).
+- [ ] **Step 4 (owner go, then agent): Prod migrate and R10** — Task 6 Step 4's block pattern (revised 2026-10-15, final review).
+
+4a — gate (read-only):
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
+  # PRODUCTION (read-only)
+  [ -s ../data/review/mpc3_r10_dry_branch.json ] || { echo "no branch evidence" >&2; exit 1; }
+  cur="$(MIG current)" || exit 1
+  printf '%s\n' "$cur"
+  case "$cur" in
+    0009_static_features) ;;
+    *) echo "prod is not at 0009_static_features: STOP" >&2; exit 1 ;;
+  esac
+  ( set -a; . ./.env.ingest; set +a
+    python3 -c 'import os, sys, urllib.parse as u
+h = (u.urlsplit(os.environ.get("INGEST_DATABASE_URL", "")).hostname or "").lower()
+ok = h.startswith("ep-") and "-pooler." not in h
+print("ingest direct host:", ok)
+sys.exit(0 if ok else 1)' ) || { echo "ingest URL is not the direct Neon host: STOP" >&2; exit 1; }
+  gate_pass c3_migrate )
+```
+
+Expected: `0009_static_features`, `ingest direct host: True`, `GATE OK: c3_migrate`.
+
+4a-snap — snapshot `pre-mpc-3` (run once; if it exists, stop and ask the owner):
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
+  # PRODUCTION snapshot
+  gate_require c3_migrate || exit 1
+  snap="$(neonctl branches create --project-id still-morning-74008008 --name pre-mpc-3 --parent production --no-secrets --output json \
+    | python3 -c 'import json,sys; b=json.load(sys.stdin)["branch"]; print(b["id"], b["name"], b["parent_id"], b["created_at"])')" || exit 1
+  printf '%s\n' "$snap"
+  case "$snap" in *" pre-mpc-3 br-restless-bar-ajw5zy4b "*) gate_pass snapshot ;; *) echo "snapshot parent is not production: STOP" >&2; exit 1 ;; esac )
+```
+
+Expected: parent `br-restless-bar-ajw5zy4b` and `GATE OK: snapshot`. Record the id and `created_at` in the PR.
+
+4b — migrate, grants, verify:
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
+  # PRODUCTION
+  gate_require c3_migrate || exit 1
+  gate_require snapshot || exit 1
+  MIG upgrade head || exit 1
+  cur="$(MIG current)" || exit 1
+  printf '%s\n' "$cur"
+  [ "$cur" = "0010_accident_route_links (head)" ] || { echo "prod is not at 0010_accident_route_links (head): STOP" >&2; exit 1; }
+  MIG check || exit 1
+  OWNER_PSQL -q -f db/roles/grants_phase2.sql || exit 1
+  OWNER_PSQL -q -f db/roles/verify_roles.sql || exit 1
+  OWNER_PSQL -q -f db/roles/verify_roles_phase2.sql || exit 1
+  gate_pass c3_migrated )
+```
+
+4c — gate: the prod dry run's `links` and `unresolved` totals are within 1% of the branch's:
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
+  # PRODUCTION (read-only dry run)
+  gate_require c3_migrated || exit 1
+  save_once ../data/review/mpc3_r10_dry_prod.json ING r10 || exit 1
+  python3 - <<'EOF' || exit 1
+import json
+b = json.load(open("../data/review/mpc3_r10_dry_branch.json")); p = json.load(open("../data/review/mpc3_r10_dry_prod.json"))
+for key in ("links", "unresolved"):
+    tb, tp = sum(b[key].values()), sum(p[key].values())
+    assert abs(tp - tb) <= 0.01 * max(tb, 1), (key, tb, tp)
+    print(key, "branch", tb, "prod", tp)
+print("prod R10 dry run matches branch")
+EOF
+  gate_pass c3_apply )
+```
+
+4d — apply R10 on prod (then the Step 2 queries with the prod preamble; the accidents counts are unchanged):
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
+  # PRODUCTION
+  gate_require c3_apply || exit 1
+  ING r10 --apply )
+```
+
+4e (owner, optional) — Step 3 on prod: branch decisions are re-made on prod by importing the same reviewed CSV, which the import validates against prod's catalog. Each prod write runs in a block with the prod preamble's `cd`/`TARGET_HOST`/`GATE_DIR` line and `gate_require c3_apply || exit 1` first: `ING r10-import --review-file ../data/review/r10_unresolved.csv` (dry), then with `--apply`, then `ING r10 --apply`.
+
+- [ ] **Step 5 (owner go, then agent with the key exported in its shell): R10 LLM pass, prod only** — DP8 (0.80), DP13 (Haiku preferred) and DP14 (full narrative) are owner decisions. O1 is decided (owner 2026-10-14: candidate MP names, grades and types are sent). The owner exports `ANTHROPIC_API_KEY` in the shell (never written to a file, never echoed); every block below is a subshell of that shell. `--max-usd` is **cumulative** per model and prompt version (review ruling I1): every `probe`, `sample` and `run` for that model counts against it, including failed and still-running ledger rows; the code refuses a value above the owner's cap ($12 Haiku, $22 Sonnet), and an advisory lock lets only one paid r10_llm process spend at a time. Each accident is attempted at most twice per model and prompt; the SDK never retries on its own. Because the ledger is prod's only, the caps bound the whole pass.
+
+5a — **3a-verify, the HARD GATE before any paid `sample`** (Task 15 Step 1, made a runbook step; review I5). It runs once, against prod's ledger. Record everything in `../data/review/gates_mpc3_prod/r10_llm_verify.md` (date of each check, never the key). Any STOP below ends Task 16's LLM work until the owner rules.
   1. **Prices.** Fetch Anthropic's pricing page; record the input and output price per MTok for `claude-haiku-4-5-20251001` and `claude-sonnet-5` with today's date. If either differs from `r10_llm.PRICES_USD_PER_MTOK`: **STOP** (the ceilings and caps were computed from those prices; updating them is a code change and an owner call).
-  2. **Pinned ids and one fixture call per model.** `INGLLM app.data.repair.r10_llm probe --model haiku --max-usd 12` then `--model sonnet --max-usd 22`. Each runs `models.retrieve` on the pinned id (refuses unless it returns the same id), then one synthetic fixture call (`Fixture …` names, no real accident, no audit row; its spend goes into the same cumulative `source_ingest_log` ledger as the sample). Record `retrieved`, `status`, `input_tokens`, `output_tokens`, `cost_usd` against `ceiling_usd`. **STOP** if `status` is not `ok`, if `model_reported` differs from the pinned id (the probe refuses), or if `cost_usd` exceeds `ceiling_usd`.
+  2. **Pinned ids and one fixture call per model.** Each runs `models.retrieve` on the pinned id (refuses unless it returns the same id), then one synthetic fixture call (`Fixture …` names, no real accident, no audit row; its spend goes into the same cumulative `source_ingest_log` ledger as the sample). Record `retrieved`, `status`, `input_tokens`, `output_tokens`, `cost_usd` against `ceiling_usd`. **STOP** if `status` is not `ok`, if `model_reported` differs from the pinned id (the probe refuses), or if `cost_usd` exceeds `ceiling_usd`.
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
+  # PRODUCTION (paid: one fixture call per model)
+  gate_require c3_migrated || exit 1
+  INGLLM app.data.repair.r10_llm probe --model haiku --max-usd 12 || exit 1
+  INGLLM app.data.repair.r10_llm probe --model sonnet --max-usd 22 )
+```
+
   3. **Haiku accepts thinking plus structured output together.** The Haiku probe sends `thinking={"type": "enabled", "budget_tokens": 8192}` with `output_config.format` = JSON schema; `status: ok` with a parsed pick confirms it. An `error` with `error_class: BadRequestError` means the combination is refused: **STOP** (the fallback, a strict tool with `tool_choice`, is the owner's call and a new `PROMPT_VERSION`). Same for the Sonnet probe with adaptive thinking at effort `high`.
   4. **Data retention.** Record the org's API data-retention setting (zero data retention on or off) from the Anthropic console, for the owner (DP14 sends full narratives).
-  5. Owner signs off the record; only then Step 3b.
-- [ ] **Step 3b (owner go, then agent with the key exported in its shell): LLM sample on the branch** — DP8 (0.80), DP13 (Haiku preferred) and DP14 (full narrative) are owner decisions. O1 is decided (owner 2026-10-14: candidate MP names, grades and types are sent). **Precondition: Step 3a-verify above passed and its record exists.** The caps below sit above each model's worst-case ceiling (about $10 and $19 at 12,288 output tokens a call, M4), so the cap never stops a 150-case sample early. `--max-usd` is **cumulative** per model and prompt version (review ruling I1): every `probe`, `sample` and `run` for that model counts against it, including failed and still-running ledger rows, the code refuses a value above the owner's cap ($12 Haiku, $22 Sonnet), and an advisory lock lets only one paid r10_llm process spend at a time. Each accident is attempted at most twice per model and prompt; the SDK never retries on its own. If a sample's CSV is lost, `INGLLM app.data.repair.r10_llm sample-csv --run-id <run_id> --out <new CSV>` rebuilds it from the audit rows.
+  5. **Owner sign-off.** The owner reads the record and adds one line starting `Owner sign-off:` with the date. Only then does the agent run:
 
 ```bash
-INGLLM app.data.repair.r10_llm plan
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
+  # PRODUCTION gate (no database access)
+  [ -s "$GATE_DIR/r10_llm_verify.md" ] || { echo "no verify record" >&2; exit 1; }
+  grep -q '^Owner sign-off:' "$GATE_DIR/r10_llm_verify.md" || { echo "owner has not signed off the verify record: STOP" >&2; exit 1; }
+  gate_pass llm_verify )
 ```
 
-Expected (free): case counts by kind and a dollar ceiling per model. Then, for each model being compared (DP13), from a shell where the owner exported `ANTHROPIC_API_KEY` (never written to a file, never echoed):
+Expected: `GATE OK: llm_verify`.
+
+5b — **sample** (paid). The caps sit above each model's worst-case ceiling (about $10 and $19 at 12,288 output tokens a call, M4), so the cap never stops a 150-case sample early; use `plan`'s ceiling and the probes' `output_tokens` to check the headroom left for `run`. For each model being compared (DP13):
 
 ```bash
-INGLLM app.data.repair.r10_llm sample --model haiku --n 150 --max-usd 12 --out ../data/review/r10_llm_sample_haiku.csv
-INGLLM app.data.repair.r10_llm sample --model sonnet --n 150 --max-usd 22 --out ../data/review/r10_llm_sample_sonnet.csv
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
+  # PRODUCTION (paid)
+  gate_require llm_verify || exit 1
+  INGLLM app.data.repair.r10_llm plan || exit 1
+  INGLLM app.data.repair.r10_llm sample --model haiku --n 150 --max-usd 12 --out ../data/review/r10_llm_sample_haiku.csv )
 ```
 
-Expected: `calls` ≤ 150 each, `status_counts` mostly `ok`, `spent_usd` under the cap, `stopped_at_cap: false`. Any `refusal` or `error` count above a handful: STOP and report.
-  - **Owner spot-check:** fill `owner_answer` in each CSV (a candidate id or `none`), ideally with the two `llm_*` columns hidden while labelling. Then `INGLLM app.data.repair.r10_llm gate --model haiku --review-file ../data/review/r10_llm_sample_haiku.csv` (and the same for sonnet) → prints `n_checked`, agreement, auto-band precision and `passed`. Owner picks the model (DP13) from these numbers.
-  - `INGLLM app.data.repair.r10_llm run --model <picked> --max-usd <owner's cap>` (the same cumulative cap the sample already spent from; resumable: rerun until no case is left or the cap stops it, and report `skipped_attempt_limit` and `error_counts`), then `INGLLM app.data.repair.r10_llm apply --model <picked>` (dry: counts per band), then with `--apply`, then `ING r10 --apply` and `ING r10-export --out ../data/review/r10_unresolved.csv` for the review band (Step 3's round trip, now prefilled with the LLM's pick).
-- [ ] **Step 4 (owner go, then agent): Prod** — gate `c3_migrate` (branch dry-run evidence exists; prod not yet at `0010`), migrate + grants + verify, then gate `c3_apply`: `save_once ../data/review/mpc3_r10_dry_prod.json ING r10` and a python check that its `links` and `unresolved` totals are within 1% of the branch's; then `ING r10 --apply`, and Steps 3/3b on prod if the owner chooses. Branch decisions are re-made on prod by importing the same reviewed CSV, which the import validates against prod's catalog. Prod LLM calls are paid again: the branch's gate row does not carry over, so the prod gate is re-run on the same spot-check CSV (the `gate` subcommand only reads the file), and `run` makes the prod calls under the owner's cap.
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
+  # PRODUCTION (paid)
+  gate_require llm_verify || exit 1
+  INGLLM app.data.repair.r10_llm sample --model sonnet --n 150 --max-usd 22 --out ../data/review/r10_llm_sample_sonnet.csv )
+```
+
+Expected: `calls` ≤ 150 each, `status_counts` mostly `ok`, `spent_usd` under the cap, `stopped_at_cap: false`. Any `refusal` or `error` count above a handful: STOP and report. If a sample's CSV is lost, `INGLLM app.data.repair.r10_llm sample-csv --run-id <run_id> --out <new CSV>` (free, prod preamble) rebuilds it from the audit rows.
+
+5c — **owner spot-check, then gate** (free). The owner fills `owner_answer` in each CSV (a candidate id or `none`), ideally with the two `llm_*` columns hidden while labelling. Then, per model:
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
+  # PRODUCTION (no API calls; records the gate and the owner's answers)
+  gate_require llm_verify || exit 1
+  INGLLM app.data.repair.r10_llm gate --model haiku --review-file ../data/review/r10_llm_sample_haiku.csv || exit 1
+  INGLLM app.data.repair.r10_llm gate --model sonnet --review-file ../data/review/r10_llm_sample_sonnet.csv )
+```
+
+Expected per model: `n_checked`, agreement, auto-band precision and `passed`. `gate` reads the sample's audit rows from this database and saves each spot-check answer as an R10 owner decision (`link` to the answered id, or `no_link` for `none`), so a sampled accident never needs deciding twice and `apply` never overrides it. The owner picks the model (DP13) from these numbers; a model whose latest gate did not pass cannot `run` or `apply`.
+
+5d — **run** (paid; resumable: rerun until no case is left or the cap stops it; report `skipped_attempt_limit` and `error_counts`):
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
+  # PRODUCTION (paid)
+  gate_require llm_verify || exit 1
+  INGLLM app.data.repair.r10_llm run --model haiku --max-usd 12 )
+```
+
+(Replace `haiku`/`12` by `sonnet`/`22` if the owner picked Sonnet. The cap is the same cumulative one the probe and sample already spent from.) `run` refuses unless the latest gate for that model and prompt version passed.
+
+5e — **apply** (free): dry run, then write, then R10 and the review-band export to a new file (Step 3's `r10_unresolved.csv` may already exist, and `r10-export` refuses to replace a file; `--overwrite` would wipe filled decisions):
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
+  # PRODUCTION (dry run: counts per band)
+  gate_require llm_verify || exit 1
+  INGLLM app.data.repair.r10_llm apply --model haiku )
+```
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
+  # PRODUCTION
+  gate_require llm_verify || exit 1
+  INGLLM app.data.repair.r10_llm apply --model haiku --apply || exit 1
+  ING r10 --apply || exit 1
+  ING r10-export --out ../data/review/r10_unresolved_llm_prod.csv )
+```
+
+The new CSV is Step 3's round trip for the review band, prefilled with the LLM's pick; import it with `ING r10-import --review-file ../data/review/r10_unresolved_llm_prod.csv` (dry, then `--apply`) and `ING r10 --apply`, each in a prod block that starts with `gate_require c3_apply`. Owner decisions, including the spot-check answers `gate` saved, are never overridden by `apply`.
 
 ---
 
@@ -5084,7 +5457,7 @@ The follow-up v2.2 plan needs per-point slope, aspect (with confidence), litholo
   - MP as the only source, no OpenBeta (decision 1; no OpenBeta code anywhere).
   - Scope, with boulders and non-US routes unscorable (Tasks 2, 4: `boulder`, `not_us`).
   - Thin catalog with derived columns only (D-B).
-  - `type_group`, with toprope/aid to the underlying rock group per ruling R-1 (Task 2); plus the `rock` group (owner 2026-10-13) for a route whose only discipline evidence is MP's own `rock` type, carried through to the similarity features and Phase 3 consumers above.
+  - `type_group`, with toprope/aid to the underlying rock group per ruling R-1 (Task 2), and a toprope/aid-only route to `rock` (`rt-mp-v3`, 2026-10-15); plus the `rock` group (owner 2026-10-13) for a route whose only discipline evidence is MP's own `rock` type, carried through to the similarity features and Phase 3 consumers above.
   - `ltree` path (Tasks 1, 3) and the scorable flag (Task 4).
   - Scheduled refresh (Task 12; DP6 decided: a Railway cron service, yearly on 2 January plus on demand, holding only the `ingest` credential) on top of the CLI refresh path (Task 4).
   - No matcher: R10 candidates are ranked only, and the LLM picks among them.
@@ -5127,7 +5500,7 @@ The follow-up v2.2 plan needs per-point slope, aspect (with confidence), litholo
   - P3:57 builds the area hierarchy from an OpenBeta `canonical_areas`. Here it is the MP tree: `area_path` depth 1 = state, depth 2 = region, and the route's own area = crag. MP depth varies, so "crag" is the route's area, not always a leaf.
   - P3:49, P3:161, P3 M11 and the Phase 2 spec name OpenBeta as the public rock catalog and list an "OpenBeta ticks" exposure component; both are superseded.
   - P3's objective-level scoring puts objectives in `canonical_areas`. With MP-id keys there is no room for non-MP area rows; objectives are off the roadmap.
-  - P3:56 is followed (R-1). A toprope/aid-only route is `trad` for lack of bolt data, which the spec did not foresee.
+  - P3:56 is followed (R-1). A toprope/aid-only route is `rock` (sport or trad, unknown) for lack of bolt data (`rt-mp-v3`, 2026-10-15), which the spec did not foresee.
   - **Phase 4 plan:**
     - It renumbers to 0011–0013 (its 0011 follows this plan's `0010_accident_route_links`) and renames its migration tests and runbook expectations.
     - Its statement that `canonical_*` do not exist goes stale.
