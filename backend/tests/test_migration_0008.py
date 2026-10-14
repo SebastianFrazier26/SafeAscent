@@ -25,7 +25,8 @@ ROUTES = ("INSERT INTO canonical_routes (route_id, area_id, type_group, is_bould
 
 
 def test_0008_checks_clean_and_enforces_the_catalog_rules():
-    with migrated_db(PIN, seed_sql=MP + AREAS) as name:
+    # At head, not PIN: alembic check compares every model to the DB and refuses a DB behind head.
+    with migrated_db(seed_sql=MP + AREAS) as name:
         command.check(_alembic_cfg(name))
         with pytest.raises(asyncpg.CheckViolationError):
             run_sql(name, ROUTES + "(900000001, 900000101, 'trad', false, '{trad}', 'rt-mp-v1', true, 'unknown_type', 'h', 'v')")

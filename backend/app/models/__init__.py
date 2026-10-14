@@ -4,6 +4,7 @@ Import all models here to make them available for Alembic migrations.
 """
 from app.models import catalog  # noqa: F401  (MP route catalog, 0008)
 from app.models import conditions  # noqa: F401  (Phase 2a daily conditions and normals)
+from app.models import features  # noqa: F401  (MP similarity features, 0009)
 from app.models import legacy  # noqa: F401  (registers FK targets on Base.metadata)
 from app.models import pipeline  # noqa: F401  (Phase 2 bookkeeping tables)
 from app.models import reference  # noqa: F401  (Phase 2a reference and review tables)

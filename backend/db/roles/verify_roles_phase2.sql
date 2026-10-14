@@ -98,7 +98,13 @@ INSERT INTO ingest_privs VALUES
   -- The tick-source seam (DP9) and its two read views.
   ('internal.route_tick_scrapes', 'SELECT'), ('internal.route_tick_scrapes', 'INSERT'),
   ('internal.route_tick_scrapes', 'UPDATE'),
-  ('internal.route_tick_coverage', 'SELECT'), ('internal.route_tick_months', 'SELECT');
+  ('internal.route_tick_coverage', 'SELECT'), ('internal.route_tick_months', 'SELECT'),
+  -- MP similarity features (0009): points are upserted, never deleted; route rows are rebuilt
+  -- (DELETE for routes that became boulders); the scoring-unit view is read only.
+  ('public.feature_points', 'SELECT'), ('public.feature_points', 'INSERT'), ('public.feature_points', 'UPDATE'),
+  ('public.route_static_features', 'SELECT'), ('public.route_static_features', 'INSERT'),
+  ('public.route_static_features', 'UPDATE'), ('public.route_static_features', 'DELETE'),
+  ('public.scoring_unit_features', 'SELECT');
 
 -- PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views, so extension-owned
 -- relations are skipped throughout, as verify_roles.sql does.
@@ -244,8 +250,8 @@ FROM cols;
 INSERT INTO role_checks VALUES
   ('accidents_raw column checks ran', EXISTS (SELECT 1 FROM rels WHERE tbl = 'internal.accidents_raw'));
 
--- Plan 2 (0006), plan 3 (0007) and the MP catalog plan (0008): app and analyst read the clean
--- views, the conditions tables, accident_conditions and the catalog through migrator's default
+-- Plan 2 (0006), plan 3 (0007) and the MP catalog plan (0008, 0009): app and analyst read the clean
+-- views, the conditions tables, accident_conditions, the catalog and its features through migrator's default
 -- privileges and hold nothing else on them
 -- (a simple view is auto-updatable, so writes are checked too). ingest's SELECT is in the exact
 -- set above; trainer holds nothing until Phase 3 (D13), per the trainer check above.
@@ -259,7 +265,8 @@ FROM unnest(ARRAY['public.cell_daily_conditions', 'public.grid_bucket_series', '
 UNION ALL
 SELECT 'catalog relation exists: ' || t, EXISTS (SELECT 1 FROM rels WHERE tbl = t)
 FROM unnest(ARRAY['public.canonical_areas', 'public.canonical_routes', 'public.scorable_routes',
-                  'internal.route_tick_scrapes', 'internal.route_tick_coverage', 'internal.route_tick_months']) AS t
+                  'internal.route_tick_scrapes', 'internal.route_tick_coverage', 'internal.route_tick_months',
+                  'public.feature_points', 'public.route_static_features', 'public.scoring_unit_features']) AS t
 UNION ALL
 SELECT g || ' can SELECT ' || r.tbl || ' and nothing else',
        has_table_privilege(g, r.oid, 'SELECT')
@@ -270,7 +277,8 @@ FROM rels r CROSS JOIN unnest(ARRAY['app', 'analyst']) AS g
 WHERE r.tbl IN ('public.accidents_clean', 'public.accidents_clean_daily', 'public.accident_conditions',
                 'public.cell_daily_conditions', 'public.grid_bucket_series', 'public.cell_normals_status',
                 'public.cell_climate_normals', 'public.cell_climatology', 'public.canonical_areas',
-                'public.canonical_routes', 'public.scorable_routes');
+                'public.canonical_routes', 'public.scorable_routes', 'public.feature_points',
+                'public.route_static_features', 'public.scoring_unit_features');
 
 SELECT check_name, ok FROM role_checks ORDER BY ok, check_name;
 

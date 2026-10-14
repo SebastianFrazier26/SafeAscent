@@ -469,6 +469,19 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
     _denied(app, "SELECT count(*) FROM internal.route_tick_scrapes")
     _denied(analyst, "BEGIN READ WRITE; DELETE FROM internal.route_tick_scrapes WHERE false; COMMIT")
 
+    # MP similarity features (0009): ingest upserts points (never deletes them) and rebuilds the
+    # route rows; app and analyst only read the features and the scoring-unit view.
+    _as(ingest, "INSERT INTO feature_points (point_key, lat, lon, grid_bucket, h3_r5, h3_r7, feature_version) "
+        "VALUES ('900000100:k', 40, -105, 1, 'a', 'b', 'f') "
+        "ON CONFLICT (point_key) DO UPDATE SET tz = 'America/Denver'")
+    _denied(ingest, "DELETE FROM feature_points WHERE false")
+    _as(ingest, "UPDATE route_static_features SET feature_version = 'f' WHERE false; "
+        "DELETE FROM route_static_features WHERE false; SELECT count(*) FROM scoring_unit_features")
+    _as(app, "SELECT count(*) FROM scoring_unit_features; SELECT count(*) FROM route_static_features")
+    _as(analyst, "SELECT count(*) FROM feature_points")
+    _denied(app, "UPDATE feature_points SET tz = NULL WHERE false")
+    _denied(analyst, "BEGIN READ WRITE; DELETE FROM route_static_features WHERE false; COMMIT")
+
     _denied(app, "SELECT count(*) FROM internal.mp_tick_aggregates")
     _denied(app, "SELECT count(*) FROM internal.accidents_raw")
     _as(app, "SELECT count(*) FROM source_ingest_log")
@@ -583,7 +596,10 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "GRANT DELETE ON public.canonical_routes TO ingest;"
         "REVOKE UPDATE ON internal.route_tick_scrapes FROM ingest;"
         "GRANT INSERT ON public.canonical_areas TO app;"
-        "GRANT SELECT ON public.scorable_routes TO trainer;",
+        "GRANT SELECT ON public.scorable_routes TO trainer;"
+        "GRANT DELETE ON public.feature_points TO ingest;"
+        "GRANT INSERT ON public.route_static_features TO app;"
+        "GRANT SELECT ON public.scoring_unit_features TO trainer;",
     )
     _as(owner_url, "GRANT ingest TO analyst")
     # CREATE without USAGE is enough to create a table, which is why verify checks both.
@@ -624,5 +640,8 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "ingest UPDATE on internal.route_tick_scrapes matches the expected set",
         "app can SELECT public.canonical_areas and nothing else",
         "trainer holds no privilege on public.scorable_routes",
+        "ingest DELETE on public.feature_points matches the expected set",
+        "app can SELECT public.route_static_features and nothing else",
+        "trainer holds no privilege on public.scoring_unit_features",
     ):
         assert check in stray.stderr, check

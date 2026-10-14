@@ -115,6 +115,13 @@ GRANT SELECT ON public.scorable_routes TO ingest;
 GRANT SELECT, INSERT, UPDATE ON internal.route_tick_scrapes TO ingest;
 GRANT SELECT ON internal.route_tick_coverage, internal.route_tick_months TO ingest;
 
+-- MP similarity features (0009). The points step inserts points and sets their timezone; the
+-- elevation step updates them; the route step rebuilds route_static_features (DELETE only for
+-- routes that became boulders). Reads the catalog and mp_routes through grants above.
+GRANT SELECT, INSERT, UPDATE ON public.feature_points TO ingest;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.route_static_features TO ingest;
+GRANT SELECT ON public.scoring_unit_features TO ingest;
+
 RESET ROLE;
 COMMIT;
 \echo 'phase 2 grants applied'
