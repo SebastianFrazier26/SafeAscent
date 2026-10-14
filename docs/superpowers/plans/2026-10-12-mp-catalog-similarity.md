@@ -58,7 +58,7 @@ The foundations plan's Global Constraints apply. Also:
 
 **Coordinator ruling R-1 (2026-10-12; the owner may override):** toprope and aid map to the underlying rock group, per P3:56. With `sport` or `trad` in the type string that group is used; a toprope/aid-only route maps to `trad` (MP has no bolt data, and aid and gear-protected toprope lines are trad-protected far more often than bolted; a TR-only sport line is mislabelled `trad`, which the owner accepted as the cost of following P3:56 over the earlier `unknown` default).
 
-**R-1 revised (2026-10-15, final review; `TYPE_RULE_VERSION = "rt-mp-v3"`):** a route whose only discipline evidence is toprope or aid now maps to `rock` (sport or trad, unknown), not `trad`: with no bolt data that is exactly what `rock` means (owner group of 2026-10-13). `sport`/`trad` in the type string still win. A V grade means a boulder everywhere, not only on a `rock`-only route. The Task 2 code and tests below show the `rt-mp-v2` rule they were written against; the shipped mapper is `rt-mp-v3`.
+**R-1 revised (2026-10-14, final review; `TYPE_RULE_VERSION = "rt-mp-v3"`):** a route whose only discipline evidence is toprope or aid now maps to `rock` (sport or trad, unknown), not `trad`: with no bolt data that is exactly what `rock` means (owner group of 2026-10-13). `sport`/`trad` in the type string still win. A V grade means a boulder everywhere, not only on a `rock`-only route. The Task 2 code and tests below show the `rt-mp-v2` rule they were written against; the shipped mapper is `rt-mp-v3`.
 
 **Decisions this plan makes:**
 - D-A `(decided: DP1)` **Catalog keys are the MP ids.** `canonical_areas.area_id` = `mp_locations.mp_id`, `canonical_routes.route_id` = `mp_routes.mp_route_id` (bigint, FK). Phase 4's `RouteRef(kind="mp_route", id=…)`, its FKs to `mp_routes`, the live app's route ids and Phase 3's `route_id` are one id space.
@@ -84,7 +84,7 @@ The foundations plan's Global Constraints apply. Also:
 2. **A crag that copied its state's coordinates, or a region's coordinates two levels up** — expect `none` for the state copy and `inherited` with the region as `coord_source_id` for the other (Task 3 `test_inherited_coordinates_resolve_to_their_true_source`).
 3. **A scrape load that blanks the type string of 10% of routes** — expect the refresh `rejected`, the catalog unchanged and a `rejected` log row (Task 4 `test_scorable_drop_rejects_and_writes_nothing`); the scheduled cycle then stops before the feature steps (Task 12 `test_cycle_stops_when_the_refresh_is_rejected`).
 4. **A route never scraped, a route scraped but not finished, a month after the scrape** — expect `missing`/`scraped`/`complete as of`, and no zero for any of them (Task 1 `test_tick_coverage_has_three_states_and_never_zero`, `test_loader_writes_the_seam_only_for_complete_routes`).
-5. **"TR" or "Aid" alone, "Trad, Boulder", "Ice, Mixed, Alpine", "unknown" with grade "WI3"** — expect `rock` (R-1 as revised 2026-10-15), `trad` (not a boulder), `mixed`, `ice` (Task 2 tests).
+5. **"TR" or "Aid" alone, "Trad, Boulder", "Ice, Mixed, Alpine", "unknown" with grade "WI3"** — expect `rock` (R-1 as revised 2026-10-14), `trad` (not a boulder), `mixed`, `ice` (Task 2 tests).
 6. **A DEM tile that times out, or a nodata cell** — expect the point left unfilled for the next run, and `nodata` with NULL elevation, never 0 (Task 8, carried tests).
 7. **A scorable route whose point has no normals yet** — expect 12 `scoring_unit_features` rows with NULL normals and `normals_status = 'pending'` (Task 7).
 8. **A legacy accident link with no MP id** — expect an `internal.r10_unresolved` row with ranked candidate ids, no link, legacy columns untouched (Task 14 `test_unresolved_links_are_recorded_never_guessed`).
@@ -1978,7 +1978,7 @@ INGMOD app.pipelines.mp_catalog refresh
 ```
 
 Expected:
-- Dry run: `status: ok`, `routes: 168055` (or the current `mp_routes` count), `areas` ≈ 45K, `stored_scorable: 0`, `routes_by_type_group` with `rock` ≈ 105,701 (owner decision 2026-10-13: MP routes typed only "rock", sport vs trad unknown) and `unknown` far smaller than the pre-rock 4,176 'unknown' type strings (TR/aid-only routes are `rock` under `rt-mp-v3`, R-1 as revised 2026-10-15), `areas_by_coord.inherited` in the thousands (owner measured 5,471 copied pairs; state-level copies land in `none`).
+- Dry run: `status: ok`, `routes: 168055` (or the current `mp_routes` count), `areas` ≈ 45K, `stored_scorable: 0`, `routes_by_type_group` with `rock` ≈ 105,701 (owner decision 2026-10-13: MP routes typed only "rock", sport vs trad unknown) and `unknown` far smaller than the pre-rock 4,176 'unknown' type strings (TR/aid-only routes are `rock` under `rt-mp-v3`, R-1 as revised 2026-10-14), `areas_by_coord.inherited` in the thousands (owner measured 5,471 copied pairs; state-level copies land in `none`).
 - Refresh: `finished ok`, then one JSON line with `routes_inserted` = `routes`, `areas_inserted` = `areas`, the same scorable count as the dry run, and `quarantined` listing only `cycle`/`orphan_parent` and coordinate reasons with small counts.
 - The second refresh prints `routes_inserted: 0, routes_changed: 0, areas_inserted: 0, areas_changed: 0` (idempotent).
 - On a catalog already populated under an earlier `TYPE_RULE_VERSION` (e.g. upgrading to `rt-mp-v3` after a prior `rt-mp-v2` run), the first refresh under the new version instead reports `routes_changed` ≈ `routes` and `routes_inserted: 0`: `TYPE_RULE_VERSION` is part of every row's `facts_sha256`, so a rule bump touches every route once, in the one gated transaction.
@@ -5393,7 +5393,7 @@ Expected: `calls` ≤ 150 each, `status_counts` mostly `ok`, `spent_usd` under t
   INGLLM app.data.repair.r10_llm gate --model sonnet --review-file ../data/review/r10_llm_sample_sonnet.csv )
 ```
 
-Expected per model: `n_checked`, agreement, auto-band precision and `passed`. `gate` reads the sample's audit rows from this database and saves each spot-check answer as an R10 owner decision (`link` to the answered id, or `no_link` for `none`), so a sampled accident never needs deciding twice and `apply` never overrides it. The owner picks the model (DP13) from these numbers; a model whose latest gate did not pass cannot `run` or `apply`.
+Expected per model: `n_checked`, agreement, auto-band precision and `passed`. `gate` reads the sample's audit rows from this database and saves each spot-check answer as an R10 owner decision (`link` to the answered route or area, or `no_link` for `none`) whether or not the gate passes, leaving any earlier owner decision as it was (`owner_decisions_recorded`/`owner_decisions_skipped`), so a sampled accident never needs deciding twice and `apply` never overrides it. The owner picks the model (DP13) from these numbers; a model whose latest gate did not pass cannot `run` or `apply`.
 
 5d — **run** (paid; resumable: rerun until no case is left or the cap stops it; report `skipped_attempt_limit` and `error_counts`):
 
@@ -5457,7 +5457,7 @@ The follow-up v2.2 plan needs per-point slope, aspect (with confidence), litholo
   - MP as the only source, no OpenBeta (decision 1; no OpenBeta code anywhere).
   - Scope, with boulders and non-US routes unscorable (Tasks 2, 4: `boulder`, `not_us`).
   - Thin catalog with derived columns only (D-B).
-  - `type_group`, with toprope/aid to the underlying rock group per ruling R-1 (Task 2), and a toprope/aid-only route to `rock` (`rt-mp-v3`, 2026-10-15); plus the `rock` group (owner 2026-10-13) for a route whose only discipline evidence is MP's own `rock` type, carried through to the similarity features and Phase 3 consumers above.
+  - `type_group`, with toprope/aid to the underlying rock group per ruling R-1 (Task 2), and a toprope/aid-only route to `rock` (`rt-mp-v3`, 2026-10-14); plus the `rock` group (owner 2026-10-13) for a route whose only discipline evidence is MP's own `rock` type, carried through to the similarity features and Phase 3 consumers above.
   - `ltree` path (Tasks 1, 3) and the scorable flag (Task 4).
   - Scheduled refresh (Task 12; DP6 decided: a Railway cron service, yearly on 2 January plus on demand, holding only the `ingest` credential) on top of the CLI refresh path (Task 4).
   - No matcher: R10 candidates are ranked only, and the LLM picks among them.
@@ -5500,7 +5500,7 @@ The follow-up v2.2 plan needs per-point slope, aspect (with confidence), litholo
   - P3:57 builds the area hierarchy from an OpenBeta `canonical_areas`. Here it is the MP tree: `area_path` depth 1 = state, depth 2 = region, and the route's own area = crag. MP depth varies, so "crag" is the route's area, not always a leaf.
   - P3:49, P3:161, P3 M11 and the Phase 2 spec name OpenBeta as the public rock catalog and list an "OpenBeta ticks" exposure component; both are superseded.
   - P3's objective-level scoring puts objectives in `canonical_areas`. With MP-id keys there is no room for non-MP area rows; objectives are off the roadmap.
-  - P3:56 is followed (R-1). A toprope/aid-only route is `rock` (sport or trad, unknown) for lack of bolt data (`rt-mp-v3`, 2026-10-15), which the spec did not foresee.
+  - P3:56 is followed (R-1). A toprope/aid-only route is `rock` (sport or trad, unknown) for lack of bolt data (`rt-mp-v3`, 2026-10-14), which the spec did not foresee.
   - **Phase 4 plan:**
     - It renumbers to 0011–0013 (its 0011 follows this plan's `0010_accident_route_links`) and renames its migration tests and runbook expectations.
     - Its statement that `canonical_*` do not exist goes stale.
