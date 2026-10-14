@@ -134,6 +134,7 @@ module = [
     "app.pipelines.accident_facts",
     "app.pipelines.dem",
     "app.pipelines.epqs",
+    "app.pipelines.static_features",
     "app.models.types",
 ]
 ignore_errors = false

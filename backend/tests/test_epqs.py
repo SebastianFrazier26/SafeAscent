@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from app.pipelines.dem import Elevation
-from app.pipelines.epqs import EpqsClient, compare, local_slopes, slope_class
+from app.pipelines.epqs import EpqsClient, compare, failure_guard, local_slopes, slope_class
 
 
 def _client(handler):
@@ -39,6 +39,12 @@ def test_retries_transient_failures_then_gives_up_without_a_value():
 def test_slope_classes():
     assert [slope_class(d) for d in (0.0, 9.9, 10.0, 29.9, 30.0, 80.0)] == [
         "flat", "flat", "moderate", "moderate", "steep", "steep"]
+
+
+@pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
+def test_slope_class_refuses_a_non_finite_slope(bad):
+    with pytest.raises(ValueError, match="finite"):
+        slope_class(bad)
 
 
 def test_local_slope_of_a_30_degree_plane():
@@ -99,3 +105,23 @@ def test_gate_edges_at_the_tolerances():
     assert compare(_rows("flat", 60, 1.0) + p90 + _rows("steep", 60, 1.0))["passed"] == 0
     thin = compare(_rows("flat", 29, 1.0) + _rows("moderate", 91, 1.0) + _rows("steep", 60, 1.0))
     assert thin["passed"] == 0 and thin["classes"]["flat"] == {"n": 29, "median": None, "p90": None, "passed": 0}
+
+
+def _with_failures(cls, n, failed):
+    return [(cls, 1000.0, None)] * failed + _rows(cls, n - failed, 1.0)
+
+
+def test_failure_guard_counts_per_class_and_fails_above_20_percent():
+    rows = _with_failures("flat", 80, 20) + _with_failures("moderate", 80, 8) + _rows("steep", 80, 1.0)
+    counts, problems = failure_guard(rows)
+    assert counts == {"flat": {"attempted": 80, "failed": 20, "compared": 60},
+                      "moderate": {"attempted": 80, "failed": 8, "compared": 72},
+                      "steep": {"attempted": 80, "failed": 0, "compared": 80}}
+    assert len(problems) == 1 and "class flat" in problems[0]
+
+
+def test_failure_guard_passes_at_10_percent_and_at_exactly_20():
+    assert failure_guard(_with_failures("flat", 80, 8))[1] == []
+    assert failure_guard(_with_failures("flat", 80, 16))[1] == []
+    assert failure_guard(_with_failures("flat", 80, 17))[1] != []
+    assert failure_guard([("steep", 1000.0, math.nan)])[0]["steep"]["failed"] == 1

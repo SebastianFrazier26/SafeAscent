@@ -25,6 +25,9 @@ GROSS_M = 100.0
 SLOPE_CLASSES: tuple[tuple[str, float, float], ...] = (("flat", 0.0, 10.0), ("moderate", 10.0, 30.0), ("steep", 30.0, 91.0))
 TOLERANCE_M: dict[str, tuple[float, float]] = {"flat": (2.0, 5.0), "moderate": (4.0, 10.0), "steep": (8.0, 20.0)}
 NEIGHBOUR_M = 15.0
+# Controller ruling (2026-10-14): EPQS failing mostly on one kind of terrain inside a class
+# would let the gate pass on a biased subset, so a class with more failures than this fails closed.
+MAX_FAILURE_SHARE = 0.20
 
 Sampler = Callable[[Sequence[tuple[float, float]]], list[Elevation | None]]
 
@@ -68,6 +71,8 @@ class EpqsClient:
 
 
 def slope_class(deg: float) -> str:
+    if not math.isfinite(deg):
+        raise ValueError(f"slope_class needs a finite slope, got {deg!r}")
     for name, lo, hi in SLOPE_CLASSES:
         if lo <= deg < hi:
             return name
@@ -119,3 +124,22 @@ def compare(rows: Sequence[tuple[str, float | None, float | None]]) -> dict[str,
         classes[cls] = {"n": len(diffs), "median": round(median, 2), "p90": round(p90, 2), "passed": int(passed)}
         ok = ok and passed
     return {"compared": compared, "gross": gross, "classes": classes, "passed": int(ok)}
+
+
+def failure_guard(rows: Sequence[tuple[str, float | None, float | None]]) -> tuple[dict[str, dict[str, int]], list[str]]:
+    """Per slope class: points attempted, EPQS failures (no usable reference value) and pairs
+    compared; plus one problem per class whose failure share exceeds MAX_FAILURE_SHARE."""
+    counts = {cls: {"attempted": 0, "failed": 0, "compared": 0} for cls, _, _ in SLOPE_CLASSES}
+    for cls, dem, ref in rows:
+        c = counts[cls]
+        c["attempted"] += 1
+        if ref is None or not math.isfinite(ref):
+            c["failed"] += 1
+        elif dem is not None and math.isfinite(dem):
+            c["compared"] += 1
+    problems = [
+        f"epqs failure share {c['failed'] / c['attempted']:.3f} in class {cls} exceeds {MAX_FAILURE_SHARE:.2f}"
+        for cls, c in counts.items()
+        if c["attempted"] and c["failed"] / c["attempted"] > MAX_FAILURE_SHARE
+    ]
+    return counts, problems
