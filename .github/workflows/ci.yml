@@ -133,6 +133,9 @@ jobs:
       - name: No scraper code (D9)
         run: python scripts/check_no_scrapers.py
 
+      - name: No Mountain Project data in data/docs/fixtures
+        run: python scripts/check_no_mp_data.py
+
       - name: docker-compose mirrors the Railway services
         run: |
           services="$(docker compose config --services | sort | tr '\n' ' ')"

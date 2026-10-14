@@ -358,6 +358,54 @@ Grants: `app`, `analyst` and `ingest` read it through `migrator`'s default privi
 
 ---
 
+### 16. canonical_areas
+**Purpose:** The MP area tree as the catalog uses it, one row per `mp_locations` row. Added by `0008_mp_catalog`; written only by `python -m app.pipelines.mp_catalog refresh` (`app/pipelines/area_tree.py`). Derived columns only: names stay in `mp_locations`, read by the same id. Upserted, never deleted.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| area_id | BIGINT | Primary key; FK to `mp_locations.mp_id` (`ON DELETE RESTRICT`) |
+| parent_id | BIGINT | The MP parent, copied (no FK) |
+| path, depth | LTREE, SMALLINT | Area ids root-first along `parent_id` (GiST index); set only when `tree_status` is `us` or `foreign_root` (check) |
+| tree_status | TEXT | `us` (root is a US state), `foreign_root` (any other root), `cycle` or `orphan_parent` (no path; quarantined by the refresh) |
+| state_code | TEXT | Two-letter state from the root; set exactly when `tree_status = 'us'` (check) |
+| lat, lon | FLOAT | The area's point, or both NULL |
+| coord_precision | TEXT | `own`: the area's own pair; `inherited`: its pair equals its parent's, so it was copied from the topmost area carrying that pair (`coord_source_id`); `none`: no usable point (missing, invalid, or only the state-level root's pair). `none` exactly when `lat` is NULL (check) |
+| coord_source_id | BIGINT | The area whose pair this is; NULL exactly when `coord_precision = 'none'` |
+| point_key | TEXT | `grid.point_key(lat, lon)` (5 decimals), indexed; NULL exactly when `lat` is NULL |
+| catalog_version, first_seen_at, updated_at, run_id | TEXT, TIMESTAMPTZ, TIMESTAMPTZ, UUID | `cat-mp-v1`; first insert; last change (an unchanged row is not rewritten); the `source_ingest_log` run that last wrote it |
+
+The refresh reads `mp_locations (mp_id, parent_id, latitude, longitude)` for every area and `name` only for the roots, to recognise US states. US areas with out-of-range, non-finite or non-US coordinates are quarantined (`internal.ingest_quarantine`) and stored with `coord_precision = 'none'`.
+
+---
+
+### 17. canonical_routes
+**Purpose:** Each MP route's type group and whether it can be scored. Added by `0008_mp_catalog`; written only by `mp_catalog refresh`. Derived columns only: names and grades stay in `mp_routes`. Upserted, never deleted. A route's point is its area's: `mp_routes` coordinates are never read (owner decision 2026-10-12).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| route_id | BIGINT | Primary key; FK to `mp_routes.mp_route_id` (`ON DELETE RESTRICT`) |
+| area_id | BIGINT | FK to `canonical_areas` (the route's `location_id`); NULL when the location is unknown |
+| type_group | TEXT | `sport`, `trad`, `alpine`, `ice`, `mixed`, `rock` or `unknown` (`app/pipelines/route_types.py`); NULL only for boulders (check) |
+| is_boulder | BOOLEAN | Boulder-only, or a "rock" route with a V grade (incl. `VB`, `V-easy`); never scorable (check) |
+| disciplines | TEXT[] | The MP discipline flags parsed from `type` |
+| type_rule_version | TEXT | `rt-mp-v2` |
+| scorable, unscorable_reason | BOOLEAN, TEXT | `scorable` exactly when the reason is NULL (check). Reasons, first match wins: `boulder`; `no_area` (no area, or a `cycle`/`orphan_parent` one); `not_us` (`foreign_root`); `unknown_type`; `no_coordinates` (area `coord_precision = 'none'`) |
+| facts_sha256 | TEXT | Hash of the catalog and rule versions plus the route's location, type and grade, so a fact change is visible |
+| catalog_version, first_seen_at, updated_at, run_id | | As in `canonical_areas` |
+
+A refresh whose scorable count falls more than 3% (`mp_catalog.MAX_SCORABLE_DROP`) below the stored count is rejected and writes nothing but its `source_ingest_log` row (`source = 'mp_catalog'`, status `rejected`).
+
+---
+
+### 18. scorable_routes (view)
+**Purpose:** The routes the model may score: `canonical_routes` joined to `canonical_areas` where `scorable`. Added by `0008`.
+
+Columns: `route_id, area_id, type_group, type_rule_version, area_path, state_code, point_key, coord_precision, updated_at`.
+
+Grants: `app` and `analyst` read the catalog tables and this view through `migrator`'s default privileges; `ingest` reads `mp_locations (parent_id, name)`, upserts both tables and reads this view (`grants_phase2.sql`); `trainer` gets nothing (D13).
+
+---
+
 ## Key Relationships
 
 Full diagram: [`data_model.png`](../data_model.png) (source `docs/diagrams/data_model.mmd`). The schema is owned by Alembic (`backend/alembic/`). Two more live tables have no SQLAlchemy model: `mp_ticks` (read with raw SQL by the ascent-analytics endpoint) and `area_weekly_weather` (not referenced by `app/`).
@@ -374,6 +422,8 @@ accidents (6.9K)
     └── weather (25K)
 ```
 
+`canonical_areas` and `canonical_routes` (`0008`) hang one-to-one off `mp_locations` and `mp_routes` by the same ids, with `ON DELETE RESTRICT` FKs; `internal.route_tick_scrapes` hangs off `mp_routes` the same way.
+
 **Note:** `accidents.mp_route_id` is a nullable FK to `mp_routes`, but the safety algorithm does not rely on it; it finds relevant accidents by spatial proximity (PostGIS). `historical_predictions.route_id` holds an MP route id without an FK constraint. Accidents do carry legacy FKs, `accidents.route_id → routes` and `accidents.mountain_id → mountains`. Phase 2a relinks them to `mp_routes`/`mp_locations` and drops the legacy tables. `ascents` and `climbers` were dropped by migration `0002_drop_ascents_climbers`.
 
 ---
@@ -389,6 +439,9 @@ Added by `0004_phase2a_foundation`. Owned by `migrator`; `app` has no `USAGE` on
 | `duplicate_decisions` | Added by `0005`. One R5 decision per row pair (`low_id < high_id`): `merge` or `distinct`, `decided_by` `auto` (score band) or `owner` (review CSV), with score, rule version and the R5 run that wrote it. Owner decisions are never re-decided; `ingest` cannot delete one |
 | `ingest_quarantine` | One row per input row an ingest job rejected rather than wrote, with a reason and optional JSON detail — never deleted |
 | `mp_tick_aggregates` | MP-reported ice/mixed tick counts by route/period/style, loaded from the private scraper's export (`app/pipelines/mp_tick_aggregates.py`); INSERT-only, a changed count is quarantined rather than overwritten |
+| `route_tick_scrapes` | Added by `0008`. The tick-source seam (DP9): one row per MP route whose ticks were scraped (`source = 'mp_scrape'`), with `scraped_at`, `complete`, `complete_through` (the last fully observed month's last day; set exactly when `complete`) and `total_ticks` (only when `complete`). FK to `mp_routes`; loaders upsert, never delete. `0008` backfilled it from `mp_tick_aggregates` only for routes whose stored months (plus that run's quarantined partial/future months) sum to the stored total |
+| `route_tick_coverage` (view) | Every `canonical_routes` route with its `tick_status`: `complete`, `scraped` (incomplete), or `missing` (never scraped). `tick_total` is set only for `complete` routes, so an unscraped route never reads as zero ticks |
+| `route_tick_months` (view) | Monthly tick counts (`route_id, period, style, tick_count`) only for completely scraped routes, and only for months up to their `complete_through` |
 
 ---
 
