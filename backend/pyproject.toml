@@ -34,6 +34,11 @@ dev = [
     "pip-audit==2.10.1",
     "fakeredis==2.38.0",
 ]
+# R10 LLM pass only (app.data.repair.r10_llm). Not in default-groups, so no image and no
+# plain `uv sync` installs it; run with `uv run --group llm`. CI audits it via the export.
+llm = [
+    "anthropic==1.13.0",
+]
 # Data-job dependencies (local days now; later plans append). Not in the API image: the
 # Dockerfile syncs with --no-group pipelines; Dockerfile.jobs (catalog-cycle cron) includes it.
 pipelines = [
@@ -121,6 +126,7 @@ module = [
     "app.data.repair.experience",
     "app.data.repair.area_weekly",
     "app.data.repair.legacy_links",
+    "app.data.repair.r10_llm",
     "app.pipelines.textsim",
     "app.pipelines.geo",
     "app.pipelines.gnis",

@@ -67,7 +67,7 @@ jobs:
 
       - name: Dependency audit
         run: |
-          uv export --frozen --no-dev --group pipelines --no-emit-project --format requirements.txt \
+          uv export --frozen --no-dev --group pipelines --group llm --no-emit-project --format requirements.txt \
             | uv run pip-audit -r /dev/stdin --require-hashes --disable-pip
 
       - name: Test

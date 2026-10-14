@@ -14,6 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.data.repair import activity, dates, dedupe, experience, geocode, legacy_links, review, severity
+from app.data.repair import r10_llm as r10_llm_mod
 from app.data.repair.checks import record_check
 from app.data.repair.framework import LOCATION, Change, run_step
 from app.pipelines import accident_facts, cell_conditions, gnis, localday, mp_tick_aggregates, mp_ticks_quarantine
@@ -517,6 +518,33 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
     r10_first, r10_export, r10_import, r10_again = asyncio.run(r10())
     assert r10_first["unresolved"] == {"legacy_route_no_mp_id": 1} and r10_export["rows"] == 1
     assert r10_import == {"link": 0, "no_link": 1, "applied": True} and r10_again["owner_decided"] == 1
+
+    # R10 LLM pass as ingest, fake allocator (no API): the case read, the pre-send spend ledger in
+    # source_ingest_log, the append-only audit row, and apply's reads all fit the existing grants.
+    async def r10_llm() -> tuple[int, dict[str, object], dict[str, object]]:
+        engine = create_async_engine(ingest.replace("postgresql://", "postgresql+asyncpg://", 1))
+        case = r10_llm_mod.Case(900000001, "route", (900000055,), {"candidates": [{"label": "A"}]})
+
+        class Fake:
+            model = r10_llm_mod.MODELS["haiku"]
+
+            async def allocate(self, c: r10_llm_mod.Case) -> r10_llm_mod.Allocation:
+                return r10_llm_mod.Allocation("ok", 0, False, 0.9, "name_match", 10, 10, self.model)
+
+        try:
+            async with engine.connect() as conn:
+                n_cases = len(await r10_llm_mod.build_cases(conn))
+            ran = await r10_llm_mod.run_calls(engine, Fake(), [case], run_id=uuid.uuid4(), is_sample=True,
+                                              max_usd=1.0)
+            async with engine.begin() as conn:
+                applied = await r10_llm_mod.apply_picks(conn, model=Fake.model, apply=False)
+            return n_cases, ran, applied
+        finally:
+            await engine.dispose()
+
+    llm_cases, llm_ran, llm_applied = asyncio.run(r10_llm())
+    assert llm_cases == 0 and llm_ran["status_counts"] == {"ok": 1} and llm_applied["applied"] is False
+    _denied(ingest, "UPDATE internal.r10_llm_calls SET status = status WHERE false")
     _as(app, "SELECT count(*) FROM accident_route_links; SELECT count(*) FROM accident_legacy_links")
     _as(analyst, "SELECT count(*) FROM accident_route_links; SELECT count(*) FROM internal.r10_unresolved")
     _denied(app, "SELECT count(*) FROM internal.r10_unresolved")

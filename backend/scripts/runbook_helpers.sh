@@ -115,6 +115,12 @@ INGMOD() { ( _need_target && _load ./.env.ingest || exit 1
   url="$(_retarget "${INGEST_DATABASE_URL:-}")" || exit 1
   INGEST_DATABASE_URL="$url" DATABASE_URL="$url" uv run python -m "$@" ); }
 
+# INGMOD with the llm dependency group (R10 LLM pass). ANTHROPIC_API_KEY passes through only if
+# the operator exported it in this shell; the helper never reads or sets it.
+INGLLM() { ( _need_target && _load ./.env.ingest || exit 1
+  url="$(_retarget "${INGEST_DATABASE_URL:-}")" || exit 1
+  INGEST_DATABASE_URL="$url" DATABASE_URL="$url" uv run --group llm python -m "$@" ); }
+
 MIG() { ( _need_target && _load ./.env.migrator || exit 1
   url="$(_retarget "${MIGRATOR_DATABASE_URL:-}")" || exit 1
   MIGRATOR_DATABASE_URL="$url" uv run alembic "$@" ); }
