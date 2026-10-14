@@ -100,10 +100,12 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    sampled = op.get_bind().exec_driver_sql(
-        "SELECT count(*) FROM feature_points WHERE dem_source IS NOT NULL").scalar_one()
-    if sampled:
-        raise RuntimeError(f"refusing to downgrade 0009: {sampled} points carry sampled elevation")
+    # Any row, not only sampled ones: a pending point or a route row is still pipeline output.
+    bind = op.get_bind()
+    for table in ("feature_points", "route_static_features"):
+        n = bind.exec_driver_sql(f"SELECT count(*) FROM {table}").scalar_one()
+        if n:
+            raise RuntimeError(f"refusing to downgrade 0009: {table} has {n} rows")
     op.execute("DROP VIEW scoring_unit_features")
     op.drop_table("route_static_features")
     op.drop_index("ix_feature_points_grid_bucket", "feature_points")

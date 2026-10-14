@@ -71,3 +71,23 @@ def test_route_static_features_type_group_matches_the_catalog():
         run_sql(name, "UPDATE route_static_features SET type_group = 'rock' WHERE route_id = 900000001")
         with pytest.raises(asyncpg.CheckViolationError):
             run_sql(name, "UPDATE route_static_features SET type_group = 'boulder' WHERE route_id = 900000001")
+
+
+def test_0009_downgrade_refuses_with_a_pending_point_and_a_route_row():
+    pending = SEED.replace("'3dep_13'", "NULL")
+    with migrated_db(PIN, seed_sql=pending) as name:
+        assert fetch(name, "SELECT count(*) FROM feature_points WHERE dem_source IS NOT NULL") == [(0,)]
+        run_sql(name, "DELETE FROM route_static_features WHERE route_id = 900000002")
+        with pytest.raises(RuntimeError, match="refusing to downgrade 0009: feature_points has 1 rows"):
+            command.downgrade(_alembic_cfg(name), "0008_mp_catalog")
+        run_sql(name, "DELETE FROM route_static_features; DELETE FROM feature_points")
+        command.downgrade(_alembic_cfg(name), "0008_mp_catalog")
+
+
+def test_0009_downgrade_refuses_with_only_a_route_row():
+    with migrated_db(PIN) as name:
+        run_sql(name, SEED.split("INSERT INTO feature_points")[0]
+                + "INSERT INTO route_static_features (route_id, source, coord_precision, feature_version) "
+                  "VALUES (900000001, 'mp', 'none', 'f-v1')")
+        with pytest.raises(RuntimeError, match="refusing to downgrade 0009: route_static_features has 1 rows"):
+            command.downgrade(_alembic_cfg(name), "0008_mp_catalog")

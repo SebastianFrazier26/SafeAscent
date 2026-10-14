@@ -2235,10 +2235,14 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    sampled = op.get_bind().exec_driver_sql(
-        "SELECT count(*) FROM feature_points WHERE dem_source IS NOT NULL").scalar_one()
-    if sampled:
-        raise RuntimeError(f"refusing to downgrade 0009: {sampled} points carry sampled elevation")
+    # Any row, not only sampled ones: a pending point or a route row is still pipeline output.
+    bind = op.get_bind()
+    for table in ("feature_points", "route_static_features"):
+        n = bind.exec_driver_sql(f"SELECT count(*) FROM {table}").scalar_one()
+        if n:
+            raise RuntimeError(f"refusing to downgrade 0009: {table} has {n} rows")
+    # Review fix 2026-10-14: refuses on ANY row in either table (direct counts, as 0008). The
+    # earlier dem_source-only guard silently dropped pending points and every route row.
     op.execute("DROP VIEW scoring_unit_features")
     op.drop_table("route_static_features")
     op.drop_index("ix_feature_points_grid_bucket", "feature_points")
@@ -3707,7 +3711,7 @@ def test_0010_checks_clean_and_enforces_one_target():
                           "VALUES (1, 'legacy_mountain_only', 'link')")
 
 
-def test_0010_downgrade_refuses_while_owner_decisions_exist():
+def test_0010_downgrade_refuses_while_owner_decisions_exist():  # any row refuses (review fix 2026-10-14)
     with migrated_db("0010_accident_route_links") as name:
         run_sql(name, "INSERT INTO accidents (accident_id) VALUES (1); INSERT INTO internal.r10_unresolved "
                       "(accident_id, reason, owner_decision) VALUES (1, 'legacy_mountain_only', 'no_link')")
@@ -3982,12 +3986,15 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Review fix 2026-10-14 (same gap as 0009): refuse on ANY row in any 0010 table, direct counts
+    # as 0008. The earlier guard (owner decisions + LLM calls only) silently dropped legacy links,
+    # undecided residue rows and gate decisions.
     bind = op.get_bind()
-    decided = bind.exec_driver_sql(
-        "SELECT count(*) FROM internal.r10_unresolved WHERE owner_decision IS NOT NULL").scalar_one()
-    calls = bind.exec_driver_sql("SELECT count(*) FROM internal.r10_llm_calls").scalar_one()
-    if decided or calls:
-        raise RuntimeError(f"refusing to downgrade 0010: {decided} owner R10 decisions, {calls} paid LLM calls")
+    for table in ("accident_legacy_links", "internal.r10_unresolved", "internal.r10_llm_calls",
+                  "internal.r10_llm_gates"):
+        n = bind.exec_driver_sql(f"SELECT count(*) FROM {table}").scalar_one()
+        if n:
+            raise RuntimeError(f"refusing to downgrade 0010: {table} has {n} rows")
     op.drop_table("r10_llm_gates", schema="internal")
     op.drop_index("ix_r10_llm_calls_accident", "r10_llm_calls", schema="internal")
     op.drop_table("r10_llm_calls", schema="internal")
