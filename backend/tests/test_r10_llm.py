@@ -197,28 +197,38 @@ def test_cost_cap_stops_before_the_call_that_would_pass_it():
 
 
 class Crashing:
+    """Fails after the request would have gone out; reads the ledger while the call is in flight."""
+
     model = "claude-haiku-4-5-20251001"
 
+    def __init__(self, engine, run_id):
+        self.engine, self.run_id, self.in_flight_usd = engine, run_id, None
+
     async def allocate(self, case):
+        async with self.engine.connect() as conn:
+            self.in_flight_usd = float((await conn.execute(text(
+                "SELECT cost_units FROM source_ingest_log WHERE run_id = :r"), {"r": self.run_id})).scalar_one())
         raise RuntimeError("connection dropped after the request went out")
 
 
 @requires_pg
-def test_spend_is_on_record_before_the_call_goes_out():
+def test_spend_is_on_record_before_the_call_goes_out_and_a_crash_is_an_audited_attempt():
     with migrated_db(PIN, seed_sql=SEED) as name:
         _prepared(name)
         run_id = uuid.uuid4()
 
         async def go(engine):
             cases = await _cases(engine)
-            try:
-                await run_calls(engine, Crashing(), cases, run_id=run_id, is_sample=False, max_usd=5.0)
-            except RuntimeError:
-                return call_ceiling_usd(Crashing.model, cases[0])
-        ceiling = run_on_engine(name, go)
+            crashing = Crashing(engine, run_id)
+            with pytest.raises(RuntimeError, match="connection dropped"):
+                await run_calls(engine, crashing, cases, run_id=run_id, is_sample=False, max_usd=5.0)
+            return call_ceiling_usd(Crashing.model, cases[0]), crashing.in_flight_usd, cases[0].accident_id
+        ceiling, in_flight, first = run_on_engine(name, go)
+        assert in_flight == pytest.approx(ceiling, abs=1e-5)
         (status, cost), = fetch(name, f"SELECT status, cost_units FROM source_ingest_log WHERE run_id = '{run_id}'")
         assert status == "failed" and float(cost) == pytest.approx(ceiling, abs=1e-5)
-        assert fetch(name, "SELECT count(*) FROM internal.r10_llm_calls") == [(0,)]
+        # Re-review minor 3: the crashed call is an audited error attempt, so it counts toward MAX_ATTEMPTS.
+        assert fetch(name, "SELECT accident_id, status, cost_usd FROM internal.r10_llm_calls") == [(first, "error", None)]
 
 
 @requires_pg
@@ -482,6 +492,21 @@ def test_claude_allocator_request_shape_with_a_mocked_client():
     fresh._client = SimpleNamespace(messages=SimpleNamespace(create=times_out))
     assert asyncio.run(fresh.allocate(case)) == Allocation("error", None, None, None, None, None, None, None,
                                                             "APITimeoutError")
+    def status_error(cls, code):
+        async def create(**kwargs):
+            request = httpx2.Request("POST", "https://api.invalid/v1/messages")
+            raise cls("fixture", response=httpx2.Response(code, request=request), body=None)
+        return create
+
+    # Re-review minor 4: a definitive client error settles at 0; a server error keeps the ceiling.
+    fresh._client = SimpleNamespace(messages=SimpleNamespace(create=status_error(anthropic.BadRequestError, 400)))
+    assert asyncio.run(fresh.allocate(case)) == Allocation("error", None, None, None, None, 0, 0, None,
+                                                            "BadRequestError")
+    fresh._client = SimpleNamespace(messages=SimpleNamespace(create=status_error(anthropic.InternalServerError, 500)))
+    assert asyncio.run(fresh.allocate(case)) == Allocation("error", None, None, None, None, None, None, None,
+                                                            "InternalServerError")
+    fresh._client = SimpleNamespace(messages=SimpleNamespace(create=status_error(anthropic.RateLimitError, 429)))
+    assert asyncio.run(fresh.allocate(case)).input_tokens is None
     fresh._client = SimpleNamespace(messages=SimpleNamespace(create=other_model))
     assert asyncio.run(fresh.allocate(case)) == Allocation("error", None, None, None, None, 900, 300, "claude-other",
                                                             "ModelMismatch")
@@ -631,7 +656,10 @@ def test_probe_spends_into_the_ledger_without_an_audit_row():
 
 @pytest.mark.parametrize("argv", [["sample", "--model", "haiku", "--n", "1", "--max-usd", "12.01", "--out", "x.csv"],
                                   ["run", "--model", "sonnet", "--max-usd", "22.5"],
-                                  ["probe", "--model", "haiku", "--max-usd", "-1"]])
+                                  ["probe", "--model", "haiku", "--max-usd", "-1"],
+                                  ["sample", "--model", "haiku", "--n", "1", "--max-usd", "nan", "--out", "x.csv"],
+                                  ["run", "--model", "haiku", "--max-usd", "inf"],
+                                  ["run", "--model", "haiku", "--max-usd", "0"]])
 def test_max_usd_above_the_owners_cap_is_refused_before_anything_runs(argv, monkeypatch):
     import asyncio
 
@@ -671,3 +699,87 @@ def test_bands_compare_as_real_even_where_real_rounds_down(monkeypatch):
             async with engine.begin() as conn:
                 return await apply_picks(conn, model=fake.model, apply=True)
         assert run_on_engine(name, apply)["linked"] == 3
+
+
+
+@requires_pg
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -1.0, 0.0])
+def test_a_non_finite_or_non_positive_cap_never_runs(bad):
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        _prepared(name)
+        fake = FakeAllocator({})
+        with pytest.raises(SystemExit, match="finite"):
+            run_on_engine(name, lambda e: _calls(e, fake, max_usd=bad))
+        with pytest.raises(SystemExit, match="finite"):
+            run_on_engine(name, lambda e: probe_call(e, fake, max_usd=bad))
+        assert fake.seen == []
+        assert fetch(name, "SELECT count(*) FROM source_ingest_log WHERE source = 'r10_llm'") == [(0,)]
+
+
+@requires_pg
+def test_a_nan_in_the_ledger_or_ceiling_refuses(monkeypatch):
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        _prepared(name)
+        fake = FakeAllocator({})
+        monkeypatch.setattr(r10_llm, "call_ceiling_usd", lambda model, case: float("nan"))
+        with pytest.raises(SystemExit, match="call ceiling must be a finite"):
+            run_on_engine(name, lambda e: _calls(e, fake))
+        monkeypatch.undo()
+        run_sql(name, "INSERT INTO source_ingest_log (run_id, source, status, content_sha256, cost_units) VALUES "
+                      f"('{uuid.uuid4()}', 'r10_llm', 'failed', '{ledger_sha(fake.model)}', 'NaN')")
+        with pytest.raises(SystemExit, match="recorded spend must be a finite"):
+            run_on_engine(name, lambda e: _calls(e, fake))
+        assert fake.seen == []
+
+
+class LockKiller(FakeAllocator):
+    """Drops this run's lock connection from the server side during its first call."""
+
+    def __init__(self, engine):
+        super().__init__({})
+        self.engine = engine
+
+    async def allocate(self, case):
+        if not self.seen:
+            async with self.engine.begin() as conn:
+                await conn.execute(text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_locks WHERE locktype = 'advisory' AND objsubid = 1 "
+                    "AND pid <> pg_backend_pid()"))
+        return await super().allocate(case)
+
+
+@requires_pg
+def test_a_lost_lock_stops_the_run_before_the_next_call():
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        _prepared(name)
+
+        async def go(engine):
+            killer = LockKiller(engine)
+            with pytest.raises(SystemExit, match="spend lock"):
+                await _calls(engine, killer)
+            return killer
+        killer = run_on_engine(name, go)
+        assert len(killer.seen) == 1
+        assert fetch(name, "SELECT count(*) FROM internal.r10_llm_calls") == [(1,)]
+        assert fetch(name, "SELECT status FROM source_ingest_log WHERE source = 'r10_llm'") == [("failed",)]
+
+
+@requires_pg
+def test_assert_held_refuses_a_live_connection_without_the_lock():
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        async def go(engine):
+            async with run_lock(engine) as lock:
+                await lock.assert_held()
+                await lock.conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": r10_llm.LOCK_KEY})
+                with pytest.raises(SystemExit, match="no longer holds"):
+                    await lock.assert_held()
+            async with engine.connect() as conn:
+                with pytest.raises(SystemExit, match="no longer holds"):
+                    await r10_llm.HeldLock(conn).assert_held()
+        run_on_engine(name, go)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -1.0, 0.0])
+def test_the_ledger_itself_refuses_a_bad_cap(bad):
+    with pytest.raises(SystemExit, match="finite"):
+        r10_llm._Ledger(None, uuid.uuid4(), FakeAllocator.model, bad, None)

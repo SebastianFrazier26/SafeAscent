@@ -15,6 +15,8 @@ import contextlib
 import csv
 import hashlib
 import json
+import logging
+import math
 import random
 import re
 import uuid
@@ -31,6 +33,8 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from app.data.repair import review
 from app.data.repair.legacy_links import MAX_CANDIDATES, R10_VERSION
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from anthropic.types import OutputConfigParam, ThinkingConfigAdaptiveParam
@@ -59,6 +63,9 @@ BACKEND_DIR = Path(__file__).resolve().parents[3]
 LEDGER_SOURCE = "r10_llm"
 # Every paid r10_llm process in every session contends for this one key, so two runs never spend at once.
 LOCK_KEY = int.from_bytes(hashlib.sha256(b"r10_llm").digest()[:8], "big", signed=True)
+# Statuses the API returns only for a request it rejected outright without running the model, so
+# nothing was billed (re-review minor 4). 429, 5xx, timeouts and connection errors keep the ceiling.
+UNBILLED_STATUS_CODES = frozenset({400, 401, 403, 404, 422})
 # Every call that returned tokens or errored counts; a case is never paid for a third time (review I3).
 MAX_ATTEMPTS = 2
 # Owner's cumulative caps per model and prompt version (M4), across every sample, run and probe.
@@ -200,7 +207,12 @@ class ClaudeAllocator:
                     model=self.model, max_tokens=MAX_OUTPUT_TOKENS, system=SYSTEM,
                     messages=[{"role": "user", "content": content}], thinking=adaptive, output_config=output,
                 )
-        except (self._anthropic.APIStatusError, self._anthropic.APIConnectionError) as exc:
+        except self._anthropic.APIStatusError as exc:
+            # A definitive client error settles at 0; any other status keeps the ceiling (tokens unknown).
+            unbilled = exc.status_code in UNBILLED_STATUS_CODES
+            return Allocation("error", None, None, None, None, 0 if unbilled else None, 0 if unbilled else None,
+                              None, type(exc).__name__)
+        except self._anthropic.APIConnectionError as exc:
             return Allocation("error", None, None, None, None, None, None, None, type(exc).__name__)
         if response.model != self.model:
             # Paid for, so the tokens are kept; run_calls audits the row and then stops the run.
@@ -311,8 +323,37 @@ async def spent_usd(conn: AsyncConnection, model: str) -> float:
     return float((await conn.execute(LEDGER_SPENT_SQL, {"source": LEDGER_SOURCE, "sha": ledger_sha(model)})).scalar_one())
 
 
+def _lock_parts() -> tuple[int, int]:
+    unsigned = LOCK_KEY & 0xFFFF_FFFF_FFFF_FFFF
+    return unsigned >> 32, unsigned & 0xFFFF_FFFF
+
+
+# A bigint advisory key shows in pg_locks as classid (high 32 bits), objid (low 32 bits), objsubid 1.
+LOCK_HELD_SQL = text(
+    "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND pid = pg_backend_pid() AND granted "
+    "AND objsubid = 1 AND classid::bigint = :hi AND objid::bigint = :lo"
+)
+
+
+@dataclass
+class HeldLock:
+    conn: AsyncConnection
+
+    async def assert_held(self) -> None:
+        """Re-review minor 1: a dropped lock connection (network blip, server restart, terminated
+        backend) releases the lock silently, and a second run could then spend alongside this one."""
+        hi, lo = _lock_parts()
+        try:
+            held = (await self.conn.execute(LOCK_HELD_SQL, {"hi": hi, "lo": lo})).scalar_one()
+            await self.conn.commit()
+        except Exception as exc:
+            raise SystemExit(f"lost the r10_llm spend lock connection ({type(exc).__name__}): stopped") from exc
+        if held != 1:
+            raise SystemExit("this run no longer holds the r10_llm spend lock: stopped")
+
+
 @contextlib.asynccontextmanager
-async def run_lock(engine: AsyncEngine) -> AsyncIterator[None]:
+async def run_lock(engine: AsyncEngine) -> AsyncIterator[HeldLock]:
     """A session-level advisory lock held on its own connection for the whole paid run."""
     async with engine.connect() as conn:
         got = (await conn.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": LOCK_KEY})).scalar_one()
@@ -320,10 +361,22 @@ async def run_lock(engine: AsyncEngine) -> AsyncIterator[None]:
         if not got:
             raise SystemExit("another r10_llm run holds the spend lock; wait for it to finish")
         try:
-            yield
+            yield HeldLock(conn)
         finally:
-            await conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": LOCK_KEY})
-            await conn.commit()
+            # Never mask the run's own error (re-review minor 2); a dead connection released the lock anyway.
+            try:
+                await conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": LOCK_KEY})
+                await conn.commit()
+            except Exception as exc:
+                log.warning("r10_llm: releasing the spend lock failed (%s); the server drops it with the session",
+                            type(exc).__name__)
+
+
+def _finite_usd(name: str, value: float, *, positive: bool = False) -> float:
+    if not math.isfinite(value) or value < 0 or (positive and value == 0):
+        raise SystemExit(f"{name} must be a finite {'positive' if positive else 'non-negative'} dollar amount, "
+                         f"got {value!r}")
+    return value
 
 
 @dataclass
@@ -335,11 +388,16 @@ class _Ledger:
     run_id: uuid.UUID
     model: str
     max_usd: float
+    lock: HeldLock
     spent: float = 0.0
+
+    def __post_init__(self) -> None:
+        # NaN compares False with everything, so an unchecked NaN cap would never stop a run.
+        _finite_usd("max_usd", self.max_usd, positive=True)
 
     async def start(self) -> float:
         async with self.engine.begin() as conn:
-            before = await spent_usd(conn, self.model)
+            before = _finite_usd("recorded spend", await spent_usd(conn, self.model))
             await conn.execute(LEDGER_START_SQL, {"run": self.run_id, "source": LEDGER_SOURCE,
                                                   "sha": ledger_sha(self.model)})
         return before
@@ -347,14 +405,17 @@ class _Ledger:
     async def reserve(self, ceiling: float) -> bool:
         """Plan 3's money rule: the call's worst case is on record before it is sent, so a crash
         between the paid call and its audit row still leaves the spend in source_ingest_log."""
+        _finite_usd("call ceiling", ceiling)
+        await self.lock.assert_held()
         async with self.engine.begin() as conn:
-            if await spent_usd(conn, self.model) + ceiling > self.max_usd:
+            total = _finite_usd("recorded spend", await spent_usd(conn, self.model))
+            if total + ceiling > self.max_usd:
                 return False
             await conn.execute(LEDGER_SET_SQL, {"run": self.run_id, "usd": round(self.spent + ceiling, 6)})
         return True
 
     def settle(self, cost: float) -> dict[str, object]:
-        self.spent += cost
+        self.spent += _finite_usd("call cost", cost)
         return {"run": self.run_id, "usd": round(self.spent, 6)}
 
     async def finish(self, ok: bool, n: int) -> None:
@@ -370,6 +431,21 @@ def _check_reported_model(allocator: Allocator, alloc: Allocation) -> None:
                          "stopped (the call is audited)")
 
 
+async def _audit(engine: AsyncEngine, ledger: _Ledger, allocator: Allocator, case: Case, alloc: Allocation,
+                 cost: float | None, ceiling: float, run_id: uuid.UUID, is_sample: bool) -> None:
+    request = json.dumps({"model": allocator.model, "prompt": PROMPT_VERSION, "payload": case.payload}, sort_keys=True)
+    async with engine.begin() as conn:
+        await conn.execute(AUDIT_SQL, {
+            "c": uuid.uuid4(), "run": run_id, "a": case.accident_id, "m": allocator.model,
+            "mr": alloc.model_reported, "pv": PROMPT_VERSION, "pf": list(PAYLOAD_FIELDS),
+            "sha": hashlib.sha256(request.encode()).hexdigest(), "kind": case.kind,
+            "ids": list(case.candidate_ids), "st": alloc.status,
+            "pick": None if alloc.pick_index is None else case.candidate_ids[alloc.pick_index],
+            "none": alloc.pick_none, "conf": alloc.confidence, "reason": alloc.reason_code,
+            "it": alloc.input_tokens, "ot": alloc.output_tokens, "cost": cost, "sample": is_sample})
+        await conn.execute(LEDGER_SET_SQL, ledger.settle(cost if cost is not None else ceiling))
+
+
 async def run_calls(engine: AsyncEngine, allocator: Allocator, cases: Sequence[Case], *, run_id: uuid.UUID,
                     is_sample: bool, max_usd: float) -> dict[str, object]:
     """One audited call per case, under the cumulative cap. Known gap (review M7): if the process
@@ -380,8 +456,9 @@ async def run_calls(engine: AsyncEngine, allocator: Allocator, cases: Sequence[C
     errors: Counter[str] = Counter()
     stopped = finished = False
     at_limit = 0
-    ledger = _Ledger(engine, run_id, allocator.model, max_usd)
-    async with run_lock(engine):
+    _finite_usd("max_usd", max_usd, positive=True)
+    async with run_lock(engine) as lock:
+        ledger = _Ledger(engine, run_id, allocator.model, max_usd, lock)
         before = await ledger.start()
         try:
             for case in cases:
@@ -395,23 +472,19 @@ async def run_calls(engine: AsyncEngine, allocator: Allocator, cases: Sequence[C
                 if not await ledger.reserve(ceiling):
                     stopped = True
                     break
-                alloc = await allocator.allocate(case)
+                try:
+                    alloc = await allocator.allocate(case)
+                except Exception as exc:
+                    # Re-review minor 3: the request may have gone out, so it is audited as an attempt
+                    # (counts toward MAX_ATTEMPTS, settled at the ceiling) before the error propagates.
+                    alloc = Allocation("error", None, None, None, None, None, None, None, type(exc).__name__)
+                    await _audit(engine, ledger, allocator, case, alloc, None, ceiling, run_id, is_sample)
+                    raise
                 cost = _cost(allocator.model, alloc)
                 statuses[alloc.status] += 1
                 if alloc.error_class is not None:
                     errors[alloc.error_class] += 1
-                request = json.dumps({"model": allocator.model, "prompt": PROMPT_VERSION, "payload": case.payload},
-                                     sort_keys=True)
-                async with engine.begin() as conn:
-                    await conn.execute(AUDIT_SQL, {
-                        "c": uuid.uuid4(), "run": run_id, "a": case.accident_id, "m": allocator.model,
-                        "mr": alloc.model_reported, "pv": PROMPT_VERSION, "pf": list(PAYLOAD_FIELDS),
-                        "sha": hashlib.sha256(request.encode()).hexdigest(), "kind": case.kind,
-                        "ids": list(case.candidate_ids), "st": alloc.status,
-                        "pick": None if alloc.pick_index is None else case.candidate_ids[alloc.pick_index],
-                        "none": alloc.pick_none, "conf": alloc.confidence, "reason": alloc.reason_code,
-                        "it": alloc.input_tokens, "ot": alloc.output_tokens, "cost": cost, "sample": is_sample})
-                    await conn.execute(LEDGER_SET_SQL, ledger.settle(cost if cost is not None else ceiling))
+                await _audit(engine, ledger, allocator, case, alloc, cost, ceiling, run_id, is_sample)
                 _check_reported_model(allocator, alloc)
             finished = True
         finally:
@@ -433,10 +506,11 @@ FIXTURE_CASE = Case(0, "route", (900000001, 900000002), {
 async def probe_call(engine: AsyncEngine, allocator: Allocator, *, max_usd: float) -> dict[str, object]:
     """One synthetic fixture call (no real accident, no audit row) for the runbook's verify step:
     its spend goes into the same ledger, so it counts against the cumulative cap."""
-    ledger = _Ledger(engine, uuid.uuid4(), allocator.model, max_usd)
+    _finite_usd("max_usd", max_usd, positive=True)
     ceiling = call_ceiling_usd(allocator.model, FIXTURE_CASE)
     finished = False
-    async with run_lock(engine):
+    async with run_lock(engine) as lock:
+        ledger = _Ledger(engine, uuid.uuid4(), allocator.model, max_usd, lock)
         await ledger.start()
         try:
             if not await ledger.reserve(ceiling):
@@ -697,9 +771,10 @@ def build_parser() -> argparse.ArgumentParser:
 async def _main(args: argparse.Namespace) -> dict[str, object]:
     from app.pipelines.db import ingest_engine
 
-    max_usd = getattr(args, "max_usd", 0.0)
-    if max_usd < 0 or (hasattr(args, "model") and max_usd > OWNER_CAPS_USD[MODELS[args.model]]):
-        raise SystemExit(f"--max-usd must be between 0 and the owner's cap {OWNER_CAPS_USD}")
+    if hasattr(args, "max_usd"):
+        max_usd = args.max_usd
+        if not math.isfinite(max_usd) or max_usd <= 0 or max_usd > OWNER_CAPS_USD[MODELS[args.model]]:
+            raise SystemExit(f"--max-usd must be a finite amount above 0 and within the owner's cap {OWNER_CAPS_USD}")
     # Fail on a missing or misplaced key before touching the database.
     key = api_key_from_environment() if args.command in ("sample", "run", "probe") else ""
     engine = ingest_engine()
