@@ -36,12 +36,12 @@ import uuid
 from collections import defaultdict
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
-from sqlalchemy import bindparam, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.pipelines.db import ingest_engine
@@ -289,14 +289,45 @@ def validate(
 async def existing_counts(conn: AsyncConnection, route_ids: set[int]) -> dict[tuple[int, str, str], int]:
     if not route_ids:
         return {}
+    # One array parameter, not an expanding IN: a cumulative rock export names ~163K routes, far
+    # past asyncpg's 32,767-parameter limit.
     result = await conn.execute(
-        text(
-            "SELECT mp_route_id, period, style, tick_count FROM internal.mp_tick_aggregates "
-            "WHERE mp_route_id IN :ids"
-        ).bindparams(bindparam("ids", expanding=True)),
+        text("SELECT mp_route_id, period, style, tick_count FROM internal.mp_tick_aggregates "
+             "WHERE mp_route_id = ANY(CAST(:ids AS bigint[]))"),
         {"ids": sorted(route_ids)},
     )
     return {(int(r), str(p), str(s)): int(n) for r, p, s, n in result.all()}
+
+
+async def seam_scraped_at(conn: AsyncConnection, route_ids: set[int]) -> dict[int, datetime]:
+    if not route_ids:
+        return {}
+    result = await conn.execute(
+        text("SELECT mp_route_id, scraped_at FROM internal.route_tick_scrapes "
+             "WHERE mp_route_id = ANY(CAST(:ids AS bigint[]))"),
+        {"ids": sorted(route_ids)},
+    )
+    return {int(r): at for r, at in result.all()}
+
+
+def routes_to_load(totals: list[RouteTotal], seam: dict[int, datetime]) -> set[int]:
+    """Routes the seam has not seen at this scrape time or later. An unzoned scrape time is kept so
+    validate quarantines it, rather than raising on the comparison here."""
+    out = set()
+    for t in totals:
+        seen = seam.get(t.mp_route_id)
+        if seen is None or t.scraped_at.tzinfo is None or seen < t.scraped_at:
+            out.add(t.mp_route_id)
+    return out
+
+
+def quarantinable(report: ValidationReport, scope: Scope) -> ValidationReport:
+    """Controller ruling 2026-10-15: rock's out-of-scope routes are not data problems and recur on
+    every weekly reload, so they never reach internal.ingest_quarantine; they show up only as the
+    run's routes_waiting_* stats."""
+    if scope != "rock":
+        return report
+    return replace(report, issues=[i for i in report.issues if i.reason not in OUT_OF_SCOPE_ROCK])
 
 
 SEAM_UPSERT = text(
@@ -408,23 +439,39 @@ async def load(conn: AsyncConnection, rows: list[AggregateRow], *, run_id: uuid.
     return inserted
 
 
-async def main(path: Path, *, today: date, max_quarantine_share: float, dry_run: bool) -> dict[str, object]:
-    totals, monthly = read_export(path)
-    sha = sha256_rows(
-        [(t.mp_route_id, t.total_ticks, t.complete, t.scraped_at.isoformat()) for t in totals]
-        + [(m.mp_route_id, m.year_month, m.style, m.n) for m in monthly]
-    )
+async def main(
+    path: Path, *, today: date, max_quarantine_share: float, dry_run: bool, scope: Scope = "ice_mixed"
+) -> dict[str, object]:
+    source = SOURCE_BY_SCOPE[scope]
+    # Controller ruling 2026-10-15: both refusals run on every load, ice included, before any row is read.
+    check_export_location(path)
+    check_aggregate_only(path)
+    totals, monthly = read_export(path, routes=set() if scope == "rock" else None)
     engine = ingest_engine()
     try:
         async with engine.begin() as conn:
-            if await find_completed(conn, source=SOURCE, window_start=None, window_end=None, content_sha256=sha):
-                return {"status": "noop", "rows_upserted": 0}
+            unchanged = 0
+            if scope == "rock":
+                todo = routes_to_load(totals, await seam_scraped_at(conn, {t.mp_route_id for t in totals}))
+                unchanged = len(totals) - len(todo)
+                if not todo:
+                    return {"status": "noop", "rows_upserted": 0, "routes_unchanged": unchanged}
+                totals = [t for t in totals if t.mp_route_id in todo]
+                monthly = read_export(path, routes=todo)[1]
+            sha = sha256_rows(
+                [(t.mp_route_id, t.total_ticks, t.complete, t.scraped_at.isoformat()) for t in totals]
+                + [(m.mp_route_id, m.year_month, m.style, m.n) for m in monthly]
+            )
+            if await find_completed(conn, source=source, window_start=None, window_end=None, content_sha256=sha):
+                return {"status": "noop", "rows_upserted": 0, "routes_unchanged": unchanged}
             route_types = {
                 int(r): (str(t) if t is not None else None)
                 for r, t in (await conn.execute(text("SELECT mp_route_id, type FROM mp_routes"))).all()
             }
             existing = await existing_counts(conn, {t.mp_route_id for t in totals})
-            rows, report, stats = validate(totals, monthly, route_types=route_types, existing=existing, today=today)
+            rows, report, stats = validate(totals, monthly, route_types=route_types, existing=existing, today=today,
+                                           scope=scope)
+            stats["routes_unchanged"] = unchanged
             # previous_rows_in=None (F10, Task 6 review): this source is a one-time or occasional
             # load of a scrape that only grows between runs, so there is no "last run" row count a
             # swing check could reasonably compare against; only the quarantine-share gate applies.
@@ -436,8 +483,8 @@ async def main(path: Path, *, today: date, max_quarantine_share: float, dry_run:
             stats["seam_scraped"] = len(scrapes) - stats["seam_complete"]
             if dry_run:
                 return {"status": "dry_run", "report": report.summary(), "stats": stats, "problems": problems}
-            run_id = await start_run(conn, source=SOURCE, window_start=None, window_end=None, content_sha256=sha)
-            await write_quarantine(conn, run_id, report)
+            run_id = await start_run(conn, source=source, window_start=None, window_end=None, content_sha256=sha)
+            await write_quarantine(conn, run_id, quarantinable(report, scope))
             if problems:
                 await finish_run(conn, run_id, status="rejected", report=report, rows_upserted=0, problems=problems)
                 return {"status": "rejected", "rows_upserted": 0, "problems": problems, "report": report.summary()}
@@ -456,10 +503,11 @@ def cli() -> None:
     parser.add_argument("--sqlite", type=Path, required=True)
     parser.add_argument("--max-quarantine-share", type=float, default=0.10)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--scope", choices=SCOPES, default="ice_mixed",
+                        help="ice_mixed (the one-time ice/mixed export) or rock (the incremental rock export)")
     args = parser.parse_args()
-    result = asyncio.run(
-        main(args.sqlite, today=utc_today(), max_quarantine_share=args.max_quarantine_share, dry_run=args.dry_run)
-    )
+    result = asyncio.run(main(args.sqlite, today=utc_today(), max_quarantine_share=args.max_quarantine_share,
+                              dry_run=args.dry_run, scope=args.scope))
     print(json.dumps(result, sort_keys=True, default=str))
 
 
