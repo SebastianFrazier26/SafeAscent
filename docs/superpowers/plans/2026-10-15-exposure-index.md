@@ -114,7 +114,7 @@ The foundations plan's Global Constraints and the MP catalog plan's Global Const
   - The window is the same length for every route, so routes are comparable and backtests at older cutoffs still get 5 years.
   - Alternative: all history. Older MP years are thinner, which biases old routes low.
 - **D-5 Season share** is a time-invariant climate covariate `[decided: DP4]`.
-  - Source: `cell_daily_conditions` ERA5 rows (`record_kind = 'era5'`) of the area's `(grid_bucket, tz)` series over `[today − 3×365 d, today)`. That is the 3-year window `era5_window` keeps for non-incident series; older rows are pruned, so a strict cutoff would leave every backtest older than 3 years without it.
+  - Source: `cell_daily_conditions` ERA5 rows (`record_kind = 'era5'`) of the area's `(grid_bucket, tz)` series over `[today − 3×365 d, today)`. That window lies inside what `era5_fill` keeps (`history_start(today)` = Jan 1 three years back, `HISTORY_YEARS = 3`); the last `ERA5_LAG_DAYS` (5) days are not yet filled. `SEASON_YEARS` (Task 5) is set equal to `era5_fill.HISTORY_YEARS`, not redeclared, so the two can't drift (pre-flight F9).
   - Rules: rock (sport, trad, rock) day = tmax 5–32 °C and precip < 2 mm. Ice/mixed day = tmax < 0 °C on ≥ 7 of the 10 days ending that day. Alpine day = either (spec "both windows", read as the union, as in the 2026-09-28 plan).
   - Unknown days (a NULL input, or a missing day in the 10-day window that could change the answer) are excluded, never counted false.
   - A calendar month with fewer than 28 known days is missing (`insufficient_history`).
@@ -210,7 +210,7 @@ The foundations plan's Global Constraints and the MP catalog plan's Global Const
 | 8 | 10, Phase 3 | `build(conn, *, today, cutoff=None, mp_enabled, run_id=None)`, `validate(conn, *, as_of, data_cutoff)`, CLI | Frozen in Task 8. |
 | 4 | Phase 4, objectives re-plan | Alembic chain | Phase 4 → `0012`–`0014` (Task 9 Step 4). |
 | 4 | Phase 3 | `trainer` grant on `internal.exposure_index` | Phase 3's role change, not here (D13). |
-| 2, 8 | `ingest_log._ALLOWED_METRICS` | Allowlisted metric names | Task 8 appends; nothing else changes. |
+| 8 | `ingest_log._ALLOWED_METRICS` | Allowlisted metric names | Task 8 appends; nothing else changes (pre-flight F14: Task 2 never touches this). |
 
 ---
 
@@ -230,21 +230,31 @@ The foundations plan's Global Constraints and the MP catalog plan's Global Const
   - `check_export_location(path: Path, repo_root: Path = REPO_ROOT) -> None` (raises `SystemExit`);
   - `check_aggregate_only(path: Path) -> None` (raises `SystemExit`);
   - `read_export(path: Path, routes: set[int] | None = None) -> tuple[list[RouteTotal], list[MonthlyRow]]` (monthly rows filtered to `routes` when given);
-  - `validate(totals, monthly, *, route_types, existing, today, scope: Scope = "ice_mixed")`, where the rock scope quarantines `ice_mixed_route` instead of `not_ice_mixed`.
+  - `validate(totals, monthly, *, route_types, existing, today, scope: Scope = "ice_mixed")`, where the rock scope's `_route_problem` returns `ice_mixed_route` instead of `not_ice_mixed`. Controller ruling F3 (2026-10-15, overrides the pre-flight's proposed ruling): in the rock scope, `unknown_route`, `ice_mixed_route` and `route_incomplete` are out-of-scope reasons, not data-quality ones — they recur every reload (the seam never gets an entry for an uncatalogued, ice/mixed, or still-scraping route), so counting them would eventually push a load's quarantine share past the gate with no real data problem. `validate` records them as an `Issue` (so `seam_rows` still treats the route as rejected) without calling `report.quarantine()` — they never touch `report.rows_in` or `report.quarantined`, in either direction — and returns their per-route counts in `stats["routes_waiting_unknown_route"]`, `stats["routes_waiting_ice_mixed_route"]` and `stats["routes_waiting_route_incomplete"]`. The fourth out-of-scope reason, routes already loaded, never reaches `validate` at all: `main` filters them out before calling it and reports them as `stats["routes_unchanged"]` (unchanged). The ice-mixed scope's own gate is untouched: `not_ice_mixed` still quarantines normally there.
 
-- [ ] **Step 1: Write the failing tests.** Append to `backend/tests/test_mp_tick_aggregates.py`:
+- [ ] **Step 1: Write the failing tests.** Pre-flight F1: merge these names into the existing `backend/tests/test_mp_tick_aggregates.py:14` import line instead of appending a new import statement — `pyproject.toml` selects `E4` (including E402), and an appended mid-file import fails Step 4's `ruff check`. Line 14 becomes:
 
 ```python
-from app.pipelines.mp_tick_aggregates import check_aggregate_only, check_export_location
+from app.pipelines.mp_tick_aggregates import (
+    AggregateRow, check_aggregate_only, check_export_location, is_ice_mixed, load, main, read_export, validate,
+)
+```
 
+Then append the test bodies below to `backend/tests/test_mp_tick_aggregates.py`:
+
+```python
 ROCK = {R1: "Ice", R4: "Trad"}
 
 
 def test_rock_scope_quarantines_ice_routes_and_accepts_rock(tmp_path):
     path = _export(tmp_path, [(R1, "2025-01", "lead", 3), (R4, "2025-01", "lead", 2)], [(R1, 3, 1), (R4, 2, 1)])
     totals, monthly = read_export(path)
-    rows, report, _ = validate(totals, monthly, route_types=ROCK, existing={}, today=TODAY, scope="rock")
-    assert report.quarantined == {"ice_mixed_route": 2}
+    rows, report, stats = validate(totals, monthly, route_types=ROCK, existing={}, today=TODAY, scope="rock")
+    # F3 (controller ruling 2026-10-15): ice_mixed_route is out-of-scope for the rock gate, so it
+    # never reaches report.quarantined — it is counted separately, per route.
+    assert report.quarantined == {}
+    assert report.source == "mp_tick_aggregates_rock"  # F2: source matches the scope, not the ice default
+    assert stats["routes_waiting_ice_mixed_route"] == 1
     assert _keys(rows) == {(R4, "2025-01", "lead", 2), (R4, "total", "all", 2)}
 
 
@@ -342,13 +352,37 @@ def check_export_location(path: Path, repo_root: Path = REPO_ROOT) -> None:
     if resolved == root or root in resolved.parents:
         raise SystemExit(f"refusing {path}: tick exports never live inside the repository ({root}); "
                          "keep them in the private directory")
+```
+
+Pre-flight F8: factor the WAL-mode read-only open out of `read_export` (which already has it) into a shared `_ro_connection`, and use it from `check_aggregate_only` too, which currently opens `mode=ro` with no `OperationalError` handling at all:
+
+```python
+from contextlib import contextmanager
+from collections.abc import Iterator
+
+
+@contextmanager
+def _ro_connection(path: Path) -> Iterator[sqlite3.Connection]:
+    """Shared by read_export and check_aggregate_only (F8): a WAL-mode export can still need to
+    (re)create its -wal file on a read-only open, which fails here if this process can't write to
+    the export's directory. A `.backup` copy is a consistent snapshot that opens read-only anywhere."""
+    try:
+        db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            yield db
+        finally:
+            db.close()
+    except sqlite3.OperationalError as exc:
+        raise SystemExit(
+            f"cannot read {path} read-only ({exc}). This export is WAL-mode; make a consistent "
+            f'snapshot first and load that instead: sqlite3 {path} ".backup <snapshot-path>"'
+        ) from exc
 
 
 def check_aggregate_only(path: Path) -> None:
     """A raw scrape database (climber rows, page HTML, notes) must never be read by a committed
     loader, so anything beyond the two aggregate tables and their known columns is refused."""
-    db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    try:
+    with _ro_connection(path) as db:
         objects = {str(n) for (n,) in db.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'view')")
                    if not str(n).startswith("sqlite_")}
         extra = sorted(objects - set(EXPORT_COLUMNS))
@@ -363,32 +397,24 @@ def check_aggregate_only(path: Path) -> None:
                 raise SystemExit(f"refusing {path}: unexpected column(s) {', '.join(f'{table}.{c}' for c in unknown)}")
             if lacking := sorted(REQUIRED_COLUMNS[table] - cols):
                 raise SystemExit(f"refusing {path}: {table} lacks {', '.join(lacking)}")
-    finally:
-        db.close()
 ```
 
-Change `read_export` so that it filters monthly rows while iterating (memory stays bounded by the routes asked for):
+Change `read_export` so that it filters monthly rows while iterating (memory stays bounded by the routes asked for), and uses the shared helper:
 
 ```python
 def read_export(path: Path, routes: set[int] | None = None) -> tuple[list[RouteTotal], list[MonthlyRow]]:
-    try:
-        db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-        try:
-            totals = [
-                RouteTotal(int(r), int(t), bool(c), datetime.fromisoformat(s))
-                for r, t, c, s in db.execute(
-                    "SELECT mp_route_id, total_ticks, complete, scraped_at FROM route_tick_totals"
-                )
-            ]
-            monthly = [
-                MonthlyRow(int(r), str(ym), str(st), int(n))
-                for r, ym, st, n in db.execute("SELECT mp_route_id, year_month, style, n FROM route_tick_monthly")
-                if routes is None or int(r) in routes
-            ]
-        finally:
-            db.close()
-    except sqlite3.OperationalError as exc:
-        ...  # unchanged WAL-mode SystemExit
+    with _ro_connection(path) as db:
+        totals = [
+            RouteTotal(int(r), int(t), bool(c), datetime.fromisoformat(s))
+            for r, t, c, s in db.execute(
+                "SELECT mp_route_id, total_ticks, complete, scraped_at FROM route_tick_totals"
+            )
+        ]
+        monthly = [
+            MonthlyRow(int(r), str(ym), str(st), int(n))
+            for r, ym, st, n in db.execute("SELECT mp_route_id, year_month, style, n FROM route_tick_monthly")
+            if routes is None or int(r) in routes
+        ]
     return totals, monthly
 ```
 
@@ -412,9 +438,40 @@ def _route_problem(
     if total.scraped_at.astimezone(UTC).date() > today:
         return "scrape_after_today"
     return None
+
+
+# F3 (controller ruling 2026-10-15, overrides the pre-flight's proposed ruling): in the rock
+# scope, these three reasons are out of scope, not data-quality rejects. A persistent uncatalogued,
+# ice/mixed, or still-scraping route never gets a seam row, so it recurs on every reload; counting
+# it in the quarantine share would eventually reject a load with no real data problem.
+OUT_OF_SCOPE_ROCK = frozenset({"unknown_route", "ice_mixed_route", "route_incomplete"})
 ```
 
-`validate(...)` gains the keyword `scope: Scope = "ice_mixed"` and passes it to both `_route_problem` calls. Nothing else in `validate` changes.
+`validate(...)` gains the keyword `scope: Scope = "ice_mixed"`. Fix F2 (the source): build `report = ValidationReport(SOURCE_BY_SCOPE[scope])` instead of `ValidationReport(SOURCE)`, so a rock quarantine row and its log row agree on source. Fix F3 (the gate): route the two `_route_problem` call sites through a helper that, in the rock scope, records out-of-scope reasons as an issue only — never through `report.quarantine()`, so they never touch `rows_in` or `quarantined` — and tallies them per route:
+
+```python
+    waiting: dict[str, set[int]] = defaultdict(set)
+
+    def _problem(route_id: int, total: RouteTotal | None, ref: str) -> str | None:
+        problem = _route_problem(route_id, total, route_types, today, scope)
+        if problem is None:
+            return None
+        if scope == "rock" and problem in OUT_OF_SCOPE_ROCK:
+            waiting[problem].add(route_id)
+            report.issues.append(Issue(ref, problem, {}))  # seam_rows still sees it as rejected
+        else:
+            report.quarantine(ref, problem)
+        return problem
+```
+
+Both call sites (the monthly-row loop and the totals loop) change from `if (problem := _route_problem(row.mp_route_id, total, route_types, today)) is not None: report.quarantine(ref, problem)` to `if (problem := _problem(row.mp_route_id, total, ref)) is not None: continue` (same for the totals loop's `total.mp_route_id`/`f"{total.mp_route_id}:total"`) — nothing else in either loop changes. At the end of `validate`, before the `return`, add:
+
+```python
+    for reason, routes in waiting.items():
+        stats[f"routes_waiting_{reason}"] = len(routes)
+```
+
+(`Issue` and `defaultdict` need importing: `from collections import defaultdict` and `from app.pipelines.validate import Issue, ValidationReport, batch_gate` — the plan's existing import of `ValidationReport`/`batch_gate` gains `Issue`.)
 
 - [ ] **Step 4: Run the tests.** `cd backend && uv run pytest tests/test_mp_tick_aggregates.py -q && uv run mypy && uv run ruff check .` → all pass, including every existing ice test.
 
@@ -434,15 +491,21 @@ def _route_problem(
   - `existing_counts(conn, route_ids)`, now with `= ANY(CAST(:ids AS bigint[]))`;
   - `async seam_scraped_at(conn, route_ids: set[int]) -> dict[int, datetime]`;
   - `routes_to_load(totals: list[RouteTotal], seam: dict[int, datetime]) -> set[int]`;
-  - `async main(path, *, today, max_quarantine_share, dry_run, scope: Scope = "ice_mixed") -> dict[str, object]`. Rock returns `{"status": "noop", "rows_upserted": 0, "routes_unchanged": n}` when nothing is newer. On other paths, `stats["routes_unchanged"]` is set and the log source is `SOURCE_BY_SCOPE[scope]`.
+  - `async main(path, *, today, max_quarantine_share, dry_run, scope: Scope = "ice_mixed") -> dict[str, object]`. Rock returns `{"status": "noop", "rows_upserted": 0, "routes_unchanged": n}` when nothing is newer. On other paths, `stats["routes_unchanged"]` is set and the log source is `SOURCE_BY_SCOPE[scope]`. In the rock scope, `stats` also carries `routes_waiting_unknown_route`/`routes_waiting_ice_mixed_route`/`routes_waiting_route_incomplete` (F3: counted apart from `rows_upserted` and from `report["quarantined"]`'s share, since they recur every reload).
   - CLI `--scope {ice_mixed,rock}` (default `ice_mixed`).
 
-- [ ] **Step 1: Write the failing tests.** Append to `backend/tests/test_mp_tick_aggregates.py`:
+- [ ] **Step 1: Write the failing tests.** Pre-flight F1: merge `RouteTotal, existing_counts, routes_to_load` into the same `backend/tests/test_mp_tick_aggregates.py:14` import line Task 1 already updated, rather than a new import statement — it becomes:
 
 ```python
-from app.pipelines.mp_tick_aggregates import RouteTotal, existing_counts, routes_to_load
+from app.pipelines.mp_tick_aggregates import (
+    AggregateRow, RouteTotal, check_aggregate_only, check_export_location, existing_counts, is_ice_mixed, load,
+    main, read_export, routes_to_load, validate,
+)
+```
 
+Then append the test bodies below to `backend/tests/test_mp_tick_aggregates.py`:
 
+```python
 def _seed_rock_and_ice() -> str:
     return (
         "INSERT INTO mp_locations (mp_id, name) VALUES (900000100, 'Fixture Area');"
@@ -466,12 +529,17 @@ def test_rock_scope_loads_rock_and_writes_the_seam(tmp_path, monkeypatch):
         url = sa_url(name)
         monkeypatch.setattr(loader, "ingest_engine", lambda: create_async_engine(url))
         out = asyncio.run(main(path, today=TODAY, max_quarantine_share=1.0, dry_run=False, scope="rock"))
-        assert out["status"] == "ok" and out["report"]["quarantined"] == {"ice_mixed_route": 2}
+        # F3: ice_mixed_route is out-of-scope for the rock gate, so R1 never reaches report.quarantined;
+        # it shows up only as stats.routes_waiting_ice_mixed_route.
+        assert out["status"] == "ok" and out["report"]["quarantined"] == {}
+        assert out["stats"]["routes_waiting_ice_mixed_route"] == 1
         scrapes, months = asyncio.run(_seam_state(url))
         assert [(r, c, t) for r, _, c, _, t in scrapes] == [(R4, True, 3)]
         assert months == [(R4, "2025-01", 2), (R4, "2025-03", 1)]
         log = fetch(name, "SELECT source, status FROM source_ingest_log ORDER BY started_at")
         assert log == [("mp_tick_aggregates_rock", "ok")]
+        # F2: the quarantine rows for the rejected ice route are logged under the rock source too.
+        assert fetch(name, "SELECT DISTINCT source FROM internal.ingest_quarantine") == [("mp_tick_aggregates_rock",)]
 
 
 @requires_pg
@@ -491,6 +559,28 @@ def test_rock_reload_is_a_noop_and_older_never_rolls_back(tmp_path, monkeypatch)
 
 
 @requires_pg
+def test_persistent_out_of_scope_routes_never_trip_the_rock_quarantine_gate(tmp_path, monkeypatch):
+    # F3 (controller ruling 2026-10-15): a rock export's cumulative route list always carries some
+    # routes the catalog hasn't ingested yet. They recur every reload — the seam never gets an
+    # entry for them — so under the old, unadjusted share this reload (5 of 6 routes rejected, a
+    # 0.833 share) would be rejected at max_quarantine_share=0.10 even though the one real route
+    # is fine.
+    unknown = [900000901, 900000902, 900000903, 900000904, 900000905]
+    monthly = [(R4, "2025-01", "lead", 2)] + [(u, "2025-01", "lead", 1) for u in unknown]
+    totals = [(R4, 2, 1)] + [(u, 1, 1) for u in unknown]
+    path = _export(tmp_path, monthly, totals)
+    with migrated_db(seed_sql=_seed_rock_and_ice()) as name:
+        url = sa_url(name)
+        monkeypatch.setattr(loader, "ingest_engine", lambda: create_async_engine(url))
+        out = asyncio.run(main(path, today=TODAY, max_quarantine_share=0.10, dry_run=False, scope="rock"))
+        assert out["status"] == "ok"
+        assert out["report"]["quarantined"] == {}
+        assert out["stats"]["routes_waiting_unknown_route"] == 5
+        scrapes, _ = asyncio.run(_seam_state(url))
+        assert [(r, c) for r, _, c, _, _ in scrapes] == [(R4, True)]  # no seam row for the 5 unknowns
+
+
+# F13: no @requires_pg — ingest_engine is monkeypatched to raise, so this never needs a real DB.
 def test_rock_scope_refuses_a_raw_export_before_touching_the_database(tmp_path, monkeypatch):
     raw = _export(tmp_path, [(R4, "2025-01", "lead", 2)], [(R4, 2, 1)])
     db = sqlite3.connect(raw)
@@ -543,6 +633,11 @@ def test_status_counts_by_type_group_are_reported():
         "SELECT r.type_group, c.tick_status, count(*) AS n FROM scorable_routes r "
         "JOIN internal.route_tick_coverage c ON c.route_id = r.route_id GROUP BY 1, 2 ORDER BY 1, 2")
     assert rows
+    # F15: a real invariant, not just a printer — every scorable type group appears, and every
+    # status is one the seam can actually produce.
+    groups = fetch("SELECT DISTINCT type_group FROM scorable_routes")
+    assert {r["type_group"] for r in rows} == {g["type_group"] for g in groups}
+    assert {r["tick_status"] for r in rows} <= {"missing", "scraped", "complete"}
     for r in rows:
         print(r["type_group"], r["tick_status"], r["n"])
 ```
@@ -751,7 +846,7 @@ VERIFY tests/verify/test_tick_seam.py -q -s
 ```
 
 Expected:
-- **Dry run:** `status: dry_run`, empty `problems`, and `report.quarantined` limited to `ice_mixed_route`, `route_incomplete`, `partial_month`, `future_month` and `unknown_route` with small counts. `stats.seam_complete` should be close to the export's complete count.
+- **Dry run:** `status: dry_run`, empty `problems`, and `report.quarantined` limited to small `partial_month`/`future_month`/`bad_style`/`nonpositive_count`/`scrape_time_unzoned`/`scrape_after_today` counts — real data-quality rejects only. `ice_mixed_route`, `route_incomplete` and `unknown_route` are out of scope for this gate (F3) and show up instead as `stats.routes_waiting_ice_mixed_route`/`routes_waiting_route_incomplete`/`routes_waiting_unknown_route`. `stats.seam_complete` should be close to the export's complete count.
 - **Load:** `status: ok`, with `rows_upserted` equal to the dry run's accepted rows minus `already_loaded_*`.
 - **Second load:** `{"routes_unchanged": N, "rows_upserted": 0, "status": "noop"}`.
 - **Verify:** passes and prints status counts by type group.
@@ -852,8 +947,12 @@ if p["status"] == "noop":
     print("nothing newer in this export"); sys.exit(1)
 r = p["report"]; q = sum(r["quarantined"].values())
 assert p["status"] == "dry_run" and not p["problems"], p
+# F3: rows_in/quarantined already exclude the out-of-scope reasons (unknown_route, ice_mixed_route,
+# route_incomplete) — they never count toward this share, so a persistent backlog of them can't
+# trip this gate.
 assert r["rows_in"] and q / r["rows_in"] <= 0.10, (q, r["rows_in"])
-print("load gate ok:", p["stats"]["routes"], "routes,", p["stats"]["seam_complete"], "complete")
+waiting = {k: v for k, v in p["stats"].items() if k.startswith("routes_waiting_")}
+print("load gate ok:", p["stats"]["routes"], "routes,", p["stats"]["seam_complete"], "complete, waiting:", waiting)
 EOF
   snap="$(neonctl branches create --project-id still-morning-74008008 --name "pre-xp-load-$D" --parent production --no-secrets --output json \
     | python3 -c 'import json,sys; b=json.load(sys.stdin)["branch"]; print(b["id"], b["name"], b["parent_id"])')" || exit 1
@@ -870,7 +969,7 @@ EOF
 Then:
 - `bg_wait` that log until `status: ok`;
 - `VERIFY tests/verify/test_tick_seam.py -q -s`;
-- once X-2 is on prod, `INGMOD app.pipelines.exposure build` (Task 10 Step 5).
+- once X-2 is on prod, the gated rebuild (Task 10 Step 5 — F5: not a bare `INGMOD app.pipelines.exposure build`).
 
 "Nothing newer" means no load is needed. Any other failure: STOP and report the counts. The owner deletes old `pre-xp-load-*` snapshots when satisfied; the agent never deletes a branch.
 
@@ -1224,6 +1323,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
+from numpy.typing import NDArray
+
+from app.pipelines.era5_fill import HISTORY_YEARS
 
 PROXY_VERSION = "x-mp-v1"
 COMPONENTS = ("route_density", "season_share", "mp_ticks")
@@ -1232,7 +1334,9 @@ MONTHS = range(1, 13)
 RULE_BY_GROUP = {"sport": "rock", "trad": "rock", "rock": "rock", "alpine": "alpine", "ice": "ice", "mixed": "ice"}
 ROCK_TMAX_LO, ROCK_TMAX_HI, ROCK_MAX_PRECIP = 5.0, 32.0, 2.0
 ICE_WINDOW, ICE_MIN_FROZEN = 10, 7
-SEASON_YEARS = 3
+# F9: equal to era5_fill.HISTORY_YEARS, not redeclared, so the window this reads and the window
+# era5_fill prunes to can't drift apart.
+SEASON_YEARS = HISTORY_YEARS
 MIN_SEASON_DAYS = 28
 TICK_WINDOW_MONTHS = 60
 TICK_WINDOW_YEARS = TICK_WINDOW_MONTHS // 12
@@ -1299,7 +1403,7 @@ def alpine_day(rock: bool | None, ice: bool | None) -> bool | None:
     return False
 
 
-def _ranks(values: Sequence[float]) -> np.ndarray:
+def _ranks(values: Sequence[float]) -> NDArray[np.float64]:
     x = np.asarray(values, dtype=np.float64)
     order = x.argsort(kind="mergesort")
     ranks = np.empty(len(x))
@@ -1622,11 +1726,15 @@ async def season(conn: AsyncConnection, scope_: Scope, *, today: date) -> dict[K
 - Consumes: `internal.route_tick_coverage(route_id, tick_status, complete_through, …)`, `internal.route_tick_months(route_id, period, style, tick_count)`, `tick_component`.
 - Produces: `async mp_ticks(conn, scope_, *, enabled: bool, cutoff: date) -> dict[Key, Component]`, with missing reasons `disabled`, `table_dropped` and `no_complete_routes`.
 
-- [ ] **Step 1: Write the failing tests.** Append to `backend/tests/test_exposure_components.py`:
+- [ ] **Step 1: Write the failing tests.** Pre-flight F1: merge `mp_ticks` into Task 6's existing import line instead of appending a new import statement (ruff's E402 fails a mid-file import) — `from app.pipelines.exposure_components import keys, route_density, scope, season` becomes:
 
 ```python
-from app.pipelines.exposure_components import mp_ticks
+from app.pipelines.exposure_components import keys, mp_ticks, route_density, scope, season
+```
 
+Then append the test bodies below to `backend/tests/test_exposure_components.py`:
+
+```python
 # Crag: 900000001 complete through 2026-08-31, 900000002 scraped (incomplete), 900000003 never scraped.
 # Ice: 900000004 complete through 2026-01-31.
 TICKS = """
@@ -1776,14 +1884,17 @@ async def mp_ticks(conn: AsyncConnection, scope_: Scope, *, enabled: bool, cutof
 - [ ] **Step 1: Write the failing tests.** `backend/tests/test_exposure.py`:
 
 ```python
+import argparse
 import asyncio
 from datetime import date
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.pipelines.exposure import build, drop_snapshot, validate
-from tests.pgtest import fetch, migrated_db, requires_pg, run_on_conn
+from app.pipelines import db as db_module
+from app.pipelines.exposure import _run, build, drop_snapshot, validate
+from tests.pgtest import fetch, migrated_db, requires_pg, run_on_conn, sa_url
 from tests.test_exposure_components import CRAG, SEED, TICKS, TODAY, _climate
 
 CLIMATE = _climate()[0]
@@ -1848,6 +1959,11 @@ def test_backtest_snapshots_survive_production_pruning_and_can_be_dropped():
 
 @requires_pg
 def test_validate_reports_counts_and_omits_undefined_spearman():
+    # F10: the old assertion's "or" reduced to its first disjunct (full_coverage_cells == 12 was
+    # already asserted), so the "omits undefined" case the test's name promises was never
+    # exercised, and tick_coverage_mean was never checked. CRAG has 3 routes (1 complete, 1
+    # scraped, 1 never scraped) across 12 months = 1/3 coverage; the ice area's 1 route is
+    # complete = 1.0; the bare area's 1 route is never scraped = 0.0.
     with migrated_db(seed_sql=SEED + TICKS + CLIMATE) as name:
         async def go(conn):
             await build(conn, today=TODAY, mp_enabled=True)
@@ -1855,12 +1971,45 @@ def test_validate_reports_counts_and_omits_undefined_spearman():
 
         got = run_on_conn(name, go)
     assert got["cells"] == 36 and got["full_coverage_cells"] == 12
-    assert "spearman_point_ticks" in got or got["full_coverage_cells"] < 3
+    assert got["tick_coverage_mean"] == pytest.approx((12 * 1 / 3 + 12 * 1 + 12 * 0) / 36)
+    assert "spearman_point_ticks" in got
+
+
+@requires_pg
+def test_validate_omits_tick_metrics_when_mp_ticks_is_disabled():
+    # F10: the undefined case — with mp_enabled=False every cell's mp_ticks is "disabled", so
+    # there is no coverage anywhere and both tick-derived keys are absent.
+    with migrated_db(seed_sql=SEED + TICKS + CLIMATE) as name:
+        async def go(conn):
+            await build(conn, today=TODAY, mp_enabled=False)
+            return await validate(conn, as_of=TODAY, data_cutoff=TODAY)
+
+        got = run_on_conn(name, go)
+    assert got["full_coverage_cells"] == 0
+    assert "tick_coverage_mean" not in got and "spearman_point_ticks" not in got
 
 
 def test_cutoff_after_today_is_refused():
     with pytest.raises(ValueError, match="after today"):
         asyncio.run(build(None, today=TODAY, cutoff=date(2026, 10, 16), mp_enabled=True))  # type: ignore[arg-type]
+
+
+@requires_pg
+def test_cli_build_logs_metrics(monkeypatch):
+    # F11: no test exercised the logged CLI path (start_run -> build -> validate ->
+    # finish_run(metrics=checks)) before this — exactly where the _ALLOWED_METRICS change and
+    # report.rows_in = report.accepted = int(str(summary["cells"])) live.
+    with migrated_db(seed_sql=SEED + TICKS + CLIMATE) as name:
+        monkeypatch.setattr(db_module, "ingest_engine", lambda: create_async_engine(sa_url(name)))
+        args = argparse.Namespace(cmd="build", cutoff=None, dry_run=False)
+        asyncio.run(_run(args, today=TODAY, mp_enabled=True))
+        [(status, rows_upserted, report)] = fetch(
+            name, "SELECT status, rows_upserted, validation_report FROM source_ingest_log WHERE source = 'exposure'")
+    import json
+
+    report = json.loads(report) if isinstance(report, str) else report
+    assert status == "ok" and rows_upserted == 36
+    assert {"cells", "full_coverage_cells"} <= set(report)
 ```
 
 `backend/tests/test_no_exposure_in_api.py`:
@@ -1874,6 +2023,56 @@ API = Path(__file__).resolve().parents[1] / "app" / "api"
 def test_no_endpoint_reads_the_exposure_index():
     assert [str(p) for p in API.rglob("*.py") if "exposure_index" in p.read_text(encoding="utf-8")] == []
 ```
+
+F6 (controller ruling 2026-10-15, overrides the pre-flight's proposed ruling): the roles test (M4 precedent: "a grant the real SQL needs fails here rather than on the first prod run") must actually run the rock loader and the exposure build as `ingest`, not just the ad hoc `_as`/`_denied` statements Task 4 added. Extend `_run_real_jobs_as_ingest` in `backend/tests/test_roles_phase2.py`, right after its existing block that already runs `mp_tick_aggregates.main` (the one asserting `first["status"] == "ok" and first["rows_upserted"] == 2` / `again["status"] == "noop"`):
+
+```python
+    # F6: a rock-scope route the ice-mixed fixture above doesn't cover, so the loader's
+    # internal.route_tick_scrapes writes and exposure's reads/writes all run as ingest too.
+    rock_seed = (
+        "INSERT INTO mp_locations (mp_id, name) VALUES (900000951, 'Fixture Rock Area');"
+        "INSERT INTO mp_routes (mp_route_id, name, location_id, type) VALUES (900000950, 'Fixture Rock', 900000951, 'Trad');"
+        "INSERT INTO canonical_areas (area_id, tree_status, coord_precision, point_key, catalog_version) "
+        "VALUES (900000951, 'cycle', 'none', '900000951:k', 'v');"
+        "INSERT INTO canonical_routes (route_id, area_id, type_group, is_boulder, disciplines, type_rule_version, "
+        "scorable, unscorable_reason, facts_sha256, catalog_version) "
+        "VALUES (900000950, 900000951, 'trad', false, '{trad}', 'v', true, NULL, 'h', 'v');"
+        "INSERT INTO feature_points (point_key, lat, lon, grid_bucket, h3_r5, h3_r7, tz, feature_version) "
+        "VALUES ('900000951:k', 40.0, -105.0, 950, 'a', 'b', 'America/Denver', 'f-v1');"
+    )
+
+    async def seed_rock() -> None:
+        engine = create_async_engine(sa_ingest)
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text(rock_seed))
+        finally:
+            await engine.dispose()
+
+    asyncio.run(seed_rock())
+    rock_export = _export(tmp_path, [(900000950, "2025-01", "lead", 2)], [(900000950, 2, 1)], name="rock.sqlite")
+    rock_out = asyncio.run(
+        mp_tick_aggregates.main(rock_export, today=JOB_TODAY, max_quarantine_share=1.0, dry_run=False, scope="rock")
+    )
+    assert rock_out["status"] == "ok"
+
+    async def run_exposure() -> dict[str, object]:
+        engine = create_async_engine(sa_ingest)
+        try:
+            async with engine.begin() as conn:
+                built = await exposure.build(conn, today=JOB_TODAY, mp_enabled=True)
+                checked = await exposure.validate(conn, as_of=JOB_TODAY, data_cutoff=JOB_TODAY)
+                dropped = await exposure.drop_snapshot(conn, as_of=JOB_TODAY, data_cutoff=JOB_TODAY)
+                return {"built": built, "checked": checked, "dropped": dropped}
+        finally:
+            await engine.dispose()
+
+    exposure_out = asyncio.run(run_exposure())
+    assert exposure_out["built"]["cells"] >= 12
+    assert exposure_out["dropped"] == exposure_out["built"]["cells"]
+```
+
+(`sa_ingest` is the function's existing ingest URL variable; `mp_tick_aggregates.ingest_engine` is already monkeypatched to it earlier in this function, so the rock-scope `main` call needs no extra patching. Add `from app.pipelines import exposure` to the file's import list, next to the existing `from app.pipelines import accident_facts, cell_conditions, gnis, localday, mp_tick_aggregates, mp_ticks_quarantine` line.)
 
 - [ ] **Step 2: Run the tests to confirm they fail.** `cd backend && uv run pytest tests/test_exposure.py -q` → FAIL (`ModuleNotFoundError: app.pipelines.exposure`).
 
@@ -1914,14 +2113,13 @@ SOURCE = "exposure"
 KEEP_SNAPSHOTS = 3
 INSERT_CHUNK = 5000
 
-UPSERT_SQL = text(
+# F16: a plain INSERT, not ON CONFLICT DO UPDATE — build always runs CLEAR_SQL for this
+# (as_of, data_cutoff) before inserting, in the same transaction, so the conflict branch could
+# never fire. A leftover row now fails loudly instead of being silently merged.
+INSERT_SQL = text(
     "INSERT INTO internal.exposure_index (area_id, type_group, month, n_routes, proxy, proxy_version, as_of, "
     "data_cutoff, tick_coverage, exposure_point, exposure_lo, exposure_hi, run_id) VALUES (:a, :tg, :m, :n, "
-    "CAST(:p AS jsonb), :v, :d, :c, :cov, :pt, :lo, :hi, :run) "
-    "ON CONFLICT (area_id, type_group, month, as_of, data_cutoff) DO UPDATE SET n_routes = EXCLUDED.n_routes, "
-    "proxy = EXCLUDED.proxy, proxy_version = EXCLUDED.proxy_version, tick_coverage = EXCLUDED.tick_coverage, "
-    "exposure_point = EXCLUDED.exposure_point, exposure_lo = EXCLUDED.exposure_lo, "
-    "exposure_hi = EXCLUDED.exposure_hi, run_id = EXCLUDED.run_id")
+    "CAST(:p AS jsonb), :v, :d, :c, :cov, :pt, :lo, :hi, :run)")
 # A rebuild of the same snapshot must not keep cells whose area left the scope.
 CLEAR_SQL = text("DELETE FROM internal.exposure_index WHERE as_of = :d AND data_cutoff = :c")
 PRUNE_SQL = text(
@@ -1963,7 +2161,7 @@ async def build(conn: AsyncConnection, *, today: date, cutoff: date | None = Non
     if write:
         await conn.execute(CLEAR_SQL, {"d": today, "c": cut})
         for i in range(0, len(rows), INSERT_CHUNK):
-            await conn.execute(UPSERT_SQL, rows[i : i + INSERT_CHUNK])
+            await conn.execute(INSERT_SQL, rows[i : i + INSERT_CHUNK])
         await conn.execute(PRUNE_SQL, {"k": KEEP_SNAPSHOTS})
     return {"cells": len(rows), "null_points": sum(1 for r in rows if r["pt"] is None), "as_of": today.isoformat(),
             "data_cutoff": cut.isoformat(), "mp_enabled": mp_enabled, "proxy_version": PROXY_VERSION,
@@ -2043,9 +2241,9 @@ if __name__ == "__main__":
 
 (A failure inside `build` rolls the whole transaction back, including the run's `running` log row, so a crashed run leaves nothing behind, as in the other one-transaction jobs. `drop` refuses nothing by design: it is the owner's tool for backtest snapshots.)
 
-- [ ] **Step 4: Run the tests.** `cd backend && uv run pytest tests/test_exposure.py tests/test_no_exposure_in_api.py tests/test_ingest_log.py -q && uv run mypy && uv run ruff check .` → PASS.
+- [ ] **Step 4: Run the tests.** `cd backend && uv run pytest tests/test_exposure.py tests/test_no_exposure_in_api.py tests/test_ingest_log.py tests/test_roles_phase2.py -q && uv run mypy && uv run ruff check .` → PASS.
 
-- [ ] **Step 5: Commit.** `git add backend/app/pipelines/exposure.py backend/app/pipelines/ingest_log.py backend/tests/test_exposure.py backend/tests/test_no_exposure_in_api.py backend/pyproject.toml && git commit -m "feat(pipelines): exposure snapshots by data cutoff, validation metrics, removal drill, CLI"`
+- [ ] **Step 5: Commit.** `git add backend/app/pipelines/exposure.py backend/app/pipelines/ingest_log.py backend/tests/test_exposure.py backend/tests/test_no_exposure_in_api.py backend/tests/test_roles_phase2.py backend/pyproject.toml && git commit -m "feat(pipelines): exposure snapshots by data cutoff, validation metrics, removal drill, CLI"`
 
 ---
 
@@ -2102,7 +2300,14 @@ def test_coverage_by_type_group_is_reported():
         "count(*) FILTER (WHERE tick_coverage = 1) AS full, count(*) FILTER (WHERE exposure_point IS NULL) AS null_points "
         f"FROM internal.exposure_index WHERE data_cutoff = as_of AND as_of = {LATEST} AND month = 1 GROUP BY 1 ORDER BY 1")
     assert rows
+    # F15: a real invariant — cells matches the distinct (area, type_group) count for that group,
+    # and mean_cov is a coverage fraction or NULL, never outside [0, 1].
+    pairs = fetch(
+        "SELECT type_group, count(*) AS n FROM (SELECT DISTINCT area_id, type_group FROM scorable_routes) s GROUP BY 1")
+    expected = {p["type_group"]: p["n"] for p in pairs}
     for r in rows:
+        assert r["cells"] == expected[r["type_group"]]
+        assert r["mean_cov"] is None or 0.0 <= r["mean_cov"] <= 1.0
         print(r["type_group"], r["cells"], r["mean_cov"], r["full"], r["null_points"])
 ```
 
@@ -2134,7 +2339,7 @@ def test_coverage_by_type_group_is_reported():
 | `0008_creates_accounts_tables_and_seeds_settings` | `0012_creates_accounts_tables_and_seeds_settings` |
 
 Then set its first migration's `down_revision` to `"0011_exposure_index"`, and change its runbook's expected first `MIG current` line to `0011_exposure_index`. Then check:
-- `grep -n "0007_cell_daily_conditions\|0010_static_features" docs/superpowers/plans/2026-10-12-phase4-users-incident-reporting.md` lists only references that describe older revisions. Fix any `down_revision` or "prod is at" line it shows.
+- F12: `0010_static_features` does not exist (it is `0009_static_features`; `0010` is `0010_accident_route_links`). `grep -n "0007_cell_daily_conditions\|0009_static_features\|0010_accident_route_links" docs/superpowers/plans/2026-10-12-phase4-users-incident-reporting.md` lists only references that describe older revisions. Fix any `down_revision` or "prod is at" line it shows.
 - `grep -c "0008_\|0009_\|0010_" …` is 0 outside those described references.
 
 Add a revision note at the top of that plan: "Renumbered 2026-10-15: the exposure plan takes 0011."
@@ -2185,7 +2390,10 @@ Anything else: STOP.
 
 ```bash
 save_once ../data/review/xp2_dry_branch.json INGMOD app.pipelines.exposure build --dry-run
-save_once ../data/review/xp2_drill_branch.json env EXPOSURE_ENABLE_MP_TICKS=false INGMOD app.pipelines.exposure build --dry-run
+# F4: INGMOD is a shell function, so `env VAR=x INGMOD …` fails (`env` can only exec binaries).
+# A subshell with the export gives the function's own subprocess the variable instead; pydantic's
+# env var beats .env.
+( export EXPOSURE_ENABLE_MP_TICKS=false; save_once ../data/review/xp2_drill_branch.json INGMOD app.pipelines.exposure build --dry-run )
 python3 - <<'EOF'
 import json
 on = json.load(open("../data/review/xp2_dry_branch.json")); off = json.load(open("../data/review/xp2_drill_branch.json"))
@@ -2283,10 +2491,25 @@ Then, with the prod preamble:
 
 The PR records the build JSON and the snapshot id. The code deploys after 4b: no API reads the table, so deploy order is free.
 
-- [ ] **Step 5 (agent, recurring): Rebuilds** `[decided: DP8]`. After every rock load (Task 3 Step 5), and at least monthly, run with the prod preamble:
-  - `INGMOD app.pipelines.exposure build`;
-  - `VERIFY tests/verify/test_exposure.py -q -s`;
-  - paste the per-type-group coverage lines into the load's record.
+- [ ] **Step 5 (agent, recurring): Rebuilds** `[decided: DP8]`. After every rock load (Task 3 Step 5), and at least monthly. F5 (blocker, hard constraint: prod runbooks follow the plan-2 safety structure): the bare `INGMOD app.pipelines.exposure build` this step used to call directly broke that structure — no `gate_pass`/`gate_require`, no `save_once` dry-run evidence, no check against the previous snapshot. Run the gated block below instead, with the prod preamble:
+
+```bash
+D=$(date -u +%F); export GATE_DIR="../data/review/gates_xp2_rebuild_$D"
+save_once "../data/review/xp2_dry_prod_$D.json" INGMOD app.pipelines.exposure build --dry-run
+python3 - "../data/review/xp2_dry_prod_$D.json" <<'EOF' || exit 1
+import json, sys
+p = json.load(open(sys.argv[1]))
+prev = json.load(open("../data/review/xp2_build_prod.json"))  # most recent build JSON on record
+assert p["status"] == "dry_run" and p["proxy_version"] == prev["proxy_version"], p
+assert abs(p["cells"] - prev["cells"]) <= 0.01 * prev["cells"], (prev["cells"], p["cells"])
+print("rebuild dry run matches the last snapshot on record")
+EOF
+gate_pass rebuild
+gate_require rebuild || exit 1
+bg_start "../data/review/logs/xp2_build_prod_$D.log" INGMOD app.pipelines.exposure build
+```
+
+Then: `bg_wait` that log until `status: ok`; `VERIFY tests/verify/test_exposure.py -q -s`; paste the per-type-group coverage lines into the load's record, and update `../data/review/xp2_build_prod.json` (grep `^{` from the log) so the next rebuild compares against this one. No Neon snapshot branch is needed for a rebuild: `internal.exposure_index` is fully derived from other tables, and the prune (`KEEP_SNAPSHOTS = 3`) keeps the previous 2 production snapshots alongside the new one.
 
   Backtest snapshots for Phase 3 are `INGMOD app.pipelines.exposure build --cutoff YYYY-MM-DD`, dropped with `drop --as-of … --cutoff …` when no longer needed.
 
