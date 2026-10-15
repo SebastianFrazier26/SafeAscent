@@ -11,7 +11,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 import app.pipelines.mp_tick_aggregates as loader
-from app.pipelines.mp_tick_aggregates import AggregateRow, is_ice_mixed, load, main, read_export, validate
+from app.pipelines.mp_tick_aggregates import (
+    AggregateRow, check_aggregate_only, check_export_location, is_ice_mixed, load, main, read_export, validate,
+)
 from tests.pgtest import migrated_db, requires_pg, sa_url
 
 TODAY = date(2026, 9, 28)
@@ -430,3 +432,95 @@ def test_gappy_routes_load_as_scraped_and_hide_their_months(tmp_path, monkeypatc
         scrapes, months = asyncio.run(_seam_state(url))
     assert [(r[0], r[2], r[3], r[4]) for r in scrapes] == [(R1, False, None, None), (R2, False, None, None)]
     assert months == []
+
+
+ROCK = {R1: "Ice", R4: "Trad"}
+
+
+def test_rock_scope_quarantines_ice_routes_and_accepts_rock(tmp_path):
+    path = _export(tmp_path, [(R1, "2025-01", "lead", 3), (R4, "2025-01", "lead", 2)], [(R1, 3, 1), (R4, 2, 1)])
+    totals, monthly = read_export(path)
+    rows, report, stats = validate(totals, monthly, route_types=ROCK, existing={}, today=TODAY, scope="rock")
+    # F3 (controller ruling 2026-10-15): ice_mixed_route is out-of-scope for the rock gate, so it
+    # never reaches report.quarantined — it is counted separately, per route.
+    assert report.quarantined == {}
+    assert report.source == "mp_tick_aggregates_rock"  # F2: source matches the scope, not the ice default
+    assert stats["routes_waiting_ice_mixed_route"] == 1
+    assert _keys(rows) == {(R4, "2025-01", "lead", 2), (R4, "total", "all", 2)}
+
+
+def test_ice_scope_is_unchanged_by_the_scope_parameter(tmp_path):
+    path = _export(tmp_path, [(R1, "2025-01", "lead", 3), (R4, "2025-01", "lead", 2)], [(R1, 3, 1), (R4, 2, 1)])
+    totals, monthly = read_export(path)
+    rows, report, _ = validate(totals, monthly, route_types=ROCK, existing={}, today=TODAY)
+    assert report.quarantined == {"not_ice_mixed": 2}
+    assert _keys(rows) == {(R1, "2025-01", "lead", 3), (R1, "total", "all", 3)}
+
+
+def test_read_export_filters_monthly_rows_to_the_requested_routes(tmp_path):
+    path = _export(tmp_path, [(R1, "2025-01", "lead", 3), (R4, "2025-02", "tr", 1)], [(R1, 3, 1), (R4, 1, 1)])
+    totals, monthly = read_export(path, routes={R4})
+    assert {t.mp_route_id for t in totals} == {R1, R4}
+    assert [(m.mp_route_id, m.year_month) for m in monthly] == [(R4, "2025-02")]
+    assert read_export(path, routes=set())[1] == []
+
+
+def test_an_export_inside_the_repository_is_refused(tmp_path):
+    inside = tmp_path / "repo" / "data" / "ticks.sqlite"
+    inside.parent.mkdir(parents=True)
+    with pytest.raises(SystemExit, match="inside the repository"):
+        check_export_location(inside, repo_root=tmp_path / "repo")
+    check_export_location(tmp_path / "private" / "ticks.sqlite", repo_root=tmp_path / "repo")
+
+
+def test_the_real_repo_root_is_the_checkout_root():
+    assert (loader.REPO_ROOT / "backend" / "app" / "pipelines" / "mp_tick_aggregates.py").is_file()
+
+
+def test_a_raw_table_or_extra_column_is_refused_before_any_row_is_read(tmp_path):
+    raw = _export(tmp_path, [(R4, "2025-01", "lead", 2)], [(R4, 2, 1)], name="raw.sqlite")
+    db = sqlite3.connect(raw)
+    db.execute("CREATE TABLE tick_rows (mp_route_id INTEGER, climber TEXT)")
+    db.commit()
+    db.close()
+    with pytest.raises(SystemExit, match="tick_rows"):
+        check_aggregate_only(raw)
+    wide = _export(tmp_path, [(R4, "2025-01", "lead", 2)], [(R4, 2, 1)], name="wide.sqlite")
+    db = sqlite3.connect(wide)
+    db.execute("ALTER TABLE route_tick_monthly ADD COLUMN note TEXT")
+    db.commit()
+    db.close()
+    with pytest.raises(SystemExit, match="route_tick_monthly.note"):
+        check_aggregate_only(wide)
+    check_aggregate_only(_export(tmp_path, [(R4, "2025-01", "lead", 2)], [(R4, 2, 1)], name="ok.sqlite"))
+
+
+def test_a_missing_required_column_is_refused(tmp_path):
+    path = tmp_path / "thin.sqlite"
+    db = sqlite3.connect(path)
+    db.executescript(
+        "CREATE TABLE route_tick_totals (mp_route_id INTEGER PRIMARY KEY, total_ticks INTEGER NOT NULL);"
+        "CREATE TABLE route_tick_monthly (mp_route_id INTEGER, year_month TEXT, style TEXT, n INTEGER);")
+    db.close()
+    with pytest.raises(SystemExit, match="route_tick_totals lacks"):
+        check_aggregate_only(path)
+
+
+def test_rock_out_of_scope_routes_stay_off_the_gate_and_out_of_the_seam(tmp_path):
+    from app.pipelines.mp_tick_aggregates import seam_rows
+
+    r5, r6 = 900000005, 900000006
+    path = _export(
+        tmp_path,
+        [(R1, "2025-01", "lead", 3), (R4, "2025-01", "lead", 2), (r5, "2025-01", "tr", 1), (r6, "2025-01", "lead", 4)],
+        [(R1, 3, 1), (R4, 2, 1), (r5, 1, 0), (r6, 4, 1)],
+    )
+    totals, monthly = read_export(path)
+    types = {**ROCK, r5: "Sport"}
+    _, report, stats = validate(totals, monthly, route_types=types, existing={}, today=TODAY, scope="rock")
+    assert (report.rows_in, report.accepted, report.quarantined) == (2, 2, {})
+    assert {k: v for k, v in stats.items() if k.startswith("routes_waiting_")} == {
+        "routes_waiting_ice_mixed_route": 1, "routes_waiting_route_incomplete": 1, "routes_waiting_unknown_route": 1,
+    }
+    # Missing is never 0: an ice, still-scraping or uncatalogued route gets no seam row at all.
+    assert {(s.mp_route_id, s.complete) for s in seam_rows(totals, monthly, report)} == {(R4, True)}

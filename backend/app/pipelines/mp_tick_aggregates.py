@@ -18,6 +18,11 @@ scraped_at is the private export's last-page time for the route, not its first (
 upserts it on every page). A route whose pages straddle a month boundary could therefore
 treat a month as partial when only its early days were actually unobserved; accepted for now
 (owner-noted), since a route's pages are normally fetched back to back.
+
+Rock scope (exposure plan X-1, 2026-10-15): the same loader reads the private rock tick export with
+--scope rock. Each route has one owning export: the rock scope takes exactly the routes the ice
+scope rejects. A rock export must hold only the two aggregate tables (check_aggregate_only), and
+no export may live inside the repository (check_export_location): scraped data never reaches git.
 """
 
 from __future__ import annotations
@@ -28,21 +33,37 @@ import json
 import re
 import sqlite3
 import uuid
+from collections import defaultdict
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import Literal
 
 from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.pipelines.db import ingest_engine
 from app.pipelines.ingest_log import find_completed, finish_run, sha256_rows, start_run, write_quarantine
-from app.pipelines.validate import ValidationReport, batch_gate
+from app.pipelines.validate import Issue, ValidationReport, batch_gate
 
 SOURCE = "mp_tick_aggregates"
 STYLES = frozenset({"lead", "follow", "tr", "solo", "unknown"})
 YEAR_MONTH = re.compile(r"^(\d{4})-(0[1-9]|1[0-2])$")
 ICE_MIXED = re.compile(r"\b(ice|mixed)\b", re.IGNORECASE)
+Scope = Literal["ice_mixed", "rock"]
+SCOPES: tuple[Scope, ...] = ("ice_mixed", "rock")
+SOURCE_BY_SCOPE: dict[str, str] = {"ice_mixed": SOURCE, "rock": "mp_tick_aggregates_rock"}
+EXPORT_COLUMNS: dict[str, frozenset[str]] = {
+    "route_tick_totals": frozenset({"mp_route_id", "total_ticks", "last_page", "pages_fetched", "complete", "scraped_at"}),
+    "route_tick_monthly": frozenset({"mp_route_id", "year_month", "style", "n"}),
+}
+REQUIRED_COLUMNS: dict[str, frozenset[str]] = {
+    "route_tick_totals": frozenset({"mp_route_id", "total_ticks", "complete", "scraped_at"}),
+    "route_tick_monthly": frozenset({"mp_route_id", "year_month", "style", "n"}),
+}
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 @dataclass(frozen=True)
@@ -74,40 +95,79 @@ def is_ice_mixed(route_type: str | None) -> bool:
     return route_type is not None and ICE_MIXED.search(route_type) is not None
 
 
-def read_export(path: Path) -> tuple[list[RouteTotal], list[MonthlyRow]]:
+def check_export_location(path: Path, repo_root: Path = REPO_ROOT) -> None:
+    resolved, root = path.resolve(), repo_root.resolve()
+    if resolved == root or root in resolved.parents:
+        raise SystemExit(f"refusing {path}: tick exports never live inside the repository ({root}); "
+                         "keep them in the private directory")
+
+
+@contextmanager
+def _ro_connection(path: Path) -> Iterator[sqlite3.Connection]:
+    """Shared by read_export and check_aggregate_only (F8). I1: the private scraper leaves the
+    export in WAL mode. A mode=ro open can still need to (re)create the -wal file (e.g. right after
+    a checkpoint clears it) even for a read, which fails here if this process can't write to the
+    export's directory — a live writer alone is fine (SQLite's WAL readers don't need it). A
+    `.backup` copy is a consistent snapshot that opens read-only anywhere."""
     try:
         db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         try:
-            totals = [
-                RouteTotal(int(r), int(t), bool(c), datetime.fromisoformat(s))
-                for r, t, c, s in db.execute(
-                    "SELECT mp_route_id, total_ticks, complete, scraped_at FROM route_tick_totals"
-                )
-            ]
-            monthly = [
-                MonthlyRow(int(r), str(ym), str(st), int(n))
-                for r, ym, st, n in db.execute("SELECT mp_route_id, year_month, style, n FROM route_tick_monthly")
-            ]
+            yield db
         finally:
             db.close()
     except sqlite3.OperationalError as exc:
-        # I1: the private scraper leaves the export in WAL mode. A mode=ro open can still need
-        # to (re)create the -wal file (e.g. right after a checkpoint clears it) even for a read,
-        # which fails right here if this process can't write to the export's directory — a live
-        # writer alone is fine (SQLite's WAL readers don't need it). A `.backup` copy is a
-        # consistent snapshot that opens read-only anywhere.
         raise SystemExit(
             f"cannot read {path} read-only ({exc}). This export is WAL-mode; make a consistent "
             f'snapshot first and load that instead: sqlite3 {path} ".backup <snapshot-path>"'
         ) from exc
+
+
+def check_aggregate_only(path: Path) -> None:
+    """A raw scrape database (climber rows, page HTML, notes) must never be read by a committed
+    loader, so anything beyond the two aggregate tables and their known columns is refused."""
+    with _ro_connection(path) as db:
+        objects = {str(n) for (n,) in db.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'view')")
+                   if not str(n).startswith("sqlite_")}
+        extra = sorted(objects - set(EXPORT_COLUMNS))
+        if extra:
+            raise SystemExit(f"refusing {path}: not an aggregate-only export (unexpected {', '.join(extra)})")
+        for table, allowed in EXPORT_COLUMNS.items():
+            # table comes from the fixed EXPORT_COLUMNS keys, never from the file.
+            cols = {str(r[1]) for r in db.execute(f"PRAGMA table_info({table})")}
+            if not cols:
+                raise SystemExit(f"refusing {path}: {table} is missing")
+            if unknown := sorted(cols - allowed):
+                raise SystemExit(f"refusing {path}: unexpected column(s) {', '.join(f'{table}.{c}' for c in unknown)}")
+            if lacking := sorted(REQUIRED_COLUMNS[table] - cols):
+                raise SystemExit(f"refusing {path}: {table} lacks {', '.join(lacking)}")
+
+
+def read_export(path: Path, routes: set[int] | None = None) -> tuple[list[RouteTotal], list[MonthlyRow]]:
+    with _ro_connection(path) as db:
+        totals = [
+            RouteTotal(int(r), int(t), bool(c), datetime.fromisoformat(s))
+            for r, t, c, s in db.execute(
+                "SELECT mp_route_id, total_ticks, complete, scraped_at FROM route_tick_totals"
+            )
+        ]
+        monthly = [
+            MonthlyRow(int(r), str(ym), str(st), int(n))
+            for r, ym, st, n in db.execute("SELECT mp_route_id, year_month, style, n FROM route_tick_monthly")
+            if routes is None or int(r) in routes
+        ]
     return totals, monthly
 
 
-def _route_problem(route_id: int, total: RouteTotal | None, route_types: dict[int, str | None], today: date) -> str | None:
+def _route_problem(
+    route_id: int, total: RouteTotal | None, route_types: dict[int, str | None], today: date, scope: Scope
+) -> str | None:
     if route_id not in route_types:
         return "unknown_route"
-    if not is_ice_mixed(route_types[route_id]):
+    ice = is_ice_mixed(route_types[route_id])
+    if scope == "ice_mixed" and not ice:
         return "not_ice_mixed"
+    if scope == "rock" and ice:
+        return "ice_mixed_route"
     if total is None or not total.complete:
         return "route_incomplete"
     if total.scraped_at.tzinfo is None:
@@ -115,6 +175,13 @@ def _route_problem(route_id: int, total: RouteTotal | None, route_types: dict[in
     if total.scraped_at.astimezone(UTC).date() > today:
         return "scrape_after_today"
     return None
+
+
+# F3 (controller ruling 2026-10-15, overrides the pre-flight's proposed ruling): in the rock
+# scope, these three reasons are out of scope, not data-quality rejects. A persistent uncatalogued,
+# ice/mixed, or still-scraping route never gets a seam row, so it recurs on every reload; counting
+# it in the quarantine share would eventually reject a load with no real data problem.
+OUT_OF_SCOPE_ROCK = frozenset({"unknown_route", "ice_mixed_route", "route_incomplete"})
 
 
 def _month_problem(year_month: str, *, today: date, cutoff: date) -> str | None:
@@ -158,9 +225,10 @@ def validate(
     route_types: dict[int, str | None],
     existing: dict[tuple[int, str, str], int],
     today: date,
+    scope: Scope = "ice_mixed",
 ) -> tuple[list[AggregateRow], ValidationReport, dict[str, int]]:
     by_route = {t.mp_route_id: t for t in totals}
-    report = ValidationReport(SOURCE)
+    report = ValidationReport(SOURCE_BY_SCOPE[scope])
     accepted: list[AggregateRow] = []
     stats = {
         "routes": len(by_route),
@@ -170,13 +238,25 @@ def validate(
         "already_loaded_changed": 0,
         "total_mismatch_routes": 0,
     }
+    waiting: dict[str, set[int]] = defaultdict(set)
+
+    def _problem(route_id: int, total: RouteTotal | None, ref: str) -> str | None:
+        problem = _route_problem(route_id, total, route_types, today, scope)
+        if problem is None:
+            return None
+        if scope == "rock" and problem in OUT_OF_SCOPE_ROCK:
+            waiting[problem].add(route_id)
+            report.issues.append(Issue(ref, problem, {}))  # seam_rows still sees it as rejected
+        else:
+            report.quarantine(ref, problem)
+        return problem
+
     raw_sums: dict[int, int] = {}
     for row in monthly:
         raw_sums[row.mp_route_id] = raw_sums.get(row.mp_route_id, 0) + row.n
         ref = f"{row.mp_route_id}:{row.year_month}:{row.style}"
         total = by_route.get(row.mp_route_id)
-        if (problem := _route_problem(row.mp_route_id, total, route_types, today)) is not None:
-            report.quarantine(ref, problem)
+        if _problem(row.mp_route_id, total, ref) is not None:
             continue
         assert total is not None
         cutoff = min(today, total.scraped_at.astimezone(UTC).date())
@@ -192,15 +272,17 @@ def validate(
             stats["accepted_month_ticks"] += row.n
     for total in totals:
         ref = f"{total.mp_route_id}:total"
-        if (problem := _route_problem(total.mp_route_id, total, route_types, today)) is not None:
-            report.quarantine(ref, problem)
-        elif total.total_ticks < 0:
+        if _problem(total.mp_route_id, total, ref) is not None:
+            continue
+        if total.total_ticks < 0:
             report.quarantine(ref, "bad_total", total=total.total_ticks)
         else:
             candidate = AggregateRow(total.mp_route_id, "total", "all", total.total_ticks, total.scraped_at)
             _accept_or_compare(candidate, existing, report, accepted, stats)
             if raw_sums.get(total.mp_route_id, 0) != total.total_ticks:
                 stats["total_mismatch_routes"] += 1
+    for reason, routes in waiting.items():
+        stats[f"routes_waiting_{reason}"] = len(routes)
     return accepted, report, stats
 
 
