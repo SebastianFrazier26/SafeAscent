@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Hardening: tick-reload metrics and pinned base images — 2026-10-15
+
+- `mp_tick_aggregates` now persists `already_loaded_same` and `already_loaded_changed` as run metrics on `source_ingest_log` (not just printed), via `finish_run(metrics=...)`; both names join `ingest_log._ALLOWED_METRICS`.
+- `backend/Dockerfile`, `backend/Dockerfile.jobs` and `frontend/Dockerfile` pin their base images (`python:3.12-slim`, `ghcr.io/astral-sh/uv:0.11.3`, `node:22-alpine`, `nginx:alpine`) by digest (`image:tag@sha256:...`), per the owner norm to pin anything deployed. Each pin carries a comment with the registry API call to refresh it.
+
 ### MP catalog final-review fixes — 2026-10-15
 
 - Route types `rt-mp-v3` (2026-10-14): a route whose only discipline evidence is toprope or aid ("Rock, TR" included) maps to `rock` (sport or trad, unknown), no longer `trad`; a V grade means a boulder whatever the type flags. The first refresh under the new version rewrites every route's `facts_sha256` once.
