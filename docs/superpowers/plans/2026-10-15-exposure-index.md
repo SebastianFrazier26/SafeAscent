@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Revision 1 (2026-10-15):** this plan replaces the exposure half (PR 2b-4) of `docs/superpowers/plans/2026-09-28-phase2b-exposure-compaction.md`, which targeted an OpenBeta catalog that no longer exists. That plan's compaction half (PR 2b-5) is not carried over here `[default pending: DP11]`. Design calls are marked `[default pending: DPn]`, each with the recommended default the plan is written against. The owner can overrule any of them before execution starts.
+**Revision 1 (2026-10-15):** this plan replaces the exposure half (PR 2b-4) of `docs/superpowers/plans/2026-09-28-phase2b-exposure-compaction.md`, which targeted an OpenBeta catalog that no longer exists. That plan's compaction half (PR 2b-5) is not carried over here `[decided: DP11]`. Design calls are marked `[decided: DPn]`: DP1–DP11 are each decided (controller ruling 2026-10-15, owner overnight instruction; owner may override), on the recommended default the plan is written against (Appendix A). The owner can still overrule any of them before execution starts.
 
 **Goal:** Load the private rock tick aggregates into prod through the existing tick seam, using a local, file-only loader (X-1). Then build `internal.exposure_index` (X-2): one row per MP area × type group × month, holding raw exposure components with missing flags and per-cell tick coverage, computed as of a data cutoff. Phase 3 can then build leak-free training snapshots and tell low traffic apart from no data.
 
@@ -15,7 +15,7 @@
 - **How the job reads its inputs:**
   - Ticks come only through `internal.route_tick_coverage` and `internal.route_tick_months`. A route is `missing`, `scraped` or `complete as of`, so an unscraped route is never a zero.
   - Each cell stores its tick coverage (`n_complete / n_routes`), both in the proxy and in a `tick_coverage` column.
-- **Where it runs.** Both jobs run from the owner's Mac as `ingest` through the runbook helpers `[default pending: DP8]`. Nothing new runs on GitHub Actions or Railway.
+- **Where it runs.** Both jobs run from the owner's Mac as `ingest` through the runbook helpers `[decided: DP8]`. Nothing new runs on GitHub Actions or Railway.
 
 **Tech Stack:** Python 3.12, SQLAlchemy async + asyncpg, Alembic, Postgres (window functions over `cell_daily_conditions`), numpy, sqlite3 (stdlib), pytest.
 
@@ -60,13 +60,13 @@ The foundations plan's Global Constraints and the MP catalog plan's Global Const
   - `Component.present` refuses a non-finite value.
 - **Ticks are read only through the seam views.** `internal.route_tick_coverage` gives the route's status and `internal.route_tick_months` gives its counts. The exposure code never reads `internal.mp_tick_aggregates` directly. A month counts only for a `complete` route and only up to its `complete_through`.
 - **Coverage is always stored.** Every `mp_ticks` component carries `coverage`, `n_complete`, `n_scraped` and `n_missing`. The row also carries `tick_coverage` (NULL only when the MP components are disabled or removed), so Phase 3 can tell low traffic from no data.
-- **Data cutoff.** Tick months are counted only up to the last complete month strictly before `data_cutoff` (P3:398). `route_density` is the current catalog and `season_share` is the latest 3 ERA5 years; both are documented as time-invariant covariates `[default pending: DP4]`.
+- **Data cutoff.** Tick months are counted only up to the last complete month strictly before `data_cutoff` (P3:398). `route_density` is the current catalog and `season_share` is the latest 3 ERA5 years; both are documented as time-invariant covariates `[decided: DP4]`.
 - **The scraper-code rule holds.**
   - No scraper code and no scrape output is committed: no file name matching `scrape*`/`*scraper*`, no banned host in source (`scripts/check_no_scrapers.py`), and no MP ids below 900000000 in `data/`, `docs/`, `backend/tests/` (`scripts/check_no_mp_data.py`).
   - The loader reads only an exported aggregate file. It imports no network client (`test_loader_imports_no_network_client`), refuses an export inside the repository, and refuses an export holding any table but the two aggregate tables.
 - **Least privilege.**
   - Grants change only in the Phase 2 three-file lockstep: `backend/db/roles/grants_phase2.sql`, `verify_roles_phase2.sql`, and `backend/tests/test_roles_phase2.py`, all green together. `create_roles_phase2.sql` is untouched.
-  - `exposure_index` lives in schema `internal` `[default pending: DP1]`. As a result, `app` holds nothing on it by construction, `analyst` reads it through the schema-wide SELECT, and `trainer` gets nothing until Phase 3 (D13).
+  - `exposure_index` lives in schema `internal` `[decided: DP1]`. As a result, `app` holds nothing on it by construction, `analyst` reads it through the schema-wide SELECT, and `trainer` gets nothing until Phase 3 (D13).
   - No API endpoint reads it; a test greps `app/api/`.
 - **Parameterised SQL only.** Values travel as bound parameters, and arrays go through `CAST(:x AS bigint[])`. The only f-strings in SQL interpolate module constants. There is no DDL in `app/` (`tests/test_no_runtime_ddl.py`).
 - **Fixtures** use synthetic MP ids ≥ 900000000 and `Fixture …` names. Tests never read a real export.
@@ -96,24 +96,24 @@ The foundations plan's Global Constraints and the MP catalog plan's Global Const
 5. **Keep the P2-9 components that still make sense**, each with its source, licence and access stated, and defer any whose source is unverified (Appendix B).
 6. Migrations start at `0011`, and Phase 4 renumbers after this plan.
 
-**Decisions this plan makes. Each DP has a recommended default; the plan is written against the default.**
+**Decisions this plan makes. Each DP is decided (controller ruling 2026-10-15, owner overnight instruction; owner may override); the plan is written against that ruling.**
 - **D-1 Components in the proxy** (`PROXY_VERSION = "x-mp-v1"`) are `route_density`, `season_share` and `mp_ticks`.
-  - `nps_visits`, `permit_attempts`, `objective_popularity` and `in_app_ticks` are deferred and omitted from the proxy until their source lands. Each one that lands bumps `PROXY_VERSION` (Appendix B) `[default pending: DP6]`.
+  - `nps_visits`, `permit_attempts`, `objective_popularity` and `in_app_ticks` are deferred and omitted from the proxy until their source lands. Each one that lands bumps `PROXY_VERSION` (Appendix B) `[decided: DP6]`.
   - The alternative to omitting them is to carry them now as permanently missing keys. Phase 3 can then fit nothing for them, but the key set would stay stable.
-- **D-2 Cells: one row per (area, type group, month) for every area with at least one scorable route attached directly** (`scorable_routes.area_id`). `n_routes` counts those routes only, so cells are disjoint and Phase 3 sums up the `path` hierarchy itself `[default pending: DP5]`.
+- **D-2 Cells: one row per (area, type group, month) for every area with at least one scorable route attached directly** (`scorable_routes.area_id`). `n_routes` counts those routes only, so cells are disjoint and Phase 3 sums up the `path` hierarchy itself `[decided: DP5]`.
   - Alternative: subtree rollups per ancestor area. That double-counts across levels, and Phase 3's EB already does the hierarchy.
-- **D-3 Rock tick coverage** `[default pending: DP2]`.
+- **D-3 Rock tick coverage** `[decided: DP2]`.
   - The `mp_ticks` value is the sum over the cell's `complete` routes of each route's mean ticks per year in that calendar month. It is stored raw, never scaled to `n_routes`.
   - Beside it, `per_route_mean` (the value ÷ `n_complete`), `coverage = n_complete / n_routes`, `n_complete`, `n_scraped` and `n_missing` are stored.
   - It is present when `n_complete ≥ 1`. Otherwise it is missing (`no_complete_routes`) with `coverage: 0`.
   - Alternatives:
     - (b) present only at `coverage = 1`. Most rock cells would stay missing for ~140 days.
     - (c) extrapolate the value × `n_routes / n_complete`. Rejected: it invents numbers.
-- **D-4 Tick window** `[default pending: DP3]`.
+- **D-4 Tick window** `[decided: DP3]`.
   - Each complete route contributes the 60 months ending at its last complete month that is both ≤ `complete_through` and strictly before `data_cutoff`. Its per-month mean is the sum over that month's 5 occurrences ÷ 5.
   - The window is the same length for every route, so routes are comparable and backtests at older cutoffs still get 5 years.
   - Alternative: all history. Older MP years are thinner, which biases old routes low.
-- **D-5 Season share** is a time-invariant climate covariate `[default pending: DP4]`.
+- **D-5 Season share** is a time-invariant climate covariate `[decided: DP4]`.
   - Source: `cell_daily_conditions` ERA5 rows (`record_kind = 'era5'`) of the area's `(grid_bucket, tz)` series over `[today − 3×365 d, today)`. That is the 3-year window `era5_window` keeps for non-incident series; older rows are pruned, so a strict cutoff would leave every backtest older than 3 years without it.
   - Rules: rock (sport, trad, rock) day = tmax 5–32 °C and precip < 2 mm. Ice/mixed day = tmax < 0 °C on ≥ 7 of the 10 days ending that day. Alpine day = either (spec "both windows", read as the union, as in the 2026-09-28 plan).
   - Unknown days (a NULL input, or a missing day in the 10-day window that could change the answer) are excluded, never counted false.
@@ -122,7 +122,7 @@ The foundations plan's Global Constraints and the MP catalog plan's Global Const
   - `exposure_point = route_density × season_share`, NULL when either is missing (no floor).
   - `exposure_lo`/`exposure_hi` = point ÷/× 3. The ×/÷1.5 permit case returns with `permit_attempts`.
   - Phase 3 fits the real combination (M5). This number only anchors the bounds.
-- **D-7 One tick component.** `mp_ticks` covers every type group: rock groups from the rock scrape, ice/mixed from the ice scrape, all through the same seam with the same semantics. One flag, `EXPOSURE_ENABLE_MP_TICKS` (default true), removes it `[default pending: DP7]`.
+- **D-7 One tick component.** `mp_ticks` covers every type group: rock groups from the rock scrape, ice/mixed from the ice scrape, all through the same seam with the same semantics. One flag, `EXPOSURE_ENABLE_MP_TICKS` (default true), removes it `[decided: DP7]`.
   - Alternative: the spec's two keys (`mp_tick_count` for rock, `mp_ice_mixed_ticks`), each missing `not_applicable_type_group` on the other half of the rows.
 - **D-8 Rock loader scope.** `--scope rock` accepts exactly the routes the ice scope rejects: every `mp_routes` row whose type does not match `is_ice_mixed`. Ice and mixed rows in a rock export are quarantined `ice_mixed_route`, so each route has one owning export. Boulders never enter the rock scrape (owner, 2026-10-12); one that does loads harmlessly, since the seam is per route and exposure reads only scorable routes.
 - **D-9 Aggregate-only export** (rock scope).
@@ -134,13 +134,13 @@ The foundations plan's Global Constraints and the MP catalog plan's Global Const
   - Production snapshots (`data_cutoff = as_of`): the newest 3 are kept.
   - Backtest snapshots (`data_cutoff < as_of`) are kept until dropped with `exposure drop`.
   - At roughly 25K route-bearing areas × ~1.5 groups × 12 months ≈ 450K rows of ~250 B, the estimate is about 120 MB a snapshot and about 360 MB for three (about $0.13/month on Neon storage). This is an estimate; measure it in Task 10.
-- **D-12 Where it runs** `[default pending: DP8]`.
+- **D-12 Where it runs** `[decided: DP8]`.
   - The rock loader and `exposure build` run from the owner's Mac as `ingest` through `scripts/runbook_helpers.sh`, against the direct Neon host. The loader must run there because the export never leaves the Mac. Exposure follows each load, plus a monthly rebuild.
   - Nothing goes to GitHub Actions (that would put the `ingest` credential in an Actions secret), and nothing is added to the `catalog-cycle` cron (yearly).
   - Alternative: an `exposure` step at the end of `catalog_cycle`, which needs the same credential it already holds. It runs only yearly unless the schedule changes.
-- **D-13 Credential** `[default pending: DP9]`. The loader and the job use the existing `ingest` role, which the Mac runbooks already use and which already holds every grant they need, except the new `internal.exposure_index` grant.
+- **D-13 Credential** `[decided: DP9]`. The loader and the job use the existing `ingest` role, which the Mac runbooks already use and which already holds every grant they need, except the new `internal.exposure_index` grant.
   - Alternative: a new `tick_loader` role holding only INSERT on `internal.mp_tick_aggregates`, the seam upsert, the run log and quarantine. That changes `create_roles_phase2.sql` and needs a new owner password step.
-- **D-14 Load cadence and prod snapshots** `[default pending: DP10]`.
+- **D-14 Load cadence and prod snapshots** `[decided: DP10]`.
   - The owner exports weekly.
   - The first prod load is rehearsed on a branch and preceded by a `pre-xp-1` snapshot.
   - Each later load is gated by a prod dry run (quarantine share ≤ 10%, no batch problems) and preceded by its own dated snapshot branch, which the owner deletes when satisfied.
@@ -154,18 +154,18 @@ The foundations plan's Global Constraints and the MP catalog plan's Global Const
 ## Conflicts with the Phase 3 spec (for the owner and the Phase 3 re-plan)
 
 1. **P3:152 table shape.**
-   - **Location.** The table is `internal.exposure_index`, not public `exposure_index` `[default pending: DP1]`.
+   - **Location.** The table is `internal.exposure_index`, not public `exposure_index` `[decided: DP1]`.
    - **Primary key.** The PK adds `data_cutoff`, which P3:398 backtests need.
    - **Area keys.** `area_id` is the MP `bigint`, not an OpenBeta uuid.
    - **New columns.** `tick_coverage`, `exposure_lo`/`exposure_hi` and `run_id` are added.
    - **Why internal.** The Phase 1 check `verify_roles.sql` requires `app` to SELECT every public table, so the 2026-09-28 plan's REVOKE on a public table would fail it.
    - **What Phase 3 must grant.** `trainer` needs USAGE on `internal` plus SELECT on that one table. That changes the `trainer has no USAGE on schema internal` row of `verify_roles_phase2.sql`.
 2. **P3 M10 has five type groups. Cells here have six,** because `rock` (sport-or-trad, discipline unknown; owner 2026-10-13) holds about 63% of routes. Phase 3's cells, percentiles, bands and thresholds need a `rock` group or a rule for pooling it into `sport`/`trad`.
-3. **P3 M5 component list.** `OpenBeta ticks` is gone. `mp_tick_count` (CA/NV, capped at 16) and `mp_ice_mixed_ticks` are replaced by one seam-based `mp_ticks` with coverage `[default pending: DP7]`. NPS visits, permits and objective popularity are deferred. MVP-1 fits on `route_density`, `season_share` and `mp_ticks` only.
+3. **P3 M5 component list.** `OpenBeta ticks` is gone. `mp_tick_count` (CA/NV, capped at 16) and `mp_ice_mixed_ticks` are replaced by one seam-based `mp_ticks` with coverage `[decided: DP7]`. NPS visits, permits and objective popularity are deferred. MVP-1 fits on `route_density`, `season_share` and `mp_ticks` only.
 4. **M5 calls the MP components "optional, removable".** `mp_ticks` is now the main traffic signal, not a side covariate. The model card's with/without-MP comparison will show a much larger gap, and the removal drill leaves only density × season.
-5. **Coverage is informative, not random** (MNAR). Routes near accidents are scraped first, so partially covered cells over-represent accident areas. `ml/exposure.py` (P3:137) must take `tick_coverage`/`n_complete` as covariates or use only full-coverage cells. It must not read a partial sum as low traffic `[default pending: DP2]`.
+5. **Coverage is informative, not random** (MNAR). Routes near accidents are scraped first, so partially covered cells over-represent accident areas. `ml/exposure.py` (P3:137) must take `tick_coverage`/`n_complete` as covariates or use only full-coverage cells. It must not read a partial sum as low traffic `[decided: DP2]`.
 6. **P3:398 leakage.**
-   - `season_share` is treated as time-invariant `[default pending: DP4]`.
+   - `season_share` is treated as time-invariant `[decided: DP4]`.
    - Tick months respect the cutoff, but MP tick dates are climb dates. Counts are frozen at first scrape, so a tick logged after the cutoff for a climb before it is counted. That is unavoidable with aggregate exports, and is documented in `DATABASE_STRUCTURE.md`.
 7. **Objective-level scoring (P3:163–169)** needs exposure rows for objective areas. Those rows wait for the objectives re-plan.
 
@@ -836,7 +836,7 @@ Then, with the prod preamble:
 
 Record the counts and the snapshot id in the PR.
 
-- [ ] **Step 5 (owner, then agent): Each later load** `[default pending: DP10]`
+- [ ] **Step 5 (owner, then agent): Each later load** `[decided: DP10]`
 
 The owner writes a new dated export (Step 0 contract) and gives its path. The agent then runs the blocks below. `D` is the export date and `GATE_DIR=../data/review/gates_xp1_load_$D`. The branch rehearsal is repeated only if `mp_tick_aggregates.py` changed since the last rehearsal.
 
@@ -2283,7 +2283,7 @@ Then, with the prod preamble:
 
 The PR records the build JSON and the snapshot id. The code deploys after 4b: no API reads the table, so deploy order is free.
 
-- [ ] **Step 5 (agent, recurring): Rebuilds** `[default pending: DP8]`. After every rock load (Task 3 Step 5), and at least monthly, run with the prod preamble:
+- [ ] **Step 5 (agent, recurring): Rebuilds** `[decided: DP8]`. After every rock load (Task 3 Step 5), and at least monthly, run with the prod preamble:
   - `INGMOD app.pipelines.exposure build`;
   - `VERIFY tests/verify/test_exposure.py -q -s`;
   - paste the per-type-group coverage lines into the load's record.
@@ -2292,21 +2292,21 @@ The PR records the build JSON and the snapshot id. The code deploys after 4b: no
 
 ---
 
-## Appendix A: Owner questions (`[default pending: DPn]`)
+## Appendix A: Owner questions — DP1–DP11 decided (controller ruling 2026-10-15, owner overnight instruction; owner may override)
 
-| DP | Question | Recommended default (this plan is written against it) |
-|---|---|---|
-| DP1 | Where does `exposure_index` live? | `internal` schema: `app` excluded by construction, and Phase 1's "app reads every public table" check is untouched. Phase 3 grants `trainer` USAGE on `internal` plus SELECT on this one table. |
-| DP2 | How are partially scraped rock cells represented? | Raw sum over complete routes, plus `per_route_mean`, `coverage` and status counts. Present when ≥ 1 route is complete; never scaled up. Phase 3 must use coverage. |
-| DP3 | Tick window? | The last 60 complete months per route before the cutoff (5 occurrences of each calendar month). |
-| DP4 | Season share and the data cutoff? | Time-invariant: the latest 3 ERA5 years, at least 28 known days per month. Older ERA5 is pruned, so strict cutoffs would blank it in backtests. |
-| DP5 | Cell scope? | Areas with directly attached scorable routes. Cells are disjoint and Phase 3 sums the hierarchy. |
-| DP6 | Deferred components (NPS visits, permits, objective popularity, in-app ticks)? | Omitted from the proxy until their source lands, with a `PROXY_VERSION` bump each time. Not carried as permanently missing keys. |
-| DP7 | One tick component or two? | One `mp_ticks` for every type group, with one removal flag. |
-| DP8 | Where do loads and rebuilds run? | The owner's Mac, as `ingest`, through the runbook. Rebuild after each load and at least monthly. No GitHub Actions secret; not on `catalog-cycle`. |
-| DP9 | Which credential? | The existing `ingest` role. The alternative is a new `tick_loader` role limited to the aggregates, seam and log. |
-| DP10 | Load cadence and prod safety? | Weekly exports. A branch rehearsal for the first load and after loader code changes. A prod dry-run gate and a dated snapshot before every load; the owner deletes old snapshots. |
-| DP11 | The old plan's prediction compaction (2b-5)? | Not in this plan. It stays in the 2026-09-28 plan for its own re-plan after Phase 4, and takes the next free migration number then. |
+| DP | Question | Recommended default (this plan is written against it) | Status |
+|---|---|---|---|
+| DP1 | Where does `exposure_index` live? | `internal` schema: `app` excluded by construction, and Phase 1's "app reads every public table" check is untouched. Phase 3 grants `trainer` USAGE on `internal` plus SELECT on this one table. | Decided (controller ruling 2026-10-15, owner overnight instruction; owner may override) |
+| DP2 | How are partially scraped rock cells represented? | Raw sum over complete routes, plus `per_route_mean`, `coverage` and status counts. Present when ≥ 1 route is complete; never scaled up. Phase 3 must use coverage. | Decided (controller ruling 2026-10-15, owner overnight instruction; owner may override) |
+| DP3 | Tick window? | The last 60 complete months per route before the cutoff (5 occurrences of each calendar month). | Decided (controller ruling 2026-10-15, owner overnight instruction; owner may override) |
+| DP4 | Season share and the data cutoff? | Time-invariant: the latest 3 ERA5 years, at least 28 known days per month. Older ERA5 is pruned, so strict cutoffs would blank it in backtests. | Decided (controller ruling 2026-10-15, owner overnight instruction; owner may override) |
+| DP5 | Cell scope? | Areas with directly attached scorable routes. Cells are disjoint and Phase 3 sums the hierarchy. | Decided (controller ruling 2026-10-15, owner overnight instruction; owner may override) |
+| DP6 | Deferred components (NPS visits, permits, objective popularity, in-app ticks)? | Omitted from the proxy until their source lands, with a `PROXY_VERSION` bump each time. Not carried as permanently missing keys. | Decided (controller ruling 2026-10-15, owner overnight instruction; owner may override) |
+| DP7 | One tick component or two? | One `mp_ticks` for every type group, with one removal flag. | Decided (controller ruling 2026-10-15, owner overnight instruction; owner may override) |
+| DP8 | Where do loads and rebuilds run? | The owner's Mac, as `ingest`, through the runbook. Rebuild after each load and at least monthly. No GitHub Actions secret; not on `catalog-cycle`. | Decided (controller ruling 2026-10-15, owner overnight instruction; owner may override) |
+| DP9 | Which credential? | The existing `ingest` role. The alternative is a new `tick_loader` role limited to the aggregates, seam and log. | Decided (controller ruling 2026-10-15, owner overnight instruction; owner may override) |
+| DP10 | Load cadence and prod safety? | Weekly exports. A branch rehearsal for the first load and after loader code changes. A prod dry-run gate and a dated snapshot before every load; the owner deletes old snapshots. | Decided (controller ruling 2026-10-15, owner overnight instruction; owner may override) |
+| DP11 | The old plan's prediction compaction (2b-5)? | Not in this plan. It stays in the 2026-09-28 plan for its own re-plan after Phase 4, and takes the next free migration number then. | Decided (controller ruling 2026-10-15, owner overnight instruction; owner may override) |
 
 ## Appendix B: Components: source, licence, access, status
 
@@ -2315,7 +2315,7 @@ The PR records the build JSON and the snapshot id. The code deploys after 4b: no
 | `route_density` | `scorable_routes` (MP catalog, derived columns) | MP-derived, internal only (`DATA_LICENSE.md`) | Database, read as `ingest` | **Built.** Time-invariant covariate. |
 | `season_share` | `cell_daily_conditions` ERA5 rows for the area's `feature_points` series | Open-Meteo, CC BY 4.0 attribution (already credited in `DATA_LICENSE.md`/README); bought in the Professional window (plan 3) | Database only; no API call from this plan | **Built.** Missing until the window fills route-point series. |
 | `mp_ticks` | `internal.route_tick_coverage` / `route_tick_months` (ice/mixed export, plus the rock export via X-1) | MP-derived, internal (P2-14; the owner's lawyer consult is pending). Removal: flag false or the views gone, then rebuild and retrain. | Local aggregate file → `ingest` loader → database | **Built.** |
-| `nps_visits` | NPS IRMA Stats monthly recreation visits | Believed US-federal public domain; **not verified this session** | Manual report download into a curated CSV (no API client) | **Deferred** `[default pending: DP6]`. Re-add with `nps_units`/`nps_monthly_visits` and the 2026-09-28 plan's Task 6 loaders, after the owner verifies the source and terms. |
+| `nps_visits` | NPS IRMA Stats monthly recreation visits | Believed US-federal public domain; **not verified this session** | Manual report download into a curated CSV (no API client) | **Deferred** `[decided: DP6]`. Re-add with `nps_units`/`nps_monthly_visits` and the 2026-09-28 plan's Task 6 loaders, after the owner verifies the source and terms. |
 | `permit_attempts` | `objective_permit_counts` (NPS Denali/Rainier reports, hand-entered) | US-federal public domain (unverified) | Curated CSV | **Deferred.** The objectives layer is not built (roadmap item 4). Brings back the ×/÷1.5 bounds. |
 | `objective_popularity` | Wikidata sitelink counts for linked objectives | CC0 | Open API (`wikidata.py` in the objectives plan), behind its own gate | **Deferred.** Needs objectives. |
 | `in_app_ticks` | Phase 4 aggregates | Own data | Database | **Deferred.** Phase 4 volume. |
