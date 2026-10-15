@@ -85,3 +85,246 @@ def test_r9_severity_scale_set_and_agreement_recorded():
     [row] = fetch("SELECT count(*) FILTER (WHERE severity_scale IS NULL) AS missing FROM accidents")
     assert row["missing"] == 0
     _latest_check("repair:r9-check", R9_POOL, 50)
+
+
+# place_key -> (GNIS name_key, state) of the summit the spec names. Rows are checked only when
+# their own state is that state or blank: "Washington", "Hood" and "McKinley" are common summit
+# names elsewhere, and a mis-stated row naming a nationally unique summit was already moved.
+# "washington" is checked for NH rows only (the bare name is also WA's and OR's).
+# "denali" is held to the one aliased feature; "mckinley" may be either AK summit of that name.
+NAMED = {"denali": ("#denali", "AK"), "mckinley": ("mckinley", "AK"), "rainier": ("rainier", "WA"),
+         "hood": ("hood", "OR"), "shasta": ("shasta", "CA"), "grand teton": ("grand teton", "WY"),
+         "washington": ("washington", "NH")}
+
+
+def test_r3a_named_peaks_are_near_their_summit():
+    from app.data.repair.geocode import DENALI_GNIS_ID, TRUSTED_POINT_PRECISIONS
+    from app.pipelines.geo import haversine_km
+    from app.pipelines.gnis import state_code
+    from app.pipelines.textsim import place_key
+
+    summits = fetch(
+        "SELECT gnis_id, name_key, state_code, lat, lon FROM gnis_summits WHERE (name_key, state_code) IN "
+        "(('denali','AK'),('mckinley','AK'),('rainier','WA'),('hood','OR'),('shasta','CA'),('grand teton','WY'),"
+        f"('washington','NH')) OR gnis_id = {DENALI_GNIS_ID}"
+    )
+    targets: dict[tuple[str, str], list[tuple[float, float]]] = {}
+    for s in summits:
+        # G19: GNIS names the AK summit "Mount McKinley"; the alias table pins it by feature id.
+        key = ("#denali", "AK") if s["gnis_id"] == DENALI_GNIS_ID else (s["name_key"], s["state_code"])
+        targets.setdefault(key, []).append((s["lat"], s["lon"]))
+        if s["gnis_id"] == DENALI_GNIS_ID:
+            targets.setdefault((s["name_key"], s["state_code"]), []).append((s["lat"], s["lon"]))
+    assert set(NAMED.values()) <= set(targets), f"GNIS lookup incomplete: {sorted(targets)}"
+    trusted = ", ".join(f"'{p}'" for p in sorted(TRUSTED_POINT_PRECISIONS))
+    far, checked = [], 0
+    for r in fetch(
+        "SELECT accident_id, mountain, state, latitude, longitude FROM accidents "
+        f"WHERE latitude IS NOT NULL AND geocode_precision IN ({trusted})"
+    ):
+        target = NAMED.get(place_key(r["mountain"]))
+        if target is None:
+            continue
+        row_state = state_code(r["state"])
+        if row_state != target[1] and (row_state is not None or target == ("washington", "NH")):
+            continue
+        checked += 1
+        if min(haversine_km(r["latitude"], r["longitude"], lat, lon) for lat, lon in targets[target]) > 50:
+            far.append(r["accident_id"])
+    print({"named_rows_checked": checked, "far": far[:20]})
+    assert checked > 0 and far == []
+
+
+def test_r3_no_trusted_rows_at_raw_fallback_points_and_no_alaska_text_below_55n():
+    from app.data.repair.geocode import TRUSTED_POINT_PRECISIONS, GeoRow, alaska_point_misplaced, find_fallback_points
+    from app.pipelines.gnis import state_code
+
+    # G6: fallback points come from the pre-repair snapshot with the step's own rule; rebuilt
+    # from live coordinates, R3a's summit moves would form "clusters" of area rows by design.
+    raw = fetch("SELECT accident_id, mountain, latitude, longitude FROM internal.accidents_raw")
+    points = find_fallback_points(
+        [GeoRow(r["accident_id"], "aac", r["mountain"], None, r["latitude"], r["longitude"], None) for r in raw]
+    )
+    live = fetch("SELECT accident_id, latitude, longitude, geocode_precision FROM accidents WHERE latitude IS NOT NULL")
+    at_fallback = [
+        r["accident_id"] for r in live
+        if (round(r["latitude"], 3), round(r["longitude"], 3)) in points
+        and r["geocode_precision"] in TRUSTED_POINT_PRECISIONS
+    ]
+    # The step's own Alaska rule (Aleutian band exempt), not a re-typed copy of it.
+    ak = [
+        r["accident_id"] for r in fetch(
+            "SELECT accident_id, state, latitude, longitude, geocode_precision FROM accidents "
+            "WHERE latitude IS NOT NULL AND longitude IS NOT NULL"
+        )
+        if state_code(r["state"]) == "AK" and r["geocode_precision"] in TRUSTED_POINT_PRECISIONS
+        and alaska_point_misplaced(r["latitude"], r["longitude"])
+    ]
+    print({"raw_fallback_points": len(points), "trusted_at_fallback": at_fallback[:20], "ak_misplaced": ak[:20]})
+    # Fallback points keep their coordinates (A7/D10), so the spec's "no rows remain" reads
+    # as "no row there is labelled usable as a point".
+    assert (at_fallback, ak) == ([], [])
+
+
+def test_r3_ambiguous_rows_pending_owner_review_are_reported():
+    rows = fetch(
+        "SELECT country IS NULL AS no_country, count(*) AS n FROM accidents "
+        "WHERE geocode_method IN ('gnis_ambiguous', 'gnis_state_unmatched', 'gnis_rejected') GROUP BY 1 ORDER BY 1"
+    )
+    # Untrusted and never moved; the PR records the count the owner still has to settle.
+    print({"summit_review_pending": [dict(r) for r in rows]})
+    [row] = fetch(
+        "SELECT count(*) AS n FROM accidents WHERE geocode_method IN ('gnis_ambiguous', 'gnis_state_unmatched', 'gnis_rejected') "
+        "AND geocode_precision IS DISTINCT FROM 'unknown'"
+    )
+    assert row["n"] == 0
+
+
+R3A_POOL = "SELECT count(*) FROM accidents WHERE geocode_method LIKE 'gnis\\_summit%'"
+R3_PLOT_POOL = "SELECT count(*) FROM accidents WHERE latitude IS NOT NULL AND longitude IS NOT NULL"
+
+
+def test_r3a_hand_check_covers_every_move_at_95_percent():
+    [row] = fetch(f"SELECT ({R3A_POOL}) AS n")
+    # Every move is checked, not a sample (rows_in >= the whole pool).
+    assert _latest_check("repair:r3a-check", R3A_POOL, row["n"]) >= 0.95
+
+
+def test_r3_plot_check_at_95_percent():
+    assert _latest_check("repair:r3-plot-check", R3_PLOT_POOL, 50) >= 0.95
+
+
+def golden(name: str) -> list[dict[str, str]]:
+    import csv
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[3] / "data" / "golden" / name
+    with path.open(newline="", encoding="utf-8-sig") as fh:
+        return list(csv.DictReader(fh))
+
+
+def test_r4_golden_set_at_least_95_percent():
+    # int() on every id is what keeps the IN list below safe to interpolate.
+    labels = {int(r["accident_id"]): r["label"].strip().lower() for r in golden("activity_v1.csv")}
+    assert len(labels) >= 60, "label the golden set first (runbook Task 13)"
+    ids = ",".join(str(i) for i in labels)
+    got = {r["accident_id"]: r["activity_class"] for r in fetch(f"SELECT accident_id, activity_class FROM accidents WHERE accident_id IN ({ids})")}
+    hits = sum(got.get(i) == label for i, label in labels.items())
+    print({"r4_golden": len(labels), "hits": hits})
+    assert hits / len(labels) >= 0.95
+
+
+def test_r4_rows_pending_owner_review_are_reported():
+    [row] = fetch(
+        "SELECT count(*) AS n FROM accidents a JOIN internal.accidents_raw r USING (accident_id) "
+        # Mirrors activity.needs_review: blank ("", "?"), a placeholder, or AAC ski mountaineering.
+        "CROSS JOIN LATERAL (SELECT trim(regexp_replace(lower(coalesce(r.activity, '')), '[^a-z0-9]+', ' ', 'g')) AS act) n "
+        "WHERE a.activity_class IS NULL AND (n.act IN ('', 'unknown', 'other') "
+        "OR (lower(trim(r.source)) LIKE 'aac%' AND n.act = 'ski mountaineering'))"
+    )
+    # O1: never guessed; the PR records how many the owner still has to classify.
+    print({"activity_review_pending": row["n"]})
+    [bad] = fetch(
+        "SELECT count(*) AS n FROM accidents WHERE activity_class IS NOT NULL AND ("
+        "activity_rule_version IS NULL "
+        "OR (activity_class = 'climbing_approach') <> (inclusion_flag IS NOT DISTINCT FROM 'ski_approach_best_effort'))"
+    )
+    assert bad["n"] == 0
+
+
+def test_r5_no_exact_duplicates_among_canonical_rows():
+    [row] = fetch(
+        "SELECT count(*) AS n FROM (SELECT source, date, latitude, longitude, accident_type, activity, injury_severity, "
+        "mountain, route, md5(coalesce(description, '')) FROM accidents WHERE is_canonical "
+        # M2 (owner): rows with neither a date nor any narrative are not exact duplicates;
+        # this mirrors normalize_text (lowercase, then any a-z0-9 left).
+        "AND (date IS NOT NULL OR lower(coalesce(description, '')) ~ '[a-z0-9]') "
+        "GROUP BY 1,2,3,4,5,6,7,8,9,10 HAVING count(*) > 1) d"
+    )
+    assert row["n"] == 0
+
+
+def test_r5_latest_applied_run_left_no_pair_undecided():
+    [row] = fetch(
+        "SELECT (validation_report->>'review_pending')::int AS pending FROM source_ingest_log "
+        "WHERE source = 'repair:r5' AND status = 'ok' ORDER BY finished_at DESC LIMIT 1"
+    )
+    assert row["pending"] == 0
+
+
+def test_r5_every_group_has_exactly_one_canonical_head():
+    [row] = fetch(
+        "SELECT count(*) AS bad FROM (SELECT incident_group_id FROM accidents WHERE incident_group_id IS NOT NULL "
+        "GROUP BY 1 HAVING count(*) FILTER (WHERE is_canonical) <> 1 "
+        "OR bool_and(accident_id <> incident_group_id)) g"
+    )
+    assert row["bad"] == 0
+
+
+def test_r12_golden_precision_on_filled_values_and_recall_reported():
+    gold = {int(r["accident_id"]): r for r in golden("experience_v1.csv")}
+    assert len(gold) >= 80, "label the golden set first (runbook Task 13)"
+    ids = ",".join(str(i) for i in gold)
+    rows = fetch(f"SELECT accident_id, exp_years_climbing, exp_stated_level, exp_first_season, guided FROM accidents WHERE accident_id IN ({ids})")
+    filled = correct = stated = found = 0
+    blank = {"", "none", "null", "unknown"}
+    for r in rows:
+        g = gold[r["accident_id"]]
+        for col, missing in (("exp_years_climbing", None), ("exp_stated_level", "unknown"), ("exp_first_season", None), ("guided", "unknown")):
+            truth = g[col].strip().lower()
+            got_right = r[col] != missing and str(r[col]).lower() == truth
+            if r[col] != missing:
+                filled += 1
+                correct += got_right
+            if truth not in blank:
+                stated += 1
+                found += got_right
+    print({"filled": filled, "correct": correct, "recall": round(found / stated, 3) if stated else None})
+    # A rule that fills nothing would pass a precision-only bar; the golden set is
+    # stratified toward rows where R12 fires, so zero filled values is a failure.
+    assert filled > 0, "R12 filled no golden value"
+    assert correct / filled >= 0.95
+
+
+def test_clean_set_has_no_unverified_or_known_non_us_rows():
+    # O3 (owner): only a known non-US country drops a row; NULL-country rows stay and are
+    # reported here. The base-table join (D2) catches a view whose WHERE drifted, which
+    # counting non-US rows inside the view could not.
+    [row] = fetch(
+        "SELECT (SELECT count(*) FROM accidents_clean WHERE date_precision = 'unknown') AS unknown, "
+        "(SELECT count(*) FROM accidents a JOIN accidents_clean c USING (accident_id) "
+        " WHERE a.country IS NOT NULL AND a.country <> 'US') AS non_us, "
+        "(SELECT count(*) FROM accidents a WHERE a.is_canonical AND a.excluded_reason IS NULL "
+        " AND a.activity_class IN ('climbing', 'climbing_approach') AND a.country IS NULL "
+        " AND NOT EXISTS (SELECT 1 FROM accidents_clean c WHERE c.accident_id = a.accident_id)) AS null_dropped"
+    )
+    assert (row["unknown"], row["non_us"], row["null_dropped"]) == (0, 0, 0)
+    flagged = fetch(
+        "SELECT a.geocode_method, count(*) AS n FROM accidents_clean c JOIN accidents a USING (accident_id) "
+        "WHERE c.country IS NULL GROUP BY 1 ORDER BY 1"
+    )
+    print({"clean_null_country": {r["geocode_method"]: r["n"] for r in flagged}})
+
+
+def test_cm_training_set_has_no_aac_placeholder_dates():
+    # The data check behind spec R2's CI rule: AAC day-15 (month) and Jul-1 (year)
+    # placeholders never reach the day-precision training set, whatever the precision
+    # labels say. A labelling bug in R1/R2 fails this; restating the view's WHERE would not.
+    [row] = fetch(
+        "SELECT count(*) AS n FROM accidents_clean_daily WHERE source ILIKE 'aac%' "
+        "AND (extract(day FROM date) = 15 OR (extract(month FROM date) = 7 AND extract(day FROM date) = 1))"
+    )
+    assert row["n"] == 0
+
+
+def test_clean_set_points_trusted_only_where_precision_allows():
+    from app.data.repair.geocode import TRUSTED_POINT_PRECISIONS
+
+    trusted = ", ".join(f"'{p}'" for p in sorted(TRUSTED_POINT_PRECISIONS))
+    [row] = fetch(
+        "SELECT count(*) FILTER (WHERE point_trusted AND geocode_precision IN ('region_fallback', 'unknown')) AS bad, "
+        f"count(*) FILTER (WHERE point_trusted <> coalesce(geocode_precision IN ({trusted}), false)) AS mislabelled, "
+        "count(*) FILTER (WHERE geocode_precision = 'region_fallback' AND latitude IS NULL) AS nulled_fallback "
+        "FROM accidents_clean"
+    )
+    assert (row["bad"], row["mislabelled"], row["nulled_fallback"]) == (0, 0, 0)

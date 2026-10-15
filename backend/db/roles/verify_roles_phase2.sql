@@ -66,7 +66,55 @@ INSERT INTO ingest_privs VALUES
   ('internal.ingest_quarantine', 'SELECT'), ('internal.ingest_quarantine', 'INSERT'),
   -- Plan 2 (accident repair); mp_locations SELECT is column-level, checked below.
   ('public.accidents', 'SELECT'),
-  ('internal.accident_revisions', 'SELECT'), ('internal.accident_revisions', 'INSERT');
+  ('internal.accident_revisions', 'SELECT'), ('internal.accident_revisions', 'INSERT'),
+  -- Plan 2 (0005): the GNIS loader and R5 decisions.
+  ('public.gnis_summits', 'SELECT'), ('public.gnis_summits', 'INSERT'), ('public.gnis_summits', 'UPDATE'),
+  ('public.gnis_summits', 'DELETE'),
+  ('internal.duplicate_decisions', 'SELECT'), ('internal.duplicate_decisions', 'INSERT'),
+  ('internal.duplicate_decisions', 'UPDATE'),
+  -- Plan 3 (0007): conditions (DELETE for the prune), series registry, normals, read views.
+  ('public.cell_daily_conditions', 'SELECT'), ('public.cell_daily_conditions', 'INSERT'),
+  ('public.cell_daily_conditions', 'UPDATE'), ('public.cell_daily_conditions', 'DELETE'),
+  ('public.grid_bucket_series', 'SELECT'), ('public.grid_bucket_series', 'INSERT'),
+  ('public.grid_bucket_series', 'UPDATE'),
+  ('public.cell_normals_status', 'SELECT'), ('public.cell_normals_status', 'INSERT'),
+  ('public.cell_normals_status', 'UPDATE'),
+  ('public.cell_climate_normals', 'SELECT'), ('public.cell_climate_normals', 'INSERT'),
+  ('public.cell_climate_normals', 'UPDATE'),
+  ('public.cell_climatology', 'SELECT'), ('public.cell_climatology', 'INSERT'),
+  ('public.cell_climatology', 'UPDATE'),
+  ('public.accidents_clean', 'SELECT'), ('public.accidents_clean_daily', 'SELECT'),
+  ('public.accident_conditions', 'SELECT'),
+  -- Plan 3 (R6 verify): the legacy weather table is read-only input to r6_verify.
+  ('public.weather', 'SELECT'),
+  -- Plan 3 (R7): area_weekly_weather SELECT is table-level; UPDATE is column-level (longitude
+  -- only), checked below.
+  ('public.area_weekly_weather', 'SELECT'),
+  -- MP catalog plan (0008): the catalog tables are upserted, never deleted; mp_locations SELECT
+  -- is column-level, checked below.
+  ('public.canonical_areas', 'SELECT'), ('public.canonical_areas', 'INSERT'), ('public.canonical_areas', 'UPDATE'),
+  ('public.canonical_routes', 'SELECT'), ('public.canonical_routes', 'INSERT'), ('public.canonical_routes', 'UPDATE'),
+  ('public.scorable_routes', 'SELECT'),
+  -- The tick-source seam (DP9) and its two read views.
+  ('internal.route_tick_scrapes', 'SELECT'), ('internal.route_tick_scrapes', 'INSERT'),
+  ('internal.route_tick_scrapes', 'UPDATE'),
+  ('internal.route_tick_coverage', 'SELECT'), ('internal.route_tick_months', 'SELECT'),
+  -- MP similarity features (0009): points are upserted, never deleted; route rows are rebuilt
+  -- (DELETE for routes that became boulders); the scoring-unit view is read only.
+  ('public.feature_points', 'SELECT'), ('public.feature_points', 'INSERT'), ('public.feature_points', 'UPDATE'),
+  ('public.route_static_features', 'SELECT'), ('public.route_static_features', 'INSERT'),
+  ('public.route_static_features', 'UPDATE'), ('public.route_static_features', 'DELETE'),
+  ('public.scoring_unit_features', 'SELECT'),
+  -- R10 (0010): legacy links are rebuilt, the unresolved residue is refreshed (DELETE only for
+  -- undecided rows a rule resolved); the LLM audit and gates are append-only. routes and
+  -- mountains SELECT is column-level, checked below.
+  ('public.accident_legacy_links', 'SELECT'), ('public.accident_legacy_links', 'INSERT'),
+  ('public.accident_legacy_links', 'UPDATE'), ('public.accident_legacy_links', 'DELETE'),
+  ('public.accident_route_links', 'SELECT'),
+  ('internal.r10_unresolved', 'SELECT'), ('internal.r10_unresolved', 'INSERT'),
+  ('internal.r10_unresolved', 'UPDATE'), ('internal.r10_unresolved', 'DELETE'),
+  ('internal.r10_llm_calls', 'SELECT'), ('internal.r10_llm_calls', 'INSERT'),
+  ('internal.r10_llm_gates', 'SELECT'), ('internal.r10_llm_gates', 'INSERT');
 
 -- PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views, so extension-owned
 -- relations are skipped throughout, as verify_roles.sql does.
@@ -87,11 +135,15 @@ SELECT 'ingest ' || priv || ' on ' || tbl || ' matches the expected set',
        held = EXISTS (SELECT 1 FROM ingest_privs e WHERE e.tbl = privs.tbl AND e.priv = privs.priv)
 FROM privs;
 
+-- R11 inserts accidents through accident_id's nextval() default, which needs USAGE on its
+-- sequence: that one sequence is exempt for USAGE only, never SELECT or UPDATE (setval).
 INSERT INTO role_checks
 SELECT 'ingest has nothing on sequence ' || tbl,
-       NOT (has_sequence_privilege('ingest', oid, 'USAGE') OR has_sequence_privilege('ingest', oid, 'SELECT')
-            OR has_sequence_privilege('ingest', oid, 'UPDATE'))
+       has_sequence_privilege('ingest', oid, 'USAGE') = (tbl = 'public.accidents_accident_id_seq')
+       AND NOT (has_sequence_privilege('ingest', oid, 'SELECT') OR has_sequence_privilege('ingest', oid, 'UPDATE'))
 FROM rels WHERE relkind = 'S'
+UNION ALL
+SELECT 'accidents id sequence check ran', EXISTS (SELECT 1 FROM rels WHERE tbl = 'public.accidents_accident_id_seq')
 UNION ALL
 SELECT 'app holds nothing on internal relation ' || tbl,
        NOT (has_table_privilege('app', oid, 'SELECT') OR has_table_privilege('app', oid, 'INSERT')
@@ -132,22 +184,32 @@ SELECT 'ingest mp_ticks column privileges match the expected set: ' || attname,
 FROM cols;
 
 -- ingest's column grants from plan 2: UPDATE on accidents exactly the repair columns (never
--- description, source, source_id or accident_id); SELECT on accidents_raw only the R1/R2 inputs.
+-- description, source, source_id or accident_id), plus plan 3's tz and R11's mp_route_id; SELECT
+-- on accidents_raw only the R1-R4 inputs. INSERT (R11) is exactly accident_facts.INSERT_COLUMNS:
+-- never accident_id, location, tags or elevation_meters.
 WITH cols AS (
   SELECT a.attnum, a.attname,
          a.attname IN ('date', 'year', 'latitude', 'longitude', 'coordinates', 'country', 'date_precision',
                        'year_source', 'year_lo', 'year_hi', 'geocode_precision', 'geocode_method',
                        'activity_class', 'activity_rule_version', 'inclusion_flag', 'incident_group_id',
                        'is_canonical', 'severity_scale', 'excluded_reason', 'source_url', 'updated_at',
-                       'exp_years_climbing', 'exp_stated_level', 'exp_first_season', 'guided', 'exp_rule_version')
-           AS may_update
+                       'exp_years_climbing', 'exp_stated_level', 'exp_first_season', 'guided', 'exp_rule_version',
+                       'tz', 'mp_route_id')
+           AS may_update,
+         a.attname IN ('source', 'source_id', 'date', 'year', 'date_precision', 'state', 'mountain', 'route',
+                       'mp_route_id', 'latitude', 'longitude', 'geocode_precision', 'geocode_method', 'country',
+                       'tz', 'activity', 'activity_class', 'activity_rule_version', 'inclusion_flag',
+                       'accident_type', 'injury_severity', 'severity_scale', 'exp_years_climbing',
+                       'exp_stated_level', 'exp_first_season', 'guided', 'exp_rule_version', 'source_url',
+                       'description', 'updated_at')
+           AS may_insert
   FROM pg_attribute a
   WHERE a.attrelid = 'public.accidents'::regclass AND a.attnum > 0 AND NOT a.attisdropped
 )
 INSERT INTO role_checks
 SELECT 'ingest accidents column privileges match the expected set: ' || attname,
        has_column_privilege('ingest', 'public.accidents', attnum, 'UPDATE') = may_update
-       AND NOT has_column_privilege('ingest', 'public.accidents', attnum, 'INSERT')
+       AND has_column_privilege('ingest', 'public.accidents', attnum, 'INSERT') = may_insert
        AND NOT has_column_privilege('ingest', 'public.accidents', attnum, 'REFERENCES')
 FROM cols;
 
@@ -158,10 +220,54 @@ WITH cols AS (
 )
 INSERT INTO role_checks
 SELECT 'ingest mp_locations column privileges match the expected set: ' || attname,
-       has_column_privilege('ingest', 'public.mp_locations', attnum, 'SELECT') = (attname IN ('mp_id', 'latitude', 'longitude'))
+       has_column_privilege('ingest', 'public.mp_locations', attnum, 'SELECT')
+         = (attname IN ('mp_id', 'parent_id', 'name', 'latitude', 'longitude'))
        AND NOT has_column_privilege('ingest', 'public.mp_locations', attnum, 'UPDATE')
        AND NOT has_column_privilege('ingest', 'public.mp_locations', attnum, 'INSERT')
        AND NOT has_column_privilege('ingest', 'public.mp_locations', attnum, 'REFERENCES')
+FROM cols;
+
+-- R10 (0010): ingest reads only the legacy link columns of routes and mountains, never writes.
+WITH cols AS (
+  SELECT a.attnum, a.attname
+  FROM pg_attribute a
+  WHERE a.attrelid = 'public.routes'::regclass AND a.attnum > 0 AND NOT a.attisdropped
+)
+INSERT INTO role_checks
+SELECT 'ingest routes column privileges match the expected set: ' || attname,
+       has_column_privilege('ingest', 'public.routes', attnum, 'SELECT')
+         = (attname IN ('route_id', 'name', 'grade', 'type', 'latitude', 'longitude', 'mp_route_id'))
+       AND NOT has_column_privilege('ingest', 'public.routes', attnum, 'UPDATE')
+       AND NOT has_column_privilege('ingest', 'public.routes', attnum, 'INSERT')
+       AND NOT has_column_privilege('ingest', 'public.routes', attnum, 'REFERENCES')
+FROM cols;
+
+WITH cols AS (
+  SELECT a.attnum, a.attname
+  FROM pg_attribute a
+  WHERE a.attrelid = 'public.mountains'::regclass AND a.attnum > 0 AND NOT a.attisdropped
+)
+INSERT INTO role_checks
+SELECT 'ingest mountains column privileges match the expected set: ' || attname,
+       has_column_privilege('ingest', 'public.mountains', attnum, 'SELECT')
+         = (attname IN ('mountain_id', 'name', 'latitude', 'longitude'))
+       AND NOT has_column_privilege('ingest', 'public.mountains', attnum, 'UPDATE')
+       AND NOT has_column_privilege('ingest', 'public.mountains', attnum, 'INSERT')
+       AND NOT has_column_privilege('ingest', 'public.mountains', attnum, 'REFERENCES')
+FROM cols;
+
+-- Plan 3 (R7): ingest's only write on area_weekly_weather is UPDATE longitude; SELECT is
+-- table-level (checked in ingest_privs above), so every column already has it.
+WITH cols AS (
+  SELECT a.attnum, a.attname
+  FROM pg_attribute a
+  WHERE a.attrelid = 'public.area_weekly_weather'::regclass AND a.attnum > 0 AND NOT a.attisdropped
+)
+INSERT INTO role_checks
+SELECT 'ingest area_weekly_weather column privileges match the expected set: ' || attname,
+       has_column_privilege('ingest', 'public.area_weekly_weather', attnum, 'UPDATE') = (attname = 'longitude')
+       AND NOT has_column_privilege('ingest', 'public.area_weekly_weather', attnum, 'INSERT')
+       AND NOT has_column_privilege('ingest', 'public.area_weekly_weather', attnum, 'REFERENCES')
 FROM cols;
 
 -- By oid from rels, not 'internal.accidents_raw'::regclass: the name lookup needs USAGE on
@@ -173,13 +279,58 @@ WITH cols AS (
 )
 INSERT INTO role_checks
 SELECT 'ingest accidents_raw column privileges match the expected set: ' || attname,
-       has_column_privilege('ingest', oid, attnum, 'SELECT') = (attname IN ('accident_id', 'source', 'source_id', 'date', 'year'))
+       has_column_privilege('ingest', oid, attnum, 'SELECT') = (attname IN ('accident_id', 'source', 'source_id', 'date', 'year',
+                                                                     'mountain', 'state', 'latitude', 'longitude', 'mp_route_id',
+                                                                     'activity'))
        AND NOT has_column_privilege('ingest', oid, attnum, 'UPDATE')
        AND NOT has_column_privilege('ingest', oid, attnum, 'INSERT')
        AND NOT has_column_privilege('ingest', oid, attnum, 'REFERENCES')
 FROM cols;
 INSERT INTO role_checks VALUES
   ('accidents_raw column checks ran', EXISTS (SELECT 1 FROM rels WHERE tbl = 'internal.accidents_raw'));
+
+-- Plan 2 (0006), plan 3 (0007) and the MP catalog plan (0008, 0009): app and analyst read the clean
+-- views, the conditions tables, accident_conditions, the catalog and its features through migrator's default
+-- privileges and hold nothing else on them
+-- (a simple view is auto-updatable, so writes are checked too). ingest's SELECT is in the exact
+-- set above; trainer holds nothing until Phase 3 (D13), per the trainer check above.
+INSERT INTO role_checks
+SELECT 'clean view exists: ' || v, EXISTS (SELECT 1 FROM rels WHERE tbl = v AND relkind = 'v')
+FROM unnest(ARRAY['public.accidents_clean', 'public.accidents_clean_daily', 'public.accident_conditions']) AS v
+UNION ALL
+SELECT 'conditions table exists: ' || t, EXISTS (SELECT 1 FROM rels WHERE tbl = t AND relkind = 'r')
+FROM unnest(ARRAY['public.cell_daily_conditions', 'public.grid_bucket_series', 'public.cell_normals_status',
+                  'public.cell_climate_normals', 'public.cell_climatology']) AS t
+UNION ALL
+SELECT 'catalog relation exists: ' || t, EXISTS (SELECT 1 FROM rels WHERE tbl = t)
+FROM unnest(ARRAY['public.canonical_areas', 'public.canonical_routes', 'public.scorable_routes',
+                  'internal.route_tick_scrapes', 'internal.route_tick_coverage', 'internal.route_tick_months',
+                  'public.feature_points', 'public.route_static_features', 'public.scoring_unit_features',
+                  'public.accident_legacy_links', 'public.accident_route_links', 'internal.r10_unresolved',
+                  'internal.r10_llm_calls', 'internal.r10_llm_gates']) AS t
+UNION ALL
+SELECT g || ' can SELECT ' || r.tbl || ' and nothing else',
+       has_table_privilege(g, r.oid, 'SELECT')
+       AND NOT (has_table_privilege(g, r.oid, 'INSERT') OR has_table_privilege(g, r.oid, 'UPDATE')
+                OR has_table_privilege(g, r.oid, 'DELETE') OR has_table_privilege(g, r.oid, 'TRUNCATE')
+                OR has_table_privilege(g, r.oid, 'REFERENCES') OR has_table_privilege(g, r.oid, 'TRIGGER'))
+FROM rels r CROSS JOIN unnest(ARRAY['app', 'analyst']) AS g
+WHERE r.tbl IN ('public.accidents_clean', 'public.accidents_clean_daily', 'public.accident_conditions',
+                'public.cell_daily_conditions', 'public.grid_bucket_series', 'public.cell_normals_status',
+                'public.cell_climate_normals', 'public.cell_climatology', 'public.canonical_areas',
+                'public.canonical_routes', 'public.scorable_routes', 'public.feature_points',
+                'public.route_static_features', 'public.scoring_unit_features', 'public.accident_legacy_links',
+                'public.accident_route_links');
+
+-- 0010: owner decisions on internal.r10_unresolved are final only while this trigger exists and
+-- fires ('O' = enabled in origin mode); ingest holds UPDATE/DELETE on the table (final review S7).
+INSERT INTO role_checks VALUES
+  ('r10_unresolved keep-decisions trigger exists and is enabled',
+   EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+           -- Catalog joins, not to_regclass: the verifying role may hold no USAGE on internal.
+           WHERE n.nspname = 'internal' AND c.relname = 'r10_unresolved'
+           AND t.tgname = 'r10_unresolved_keep_decisions' AND t.tgenabled = 'O' AND NOT t.tgisinternal));
 
 SELECT check_name, ok FROM role_checks ORDER BY ok, check_name;
 

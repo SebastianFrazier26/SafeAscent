@@ -19,7 +19,8 @@ ENV UV_COMPILE_BYTECODE=1 \
 
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+# pipelines is a default group for local dev; the API image never runs the data jobs.
+RUN uv sync --frozen --no-dev --no-group pipelines --no-install-project
 
 FROM python:3.12-slim AS production
 

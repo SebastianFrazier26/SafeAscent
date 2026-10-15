@@ -45,3 +45,10 @@ def test_a_numeric_just_below_a_half_step_buckets_as_its_double():
     # asyncpg hands Python the float8 of a numeric; the SQL function sees the same double
     # only because grid_bucket_sql casts. test_migration_0004 checks the DB side.
     assert grid_bucket(float(Decimal("40.04999999999999999")), -105.3) == 4013947
+
+
+def test_point_key_is_five_decimals():
+    from app.pipelines.grid import point_key
+
+    assert point_key(40.1234567, -105.6543211) == "40.12346:-105.65432"
+    assert point_key(40.0, -105.0) == "40.00000:-105.00000"

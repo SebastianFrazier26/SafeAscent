@@ -32,3 +32,9 @@ def bucket_center(bucket: int) -> tuple[float, float]:
 
 def grid_bucket_sql(lat_expr: str, lon_expr: str) -> str:
     return f"grid_bucket_key(({lat_expr})::float8, ({lon_expr})::float8)"
+
+
+def point_key(lat: float, lon: float) -> str:
+    """The stored key of a feature point (5 decimals, ~1 m). Computed only here and stored;
+    SQL joins on the stored value and never formats coordinates itself."""
+    return f"{lat:.5f}:{lon:.5f}"

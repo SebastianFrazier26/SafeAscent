@@ -3,19 +3,25 @@ upgrades to head → grants_phase2.sql → verify scripts."""
 
 import argparse
 import asyncio
+import csv
 import os
 import subprocess
+import uuid
 from datetime import date
 
 from alembic import command
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.data.repair import dates, severity
+from app.data.repair import activity, dates, dedupe, experience, geocode, legacy_links, review, severity
+from app.data.repair import r10_llm as r10_llm_mod
 from app.data.repair.checks import record_check
 from app.data.repair.framework import LOCATION, Change, run_step
-from app.pipelines import mp_tick_aggregates, mp_ticks_quarantine
+from app.pipelines import accident_facts, cell_conditions, gnis, localday, mp_tick_aggregates, mp_ticks_quarantine
 from app.pipelines.validate import ValidationReport
 from tests.pgtest import requires_pg
+from tests.test_gnis import HEADER as GNIS_HEADER
+from tests.test_gnis import _line as gnis_line
 from tests.test_mp_tick_aggregates import _export
 from tests.test_migrations import (
     ANALYST_FIXTURE_SQL,
@@ -119,6 +125,135 @@ def _run_real_jobs_as_ingest(ingest_url: str, tmp_path, monkeypatch) -> None:
     r9, check = asyncio.run(r9_and_check())
     assert (r9["applied"], check["agreement"]) == (2, 1.0)
 
+    # G15: the GNIS loader's upsert and replace-delete, as ingest.
+    monkeypatch.setattr(gnis, "ingest_engine", lambda: create_async_engine(sa_ingest))
+    summits = tmp_path / "gnis.txt"
+    summits.write_text("\n".join([GNIS_HEADER, gnis_line("1", "Fixture Peak", "Summit", "Colorado", "40.25", "-105.6")]))
+    assert asyncio.run(gnis.main(summits))["status"] == "ok"
+    summits.write_text("\n".join([GNIS_HEADER, gnis_line("2", "Other Peak", "Summit", "Colorado", "40.2", "-105.6")]))
+    assert asyncio.run(gnis.main(summits))["rows_upserted"] == 1
+
+    # R3 and its check exports as ingest: snapshot, gnis_summits and revisions reads, the label writes.
+    monkeypatch.setattr(review, "REVIEW_DIR", tmp_path)
+
+    async def r3() -> tuple[dict[str, object], ...]:
+        engine = create_async_engine(sa_ingest)
+        try:
+            async with engine.begin() as conn:
+                out = await geocode.run_r3(conn, argparse.Namespace(apply=True))
+                exports = argparse.Namespace(out=None, overwrite=False)
+                return (
+                    out,
+                    await geocode.run_r3a_export(conn, exports),
+                    await geocode.run_r3_plot_export(conn, exports),
+                    await geocode.run_r3_ambiguous_export(conn, exports),
+                )
+        finally:
+            await engine.dispose()
+
+    r3_out, r3a, plot, ambiguous = asyncio.run(r3())
+    # The fixture repair above moved both points under an audited rule, so R3 keeps them but
+    # cannot vouch for them: labels only, both untrusted.
+    assert r3_out["applied"] == 6 and r3_out["methods"] == {"moved_by_other_rule": 2}
+    assert (r3a["exported"], plot["strata"]["unknown"], ambiguous["exported"]) == (0, 1, 0)
+
+    # R4 and its exports as ingest: snapshot activity, the MP terrain columns, the class writes.
+    async def r4() -> tuple[dict[str, object], ...]:
+        engine = create_async_engine(sa_ingest)
+        try:
+            async with engine.begin() as conn:
+                out = await activity.run_r4(conn, argparse.Namespace(apply=True))
+                exports = argparse.Namespace(out=None, overwrite=False)
+                return (
+                    out,
+                    await activity.run_r4_review_export(conn, exports),
+                    await activity.run_r4_golden_export(conn, exports),
+                )
+        finally:
+            await engine.dispose()
+
+    r4_out, r4_review, r4_golden = asyncio.run(r4())
+    # The seed's snapshot rows carry no activity: both wait for the owner, nothing is guessed.
+    assert (r4_out["review_pending"], r4_review["exported"], sum(r4_golden["strata"].values())) == (2, 2, 0)
+
+    # R5 and R12 as ingest (final review 2a-2 minor; G15): R5's snapshot/label reads, its
+    # require_r3/require_r4 run-log reads and decisions upsert, R12's narrative read and writes.
+    async def r5_r12() -> tuple[dict[str, object], dict[str, object]]:
+        engine = create_async_engine(sa_ingest)
+        try:
+            async with engine.begin() as conn:
+                return (
+                    await dedupe.run_r5(conn, argparse.Namespace(apply=True, out=None, overwrite=False)),
+                    await experience.run_r12(conn, argparse.Namespace(apply=True)),
+                )
+        finally:
+            await engine.dispose()
+
+    r5_out, r12_out = asyncio.run(r5_r12())
+    assert (r5_out["mode"], r5_out["review_pending"], r5_out["path"]) == ("apply", 0, None)
+    assert r12_out["mode"] == "apply"
+
+    # Plan 3 Task 3: the conditions upsert as ingest — INSERT, then the ON CONFLICT UPDATE whose
+    # precedence WHERE reads the stored row.
+    async def conditions() -> list[int]:
+        def row(kind: cell_conditions.RecordKind, source: str) -> cell_conditions.DayRow:
+            return cell_conditions.DayRow(1, "America/Denver", date(2026, 9, 20), 5.0, -1.0, 0.0, 0.0, 4.0, 9.0,
+                                          True, kind, "m", source)
+
+        engine = create_async_engine(sa_ingest)
+        try:
+            async with engine.begin() as conn:
+                return [
+                    await cell_conditions.upsert_rows(conn, [row(kind, source)], run_id=uuid.uuid4())
+                    for kind, source in [("stopgap", "open_meteo_forecast"), ("era5", "open_meteo_archive"),
+                                         ("forecast", "open_meteo_forecast")]
+                ]
+        finally:
+            await engine.dispose()
+
+    assert asyncio.run(conditions()) == [1, 1, 0]
+
+    # Plan 3 Task 4: the register job as ingest — accidents.tz through its column grant, the clean
+    # views, mp_locations through its three-column grant, the registry and the ingest log.
+    async def register() -> dict[str, object]:
+        engine = create_async_engine(sa_ingest)
+        try:
+            async with engine.begin() as conn:
+                # The repairs above leave no clean trusted point; promote one, as R3/R4 would.
+                await conn.execute(text("UPDATE accidents SET activity_class = 'climbing', geocode_precision = 'crag' "
+                                        "WHERE accident_id = 900000002"))
+            return await localday.register_logged(engine)
+        finally:
+            await engine.dispose()
+
+    registered = asyncio.run(register())
+    assert registered["accident_tz_changed"] == registered["accident_tz_assigned"] == 1
+    assert (registered["incident_series"], registered["route_series"]) == (1, 0)
+
+    # Plan 3 Task 10: the R11 loader as ingest — the column-level INSERT (accident_id from the
+    # column default), the route-match reads, the run log and quarantine, then --apply-route-ids.
+    monkeypatch.setattr(accident_facts, "ingest_engine", lambda: create_async_engine(sa_ingest))
+
+    def facts_csv(name: str, mp_route_id: str) -> object:
+        path = tmp_path / name
+        with path.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=accident_facts.COLUMNS)
+            writer.writeheader()
+            writer.writerow({
+                "source": "AAC", "source_id": "R11-ROLE-1", "date": "2025-02-10", "date_precision": "day",
+                "state": "CO", "route": "Fixture Ice", "mp_route_id": mp_route_id, "latitude": "40.0",
+                "longitude": "-105.0", "geocode_precision": "crag", "activity": "ice climbing",
+                "injury_severity": "minor", "source_url": "https://example.org/r11", "summary": "Fixture fall.",
+            })
+        return path
+
+    loaded = asyncio.run(accident_facts.main(facts_csv("r11.csv", ""), today=JOB_TODAY, dry_run=False))
+    assert (loaded["inserted"], loaded["review_pending"]) == (1, 1)
+    dry = asyncio.run(accident_facts.main(facts_csv("r11.csv", ""), today=JOB_TODAY, dry_run=True))
+    assert dry["report"]["quarantined"] == {"already_present": 1}
+    fill = facts_csv("r11-fill.csv", "900000002")
+    assert asyncio.run(accident_facts.main(fill, today=JOB_TODAY, dry_run=False, route_ids=True))["updated"] == 1
+
 
 # PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views; those belong to the
 # extension, not to any grant this project makes, so the check skips them as verify_roles.sql does.
@@ -218,26 +353,46 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
     )
     _denied(ingest, "UPDATE internal.mp_tick_aggregates SET tick_count = 2 WHERE false")
     _denied(ingest, "DELETE FROM internal.ingest_quarantine")
-    _as(ingest, "SELECT accident_id, source, source_id, date, year FROM internal.accidents_raw")
-    _denied(ingest, "SELECT mountain FROM internal.accidents_raw")
+    _as(ingest, "SELECT accident_id, source, source_id, date, year, mountain, state, latitude, longitude, mp_route_id, "
+        "activity FROM internal.accidents_raw")
+    _denied(ingest, "SELECT location FROM internal.accidents_raw")
+    _denied(ingest, "SELECT route FROM internal.accidents_raw")
     _denied(ingest, "SELECT description FROM internal.accidents_raw")
     _denied(ingest, "SELECT * FROM internal.accidents_raw")
     _as(ingest, "UPDATE mp_ticks SET quarantine_reason = NULL WHERE false")
     _as(owner_url, JOB_SEED_SQL)
     # The seed lands after 0004's snapshot; the migrator owns accidents_raw, so it stands in for it.
-    _as(migrator_url, "INSERT INTO internal.accidents_raw (accident_id, source, source_id, date, year) "
-        "SELECT accident_id, source, source_id, date, year FROM accidents")
+    _as(migrator_url, "INSERT INTO internal.accidents_raw (accident_id, source, source_id, date, year, latitude, longitude) "
+        "SELECT accident_id, source, source_id, date, year, latitude, longitude FROM accidents")
     _run_real_jobs_as_ingest(ingest, tmp_path, monkeypatch)
+    # The loader, as ingest, also wrote the tick-source seam for its one complete route.
+    assert _fetch_row(fresh_db, "SELECT mp_route_id, complete_through::text, total_ticks "
+                      "FROM internal.route_tick_scrapes") == [900000002, "2026-08-31", 3]
     _as(ingest, "SELECT count(*) FROM accidents")
-    _as(ingest, "SELECT mp_id, latitude, longitude FROM mp_locations")
-    _denied(ingest, "SELECT name FROM mp_locations")
+    _as(ingest, "SELECT mp_id, parent_id, name, latitude, longitude FROM mp_locations")
+    _denied(ingest, "SELECT url FROM mp_locations")
+    _denied(ingest, "SELECT created_at FROM mp_locations")
     _denied(ingest, "SELECT * FROM mp_locations")
     _as(ingest, "UPDATE accidents SET date_precision = 'day' WHERE false")
     _as(ingest, "INSERT INTO internal.accident_revisions (accident_id, field, method, rule_version, run_id) SELECT accident_id, 'f', 'm', 'v', gen_random_uuid() FROM accidents WHERE false")
     _denied(ingest, "UPDATE accidents SET description = 'x' WHERE false")
     _denied(ingest, "UPDATE accidents SET source_id = 'x' WHERE false")
+    _as(ingest, "UPDATE accidents SET tz = NULL WHERE tz IS NOT NULL AND false")
     _denied(ingest, "DELETE FROM accidents WHERE false")
+    # R11 (D15): the INSERT probe commits nothing. Never accident_id or a narrative column.
+    _as(ingest, "BEGIN; INSERT INTO accidents (source, source_id, description) VALUES ('AAC', 'probe', 'x'); ROLLBACK")
+    assert _fetch_row(fresh_db, "SELECT count(*) FROM accidents WHERE source_id = 'probe'") == [0]
+    _denied(ingest, "INSERT INTO accidents (accident_id, source) VALUES (1, 'AAC')")
+    _denied(ingest, "INSERT INTO accidents (source, location) VALUES ('AAC', 'x')")
+    _denied(ingest, "INSERT INTO accidents (source, tags) VALUES ('AAC', 'x')")
+    _as(ingest, "UPDATE accidents SET mp_route_id = NULL WHERE false")
+    _denied(ingest, "UPDATE accidents SET route = 'x' WHERE false")
     _denied(ingest, "UPDATE internal.accident_revisions SET method = 'x' WHERE false")
+    _as(ingest, "INSERT INTO internal.duplicate_decisions (low_id, high_id, score, decision, decided_by, rule_version) "
+        "VALUES (1, 2, 0.9, 'merge', 'auto', 'r5-v1') ON CONFLICT (low_id, high_id) DO UPDATE SET score = EXCLUDED.score")
+    _as(ingest, "UPDATE internal.duplicate_decisions SET decision = 'distinct' WHERE low_id = 1")
+    _denied(ingest, "DELETE FROM internal.duplicate_decisions")
+    _denied(ingest, "TRUNCATE gnis_summits")
     _denied(ingest, "SELECT climber_name FROM mp_ticks")
     _denied(ingest, "SELECT * FROM mp_ticks")
     _denied(ingest, "UPDATE mp_ticks SET climber_name = 'x' WHERE false")
@@ -249,6 +404,152 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
 
     # trainer cannot log in and holds no table privilege anywhere until Phase 3 (D13).
     assert _fetch_row(fresh_db, TRAINER_STATE_SQL) == [False, False]
+
+    # 0006: app and analyst read the clean views (default privileges); ingest since plan 3 (0007),
+    # trainer in Phase 3 (D13, TRAINER_STATE_SQL above covers views).
+    clean_views = "SELECT count(*) FROM accidents_clean; SELECT count(*) FROM accidents_clean_daily"
+    _as(app, clean_views)
+    _as(analyst, clean_views)
+    _as(ingest, clean_views)
+    _as(ingest, "SELECT count(*) FROM accident_conditions")
+    _denied(ingest, "DELETE FROM accidents_clean WHERE false")
+
+    # Plan 3 (0007): ingest writes conditions (DELETE only for the 3-year prune) and upserts the
+    # series registry and normals, which it never deletes; app and analyst only read.
+    _as(ingest, "INSERT INTO cell_daily_conditions (grid_bucket, tz, date, record_kind, source) "
+        "VALUES (1, 'UTC', '2020-01-01', 'era5', 'open_meteo_archive') "
+        "ON CONFLICT (grid_bucket, tz, date) DO UPDATE SET tmax = EXCLUDED.tmax")
+    _as(ingest, "DELETE FROM cell_daily_conditions WHERE grid_bucket = 1")
+    _as(ingest, "INSERT INTO grid_bucket_series (grid_bucket, tz) VALUES (1, 'UTC') "
+        "ON CONFLICT (grid_bucket, tz) DO UPDATE SET first_era5_date = NULL")
+    _as(ingest, "INSERT INTO cell_normals_status (grid_bucket, status) VALUES (1, 'pending') "
+        "ON CONFLICT (grid_bucket) DO UPDATE SET status = EXCLUDED.status")
+    _as(ingest, "UPDATE cell_climate_normals SET n_years = 1 WHERE false; "
+        "UPDATE cell_climatology SET n_years = 1 WHERE false")
+    for table in ("grid_bucket_series", "cell_normals_status", "cell_climate_normals", "cell_climatology"):
+        _denied(ingest, f"DELETE FROM {table} WHERE false")
+    _denied(ingest, "TRUNCATE cell_daily_conditions")
+    _as(app, "SELECT count(*) FROM cell_daily_conditions; SELECT count(*) FROM accident_conditions")
+    _denied(app, "DELETE FROM cell_daily_conditions WHERE false")
+
+    # Plan 3 (R6 verify): ingest reads the legacy weather table, never writes it.
+    _as(ingest, "SELECT count(*) FROM weather")
+    _denied(ingest, "UPDATE weather SET temperature_max = 0 WHERE false")
+    _denied(ingest, "DELETE FROM weather WHERE false")
+    _denied(ingest, "INSERT INTO weather (date, latitude, longitude) VALUES ('2020-01-01', 0, 0)")
+
+    # Plan 3 (R7): ingest reads area_weekly_weather and can flip longitude only.
+    _as(ingest, "SELECT count(*) FROM area_weekly_weather")
+    _as(ingest, "UPDATE area_weekly_weather SET longitude = -longitude WHERE false")
+    _denied(ingest, "UPDATE area_weekly_weather SET temp_avg = 0 WHERE false")
+    _denied(ingest, "INSERT INTO area_weekly_weather (latitude, longitude, week_start, week_end) "
+        "VALUES (0, 0, '2020-01-06', '2020-01-12')")
+    _denied(ingest, "DELETE FROM area_weekly_weather WHERE false")
+    _denied(analyst, "BEGIN READ WRITE; DELETE FROM grid_bucket_series WHERE false; COMMIT")
+    _denied(app, "UPDATE accidents_clean SET source_url = 'x' WHERE false")
+    _denied(analyst, "BEGIN READ WRITE; DELETE FROM accidents_clean_daily WHERE false; COMMIT")
+
+    # MP catalog plan (0008): ingest upserts the catalog and the tick-source seam, never deletes;
+    # app and analyst read the catalog, and app never reads the seam.
+    _as(ingest, "INSERT INTO canonical_areas (area_id, tree_status, coord_precision, catalog_version) "
+        "VALUES (900000100, 'cycle', 'none', 'v') "
+        "ON CONFLICT (area_id) DO UPDATE SET catalog_version = EXCLUDED.catalog_version")
+    _as(ingest, "INSERT INTO canonical_routes (route_id, area_id, type_group, is_boulder, disciplines, "
+        "type_rule_version, scorable, unscorable_reason, facts_sha256, catalog_version) "
+        "VALUES (900000002, 900000100, 'ice', false, '{ice}', 'v', false, 'not_us', 'h', 'v') "
+        "ON CONFLICT (route_id) DO UPDATE SET facts_sha256 = EXCLUDED.facts_sha256")
+    _as(ingest, "SELECT count(*) FROM scorable_routes")
+    _denied(ingest, "DELETE FROM canonical_routes WHERE false")
+    _denied(ingest, "DELETE FROM canonical_areas WHERE false")
+    _as(ingest, "SELECT tick_status FROM internal.route_tick_coverage; SELECT count(*) FROM internal.route_tick_months")
+    _as(ingest, "UPDATE internal.route_tick_scrapes SET updated_at = now() WHERE false")
+    _denied(ingest, "DELETE FROM internal.route_tick_scrapes WHERE false")
+    _as(app, "SELECT count(*) FROM canonical_routes; SELECT count(*) FROM scorable_routes")
+    _as(analyst, "SELECT count(*) FROM canonical_areas; SELECT count(*) FROM internal.route_tick_coverage")
+    _denied(app, "UPDATE canonical_routes SET scorable = scorable WHERE false")
+    _denied(app, "SELECT count(*) FROM internal.route_tick_scrapes")
+    _denied(analyst, "BEGIN READ WRITE; DELETE FROM internal.route_tick_scrapes WHERE false; COMMIT")
+
+    # MP similarity features (0009): ingest upserts points (never deletes them) and rebuilds the
+    # route rows; app and analyst only read the features and the scoring-unit view.
+    _as(ingest, "INSERT INTO feature_points (point_key, lat, lon, grid_bucket, h3_r5, h3_r7, feature_version) "
+        "VALUES ('900000100:k', 40, -105, 1, 'a', 'b', 'f') "
+        "ON CONFLICT (point_key) DO UPDATE SET tz = 'America/Denver'")
+    _denied(ingest, "DELETE FROM feature_points WHERE false")
+    _as(ingest, "UPDATE route_static_features SET feature_version = 'f' WHERE false; "
+        "DELETE FROM route_static_features WHERE false; SELECT count(*) FROM scoring_unit_features")
+    _as(app, "SELECT count(*) FROM scoring_unit_features; SELECT count(*) FROM route_static_features")
+    _as(analyst, "SELECT count(*) FROM feature_points")
+    _denied(app, "UPDATE feature_points SET tz = NULL WHERE false")
+    _denied(analyst, "BEGIN READ WRITE; DELETE FROM route_static_features WHERE false; COMMIT")
+
+    # R10 (0010): ingest reads only the legacy link columns, never writes accidents; the LLM audit
+    # and gates are append-only; app and analyst read the links, app never the residue.
+    _as(ingest, "SELECT route_id, name, grade, type, latitude, longitude, mp_route_id FROM routes; "
+        "SELECT mountain_id, name, latitude, longitude FROM mountains")
+    _denied(ingest, "SELECT mountain_name FROM routes")
+    _denied(ingest, "SELECT elevation_ft FROM mountains")
+    _denied(ingest, "UPDATE routes SET name = name WHERE false")
+    _denied(ingest, "UPDATE accidents SET route_id = route_id WHERE false")
+    _as(ingest, "SELECT count(*) FROM internal.r10_llm_calls; SELECT count(*) FROM internal.r10_llm_gates")
+    _denied(ingest, "UPDATE internal.r10_llm_calls SET status = status WHERE false")
+    _denied(ingest, "DELETE FROM internal.r10_llm_gates WHERE false")
+    _as(owner_url, "INSERT INTO routes (route_id, name, latitude, longitude, mp_route_id) "
+        "VALUES (900000055, 'Fixture Legacy', 40.0, -105.0, NULL); "
+        "UPDATE accidents SET route_id = 900000055 WHERE accident_id = 900000001")
+    monkeypatch.setattr(review, "REVIEW_DIR", tmp_path)
+    r10_csv = tmp_path / "r10-roles.csv"
+
+    async def r10() -> tuple[dict[str, object], ...]:
+        engine = create_async_engine(ingest.replace("postgresql://", "postgresql+asyncpg://", 1))
+        try:
+            async with engine.begin() as conn:
+                first = await legacy_links.run_r10(conn, argparse.Namespace(apply=True))
+                exported = await legacy_links.run_r10_export(conn, argparse.Namespace(out=str(r10_csv), overwrite=False))
+            r10_csv.write_text("accident_id,owner_decision\n900000001,no_link\n", encoding="utf-8")
+            async with engine.begin() as conn:
+                imported = await legacy_links.run_r10_import(conn, argparse.Namespace(review_file=str(r10_csv),
+                                                                                      apply=True))
+                again = await legacy_links.run_r10(conn, argparse.Namespace(apply=True))
+            return first, exported, imported, again
+        finally:
+            await engine.dispose()
+
+    r10_first, r10_export, r10_import, r10_again = asyncio.run(r10())
+    assert r10_first["unresolved"] == {"legacy_route_no_mp_id": 1} and r10_export["rows"] == 1
+    assert r10_import == {"link": 0, "no_link": 1, "applied": True} and r10_again["owner_decided"] == 1
+
+    # R10 LLM pass as ingest, fake allocator (no API): the case read, the pre-send spend ledger in
+    # source_ingest_log, the append-only audit row, and apply's reads all fit the existing grants.
+    async def r10_llm() -> tuple[int, dict[str, object], dict[str, object]]:
+        engine = create_async_engine(ingest.replace("postgresql://", "postgresql+asyncpg://", 1))
+        case = r10_llm_mod.Case(900000001, "route", (900000055,), {"candidates": [{"label": "A"}]})
+
+        class Fake:
+            model = r10_llm_mod.MODELS["haiku"]
+
+            async def allocate(self, c: r10_llm_mod.Case) -> r10_llm_mod.Allocation:
+                return r10_llm_mod.Allocation("ok", 0, False, 0.9, "name_match", 10, 10, self.model)
+
+        try:
+            async with engine.connect() as conn:
+                n_cases = len(await r10_llm_mod.build_cases(conn))
+            ran = await r10_llm_mod.run_calls(engine, Fake(), [case], run_id=uuid.uuid4(), is_sample=True,
+                                              max_usd=1.0)
+            async with engine.begin() as conn:
+                applied = await r10_llm_mod.apply_picks(conn, model=Fake.model, apply=False)
+            return n_cases, ran, applied
+        finally:
+            await engine.dispose()
+
+    llm_cases, llm_ran, llm_applied = asyncio.run(r10_llm())
+    assert llm_cases == 0 and llm_ran["status_counts"] == {"ok": 1} and llm_applied["applied"] is False
+    _denied(ingest, "UPDATE internal.r10_llm_calls SET status = status WHERE false")
+    _as(app, "SELECT count(*) FROM accident_route_links; SELECT count(*) FROM accident_legacy_links")
+    _as(analyst, "SELECT count(*) FROM accident_route_links; SELECT count(*) FROM internal.r10_unresolved")
+    _denied(app, "SELECT count(*) FROM internal.r10_unresolved")
+    _denied(app, "UPDATE accident_legacy_links SET method = method WHERE false")
+    _denied(analyst, "BEGIN READ WRITE; DELETE FROM accident_legacy_links WHERE false; COMMIT")
 
     _denied(app, "SELECT count(*) FROM internal.mp_tick_aggregates")
     _denied(app, "SELECT count(*) FROM internal.accidents_raw")
@@ -310,13 +611,15 @@ def test_grants_phase2_narrows_a_preexisting_table_level_grant(role_cleanup, fre
 
     # Simulates an older grants script, or a by-hand grant, that gave ingest the whole table
     # (climber_name included) before this script's REVOKE-then-column-GRANT existed.
-    _as(migrator_url, "GRANT SELECT ON public.mp_ticks TO ingest")
+    _as(migrator_url, "GRANT SELECT ON public.mp_ticks TO ingest; GRANT INSERT ON public.accidents TO ingest")
     ingest = _role_url(fresh_db, "ingest", PHASE2_PASSWORDS["ingest"])
     _as(ingest, "SELECT climber_name FROM mp_ticks")
 
     assert _psql(owner_url, GRANTS_PHASE2, {}).returncode == 0
     _denied(ingest, "SELECT climber_name FROM mp_ticks")
     _as(ingest, "SELECT tick_id FROM mp_ticks")
+    _denied(ingest, "BEGIN; INSERT INTO accidents (source, tags) VALUES ('AAC', 'x'); ROLLBACK")
+    _as(ingest, "BEGIN; INSERT INTO accidents (source, source_id) VALUES ('AAC', 'probe'); ROLLBACK")
     verified = _psql(owner_url, VERIFY_PHASE2, {})
     assert verified.returncode == 0, verified.stdout + verified.stderr
 
@@ -336,14 +639,43 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         migrator_url,
         "GRANT DELETE ON public.source_ingest_log TO ingest;"
         "GRANT UPDATE ON internal.mp_tick_aggregates TO ingest;"
+        "GRANT DELETE ON internal.duplicate_decisions TO ingest;"
+        "REVOKE DELETE ON public.gnis_summits FROM ingest;"
         "GRANT SELECT ON internal.accidents_raw TO ingest;"
-        "GRANT SELECT (name) ON public.mp_locations TO ingest;"
+        "GRANT SELECT (url) ON public.mp_locations TO ingest;"
         "GRANT SELECT (climber_name) ON public.mp_ticks TO ingest;"
         "GRANT USAGE ON SEQUENCE public.mp_ticks_tick_id_seq TO ingest;"
         "ALTER DEFAULT PRIVILEGES IN SCHEMA internal GRANT SELECT ON TABLES TO ingest;"
         "GRANT SELECT ON public.accidents TO trainer;"
+        "GRANT SELECT ON public.accidents_clean TO trainer;"
+        "REVOKE SELECT ON public.accidents_clean_daily FROM ingest;"
+        "GRANT DELETE ON public.grid_bucket_series TO ingest;"
+        "GRANT TRUNCATE ON public.cell_daily_conditions TO ingest;"
+        "GRANT INSERT ON public.cell_daily_conditions TO app;"
+        "GRANT SELECT ON public.accident_conditions TO trainer;"
+        "GRANT UPDATE ON public.accidents_clean TO app;"
+        "REVOKE SELECT ON public.accidents_clean_daily FROM analyst;"
         "GRANT CREATE ON SCHEMA internal TO app;"
-        "REVOKE SELECT ON internal.accident_revisions FROM analyst;",
+        "REVOKE SELECT ON internal.accident_revisions FROM analyst;"
+        "REVOKE UPDATE (tz) ON public.accidents FROM ingest;"
+        "REVOKE SELECT ON public.weather FROM ingest;"
+        "GRANT INSERT (location) ON public.accidents TO ingest;"
+        "REVOKE INSERT (description) ON public.accidents FROM ingest;"
+        "GRANT SELECT ON SEQUENCE public.accidents_accident_id_seq TO ingest;"
+        "GRANT DELETE ON public.canonical_routes TO ingest;"
+        "REVOKE UPDATE ON internal.route_tick_scrapes FROM ingest;"
+        "GRANT INSERT ON public.canonical_areas TO app;"
+        "GRANT SELECT ON public.scorable_routes TO trainer;"
+        "GRANT DELETE ON public.feature_points TO ingest;"
+        "GRANT INSERT ON public.route_static_features TO app;"
+        "GRANT SELECT ON public.scoring_unit_features TO trainer;"
+        "GRANT SELECT (mountain_name) ON public.routes TO ingest;"
+        "GRANT SELECT ON public.mountains TO ingest;"
+        "GRANT UPDATE ON internal.r10_llm_calls TO ingest;"
+        "GRANT DELETE ON internal.r10_llm_gates TO ingest;"
+        "GRANT INSERT ON public.accident_legacy_links TO app;"
+        "GRANT SELECT ON public.accident_route_links TO trainer;"
+        "ALTER TABLE internal.r10_unresolved DISABLE TRIGGER r10_unresolved_keep_decisions;",
     )
     _as(owner_url, "GRANT ingest TO analyst")
     # CREATE without USAGE is enough to create a table, which is why verify checks both.
@@ -353,17 +685,46 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
     assert stray.returncode != 0
     for check in (
         "ingest DELETE on public.source_ingest_log matches the expected set",
+        "r10_unresolved keep-decisions trigger exists and is enabled",
         "ingest UPDATE on internal.mp_tick_aggregates matches the expected set",
+        "ingest DELETE on internal.duplicate_decisions matches the expected set",
+        "ingest DELETE on public.gnis_summits matches the expected set",
         "ingest SELECT on internal.accidents_raw matches the expected set",
         "ingest accidents_raw column privileges match the expected set: description",
-        "ingest mp_locations column privileges match the expected set: name",
+        "ingest mp_locations column privileges match the expected set: url",
+        "ingest accidents column privileges match the expected set: tz",
         "ingest mp_ticks column privileges match the expected set: climber_name",
         "ingest has nothing on sequence public.mp_ticks_tick_id_seq",
         "no default privileges grant ingest or trainer anything",
         "trainer holds no privilege on public.accidents",
+        "trainer holds no privilege on public.accidents_clean",
+        "ingest SELECT on public.accidents_clean_daily matches the expected set",
+        "ingest DELETE on public.grid_bucket_series matches the expected set",
+        "ingest TRUNCATE on public.cell_daily_conditions matches the expected set",
+        "app can SELECT public.cell_daily_conditions and nothing else",
+        "trainer holds no privilege on public.accident_conditions",
+        "app can SELECT public.accidents_clean and nothing else",
+        "analyst can SELECT public.accidents_clean_daily and nothing else",
         "app has no CREATE on schema internal",
         "analyst can SELECT internal.accident_revisions",
         "nobody can SET or INHERIT ingest",
         "nobody but CURRENT_USER holds ADMIN on ingest",
+        "ingest SELECT on public.weather matches the expected set",
+        "ingest accidents column privileges match the expected set: location",
+        "ingest accidents column privileges match the expected set: description",
+        "ingest has nothing on sequence public.accidents_accident_id_seq",
+        "ingest DELETE on public.canonical_routes matches the expected set",
+        "ingest UPDATE on internal.route_tick_scrapes matches the expected set",
+        "app can SELECT public.canonical_areas and nothing else",
+        "trainer holds no privilege on public.scorable_routes",
+        "ingest DELETE on public.feature_points matches the expected set",
+        "app can SELECT public.route_static_features and nothing else",
+        "trainer holds no privilege on public.scoring_unit_features",
+        "ingest routes column privileges match the expected set: mountain_name",
+        "ingest SELECT on public.mountains matches the expected set",
+        "ingest UPDATE on internal.r10_llm_calls matches the expected set",
+        "ingest DELETE on internal.r10_llm_gates matches the expected set",
+        "app can SELECT public.accident_legacy_links and nothing else",
+        "trainer holds no privilege on public.accident_route_links",
     ):
         assert check in stray.stderr, check

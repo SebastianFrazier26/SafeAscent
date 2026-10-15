@@ -37,6 +37,7 @@ def _write(
     decision_column: str,
     *,
     overwrite: bool = False,
+    encoding: str = "utf-8",
 ) -> None:
     # Narrative text stays out: review files are handled outside the database access controls.
     if any(c.lower() == "description" for c in [*columns, decision_column]):
@@ -49,7 +50,7 @@ def _write(
     if target.exists() and not overwrite:
         raise FileExistsError(f"{target.name} already exists: it may hold filled-in decisions; pass --overwrite to replace it")
     target.parent.mkdir(parents=True, exist_ok=True)
-    with target.open("w", newline="", encoding="utf-8") as fh:
+    with target.open("w", newline="", encoding=encoding) as fh:
         writer = csv.writer(fh)
         writer.writerow([*columns, decision_column])
         for row in rows:

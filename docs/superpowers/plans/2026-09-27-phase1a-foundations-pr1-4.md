@@ -1068,7 +1068,7 @@ def test_name_rule_ignores_innocent_names(path):
 
 @pytest.mark.parametrize("suffix", [".py", ".ts", ".tsx", ".js", ".jsx", ".sh"])
 def test_host_rule_flags_mountainproject_in_source(suffix):
-    assert rules(f"src/thing{suffix}", 'URL = "https://www.MountainProject.com/route/1"') == ["host"]
+    assert rules(f"src/thing{suffix}", 'URL = "https://www.MountainProject.com/route/<id>"') == ["host"]
 
 
 def test_host_rule_ignores_non_source_files():

@@ -19,6 +19,13 @@ RAILWAY_CONFIGS = {
     "worker": "backend/railway-worker.toml",
     "beat": "backend/railway-beat.toml",
 }
+# Railway services with no docker-compose counterpart, and why. Every backend/railway-*.toml must be
+# listed here or in RAILWAY_CONFIGS, so a new service cannot skip the parity check unnoticed.
+NO_COMPOSE_COUNTERPART = {
+    # A yearly cron against prod as ingest; compose has no scheduler. Run it locally with
+    # `uv run python -m app.pipelines.catalog_cycle run`.
+    "catalog-cycle": "backend/railway-catalog-cycle.toml",
+}
 
 
 def start_command(root: Path, service: str) -> list[str]:
@@ -46,6 +53,14 @@ def mismatches(services: dict[str, Any], root: Path) -> list[str]:
     return problems
 
 
+def unlisted_configs(root: Path) -> list[str]:
+    known = set(RAILWAY_CONFIGS.values()) | set(NO_COMPOSE_COUNTERPART.values())
+    return sorted(
+        str(p.relative_to(root)) for p in (root / "backend").glob("railway-*.toml")
+        if str(p.relative_to(root)) not in known
+    )
+
+
 def main() -> int:
     rendered = subprocess.run(
         ["docker", "compose", "config", "--format", "json"],
@@ -55,6 +70,10 @@ def main() -> int:
         text=True,
     ).stdout
     problems = mismatches(json.loads(rendered)["services"], REPO_ROOT)
+    problems += [
+        f"{c} is neither compared with compose nor listed in NO_COMPOSE_COUNTERPART"
+        for c in unlisted_configs(REPO_ROOT)
+    ]
     for problem in problems:
         print(problem, file=sys.stderr)
     return 1 if problems else 0

@@ -4,6 +4,7 @@ Accident model with foreign keys and PostGIS geography.
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Column,
     Date,
     DateTime,
@@ -35,6 +36,7 @@ class Accident(Base):
         Index("idx_accidents_severity", "injury_severity"),
         Index("idx_accidents_state", "state"),
         Index("idx_accidents_type", "accident_type"),
+        CheckConstraint("tz <> ''", name="accidents_tz_check"),
     )
 
     accident_id = Column(Integer, primary_key=True)
@@ -85,6 +87,8 @@ class Accident(Base):
     exp_first_season = Column(Boolean, nullable=True)
     guided = Column(Text, nullable=False, server_default=text("'unknown'"))
     exp_rule_version = Column(Text, nullable=True)
+    # Migration 0007: IANA zone of the point; NULL = not yet resolved or unresolvable.
+    tz = Column(Text, nullable=True)
 
     # PostGIS geography column (automatically populated by database trigger)
     coordinates = Column(Geography(geometry_type="POINT", srid=4326, spatial_index=False), nullable=True)

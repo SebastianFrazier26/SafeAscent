@@ -1,0 +1,42 @@
+# Serves only the `catalog-cycle` Railway cron service (railway-catalog-cycle.toml). It is
+# Dockerfile plus the pipelines group; keep the base image, uv pin and non-root user in step with
+# Dockerfile. No EXPOSE/CMD: Railway always passes the start command.
+
+FROM python:3.12-slim AS builder
+
+COPY --from=ghcr.io/astral-sh/uv:0.11.3 /uv /bin/uv
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# UV_PYTHON_DOWNLOADS=never: the venv must use the image's Python, which the
+# runtime stage also has at the same path.
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/opt/venv
+
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
+# Default groups (dev, pipelines) minus dev: the pipelines group the API image leaves out.
+RUN uv sync --frozen --no-dev --no-install-project
+
+FROM python:3.12-slim AS production
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+COPY . .
+
+RUN adduser --disabled-password --gecos '' appuser && \
+    chown -R appuser:appuser /app
+USER appuser

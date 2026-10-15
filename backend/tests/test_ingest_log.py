@@ -11,6 +11,7 @@ from app.pipelines.ingest_log import (
     find_completed,
     finish_run,
     last_ok_rows_in,
+    last_ok_sha,
     sha256_rows,
     start_run,
     write_quarantine,
@@ -86,6 +87,17 @@ def test_finish_run_records_allowlisted_metrics_in_the_summary():
     asyncio.run(finish_run(conn, uuid.uuid4(), status="ok", report=report, rows_upserted=0, metrics={"agreement": 0.75, "review_pending": 3}))  # type: ignore[arg-type]
     summary = json.loads(str(conn.params["report"]))
     assert (summary["agreement"], summary["review_pending"]) == (0.75, 3)
+
+
+def test_finish_run_records_r6_metrics_in_the_summary():
+    # G12: r6_verify logs its sample size, correlation and gust percentile through metrics
+    # rather than a raw jsonb problems string; a None value (no linked rows yet) is never sent.
+    report = ValidationReport("r6_verify")
+    report.accept()
+    conn = _RecordingConn()
+    asyncio.run(finish_run(conn, uuid.uuid4(), status="ok", report=report, rows_upserted=0, metrics={"n": 150, "r_tmax": 0.97, "p99_gust": 42.5}))  # type: ignore[arg-type]
+    summary = json.loads(str(conn.params["report"]))
+    assert (summary["n"], summary["r_tmax"], summary["p99_gust"]) == (150, 0.97, 42.5)
 
 
 @pytest.mark.parametrize(
@@ -183,6 +195,32 @@ def test_rejected_runs_are_not_noops_and_not_row_count_baselines():
             async with engine.connect() as conn:
                 assert await find_completed(conn, source="fixture", window_start=None, window_end=None, content_sha256="abc") is None
                 assert await last_ok_rows_in(conn, "fixture") is None
+        finally:
+            await engine.dispose()
+
+    with migrated_db() as name:
+        asyncio.run(scenario(sa_url(name)))
+
+
+@requires_pg
+def test_last_ok_sha_is_the_latest_ok_run_only():
+    async def finish(conn, sha: str, status: str) -> None:
+        report = ValidationReport("fixture")
+        report.accept()
+        run_id = await start_run(conn, source="fixture", window_start=None, window_end=None, content_sha256=sha)
+        await finish_run(conn, run_id, status=status, report=report, rows_upserted=0)
+
+    async def scenario(url: str) -> None:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                assert await last_ok_sha(conn, "fixture") is None
+            for sha, status in (("a", "ok"), ("b", "ok"), ("c", "rejected")):
+                async with engine.begin() as conn:
+                    await finish(conn, sha, status)
+            async with engine.connect() as conn:
+                assert await last_ok_sha(conn, "fixture") == "b"
+                assert await last_ok_sha(conn, "other") is None
         finally:
             await engine.dispose()
 
