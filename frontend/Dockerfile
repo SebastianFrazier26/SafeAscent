@@ -3,7 +3,12 @@
 # redeploying switches modes. Any other value fails the build on purpose.
 ARG MAINTENANCE_MODE=false
 
-FROM node:22-alpine AS builder
+# Pinned by digest (owner norm: pin anything deployed). Refresh with:
+# curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/node:pull" | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])"
+# then HEAD https://registry-1.docker.io/v2/library/node/manifests/22-alpine with an
+# Authorization: Bearer <token> header and Accept: application/vnd.oci.image.index.v1+json
+# (plus the docker.distribution.manifest.list/v2 variants), and read Docker-Content-Digest.
+FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS builder
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci
@@ -14,7 +19,9 @@ ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
 ENV VITE_MAPBOX_TOKEN=$VITE_MAPBOX_TOKEN
 RUN npm run build
 
-FROM nginx:alpine AS nginx-base
+# Pinned by digest; refresh the same way, substituting repository library/nginx and tag
+# alpine (https://registry-1.docker.io/v2/library/nginx/manifests/alpine).
+FROM nginx:alpine@sha256:72aeb3308ef6cb3118242fb16389518923916dfa206e32d1a8377acc328b9870 AS nginx-base
 RUN apk add --no-cache curl && \
     chown -R nginx:nginx /usr/share/nginx/html /var/cache/nginx /var/log/nginx /etc/nginx/conf.d && \
     touch /var/run/nginx.pid && \

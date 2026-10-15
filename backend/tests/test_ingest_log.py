@@ -100,6 +100,15 @@ def test_finish_run_records_r6_metrics_in_the_summary():
     assert (summary["n"], summary["r_tmax"], summary["p99_gust"]) == (150, 0.97, 42.5)
 
 
+def test_finish_run_records_tick_reload_metrics_in_the_summary():
+    report = ValidationReport("mp_tick_aggregates")
+    report.accept()
+    conn = _RecordingConn()
+    asyncio.run(finish_run(conn, uuid.uuid4(), status="ok", report=report, rows_upserted=0, metrics={"already_loaded_same": 4, "already_loaded_changed": 2}))  # type: ignore[arg-type]
+    summary = json.loads(str(conn.params["report"]))
+    assert (summary["already_loaded_same"], summary["already_loaded_changed"]) == (4, 2)
+
+
 @pytest.mark.parametrize(
     "metrics, message",
     [

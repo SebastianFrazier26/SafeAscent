@@ -361,7 +361,13 @@ async def main(path: Path, *, today: date, max_quarantine_share: float, dry_run:
                 return {"status": "rejected", "rows_upserted": 0, "problems": problems, "report": report.summary()}
             inserted = await load(conn, rows, run_id=run_id, scrape_run_id=f"sqlite:{sha[:12]}")
             await write_seam(conn, scrapes, run_id=run_id)
-            await finish_run(conn, run_id, status="ok", report=report, rows_upserted=inserted)
+            await finish_run(
+                conn, run_id, status="ok", report=report, rows_upserted=inserted,
+                metrics={
+                    "already_loaded_same": stats["already_loaded_same"],
+                    "already_loaded_changed": stats["already_loaded_changed"],
+                },
+            )
             return {"status": "ok", "rows_upserted": inserted, "report": report.summary(), "stats": stats}
     finally:
         await engine.dispose()
