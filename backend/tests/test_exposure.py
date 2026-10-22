@@ -9,9 +9,26 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from app.pipelines import db as db_module
 from app.pipelines.exposure import _run, build, drop_snapshot, validate
 from tests.pgtest import fetch, migrated_db, requires_pg, run_on_conn, sa_url
-from tests.test_exposure_components import CRAG, SEED, TICKS, TODAY, _climate
+from tests.test_exposure_components import CRAG, ICE_KEY, SEED, TICKS, TODAY, _climate
 
 CLIMATE = _climate()[0]
+# A second ice area on the ice area's own point: same season shares, so exposure points tie across
+# the two areas, while its own tick counts keep the tick column from collapsing into the first's.
+TWIN_ICE = f"""
+INSERT INTO mp_locations (mp_id, name, parent_id, latitude, longitude) VALUES
+  (900000140, 'Fixture Twin Ice', 900000100, 40.3, -105.4);
+INSERT INTO mp_routes (mp_route_id, name, location_id, type) VALUES (900000008, 'Fixture Twin', 900000140, 'Ice');
+INSERT INTO canonical_areas (area_id, parent_id, path, depth, tree_status, state_code, lat, lon, coord_precision,
+  coord_source_id, point_key, catalog_version) VALUES
+  (900000140, 900000100, '900000100.900000140', 2, 'us', 'CO', 40.3, -105.4, 'own', 900000140, '{ICE_KEY}', 'v');
+INSERT INTO canonical_routes (route_id, area_id, type_group, is_boulder, disciplines, type_rule_version, scorable,
+  unscorable_reason, facts_sha256, catalog_version) VALUES
+  (900000008, 900000140, 'ice', false, '{{ice}}', 'rt-mp-v3', true, NULL, 'h', 'v');
+INSERT INTO internal.route_tick_scrapes (mp_route_id, source, scraped_at, complete, complete_through, total_ticks)
+  VALUES (900000008, 'mp_scrape', '2026-02-10T00:00:00+00', true, DATE '2026-01-31', 10);
+INSERT INTO internal.mp_tick_aggregates (mp_route_id, period, style, tick_count) VALUES
+  (900000008, '2025-01', 'lead', 7), (900000008, '2024-12', 'lead', 3);
+"""
 
 
 @requires_pg
@@ -110,9 +127,8 @@ def test_cutoff_after_today_is_refused():
 
 @requires_pg
 def test_cli_build_logs_metrics(monkeypatch):
-    # F11: no test exercised the logged CLI path (start_run -> build -> validate ->
-    # finish_run(metrics=checks)) before this — exactly where the _ALLOWED_METRICS change and
-    # report.rows_in = report.accepted = int(str(summary["cells"])) live.
+    # F11: the logged CLI path (start_run -> build -> validate -> finish_run(metrics=checks)), where
+    # the _ALLOWED_METRICS change and report.rows_in = report.accepted = int(checks["cells"]) live.
     with migrated_db(seed_sql=SEED + TICKS + CLIMATE) as name:
         monkeypatch.setattr(db_module, "ingest_engine", lambda: create_async_engine(sa_url(name)))
         args = argparse.Namespace(cmd="build", cutoff=None, dry_run=False)
@@ -131,7 +147,7 @@ def test_validate_spearman_matches_exposure_math(monkeypatch):
     # validate ranks in SQL; exposure_math.spearman is the reference (ties averaged, 0-based).
     from app.pipelines.exposure_math import spearman
 
-    with migrated_db(seed_sql=SEED + TICKS + CLIMATE) as name:
+    with migrated_db(seed_sql=SEED + TICKS + CLIMATE + TWIN_ICE) as name:
         async def go(conn):
             await build(conn, today=TODAY, mp_enabled=True)
             return await validate(conn, as_of=TODAY, data_cutoff=TODAY)
@@ -140,7 +156,8 @@ def test_validate_spearman_matches_exposure_math(monkeypatch):
         pairs = fetch(name, "SELECT exposure_point, (proxy->'mp_ticks'->>'value')::float8 FROM internal.exposure_index "
                             "WHERE tick_coverage = 1 AND exposure_point IS NOT NULL")
     ref = spearman([float(p) for p, _ in pairs], [float(t) for _, t in pairs])
-    assert ref is not None and len({t for _, t in pairs}) < len(pairs)
+    assert ref is not None
+    assert len({p for p, _ in pairs}) < len(pairs) and len({t for _, t in pairs}) < len(pairs)
     assert got["spearman_point_ticks"] == pytest.approx(ref, abs=1e-9)
 
 
@@ -223,3 +240,59 @@ def test_cli_is_quiet_outside_the_blackout_and_dry_run_writes_nothing(monkeypatc
     assert out["status"] == "dry_run" and out["cells"] == 36 and out["season_blackout_series"] == 0
     assert written == [(0, 0)]
     assert "WARNING" not in capsys.readouterr().err
+
+
+@requires_pg
+def test_build_refuses_an_autocommit_connection():
+    # SET TRANSACTION on AUTOCOMMIT only warns; every statement would read its own snapshot.
+    with migrated_db(seed_sql=SEED) as name:
+        async def go():
+            engine = create_async_engine(sa_url(name))
+            try:
+                async with engine.connect() as conn:
+                    auto = await conn.execution_options(isolation_level="AUTOCOMMIT")
+                    await build(auto, today=TODAY, mp_enabled=True, write=False)
+            finally:
+                await engine.dispose()
+
+        with pytest.raises(RuntimeError, match="REPEATABLE READ"):
+            asyncio.run(go())
+
+
+def _drop_cli(monkeypatch, name, as_of, cutoff):
+    from app.pipelines import exposure as exposure_mod
+
+    monkeypatch.setattr(db_module, "ingest_engine", lambda: create_async_engine(sa_url(name)))
+    monkeypatch.setattr("sys.argv", ["exposure", "drop", "--as-of", as_of, "--cutoff", cutoff])
+    exposure_mod.cli()
+
+
+@requires_pg
+def test_cli_drop_logs_dropped_rows(monkeypatch, capsys):
+    import json
+
+    with migrated_db(seed_sql=SEED + TICKS) as name:
+        run_on_conn(name, lambda conn: build(conn, today=TODAY, cutoff=date(2025, 1, 1), mp_enabled=True))
+        _drop_cli(monkeypatch, name, str(TODAY), "2025-01-01")
+        left = fetch(name, "SELECT count(*) FROM internal.exposure_index")
+        [(status, upserted, report)] = fetch(
+            name, "SELECT status, rows_upserted, validation_report FROM source_ingest_log WHERE source = 'exposure_index'")
+    report = json.loads(report) if isinstance(report, str) else report
+    assert json.loads(capsys.readouterr().out) == {"status": "ok", "dropped_rows": 36}
+    assert left == [(0,)] and status == "ok" and upserted == 0
+    assert report["dropped_rows"] == 36 and report["source"] == "exposure_index:drop"
+
+
+@requires_pg
+def test_cli_drop_of_no_such_snapshot_exits_non_zero_and_logs_it(monkeypatch, capsys):
+    import json
+
+    with migrated_db(seed_sql=SEED) as name:
+        with pytest.raises(SystemExit) as exit_:
+            _drop_cli(monkeypatch, name, str(TODAY), "2025-01-01")
+        [(status, report)] = fetch(
+            name, "SELECT status, validation_report FROM source_ingest_log WHERE source = 'exposure_index'")
+    report = json.loads(report) if isinstance(report, str) else report
+    assert exit_.value.code == 1 and "no such snapshot" in capsys.readouterr().err
+    assert status == "rejected" and report["dropped_rows"] == 0
+    assert any(p.startswith("no such snapshot") for p in report["problems"])

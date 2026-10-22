@@ -20,6 +20,7 @@ from app.pipelines.exposure_components import blackout_series, keys, mp_ticks, r
 from app.pipelines.exposure_math import COMPONENTS, PROXY_VERSION, Component, bounds, exposure_point
 
 SOURCE = "exposure"
+DROP_SOURCE = "exposure_index"
 KEEP_SNAPSHOTS = 3
 INSERT_CHUNK = 5000
 
@@ -52,6 +53,7 @@ SELECT (SELECT count(*) FROM s), (SELECT count(*) FROM s WHERE p IS NULL), (SELE
        (SELECT avg(c) FROM s), (SELECT CASE WHEN count(*) >= 3 THEN corr(rp, rt) END FROM r)
 """)
 _LOOSE_ISOLATION = ("read uncommitted", "read committed")
+_SNAPSHOT_ISOLATION = ("repeatable read", "serializable")
 
 
 def _digest(part: dict[tuple[int, str, int], Component]) -> str:
@@ -65,10 +67,15 @@ async def _one_snapshot(conn: AsyncConnection) -> None:
     # Scope and every component must read one snapshot: under READ COMMITTED each statement sees
     # its own, so a catalog write between the scope read and the tick read makes them disagree.
     # SHOW takes no snapshot, so SET still works after it; if the caller already ran a query in a
-    # READ COMMITTED transaction, Postgres refuses the SET and the build fails loudly.
-    level = (await conn.execute(text("SHOW transaction_isolation"))).scalar()
-    if level in _LOOSE_ISOLATION:
+    # READ COMMITTED transaction, Postgres refuses the SET and the build fails loudly. On an
+    # AUTOCOMMIT connection the SET only warns and does nothing, hence the second SHOW.
+    show = text("SHOW transaction_isolation")
+    if (await conn.execute(show)).scalar() in _LOOSE_ISOLATION:
         await conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
+    level = (await conn.execute(show)).scalar()
+    if level not in _SNAPSHOT_ISOLATION:
+        raise RuntimeError(f"exposure build needs one REPEATABLE READ transaction, got {level!r} "
+                           "(an AUTOCOMMIT connection cannot hold one snapshot)")
 
 
 async def build(conn: AsyncConnection, *, today: date, cutoff: date | None = None, mp_enabled: bool,
@@ -148,7 +155,16 @@ async def _run(args: argparse.Namespace, *, today: date, mp_enabled: bool) -> di
     try:
         if args.cmd == "drop":
             async with engine.begin() as conn:
-                return {"dropped_rows": await drop_snapshot(conn, as_of=args.as_of, data_cutoff=args.cutoff)}
+                run_id = await start_run(conn, source=DROP_SOURCE, window_start=args.cutoff, window_end=args.as_of,
+                                         content_sha256=None)
+                dropped = await drop_snapshot(conn, as_of=args.as_of, data_cutoff=args.cutoff)
+                missing = None if dropped else f"no such snapshot (as_of {args.as_of}, data_cutoff {args.cutoff})"
+                report = ValidationReport(f"{DROP_SOURCE}:drop")
+                report.rows_in = report.accepted = dropped
+                await finish_run(conn, run_id, status="ok" if dropped else "rejected", report=report,
+                                 rows_upserted=0, problems=[missing] if missing else None,
+                                 metrics={"dropped_rows": dropped})
+            return {"status": "ok" if dropped else "no_such_snapshot", "dropped_rows": dropped}
         if args.dry_run:
             async with engine.connect() as conn:
                 summary = await build(conn, today=today, cutoff=args.cutoff, mp_enabled=mp_enabled, write=False)
@@ -187,6 +203,9 @@ def cli() -> None:
     args = parser.parse_args()
     result = asyncio.run(_run(args, today=utc_today(), mp_enabled=settings.EXPOSURE_ENABLE_MP_TICKS))
     print(json.dumps(result, sort_keys=True, default=str))
+    if result["status"] == "no_such_snapshot":
+        print(f"no such snapshot: as_of {args.as_of}, data_cutoff {args.cutoff}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

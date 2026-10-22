@@ -28,7 +28,7 @@ _ALLOWED_SUMMARY_KEYS = frozenset({"source", "rows_in", "accepted", "quarantined
 # metric joins this set in a reviewed change rather than riding a raw jsonb UPDATE (G13).
 _ALLOWED_METRICS = frozenset({
     "agreement", "review_pending", "n", "r_tmax", "p99_gust",
-    "cells", "null_points", "full_coverage_cells", "tick_coverage_mean", "spearman_point_ticks",
+    "cells", "null_points", "full_coverage_cells", "tick_coverage_mean", "spearman_point_ticks", "dropped_rows",
     # mp_tick_aggregates --scope rock: routes kept off the quarantine (exposure plan X-1, 2026-10-21).
     "routes_waiting_unknown_route", "routes_waiting_ice_mixed_route", "routes_waiting_route_incomplete",
 })
