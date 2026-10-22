@@ -5,6 +5,8 @@ coverage or missingness term would encode the outcome. No coverage term ever ent
 
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -14,6 +16,24 @@ from app.ml.cells import FAMILY_OF, TYPE_GROUPS
 from app.ml.dataset import STATIC_FEATURES, CellData
 
 LOG1P_FEATURES = frozenset({"precip_mm", "snowfall_cm"})
+
+
+def transform_static(raw: Mapping[str, float | None]) -> dict[str, float]:
+    """One route's static features as build_design transforms them, before standardizing: z_<name> (NaN
+    where missing) plus the two missing indicators. Absent keys read as missing."""
+    out: dict[str, float] = {}
+    for f in STATIC_FEATURES:
+        v = raw.get(f)
+        if v is not None and math.isinf(v):
+            raise ValueError(f"{f} is infinite")
+        missing = v is None or math.isnan(v)
+        out[f"z_{f}"] = math.nan if missing or v is None else (math.log1p(v) if f in LOG1P_FEATURES else float(v))
+    elev_missing = math.isnan(out["z_elevation_m"])
+    if math.isnan(out["z_lat"]) and not elev_missing:
+        raise ValueError("lat missing where elevation is present: no indicator would mark the imputed lat")
+    out["ind_elevation_missing"] = float(elev_missing)
+    out["ind_normals_missing"] = float(any(math.isnan(out[f"z_{f}"]) for f in STATIC_FEATURES[2:]))
+    return out
 
 
 @dataclass(frozen=True)

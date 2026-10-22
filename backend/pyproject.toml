@@ -158,6 +158,7 @@ module = [
     "app.ml.archetypes",
     "app.ml.eb",
     "app.ml.posterior",
+    "app.ml.explain",
     "app.pipelines.accident_facts",
     "app.pipelines.dem",
     "app.pipelines.epqs",

@@ -144,3 +144,98 @@ def fitted_toy(*, local_incidents: float, archetype_incidents: int, density: int
            for keys in (a, cells.region_idx[a], cells.state_idx[a])]
     geo = has[0][a] | has[1][cells.region_idx[a]] | has[2][cells.state_idx[a]]
     return FittedToy(cells, design, coef, cp, y, 10.0, np.asarray(geo, dtype=np.bool_), target_cell)
+
+
+@dataclass(frozen=True)
+class ReferenceTerms:
+    log_hazard_over_rref: float
+    log_theta_over_mean: float
+
+
+_TOY_RAW: dict[str, float | None] = {"elevation_m": 2500.0, "lat": 44.0, "tmax_mean": 15.0, "tmin_mean": 3.0,
+                                     "precip_mm": 50.0, "snowfall_cm": 5.0, "freeze_thaw_days": 4.0}
+_TOY_Z = {"z_elevation_m": 0.8, "z_lat": -0.3, "z_tmax_mean": 1.1, "z_tmin_mean": -0.6, "z_precip_mm": 0.4,
+          "z_snowfall_cm": -1.3, "z_freeze_thaw_days": 0.9}
+_TOY_COEF = {"z_elevation_m": 0.15, "z_lat": -0.05, "z_tmax_mean": 0.1, "z_tmin_mean": 0.07, "z_precip_mm": -0.2,
+             "z_snowfall_cm": 0.12, "z_freeze_thaw_days": 0.25, "ind_elevation_missing": 0.3,
+             "ind_normals_missing": 0.2, "a_trad": 0.1, "m_7": 0.05}
+
+
+def toy_bundle_and_row() -> tuple[Any, dict[str, Any]]:
+    """A ModelBundle and an explain() row for the fitted toy's target July trad cell. The toy has no
+    static variation, so the target's z values are overridden and center/scale chosen to reproduce them
+    from _TOY_RAW; coef gets nonzero covariate and season effects. log_rref per (g, m) is read back
+    from summarize (log of theta * hazard / rr), not recomputed."""
+    import dataclasses
+
+    from app.ml.bundle import ModelBundle
+    from app.ml.features import transform_static
+    from app.ml.posterior import Thresholds, summarize
+
+    toy = fitted_toy(local_incidents=2, archetype_incidents=3)
+    d = toy.design
+    coef = toy.coef.copy()
+    center, scale = d.center.copy(), d.scale.copy()
+    X = d.X.copy()
+    tr = transform_static(_TOY_RAW)
+    for name, z in _TOY_Z.items():
+        k = d.names.index(name)
+        X[toy.target_cell, k] = z
+        center[k], scale[k] = tr[name] - z, 1.0
+    for name, c in _TOY_COEF.items():
+        coef[d.names.index(name)] = c
+    design = dataclasses.replace(d, X=X, center=center, scale=scale)
+    th = Thresholds(d_star=1.0, conf_high=2.0, conf_medium=4.0, phi=1.0)
+    inputs = {**toy.inputs(th), "design": design, "coef": coef}
+    s = summarize(**inputs)
+    _, mean, _ = _gamma(toy, th)
+    ex = list(design.exposure_cols)
+    hazard = np.exp(linear_predictor(X, coef) - linear_predictor(X[:, ex], coef[ex]))
+    cells = toy.cells
+    log_rref = np.zeros((len(TYPE_GROUPS), 12))
+    for gi in range(len(TYPE_GROUPS)):
+        for m in range(1, 13):
+            sel = np.flatnonzero((cells.g == gi) & (cells.month == m) & ~s.insufficient)
+            if sel.size:
+                c = sel[0]
+                log_rref[gi, m - 1] = float(np.log(mean[c] * hazard[c] / s.rr_mean[c]))
+    const = {g: {str(m): float(-log_rref[gi, m - 1]) for m in range(1, 13)} for gi, g in enumerate(TYPE_GROUPS)}
+    bundle = ModelBundle("toy", "rock_family",
+                         {"coef": coef, "center": center, "scale": scale, "log_rref": log_rref,
+                          "tick_ref": np.array(d.tick_ref)},
+                         {"names": list(d.names), "const": const, "families_on": sorted(d.families_on)})
+    c = toy.target_cell
+    row = {"type_group": "trad", "month": 7, "raw_features": dict(_TOY_RAW), "rr_mean": float(s.rr_mean[c]),
+           "n_eff_geo": float(s.n_eff_geo[c]), "n_eff_feature": float(s.n_eff_feature[c])}
+    return bundle, row
+
+
+def _gamma(toy: FittedToy, th: Thresholds) -> tuple[Any, Any, Any]:
+    from app.ml.posterior import gamma_interval
+
+    return gamma_interval(toy.cp.post.shape, toy.cp.post.rate, th.phi)
+
+
+def bundle_reference_terms(bundle: Any, row: dict[str, Any]) -> ReferenceTerms:
+    """log(hazard / r_ref) and log(posterior mean) for the row's cell, from the toy's own arrays by the
+    A:112-131 formulas, without going through explain or the bundle's stored constants."""
+    from app.ml.posterior import Thresholds
+
+    toy = fitted_toy(local_incidents=2, archetype_incidents=3)
+    th = Thresholds(d_star=1.0, conf_high=2.0, conf_medium=4.0, phi=1.0)
+    d = toy.design
+    coef = bundle.arrays["coef"]
+    ex = list(d.exposure_cols)
+    gi = TYPE_GROUPS.index(row["type_group"])
+    c = toy.target_cell
+    # The bundle's center/scale were chosen so the target row's z values equal _TOY_Z.
+    X = d.X.copy()
+    for name, z in _TOY_Z.items():
+        X[c, d.names.index(name)] = z
+    eta = linear_predictor(X, coef)
+    eta_exp = linear_predictor(X[:, ex], coef[ex])
+    _, mean, _ = _gamma(toy, th)
+    mu0 = np.exp(np.clip(eta, -ETA_CLIP, ETA_CLIP))
+    sel = (toy.cells.g == gi) & (toy.cells.month == row["month"])
+    r_ref = float((mu0[sel] * mean[sel]).sum() / np.exp(eta_exp[sel]).sum())
+    return ReferenceTerms(float(eta[c] - eta_exp[c] - np.log(r_ref)), float(np.log(mean[c])))

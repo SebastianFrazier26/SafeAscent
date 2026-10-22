@@ -3,7 +3,8 @@ import dataclasses
 import numpy as np
 import pytest
 
-from app.ml.features import Design, TickPolicy, build_design, tick_families
+from app.ml.dataset import STATIC_FEATURES
+from app.ml.features import Design, TickPolicy, build_design, tick_families, transform_static
 from app.ml.fixtures import synthetic_cells
 
 
@@ -84,3 +85,22 @@ def test_lat_missing_without_elevation_flag_fails_closed():
     cells.static[0, 1] = np.nan
     with pytest.raises(ValueError, match="lat missing"):
         build_design(cells, policy=TickPolicy())
+
+
+def test_transform_static_matches_the_design_row():
+    cells = synthetic_cells(5, 6)
+    d = build_design(cells, policy=TickPolicy())
+    i = 7
+    raw = {f: (None if np.isnan(cells.static[i, j]) else float(cells.static[i, j])) for j, f in enumerate(STATIC_FEATURES)}
+    t = transform_static(raw)
+    for name, v in t.items():
+        k = d.names.index(name)
+        got = v if name.startswith("ind_") else (0.0 if np.isnan(v) else (v - d.center[k]) / d.scale[k])
+        assert got == pytest.approx(d.X[i, k])
+
+
+def test_transform_static_missing_and_inconsistent_lat():
+    t = transform_static({"elevation_m": None, "lat": None})
+    assert t["ind_elevation_missing"] == 1.0 and t["ind_normals_missing"] == 1.0
+    with pytest.raises(ValueError):
+        transform_static({"elevation_m": 100.0, "lat": None})
