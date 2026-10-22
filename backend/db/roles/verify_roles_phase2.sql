@@ -115,9 +115,9 @@ INSERT INTO ingest_privs VALUES
   ('internal.r10_unresolved', 'UPDATE'), ('internal.r10_unresolved', 'DELETE'),
   ('internal.r10_llm_calls', 'SELECT'), ('internal.r10_llm_calls', 'INSERT'),
   ('internal.r10_llm_gates', 'SELECT'), ('internal.r10_llm_gates', 'INSERT'),
-  -- Exposure (0011): snapshots are rebuilt and pruned.
+  -- Exposure (0011): snapshots are cleared, reinserted and pruned, never updated.
   ('internal.exposure_index', 'SELECT'), ('internal.exposure_index', 'INSERT'),
-  ('internal.exposure_index', 'UPDATE'), ('internal.exposure_index', 'DELETE');
+  ('internal.exposure_index', 'DELETE');
 
 -- PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views, so extension-owned
 -- relations are skipped throughout, as verify_roles.sql does.

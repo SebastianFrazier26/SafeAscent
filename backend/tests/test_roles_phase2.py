@@ -593,9 +593,9 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
     _denied(app, "UPDATE accident_legacy_links SET method = method WHERE false")
     _denied(analyst, "BEGIN READ WRITE; DELETE FROM accident_legacy_links WHERE false; COMMIT")
 
-    # Exposure (0011): ingest rebuilds and prunes snapshots; analyst reads; app holds nothing in internal.
-    _as(ingest, "SELECT count(*) FROM internal.exposure_index; "
-        "UPDATE internal.exposure_index SET run_id = NULL WHERE false; DELETE FROM internal.exposure_index WHERE false")
+    # Exposure (0011): ingest clears, reinserts and prunes snapshots; analyst reads; app holds nothing in internal.
+    _as(ingest, "SELECT count(*) FROM internal.exposure_index; DELETE FROM internal.exposure_index WHERE false")
+    _denied(ingest, "UPDATE internal.exposure_index SET run_id = NULL WHERE false")
     _denied(ingest, "TRUNCATE internal.exposure_index")
     _as(analyst, "SELECT count(*) FROM internal.exposure_index")
     _denied(app, "SELECT count(*) FROM internal.exposure_index")
@@ -661,7 +661,8 @@ def test_grants_phase2_narrows_a_preexisting_table_level_grant(role_cleanup, fre
 
     # Simulates an older grants script, or a by-hand grant, that gave ingest the whole table
     # (climber_name included) before this script's REVOKE-then-column-GRANT existed.
-    _as(migrator_url, "GRANT SELECT ON public.mp_ticks TO ingest; GRANT INSERT ON public.accidents TO ingest")
+    _as(migrator_url, "GRANT SELECT ON public.mp_ticks TO ingest; GRANT INSERT ON public.accidents TO ingest; "
+        "GRANT UPDATE ON internal.exposure_index TO ingest")
     ingest = _role_url(fresh_db, "ingest", PHASE2_PASSWORDS["ingest"])
     _as(ingest, "SELECT climber_name FROM mp_ticks")
 
@@ -670,6 +671,7 @@ def test_grants_phase2_narrows_a_preexisting_table_level_grant(role_cleanup, fre
     _as(ingest, "SELECT tick_id FROM mp_ticks")
     _denied(ingest, "BEGIN; INSERT INTO accidents (source, tags) VALUES ('AAC', 'x'); ROLLBACK")
     _as(ingest, "BEGIN; INSERT INTO accidents (source, source_id) VALUES ('AAC', 'probe'); ROLLBACK")
+    _denied(ingest, "UPDATE internal.exposure_index SET run_id = NULL WHERE false")
     verified = _psql(owner_url, VERIFY_PHASE2, {})
     assert verified.returncode == 0, verified.stdout + verified.stderr
 
@@ -726,6 +728,7 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "GRANT INSERT ON public.accident_legacy_links TO app;"
         "GRANT SELECT ON public.accident_route_links TO trainer;"
         "GRANT TRUNCATE ON internal.exposure_index TO ingest;"
+        "GRANT UPDATE ON internal.exposure_index TO ingest;"
         "ALTER TABLE internal.r10_unresolved DISABLE TRIGGER r10_unresolved_keep_decisions;",
     )
     _as(owner_url, "GRANT ingest TO analyst")
@@ -778,5 +781,6 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "app can SELECT public.accident_legacy_links and nothing else",
         "trainer holds no privilege on public.accident_route_links",
         "ingest TRUNCATE on internal.exposure_index matches the expected set",
+        "ingest UPDATE on internal.exposure_index matches the expected set",
     ):
         assert check in stray.stderr, check

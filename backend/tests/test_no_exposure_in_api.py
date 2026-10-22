@@ -1,7 +1,16 @@
 from pathlib import Path
 
-API = Path(__file__).resolve().parents[1] / "app" / "api"
+import pytest
+
+APP = Path(__file__).resolve().parents[1] / "app"
+# The serving code is app/api and the services it calls; the DB grants (app has no access to
+# internal) are the real guard, this only catches a reader being added by mistake.
+MARKERS = ("exposure_index", "ExposureIndex", "app.models.exposure", "models import exposure")
 
 
-def test_no_endpoint_reads_the_exposure_index():
-    assert [str(p) for p in API.rglob("*.py") if "exposure_index" in p.read_text(encoding="utf-8")] == []
+@pytest.mark.parametrize("package", ["api", "services"])
+def test_no_serving_code_reads_the_exposure_index(package: str):
+    root = APP / package
+    assert root.is_dir(), root
+    hits = [str(p) for p in root.rglob("*.py") if any(m in p.read_text(encoding="utf-8") for m in MARKERS)]
+    assert hits == []

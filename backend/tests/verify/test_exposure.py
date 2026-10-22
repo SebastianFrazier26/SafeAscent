@@ -27,6 +27,8 @@ def test_latest_production_snapshot_is_consistent():
 
 
 def test_cells_match_the_scorable_catalog():
+    """Compares the latest snapshot to the *current* catalog, so it fails after any catalog refresh
+    that postdates the build: rebuild after any catalog refresh before running VERIFY."""
     [row] = fetch(
         "SELECT (SELECT count(*) * 12 FROM (SELECT DISTINCT area_id, type_group FROM scorable_routes) s) AS expected, "
         f"(SELECT count(*) FROM internal.exposure_index WHERE data_cutoff = as_of AND as_of = {LATEST}) AS got")
