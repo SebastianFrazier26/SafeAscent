@@ -5,19 +5,61 @@ import numpy as np
 import pytest
 
 from app.ml.cells import TYPE_GROUPS
-from app.ml.eb import KAPPA_MAX, MIN_PRIOR_SHAPE, EbFit, _level, fit_eb, mom_kappa
+from scipy.special import gammaln
+from scipy.stats import gamma as gamma_dist
+from scipy.stats import nbinom
+
+from app.ml.eb import KAPPA_MAX, MIN_PRIOR_SHAPE, EbFit, _level, fit_eb, ml_kappa, nb_loglik
 from app.ml.fixtures import synthetic_cells
 
 
-def test_mom_kappa_hand_computed():
-    obs, E, p = np.array([2.0, 8.0]), np.array([4.0, 4.0]), np.array([1.0, 1.0])
-    s2 = (4 * (0.5 - 1) ** 2 + 4 * (2 - 1) ** 2) / 8
-    assert mom_kappa(obs, E, p) == pytest.approx(1.0 / (s2 - 1.0 / 4.0))
-    assert mom_kappa(np.array([4.0, 4.0]), E, p) == 1e6          # no extra variance: full pooling
+def _mom_kappa(obs, E, p):
+    """The pre-rework method-of-moments estimator, kept only as the simulation's comparison."""
+    s2 = float(np.sum(E * (obs / E - p) ** 2) / E.sum())
+    pbar = float(np.sum(E * p) / E.sum())
+    tau2 = s2 - pbar / float(E.mean())
+    return KAPPA_MAX if tau2 <= 0 else min(pbar / tau2, KAPPA_MAX)
 
 
-def test_mom_kappa_zero_parent_pools_fully_instead_of_kappa_zero():
-    assert mom_kappa(np.array([0.0, 3.0]), np.array([1.0, 1.0]), np.zeros(2)) == KAPPA_MAX
+def test_nb_loglik_matches_scipy_negative_binomial():
+    obs, E, p, k = np.array([0.0, 2.0, 7.0]), np.array([0.3, 1.5, 2.0]), np.array([0.8, 1.2, 2.5]), 1.7
+    # O ~ NB(n = k p, success prob k / (k + E)); nb_loglik drops the kappa-free -log O! term.
+    ref = nbinom.logpmf(obs, k * p, k / (k + E)) + gammaln(obs + 1)
+    assert nb_loglik(k, obs, E, p) == pytest.approx(float(ref.sum()), rel=1e-12)
+
+
+def test_ml_kappa_is_an_interior_maximum_on_overdispersed_counts():
+    obs, E, p = np.array([0.0, 9.0, 0.0, 6.0, 1.0]), np.full(5, 2.0), np.full(5, 1.6)
+    k = ml_kappa(obs, E, p)
+    assert 1e-3 < k < KAPPA_MAX
+    for f in (0.97, 1.03):
+        assert nb_loglik(k, obs, E, p) >= nb_loglik(k * f, obs, E, p)
+
+
+def test_ml_kappa_returns_the_finite_bound_when_homogeneity_is_supported():
+    E, p = np.array([4.0, 4.0]), np.array([1.0, 1.0])
+    assert ml_kappa(np.array([4.0, 4.0]), E, p) == KAPPA_MAX == 1e4
+    assert ml_kappa(np.array([3.0]), np.array([1.0]), np.array([1.0])) == KAPPA_MAX  # one group
+
+
+def test_ml_kappa_zero_parent_raises():
+    with pytest.raises(ValueError, match="positive"):
+        ml_kappa(np.array([0.0, 3.0]), np.array([1.0, 1.0]), np.zeros(2))
+
+
+@pytest.mark.parametrize("n_groups", [100, 150])
+def test_ml_kappa_rarely_hits_the_bound_when_true_kappa_is_finite(n_groups):
+    # Sparse exposure as in the catalog: most groups expect well under one incident. MoM called these
+    # homogeneous 40-70% of the time; the marginal likelihood must recover a finite kappa.
+    hits = mom_hits = 0
+    for seed in range(20):
+        rng = np.random.default_rng(seed)
+        E = rng.lognormal(-3.0, 2.0, n_groups)
+        obs = rng.poisson(E * rng.gamma(1.0, 1.0, n_groups)).astype(float)
+        p = np.full(n_groups, obs.sum() / E.sum())
+        hits += ml_kappa(obs, E, p) >= KAPPA_MAX
+        mom_hits += _mom_kappa(obs, E, p) >= KAPPA_MAX
+    assert hits <= 4 < mom_hits
 
 
 def test_poisson_gamma_posterior_matches_hand_value():
@@ -28,7 +70,8 @@ def test_poisson_gamma_posterior_matches_hand_value():
     fit = fit_eb(cells, y, mu0, np.full(len(cells.area_id), -1), blend=False)
     post = fit.cell_posterior(cells, y, mu0, np.full(len(cells.area_id), -1))
     pi = post.prior_mean[0]
-    k = max(fit.kappa_cell, MIN_PRIOR_SHAPE / pi)
+    _, v, _, _ = fit.prior(cells, np.full(len(cells.area_id), -1))
+    k = max(1.0 / (1.0 / fit.kappa_cell + v[0] / pi), MIN_PRIOR_SHAPE / pi)
     assert post.post.mean[0] == pytest.approx((3.0 + k * pi) / (0.1 + k))
 
 
@@ -83,7 +126,9 @@ def test_non_finite_or_negative_inputs_raise(bad, which):
 def test_parent_must_be_constant_within_group():
     keys = np.array([0, 0, 1, 1], dtype=np.int64)
     with pytest.raises(ValueError, match="varies within"):
-        _level(keys, np.ones(4), np.ones(4), np.array([1.0, 2.0, 1.0, 1.0]))
+        _level(keys, np.ones(4), np.ones(4), np.array([1.0, 2.0, 1.0, 1.0]), np.zeros(4))
+    with pytest.raises(ValueError, match="varies within"):
+        _level(keys, np.ones(4), np.ones(4), np.ones(4), np.array([0.0, 0.0, 0.1, 0.2]))
 
 
 def test_floor_binds_on_kappa_and_keeps_prior_mean_at_parent():
@@ -91,7 +136,7 @@ def test_floor_binds_on_kappa_and_keeps_prior_mean_at_parent():
     keys = np.array([0, 0, 1, 1, 2], dtype=np.int64)
     y = np.array([0.0, 0.0, 40.0, 0.0, 0.0])
     mu0 = np.array([1.0, 1.0, 1.0, 1.0, 0.0])
-    level, kappa = _level(keys, y, mu0, np.full(5, 1e-3))
+    level, kappa = _level(keys, y, mu0, np.full(5, 1e-3), np.zeros(5))
     assert kappa * 1e-3 < MIN_PRIOR_SHAPE
     _, E, shape, rate = level[2]
     assert E == 0.0 and shape == pytest.approx(MIN_PRIOR_SHAPE) and shape / rate == pytest.approx(1e-3)
@@ -158,12 +203,12 @@ def test_level_groups_match_brute_force_on_sparse_keys():
     y = rng.poisson(1.0, 500).astype(float)
     mu0 = rng.uniform(0.1, 2.0, 500)
     parent = np.full(500, 0.8)
-    level, kappa = _level(keys, y, mu0, parent)
+    level, kappa = _level(keys, y, mu0, parent, np.full(500, 0.01))
     assert set(level) == set(key_set.tolist())
     for k in key_set:
         m = keys == k
         obs, E, shape, rate = level[int(k)]
-        kp = max(kappa, MIN_PRIOR_SHAPE / 0.8)
+        kp = max(1.0 / (1.0 / kappa + 0.01 / 0.8), MIN_PRIOR_SHAPE / 0.8)
         assert obs == pytest.approx(y[m].sum()) and E == pytest.approx(mu0[m].sum())
         assert shape == pytest.approx(obs + kp * 0.8) and rate == pytest.approx(E + kp)
 
@@ -175,7 +220,7 @@ def test_level_is_linear_in_cells_at_catalog_scale():
     y = rng.poisson(0.05, n).astype(float)
     mu0 = rng.uniform(0.01, 0.1, n)
     t0 = time.perf_counter()
-    level, _ = _level(keys, y, mu0, np.full(n, 1.0))
+    level, _ = _level(keys, y, mu0, np.full(n, 1.0), np.zeros(n))
     assert time.perf_counter() - t0 < 5.0
     assert len(level) == np.unique(keys).size
 
@@ -204,28 +249,31 @@ def test_fit_and_posterior_at_catalog_scale():
 
 def _reference_prior(fit: EbFit, cells, arch_of_area):
     """Straightforward per-cell walk of the brief's dict-based algorithm."""
-    def theta(level, key, parent, kappa):
+    def theta(level, key, sh, rt, kappa):
         if key in level:
             return level[key][2], level[key][3]
-        kp = max(kappa, MIN_PRIOR_SHAPE / parent)
-        return kp * parent, kp
+        m, v = sh / rt, sh / rt ** 2
+        kp = max(1.0 / (1.0 / kappa + v / m), MIN_PRIOR_SHAPE / m)
+        return kp * m, kp
 
-    prior, bgeo = np.empty(cells.n), np.empty(cells.n)
+    nat = (fit.national ** 2 / fit.national_var, fit.national / fit.national_var)  # as (shape, rate)
+    prior, var, bgeo = np.empty(cells.n), np.empty(cells.n), np.empty(cells.n)
     for i in range(cells.n):
         a = int(cells.area_idx[i])
-        s_sh, s_rt = theta(fit.state, int(cells.state_idx[a]), fit.national, fit.kappa_state)
-        r_sh, r_rt = theta(fit.region, int(cells.region_idx[a]), s_sh / s_rt, fit.kappa_region)
-        a_sh, a_rt = theta(fit.area, a, r_sh / r_rt, fit.kappa_area)
+        s_sh, s_rt = theta(fit.state, int(cells.state_idx[a]), *nat, fit.kappa_state)
+        r_sh, r_rt = theta(fit.region, int(cells.region_idx[a]), s_sh, s_rt, fit.kappa_region)
+        a_sh, a_rt = theta(fit.area, a, r_sh, r_rt, fit.kappa_area)
         wg = a_rt * a_rt / a_sh
         k = int(arch_of_area[a])
         if fit.blend and k >= 0:
-            k_sh, k_rt = theta(fit.arch, k * len(TYPE_GROUPS) + int(cells.g[i]), fit.national, fit.kappa_arch)
+            k_sh, k_rt = theta(fit.arch, k * len(TYPE_GROUPS) + int(cells.g[i]), *nat, fit.kappa_arch)
             wa = k_rt * k_rt / k_sh
         else:
             k_sh, k_rt, wa = 1.0, 1.0, 0.0
         prior[i] = (wg * a_sh / a_rt + wa * k_sh / k_rt) / (wg + wa)
+        var[i] = 1.0 / (wg + wa)
         bgeo[i] = wg / (wg + wa)
-    return prior, bgeo
+    return prior, var, bgeo
 
 
 @pytest.mark.parametrize("blend", [True, False])
@@ -239,10 +287,10 @@ def test_vectorized_posterior_matches_per_cell_reference(blend):
     train = cells.area_idx != 2                        # area 2 held out: absent keys inherit
     fit = fit_eb(cells, np.where(train, y, 0.0), np.where(train, mu0, 0.0), arch, blend=blend)
     post = fit.cell_posterior(cells, np.where(train, y, 0.0), mu0, arch)
-    prior, bgeo = _reference_prior(fit, cells, arch)
+    prior, var, bgeo = _reference_prior(fit, cells, arch)
     np.testing.assert_allclose(post.prior_mean, prior, rtol=1e-12)
     np.testing.assert_allclose(post.blend_geo, bgeo, rtol=1e-12)
-    kc = np.maximum(fit.kappa_cell, MIN_PRIOR_SHAPE / prior)
+    kc = np.maximum(1.0 / (1.0 / fit.kappa_cell + var / prior), MIN_PRIOR_SHAPE / prior)
     np.testing.assert_allclose(post.post.shape, np.where(train, y, 0.0) + kc * prior, rtol=1e-12)
     np.testing.assert_allclose(post.post.rate, mu0 + kc, rtol=1e-12)
 
@@ -262,3 +310,62 @@ def test_posteriors_finite_positive_and_carry_y_own():
         assert np.all(post.post.shape >= MIN_PRIOR_SHAPE * (1 - 1e-12))
         for name, arr in post.chain.items():
             assert np.all(np.isfinite(arr)), name
+
+
+def test_held_out_area_inherits_parent_mean_and_carries_parent_variance():
+    cells = synthetic_cells(seed=12, n_areas=60)
+    rng = np.random.default_rng(0)
+    mu0 = rng.lognormal(-3, 1.5, cells.n)
+    y = rng.poisson(mu0 * rng.gamma(1.0, 1.0, cells.n)).astype(float)
+    arch = np.zeros(len(cells.area_id), dtype=np.int64)
+    train = cells.area_idx != 0
+    fit = fit_eb(cells, np.where(train, y, 0.0), np.where(train, mu0, 0.0), arch, blend=False)
+    r_sh, r_rt = fit.region[int(cells.region_idx[0])][2:]
+    m, v = r_sh / r_rt, r_sh / r_rt ** 2
+    _, E, shape, rate = fit.area[0]
+    assert E == 0.0 and shape / rate == pytest.approx(m, rel=1e-12)
+    assert 1.0 / (1.0 / fit.kappa_area + v / m) > MIN_PRIOR_SHAPE / m      # floor not binding here
+    assert shape / rate ** 2 == pytest.approx(m / fit.kappa_area + v, rel=1e-9)
+    post = fit.cell_posterior(cells, np.zeros(cells.n), mu0, arch)
+    held = cells.area_idx == 0
+    np.testing.assert_allclose(post.prior_mean[held], m, rtol=1e-12)
+    assert np.all(post.post.shape[held] / post.post.rate[held] ** 2 > v * 0.5)
+
+
+def _five_incident_fit():
+    cells = synthetic_cells(seed=12, n_areas=60)
+    rng = np.random.default_rng(0)
+    mu0 = rng.lognormal(-3, 1.5, cells.n)
+    y = rng.poisson(mu0 * rng.gamma(1.0, 1.0, cells.n)).astype(float)
+    arch = (np.arange(len(cells.area_id)) % 3).astype(np.int64)
+    i = int(np.flatnonzero(cells.area_idx == 5)[0])
+    y[i] = 5.0
+    return cells, y, mu0, arch, i
+
+
+def test_route_with_five_local_incidents_moves_well_off_its_area_rate():
+    cells, y, mu0, arch, i = _five_incident_fit()
+    fit = fit_eb(cells, y, mu0, arch)
+    post = fit.cell_posterior(cells, y, mu0, arch)
+    area_rate = fit.area[5][2] / fit.area[5][3]
+    assert fit.kappa_cell < KAPPA_MAX
+    assert post.post.mean[i] > 1.5 * area_rate and post.post.mean[i] > 2.0 * post.prior_mean[i]
+
+
+def test_zero_incident_interval_narrows_as_parent_exposure_grows():
+    # Every other cell sits exactly at one rate, so all kappas hit the bound: the target's width then
+    # comes only from how well its area/archetype parents are measured, and must shrink with exposure.
+    cells = synthetic_cells(seed=13, n_areas=40)
+    arch = (np.arange(len(cells.area_id)) % 3).astype(np.int64)
+    i = int(np.flatnonzero(cells.area_idx == 3)[0])
+    widths = []
+    for f in (0.25, 1.0, 4.0, 16.0, 64.0):
+        mu0 = np.full(cells.n, 0.05 * f)
+        y = 0.8 * mu0
+        mu0[i], y[i] = 0.05, 0.0
+        fit = fit_eb(cells, y, mu0, arch)
+        post = fit.cell_posterior(cells, y, mu0, arch)
+        lo, hi = gamma_dist.ppf([0.05, 0.95], post.post.shape[i], scale=1.0 / post.post.rate[i])
+        widths.append(hi / lo)
+    assert all(a > b for a, b in zip(widths, widths[1:]))
+    assert widths[0] > 1.5                                   # sparse parents: a genuinely wide range

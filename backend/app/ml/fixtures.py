@@ -132,7 +132,7 @@ def fitted_toy(*, local_incidents: float, archetype_incidents: int, density: int
     y[target_cell] = local_incidents
     for k in range(archetype_incidents):
         y[cells.index[(target + 1 + k, gi, 7)]] = 1.0
-    # Clustered, not even: MoM sees extra-Poisson variance and keeps every kappa below KAPPA_MAX.
+    # Clustered, not even, so the levels see extra-Poisson variance.
     for k in range(n_mates):
         for m in (1, 7):
             y[cells.index[(target + 1 + n_mates + k, gi, m)]] = BACKGROUND[k % len(BACKGROUND)]
@@ -212,9 +212,9 @@ def toy_bundle_and_row() -> tuple[Any, dict[str, Any]]:
 
 
 def _gamma(toy: FittedToy, th: Thresholds) -> tuple[Any, Any, Any]:
-    from app.ml.posterior import gamma_interval
+    from app.ml.posterior import interval90
 
-    return gamma_interval(toy.cp.post.shape, toy.cp.post.rate, th.phi)
+    return interval90(toy.cp.post.shape, toy.cp.post.rate, th.phi)
 
 
 def bundle_reference_terms(bundle: Any, row: dict[str, Any]) -> ReferenceTerms:
