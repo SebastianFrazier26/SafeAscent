@@ -3,9 +3,9 @@ from datetime import date, timedelta
 
 import pytest
 
-from app.pipelines.exposure_components import keys, route_density, scope, season, season_window
+from app.pipelines.exposure_components import keys, mp_ticks, route_density, scope, season, season_window
 from app.pipelines.exposure_math import ICE_WINDOW, alpine_day, ice_day, rock_day
-from tests.pgtest import migrated_db, requires_pg, run_on_conn
+from tests.pgtest import migrated_db, requires_pg, run_on_conn, run_sql
 
 TODAY = date(2026, 10, 15)
 CRAG, ICE_AREA, BARE = 900000110, 900000120, 900000130
@@ -361,3 +361,72 @@ def test_alpine_unknown_days_are_not_counted_and_a_thin_month_is_missing():
     assert got[(ALPINE, "alpine", 2)].to_json() == {"value": None, "missing": True, "reason": "insufficient_history",
                                                     "n_days": 10.0}
     assert got[(ALPINE, "alpine", 3)].get("n_days") == 0.0
+
+
+# Crag: 900000001 complete through 2026-08-31, 900000002 scraped (incomplete), 900000003 never scraped.
+# Ice: 900000004 complete through 2026-01-31.
+TICKS = """
+INSERT INTO internal.route_tick_scrapes (mp_route_id, source, scraped_at, complete, complete_through, total_ticks) VALUES
+  (900000001, 'mp_scrape', '2026-09-10T00:00:00+00', true, DATE '2026-08-31', 18),
+  (900000002, 'mp_scrape', '2026-09-10T00:00:00+00', false, NULL, NULL),
+  (900000004, 'mp_scrape', '2026-02-10T00:00:00+00', true, DATE '2026-01-31', 6);
+INSERT INTO internal.mp_tick_aggregates (mp_route_id, period, style, tick_count) VALUES
+  (900000001, '2021-07', 'lead', 1), (900000001, '2025-07', 'lead', 4), (900000001, '2025-07', 'follow', 5),
+  (900000001, '2026-07', 'lead', 3), (900000001, '2026-08', 'lead', 2), (900000001, '2026-09', 'lead', 7),
+  (900000001, '2021-08', 'lead', 3),
+  (900000002, '2025-07', 'lead', 50),
+  (900000004, '2021-02', 'lead', 5), (900000004, '2025-01', 'lead', 4), (900000004, '2026-01', 'lead', 2);
+"""
+
+
+def _ticks(name, *, enabled=True, cutoff=TODAY):
+    async def go(conn):
+        return await mp_ticks(conn, await scope(conn), enabled=enabled, cutoff=cutoff)
+
+    return run_on_conn(name, go)
+
+
+@requires_pg
+def test_partial_coverage_is_raw_and_counted():
+    with migrated_db(seed_sql=SEED + TICKS) as name:
+        got = _ticks(name)
+    july = got[(CRAG, "trad", 7)].to_json()
+    # 900000001's window is 2021-09 .. 2026-08: July occurs as 2022..2026 -> (4 + 5 + 3) / 5; 2021-07 is outside.
+    assert july == {"value": 12 / 5, "missing": False, "coverage": 1 / 3, "n_complete": 1.0, "n_scraped": 1.0,
+                    "n_missing": 1.0, "per_route_mean": 12 / 5, "window_months": 60.0}
+    assert got[(CRAG, "trad", 8)].value == 2 / 5
+    assert got[(CRAG, "trad", 1)].value == 0.0
+
+
+@requires_pg
+def test_no_complete_route_is_missing_not_zero():
+    with migrated_db(seed_sql=SEED + TICKS) as name:
+        got = _ticks(name)
+    assert got[(BARE, "sport", 7)].to_json() == {"value": None, "missing": True, "reason": "no_complete_routes",
+                                                 "coverage": 0.0, "n_complete": 0.0, "n_scraped": 0.0,
+                                                 "n_missing": 1.0}
+
+
+@requires_pg
+def test_cutoff_and_complete_through_bound_the_window():
+    with migrated_db(seed_sql=SEED + TICKS) as name:
+        mid = _ticks(name, cutoff=date(2026, 7, 20))
+        ice = _ticks(name)
+    # Cutoff 2026-07-20: the last complete month before it is 2026-06, so the window is 2021-07..2026-06.
+    assert mid[(CRAG, "trad", 7)].value == (1 + 4 + 5) / 5
+    assert mid[(CRAG, "trad", 8)].value == 3 / 5
+    # The ice route's window ends at its complete_through (2026-01), not at today's cutoff.
+    assert ice[(ICE_AREA, "ice", 1)].value == (4 + 2) / 5 and ice[(ICE_AREA, "ice", 1)].get("coverage") == 1.0
+    # So its window starts at 2021-02; a window anchored on the cutoff (2021-10..2026-09) would drop
+    # those ticks and divide 52 observed months by five years.
+    assert ice[(ICE_AREA, "ice", 2)].value == 5 / 5
+
+
+@requires_pg
+def test_disabled_and_dropped_are_missing_with_no_coverage():
+    with migrated_db(seed_sql=SEED + TICKS) as name:
+        off = _ticks(name, enabled=False)
+        run_sql(name, "DROP VIEW internal.route_tick_months")
+        gone = _ticks(name)
+    assert off[(CRAG, "trad", 7)].to_json() == {"value": None, "missing": True, "reason": "disabled"}
+    assert gone[(CRAG, "trad", 7)].to_json() == {"value": None, "missing": True, "reason": "table_dropped"}

@@ -4,6 +4,7 @@ scope, so assembly fails loudly on a gap instead of filling one."""
 
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import date
 
 from sqlalchemy import text
@@ -11,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.pipelines.exposure_math import (
     ICE_MIN_FROZEN, ICE_WINDOW, MIN_SEASON_DAYS, MONTHS, ROCK_MAX_PRECIP, ROCK_TMAX_HI, ROCK_TMAX_LO,
-    RULE_BY_GROUP, SEASON_YEARS, TYPE_GROUPS, Component,
+    RULE_BY_GROUP, SEASON_YEARS, TICK_WINDOW_MONTHS, TYPE_GROUPS, Component, tick_component,
 )
 
 Key = tuple[int, str, int]
@@ -133,3 +134,52 @@ def _season_cell(
     if n == 0 or share is None or n < MIN_SEASON_DAYS:
         return Component.absent("insufficient_history", n_days=n)
     return Component.present(share, n_days=n)
+
+
+STATUS_SQL = text(
+    "SELECT s.area_id, s.type_group, c.tick_status, count(*) FROM scorable_routes s "
+    "JOIN internal.route_tick_coverage c ON c.route_id = s.route_id GROUP BY 1, 2, 3")
+# Each complete route's window is the TICK_WINDOW_MONTHS months ending at the last month that is both
+# within complete_through and fully before the cutoff (DP3); route_tick_months already hides every
+# month after complete_through, so an absent row inside the window is a real zero.
+WINDOW_TICKS_SQL = text(f"""
+WITH lim AS (
+  SELECT s.route_id, s.area_id, s.type_group,
+         LEAST(c.complete_through, (date_trunc('month', CAST(:cutoff AS date)) - interval '1 day')::date) AS last_day
+  FROM scorable_routes s JOIN internal.route_tick_coverage c ON c.route_id = s.route_id
+  WHERE c.tick_status = 'complete'
+), m AS (
+  SELECT route_id, to_date(period || '-01', 'YYYY-MM-DD') AS first_day, tick_count FROM internal.route_tick_months
+)
+SELECT l.area_id, l.type_group, extract(month FROM m.first_day)::int AS month, sum(m.tick_count) AS ticks
+FROM lim l JOIN m ON m.route_id = l.route_id
+WHERE m.first_day <= l.last_day
+  AND m.first_day > (date_trunc('month', l.last_day) - interval '{TICK_WINDOW_MONTHS} months')::date
+GROUP BY 1, 2, 3
+""")
+
+
+async def _exists(conn: AsyncConnection, name: str) -> bool:
+    return (await conn.execute(text("SELECT to_regclass(:n) IS NOT NULL"), {"n": name})).scalar() is True
+
+
+async def mp_ticks(conn: AsyncConnection, scope_: Scope, *, enabled: bool, cutoff: date) -> dict[Key, Component]:
+    if not enabled:
+        return {k: Component.absent("disabled") for k in keys(scope_)}
+    if not (await _exists(conn, "internal.route_tick_months") and await _exists(conn, "internal.route_tick_coverage")):
+        return {k: Component.absent("table_dropped") for k in keys(scope_)}
+    statuses: dict[tuple[int, str], dict[str, int]] = defaultdict(dict)
+    for a, tg, status, n in (await conn.execute(STATUS_SQL)).all():
+        statuses[(int(a), str(tg))][str(status)] = int(n)
+    sums = {(int(a), str(tg), int(m)): float(n)
+            for a, tg, m, n in (await conn.execute(WINDOW_TICKS_SQL, {"cutoff": cutoff})).all()}
+    out: dict[Key, Component] = {}
+    for (a, tg), n_routes in scope_.items():
+        st = statuses[(a, tg)]
+        # A cell with no complete route gets missing from tick_component; the 0.0 default is read
+        # only when n_complete >= 1, where an absent sum is the seam's measured zero.
+        for m in MONTHS:
+            out[(a, tg, m)] = tick_component(
+                n_routes=n_routes, n_complete=st.get("complete", 0), n_scraped=st.get("scraped", 0),
+                n_missing=st.get("missing", 0), window_ticks=sums.get((a, tg, m), 0.0))
+    return out
