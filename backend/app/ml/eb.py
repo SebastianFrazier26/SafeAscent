@@ -40,12 +40,12 @@ class CellPost:
     chain: dict[str, F64] = field(default_factory=dict)
 
 
-def mom_kappa(O: F64, E: F64, parent: F64) -> float:
+def mom_kappa(O: F64, E: F64, parent: F64) -> float:  # noqa: E741 (O is the interface name)
     ok = E > 0
     if ok.sum() < 2:
         return KAPPA_MAX
-    O, E, parent = O[ok], E[ok], parent[ok]
-    s2 = float(np.sum(E * (O / E - parent) ** 2) / E.sum())
+    obs, E, parent = O[ok], E[ok], parent[ok]
+    s2 = float(np.sum(E * (obs / E - parent) ** 2) / E.sum())
     pbar = float(np.sum(E * parent) / E.sum())
     tau2 = s2 - pbar / float(E.mean())
     # pbar <= 0 only when every parent rate is 0 (no events anywhere); kappa = 0 there would give
@@ -55,9 +55,20 @@ def mom_kappa(O: F64, E: F64, parent: F64) -> float:
     return min(pbar / tau2, KAPPA_MAX)
 
 
-def _prior_shape(kappa: float, parent: F64) -> F64:
-    out: F64 = np.maximum(kappa * parent, MIN_PRIOR_SHAPE)
+def _floored_kappa(kappa: float, parent: F64) -> F64:
+    """Per-group prior strength. Flooring kappa (not the shape) keeps the prior mean exactly at the
+    parent while guaranteeing shape >= MIN_PRIOR_SHAPE; a shape floor would inflate small parents."""
+    if not np.all(parent > 0):
+        raise ValueError("EB parent rates must be positive")
+    out: F64 = np.maximum(kappa, MIN_PRIOR_SHAPE / parent)
     return out
+
+
+def _check_counts(name: str, x: F64, n: int) -> None:
+    if x.shape != (n,):
+        raise ValueError(f"{name} has shape {x.shape}, expected ({n},)")
+    if not np.all(np.isfinite(x)) or np.any(x < 0):
+        raise ValueError(f"{name} must be finite and non-negative")
 
 
 def _level(keys: I64, y: F64, mu0: F64, parent: F64) -> tuple[Level, float]:
@@ -65,14 +76,17 @@ def _level(keys: I64, y: F64, mu0: F64, parent: F64) -> tuple[Level, float]:
     pre-flight F29: O(n) via unique + bincount; a per-key mask is O(K*n), hours at catalog scale."""
     ok = keys >= 0
     uniq, first, inv = np.unique(keys[ok], return_index=True, return_inverse=True)
-    O = np.bincount(inv, weights=y[ok], minlength=uniq.size).astype(np.float64)
+    obs = np.bincount(inv, weights=y[ok], minlength=uniq.size).astype(np.float64)
     E = np.bincount(inv, weights=mu0[ok], minlength=uniq.size).astype(np.float64)
     P: F64 = parent[ok][first]
-    kappa = mom_kappa(O, E, P)
-    shape = O + _prior_shape(kappa, P)
-    rate = E + kappa
-    return ({int(uniq[i]): (float(O[i]), float(E[i]), float(shape[i]), float(rate[i])) for i in range(uniq.size)},
-            kappa)
+    if not np.allclose(P[inv], parent[ok], rtol=1e-12, atol=0.0):
+        raise ValueError("parent rate varies within an EB group")
+    kappa = mom_kappa(obs, E, P)
+    kp = _floored_kappa(kappa, P)
+    shape = obs + kp * P
+    rate = E + kp
+    return ({int(uniq[i]): (float(obs[i]), float(E[i]), float(shape[i]), float(rate[i]))
+             for i in range(uniq.size)}, kappa)
 
 
 @dataclass(frozen=True)
@@ -102,10 +116,11 @@ def _ratio(num: F64, den: F64) -> F64:
 
 
 def _theta(table: _Table, q: I64, parent: F64, kappa: float) -> tuple[F64, F64, F64, F64]:
-    """(shape, rate, O, E) per query; an absent key inherits its parent's prior."""
+    """(shape, rate, O, E) per query; an absent key inherits its parent's prior, mean = parent."""
     found, rows = table.lookup(q)
-    shape = np.where(found, rows[:, 2], _prior_shape(kappa, parent))
-    rate = np.where(found, rows[:, 3], kappa)
+    kp = _floored_kappa(kappa, parent)
+    shape = np.where(found, rows[:, 2], kp * parent)
+    rate = np.where(found, rows[:, 3], kp)
     return shape, rate, rows[:, 0], rows[:, 1]
 
 
@@ -145,18 +160,21 @@ class EbFit:
         wa = np.where(use_arch, k_rt * k_rt / k_sh, 0.0)
         prior = (wg * a_sh / a_rt + wa * k_sh / k_rt) / (wg + wa)
         chain = {
-            "omega_area": a_E / (a_E + self.kappa_area), "O_area": a_O,
-            "omega_region": r_E / (r_E + self.kappa_region), "O_region": r_O,
-            "omega_state": s_E / (s_E + self.kappa_state), "O_state": s_O,
-            "omega_arch": k_E / (k_E + self.kappa_arch), "O_arch": k_O,
+            "omega_area": a_E / a_rt, "O_area": a_O,
+            "omega_region": r_E / r_rt, "O_region": r_O,
+            "omega_state": s_E / s_rt, "O_state": s_O,
+            "omega_arch": np.where(use_arch, k_E / k_rt, 0.0), "O_arch": np.where(use_arch, k_O, 0.0),
         }
         return prior, wg / (wg + wa), chain
 
     def cell_posterior(self, cells: CellData, y_own: F64, mu0: F64, arch_of_area: I64) -> CellPost:
+        _check_counts("y_own", y_own, cells.n)
+        _check_counts("mu0", mu0, cells.n)
         prior, bgeo, chain = self.prior(cells, arch_of_area)
-        shape = np.asarray(y_own + _prior_shape(self.kappa_cell, prior), dtype=np.float64)
-        rate = np.asarray(mu0 + self.kappa_cell, dtype=np.float64)
-        return CellPost(GammaPost(shape, rate), prior, mu0 / (mu0 + self.kappa_cell), bgeo, y_own, chain)
+        kp = _floored_kappa(self.kappa_cell, prior)
+        shape = np.asarray(y_own + kp * prior, dtype=np.float64)
+        rate = np.asarray(mu0 + kp, dtype=np.float64)
+        return CellPost(GammaPost(shape, rate), prior, _ratio(mu0, rate), bgeo, y_own, chain)
 
 
 def _mean_of(level: Level, keys: I64, fallback: F64) -> F64:
@@ -166,7 +184,12 @@ def _mean_of(level: Level, keys: I64, fallback: F64) -> F64:
 
 
 def fit_eb(cells: CellData, y: F64, mu0: F64, arch_of_area: I64, *, blend: bool = True) -> EbFit:
-    national = float(y.sum() / mu0.sum()) if mu0.sum() > 0 else 1.0
+    _check_counts("y", y, cells.n)
+    _check_counts("mu0", mu0, cells.n)
+    if not mu0.sum() > 0 or not y.sum() > 0:
+        # A zero national ratio would make every prior 0, i.e. "safe" with no evidence; refuse.
+        raise ValueError("fit_eb needs positive total exposure and at least one event")
+    national = float(y.sum() / mu0.sum())
     a = cells.area_idx.astype(np.int64)
     st, rg = cells.state_idx[a], cells.region_idx[a]
     nat = np.full(a.size, national)
