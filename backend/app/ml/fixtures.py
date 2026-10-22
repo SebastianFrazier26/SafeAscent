@@ -490,3 +490,58 @@ def fold_results_toy(*, gain_by_band: tuple[float, ...] | None = None, calibrate
     dist = np.zeros(shape.size)
     res = toy_fold_result(shape, rate, scale, obs, dist)
     return [res], [res], dist
+
+
+def challenger_metrics(*, worse: bool = False, break_: str | None = None) -> dict[str, Any]:
+    """A metrics dict in the shape train.py writes to model.registry.metrics (promote.evaluate_gate).
+    worse lowers the held-out comparison metrics so the default dict beats it; break_ names the one
+    gate component to fail, leaving every other component passing."""
+    ls, top = (-0.60, 0.30) if worse else (-0.50, 0.40)
+    zero_oe = [0.4, 0.5, 0.6] if break_ == "g2_zero_history" else [0.85, 1.05, 1.3]
+    m: dict[str, Any] = {
+        "main": {
+            "log_score": -0.50, "top10": top,
+            "calibration": {"scheme": "decile", "n_pass": 7 if break_ == "calibration" else 9,
+                            "passed": break_ != "calibration"},
+            "zero_history": {"oe": zero_oe},
+            "by_kind": {k: {"log_score": ls, "top10": top} for k in ("spatial", "rolling")},
+        },
+        "geo_only": {"log_score": -0.55, "calibration": {"scheme": "decile",
+                                                         "n_pass": 10 if break_ == "g1_pooling" else 6},
+                     "zero_history": {"oe": [0.5, 0.7, 0.9]}},
+        "permuted": {"log_score": -0.52 if break_ == "g3_negative_control" else -0.545},
+        "sensitivity": {},
+        "prospective": None, "prospective_reason": "no_test_incidents", "prospective_kernel": None,
+        "recent": {},
+        "thresholds": ({"conf_selected": False, "conf_high": None, "conf_medium": None, "phi": 1.0}
+                       if break_ == "g4_confidence" else
+                       {"conf_selected": True, "conf_high": 3.0, "conf_medium": 8.0, "phi": 1.0}),
+        "stability": {"method": "state_group_subsample", "median_spearman": 0.9,
+                      "median_band_churn": 0.2 if break_ == "stability" else 0.05, "n_subsamples": 20,
+                      "n_failed": 0, "passed": break_ != "stability"},
+        "capacity": {"wall_hours": 6.0 if break_ == "capacity" else 1.0, "peak_rss_gb": 4.0, "bundle_mb": 40.0,
+                     "curve": None},
+        "vs_active": {k: {"log_score_ci": [0.02, 0.05, 0.08]} for k in ("spatial", "rolling")},
+    }
+    return m
+
+
+def rows_for_diff(*, changed_share: float, coverage_shift: float = 0.0,
+                  n: int = 1000) -> tuple[list[tuple[int, str, str, float | None]], list[tuple[int, str, str, float | None]]]:
+    """(challenger_rows, active_rows) over n synthetic routes. changed_share of them move one band up
+    (red wraps to green); the rest move 1 point inside their band. coverage_shift adds challenger-only
+    insufficient routes so challenger coverage drops by just over that share, without touching any
+    compared route's band."""
+    centres = (12.5, 37.5, 62.5, 87.5)
+    states = tuple(STATES)
+    n_changed = round(changed_share * n)
+    active: list[tuple[int, str, str, float | None]] = []
+    challenger: list[tuple[int, str, str, float | None]] = []
+    for i in range(n):
+        rid, g, st = SYNTHETIC_ID_FLOOR + i, TYPE_GROUPS[i % len(TYPE_GROUPS)], states[i % len(states)]
+        b = i % len(centres)
+        active.append((rid, g, st, centres[b]))
+        challenger.append((rid, g, st, centres[(b + 1) % len(centres)] if i < n_changed else centres[b] + 1.0))
+    extra = int(np.ceil(n * coverage_shift / (1.0 - coverage_shift))) if coverage_shift > 0 else 0
+    challenger += [(SYNTHETIC_ID_FLOOR + n + j, TYPE_GROUPS[0], states[0], None) for j in range(extra)]
+    return challenger, active
