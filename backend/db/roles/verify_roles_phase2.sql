@@ -114,7 +114,10 @@ INSERT INTO ingest_privs VALUES
   ('internal.r10_unresolved', 'SELECT'), ('internal.r10_unresolved', 'INSERT'),
   ('internal.r10_unresolved', 'UPDATE'), ('internal.r10_unresolved', 'DELETE'),
   ('internal.r10_llm_calls', 'SELECT'), ('internal.r10_llm_calls', 'INSERT'),
-  ('internal.r10_llm_gates', 'SELECT'), ('internal.r10_llm_gates', 'INSERT');
+  ('internal.r10_llm_gates', 'SELECT'), ('internal.r10_llm_gates', 'INSERT'),
+  -- Exposure (0011): snapshots are cleared, reinserted and pruned, never updated.
+  ('internal.exposure_index', 'SELECT'), ('internal.exposure_index', 'INSERT'),
+  ('internal.exposure_index', 'DELETE');
 
 -- PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views, so extension-owned
 -- relations are skipped throughout, as verify_roles.sql does.
@@ -307,7 +310,7 @@ FROM unnest(ARRAY['public.canonical_areas', 'public.canonical_routes', 'public.s
                   'internal.route_tick_scrapes', 'internal.route_tick_coverage', 'internal.route_tick_months',
                   'public.feature_points', 'public.route_static_features', 'public.scoring_unit_features',
                   'public.accident_legacy_links', 'public.accident_route_links', 'internal.r10_unresolved',
-                  'internal.r10_llm_calls', 'internal.r10_llm_gates']) AS t
+                  'internal.r10_llm_calls', 'internal.r10_llm_gates', 'internal.exposure_index']) AS t
 UNION ALL
 SELECT g || ' can SELECT ' || r.tbl || ' and nothing else',
        has_table_privilege(g, r.oid, 'SELECT')

@@ -24,10 +24,11 @@ RunStatus = Literal["ok", "rejected", "failed"]
 # ValidationReport.summary() that starts including raw issues fails loudly instead of leaking.
 _ALLOWED_SUMMARY_KEYS = frozenset({"source", "rows_in", "accepted", "quarantined", "problems", "rule_version"})
 # Run-level numbers a job may add (hand-check agreement, rows left for owner review, R6's
-# sample size/correlation/gust percentile). A new metric joins this set in a reviewed change
-# rather than riding a raw jsonb UPDATE (G13).
+# sample size/correlation/gust percentile, the exposure snapshot's counts and Spearman). A new
+# metric joins this set in a reviewed change rather than riding a raw jsonb UPDATE (G13).
 _ALLOWED_METRICS = frozenset({
     "agreement", "review_pending", "n", "r_tmax", "p99_gust",
+    "cells", "null_points", "full_coverage_cells", "tick_coverage_mean", "spearman_point_ticks", "dropped_rows",
     # mp_tick_aggregates --scope rock: routes kept off the quarantine (exposure plan X-1, 2026-10-21).
     "routes_waiting_unknown_route", "routes_waiting_ice_mixed_route", "routes_waiting_route_incomplete",
 })
