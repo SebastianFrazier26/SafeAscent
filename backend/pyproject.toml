@@ -144,6 +144,7 @@ module = [
     "app.ml.db",
     "app.ml.cells",
     "app.ml.incidents",
+    "app.ml.dataset",
     "app.pipelines.accident_facts",
     "app.pipelines.dem",
     "app.pipelines.epqs",
