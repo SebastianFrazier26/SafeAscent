@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Phase 3: CV folds - 2026-10-22
+
+- `app.ml.folds`: 8 spatial folds (one per state group, exposure cutoff = production cutoff), rolling origins 2004/2008/2012/2016 with a 3-year test, and the prospective 2026-02-05..2026-07-03 fold. Half-open windows: test starts where training ends; exposure cutoff never exceeds `train_end`.
+
 ### Phase 3 PR 3-0: backtest window guard and model docs - 2026-10-22
 
 - The nightly `historical_predictions` purge now keeps 2026-02-05 to 2026-07-02, the prospective kernel backtest window (DP14); without this it would start deleting it on 2027-02-05. Guarded by `tests/test_backtest_window_kept.py`.
