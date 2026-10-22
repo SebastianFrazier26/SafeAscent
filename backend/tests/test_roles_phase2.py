@@ -36,6 +36,7 @@ from tests.test_migrations import (
     _denied,
     _fetch_row,
     _owner_db,
+    _owner_schema_model,
     _psql,
     _require_psql,
     _role_url,
@@ -363,6 +364,7 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
     for plaintext in PHASE2_PASSWORDS.values():
         assert plaintext not in rerun.stdout + rerun.stderr
 
+    _owner_schema_model(owner_url)
     migrator_url = _role_url(fresh_db, "migrator", PASSWORDS["migrator"])
     command.upgrade(_alembic_cfg_as(fresh_db, migrator_url), "head")
 
@@ -635,6 +637,7 @@ def test_after_relaunch_revoke_owner_regrants_set_and_migrator_runs_grants(role_
     created = _psql(owner_url, CREATE_PHASE2, PHASE2_PASSWORD_ENV)
     assert created.returncode == 0, created.stderr
 
+    _owner_schema_model(owner_url)
     migrator_url = _role_url(fresh_db, "migrator", PASSWORDS["migrator"])
     command.upgrade(_alembic_cfg_as(fresh_db, migrator_url), "head")
     granted = _psql(migrator_url, GRANTS_PHASE2, {})
@@ -656,6 +659,7 @@ def test_grants_phase2_narrows_a_preexisting_table_level_grant(role_cleanup, fre
     _as(owner_url, ANALYST_FIXTURE_SQL)
     assert _psql(owner_url, ROLES_DIR / "create_roles.sql", ROLE_PASSWORD_ENV).returncode == 0
     assert _psql(owner_url, CREATE_PHASE2, PHASE2_PASSWORD_ENV).returncode == 0
+    _owner_schema_model(owner_url)
     migrator_url = _role_url(fresh_db, "migrator", PASSWORDS["migrator"])
     command.upgrade(_alembic_cfg_as(fresh_db, migrator_url), "head")
 
@@ -683,6 +687,7 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
     _as(owner_url, ANALYST_FIXTURE_SQL)
     assert _psql(owner_url, ROLES_DIR / "create_roles.sql", ROLE_PASSWORD_ENV).returncode == 0
     assert _psql(owner_url, CREATE_PHASE2, PHASE2_PASSWORD_ENV).returncode == 0
+    _owner_schema_model(owner_url)
     migrator_url = _role_url(fresh_db, "migrator", PASSWORDS["migrator"])
     command.upgrade(_alembic_cfg_as(fresh_db, migrator_url), "head")
     assert _psql(owner_url, GRANTS_PHASE2, {}).returncode == 0

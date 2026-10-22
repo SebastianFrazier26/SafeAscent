@@ -273,6 +273,13 @@ def _owner_db(dbname: str) -> str:
     return _role_url(dbname, OWNER_ROLE, PASSWORDS["owner"])
 
 
+def _owner_schema_model(owner_url: str) -> None:
+    # Prod order (pre-flight F1): the owner creates schema model before migrator upgrades past 0012; it
+    # needs migrator to exist (AUTHORIZATION migrator) and the owner to hold SET on it.
+    made = _psql(owner_url, BACKEND / "db" / "owner" / "schema_model_phase3.sql", {})
+    assert made.returncode == 0, made.stdout + made.stderr
+
+
 def _alembic_cfg_as(dbname: str, url: str) -> Config:
     cfg = _alembic_cfg(dbname)
     cfg.set_main_option("sqlalchemy.url", url.replace("postgresql://", "postgresql+asyncpg://", 1))
@@ -364,6 +371,7 @@ def test_stamp_then_revoke_alembic_version_passes_verify(role_cleanup, fresh_db)
     phase2 = _psql(owner_url, ROLES_DIR / "create_roles_phase2.sql", PHASE2_PASSWORD_ENV)
     assert phase2.returncode == 0, phase2.stderr
 
+    _owner_schema_model(owner_url)
     migrator_url = _role_url(fresh_db, "migrator", PASSWORDS["migrator"])
     cfg = _alembic_cfg_as(fresh_db, migrator_url)
     command.stamp(cfg, "0001_baseline")

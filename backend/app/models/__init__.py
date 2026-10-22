@@ -8,6 +8,7 @@ from app.models import exposure  # noqa: F401  (exposure index, 0011)
 from app.models import features  # noqa: F401  (MP similarity features, 0009)
 from app.models import legacy  # noqa: F401  (registers FK targets on Base.metadata)
 from app.models import links  # noqa: F401  (R10 accident route links, 0010)
+from app.models import model_registry  # noqa: F401  (Phase 3, 0012)
 from app.models import pipeline  # noqa: F401  (Phase 2 bookkeeping tables)
 from app.models import reference  # noqa: F401  (Phase 2a reference and review tables)
 from app.models.accident import Accident
