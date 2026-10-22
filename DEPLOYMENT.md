@@ -51,6 +51,52 @@ Worker notes for the relaunch:
 - Neon's **direct** host with verify-full TLS, as for ingest: `app.ml.db.trainer_engine` refuses an unset URL, the `-pooler.` host, and any `ssl`/`sslmode` weaker than verify-full, and never puts the URL in an error message.
 - `HEALTHCHECKS_TRAIN_URL` (35-day dead-man check for the monthly training) goes in `backend/.env.trainer` too. `HEALTHCHECKS_SCORES_URL` is the daily stored-score heartbeat.
 
+## Phase 3 roles
+
+Training runs only from the owner's Mac (pre-flight F48); nothing here becomes a GitHub secret or Railway variable. All commands run from `backend/` after `. scripts/runbook_helpers.sh`, with `TARGET_HOST` set explicitly (a Neon branch host, or `production`). Rehearse on a fresh branch of production first; prod follows only after `gate_pass p3_0_branch`. The helpers are `MIG` (alembic as `migrator`), `OWNER_PSQL` (psql as the owner), `save_once`, `gate_pass` and `gate_require`; there is no `$OWNER_URL` or `$MIGRATOR_URL`. Agents never read `.env.trainer` or print any password.
+
+Owner steps, in order, on the target:
+
+1. `OWNER_PSQL -f db/owner/schema_model_phase3.sql` creates schema `model` (owned by `migrator`).
+2. `uv run python -m scripts.write_role_url --role trainer --env-file .env.trainer --generate-password` writes `TRAINER_DATABASE_URL` and `TRAINER_PASSWORD` into `.env.trainer` (0600, never printed).
+3. `( set -a; . ./.env.trainer; set +a; OWNER_PSQL -f db/roles/trainer_login_phase3.sql )` gives `trainer` LOGIN. The password reaches psql through `\getenv`, never argv. It refuses a rerun.
+
+Then the migration and grants (agent or owner):
+
+```bash
+MIG upgrade 0012_model_registry && save_once ../data/review/p3-0/current-after.txt MIG current
+OWNER_PSQL -f db/roles/grants_phase3.sql && OWNER_PSQL -f db/roles/verify_roles_phase3.sql \
+  && OWNER_PSQL -f db/roles/verify_roles_phase2.sql && gate_pass p3_0_branch
+```
+
+`grants_phase3.sql` does `SET ROLE migrator`, which the owner holds. A failed verify row stops the run and nothing reaches prod. Rerun `grants_phase3.sql` then `verify_roles_phase3.sql` after every Phase 3 migration.
+
+### PR 3-0 runbook
+
+Rehearsal on branch `p3-0-rehearsal` (a fresh branch of production):
+
+```bash
+cd backend && source scripts/runbook_helpers.sh
+export TARGET_HOST="$(branch_host p3-0-rehearsal)"
+save_once ../data/review/p3-0/heads.txt uv run alembic heads           # expect 0012_model_registry (head)
+save_once ../data/review/p3-0/current-before.txt MIG current            # expect 0011_exposure_index
+```
+
+STOP. The owner runs owner steps 1-3 above on the branch, then the migration-and-grants block ends in `gate_pass p3_0_branch`.
+
+Prod, only after the owner's go and the owner creates Neon branch `pre-p3-0` from `production` as the snapshot, then runs owner steps 1-3 on prod:
+
+```bash
+cd backend && source scripts/runbook_helpers.sh
+export TARGET_HOST=production
+gate_require p3_0_branch || return 1
+MIG upgrade 0012_model_registry && save_once ../data/review/p3-0/current-prod-after.txt MIG current
+OWNER_PSQL -f db/roles/grants_phase3.sql && OWNER_PSQL -f db/roles/verify_roles_phase3.sql \
+  && OWNER_PSQL -f db/roles/verify_roles_phase2.sql && gate_pass p3_0_prod
+```
+
+The owner then keeps `TRAINER_DATABASE_URL` (direct host, `ssl=verify-full`) in `backend/.env.trainer` only, and creates the healthchecks.io check `train` (period 35 days, grace 3 days), adding its URL as `HEALTHCHECKS_TRAIN_URL` to `.env.trainer`. This runbook has not been executed.
+
 ## Database, roles, and migrations
 
 - Alembic owns the schema (`backend/alembic/`). Revisions: `0001_baseline` (replays a sanitized schema-only dump; prod was **stamped** at it, never upgraded through it), `0002_drop_ascents_climbers`, `0003_hist_insufficient_data`, `0004_phase2a_foundation`. Treat every revision as forward-only.

@@ -906,6 +906,8 @@ async def _save_to_historical(
         result = await db.execute(text("""
             DELETE FROM historical_predictions
             WHERE prediction_date < CURRENT_DATE - INTERVAL '1 year'
+              -- 2026-10-15 (Phase 3 DP14): the prospective kernel backtest window (P3:381); keep until Phase 3 records it.
+              AND NOT (prediction_date BETWEEN DATE '2026-02-05' AND DATE '2026-07-02')
         """))
         await db.commit()
         if result.rowcount > 0:

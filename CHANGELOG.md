@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Phase 3 PR 3-0: backtest window guard and model docs - 2026-10-22
+
+- The nightly `historical_predictions` purge now keeps 2026-02-05 to 2026-07-02, the prospective kernel backtest window (DP14); without this it would start deleting it on 2027-02-05. Guarded by `tests/test_backtest_window_kept.py`.
+- Docs: `0012_model_registry` (schema `model`) and the `trainer` role (now LOGIN, allowlist grants) in `CLAUDE.md`, `data/DATABASE_STRUCTURE.md`; "Phase 3 roles" and the PR 3-0 branch-then-prod runbook in `DEPLOYMENT.md`. Training runs only from the owner's Mac, with no GitHub secret (F48). The runbook is not yet executed.
+
 ### Exposure index (PR X-2) — 2026-10-22
 
 - `internal.exposure_index` (migration `0011_exposure_index`): one row per area x scorable type group x month per snapshot `(as_of, data_cutoff)`, with the raw `proxy` components (`route_density`, `season_share`, `mp_ticks`), `tick_coverage`, and an unfitted `exposure_point` (route density x season share, no floor) with x/÷3 bounds. CHECKs enforce bounds order, values >= 0 and no NaN/inf. The downgrade refuses while the table holds rows. Grants: `ingest` SELECT/INSERT/DELETE (no UPDATE: a build clears and reinserts; `grants_phase2.sql` revokes any earlier UPDATE), `analyst` SELECT, `app` and `trainer` none.
