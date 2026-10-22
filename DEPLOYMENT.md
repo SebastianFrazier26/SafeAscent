@@ -13,7 +13,7 @@ One repo; each Railway service builds from its own root directory and config fil
 | Role | Railway service | Config | Start command | Notes |
 |---|---|---|---|---|
 | API | `backend` | `backend/railway.toml` | `uvicorn app.main:app --host 0.0.0.0 --port 8000` (Dockerfile default) | Healthcheck `/health`. Worker liveness is `/health/worker`, deliberately not the Railway healthcheck, so a worker outage doesn't take the API down |
-| Worker | `celery-worker` | `backend/railway-worker.toml` | `celery -A app.celery_app worker --loglevel=info --concurrency=2 -E` | One replica. Runs the nightly job and the beat heartbeat task |
+| Worker | `celery-worker` | `backend/railway-worker.toml` | `celery -A app.celery_app worker --loglevel=info --concurrency=2 -E` | One replica. Runs the scores heartbeat and the beat heartbeat task |
 | Beat | `beat` (**owner creates it**) | `backend/railway-beat.toml` | `celery -A app.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule` | Exactly one replica; a second double-schedules every task |
 | Catalog cycle | `catalog-cycle` (**owner creates it**) | `backend/railway-catalog-cycle.toml` | `python -m app.pipelines.catalog_cycle run` | Cron `0 9 2 1 *` (UTC), built from `backend/Dockerfile.jobs`. Auto-deploy off; deployed by hand after merges that touch `app/pipelines`. See Scheduled jobs |
 | Frontend | `frontend` | `frontend/railway.toml` | nginx serving the Vite build | Healthcheck `/health`. `MAINTENANCE_MODE` build arg, see below |
@@ -23,12 +23,11 @@ The API, worker, and beat all build from `backend/Dockerfile` (Python 3.12, uv, 
 
 Domains: `safeascent.us` (frontend), `www.safeascent.us` (301 to the apex), `api.safeascent.us` (API). TLS is Railway's automatic certificates.
 
-**The worker change and the beat service ship together.** The worker no longer runs an embedded beat. If the new worker deploys without a running `beat` service, nothing schedules the nightly job or the heartbeat.
+**The worker change and the beat service ship together.** The worker no longer runs an embedded beat. If the new worker deploys without a running `beat` service, nothing schedules the scores heartbeat or the beat heartbeat.
 
 Worker notes for the relaunch:
-- `--concurrency=2` (owner decision): the ~2h nightly run holds one slot and `beat_heartbeat` needs the other. The nightly Redis lock (`SET NX`, 6h TTL) keeps two nightly runs from overlapping. Check the worker's memory with two prefork slots against the Railway plan's memory limit.
+- `--concurrency=2` (owner decision, kept for compose parity): a slow task cannot starve `beat_heartbeat`. Check the worker's memory with two prefork slots against the Railway plan's memory limit.
 - `SKIP_WEATHER_STATISTICS` must be off (unset or `false`) on the worker at relaunch (owner decision).
-- The stale-lock recovery counts active nightly runs with `inspect().active()`, which assumes a single worker replica (`numReplicas = 1`).
 
 ## Environment variables
 
@@ -37,7 +36,7 @@ Worker notes for the relaunch:
 - `DATABASE_URL` on `backend`, `celery-worker`, and `beat`. The target is the least-privilege `app` role. Until the relaunch gate the services still use the owner role; switching them is the first relaunch step (plan Task 26).
 - `REDIS_URL` (or the per-purpose `CACHE_REDIS_URL` / `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND`, which fall back to it).
 - `ENVIRONMENT` unset or `production`. `ENABLE_ADMIN_ROUTES` off except for a deliberate admin session. `CORS_ORIGINS` unset (defaults to the production origins).
-- `HEALTHCHECKS_NIGHTLY_URL` and `HEALTHCHECKS_BEAT_URL` on the worker (both tasks run there). An unset URL skips the ping with a WARNING.
+- `HEALTHCHECKS_SCORES_URL`, `HEALTHCHECKS_NIGHTLY_URL` and `HEALTHCHECKS_BEAT_URL` on the worker (the scores heartbeat pings the first two; the beat heartbeat the third). An unset URL skips the ping with a WARNING.
 - `INGEST_DATABASE_URL` on `catalog-cycle` **only**: the `ingest` role on Neon's **direct** host (not the `-pooler` host; every ingest job, `catalog_cycle` included, refuses it), with verify-full TLS (`app.db.ssl` builds the verifying context; `ingest_engine` refuses a URL whose `ssl`/`sslmode` asks for anything weaker). Never set it on `backend`, `celery-worker`, `beat` or `frontend`. Set it as a Railway variable (with `--skip-deploys`), never in a file.
 - `DATABASE_URL` on `catalog-cycle` is the inert placeholder `postgresql+asyncpg://unused@invalid.invalid/unused`, never a reference to `INGEST_DATABASE_URL` or any real database: `Settings` requires the field, the job never uses it, and a code path that wrongly reads it fails instead of connecting as `ingest` (fail closed).
 - `HEALTHCHECKS_CATALOG_URL` (optional) on `catalog-cycle`: `/start`, then success only for an `ok` cycle, `/fail` otherwise.
@@ -112,7 +111,7 @@ The owner then keeps `TRAINER_DATABASE_URL` (direct host, `ssl=verify-full`) in 
   2. Apply to prod the same way from the owner's machine.
 - Roles are created **only** with SQL run as the owner: `backend/db/roles/create_roles.sql`, then `backend/db/roles/verify_roles.sql` (prints `ALL ROLE CHECKS PASSED`). Never with neonctl, the Neon Console, or the Neon API; those grant `neon_superuser`.
   - `migrator` owns the schema objects and is the only app-side role with DDL rights. The owner role keeps DDL for the stamp and role steps, and inherits `migrator` (`WITH SET TRUE, INHERIT TRUE`) until the relaunch gate revokes that membership.
-  - `app` has `SELECT` on the tables and writes only `historical_predictions` (the nightly upsert and purge).
+  - `app` has `SELECT` on the tables and still holds write grants on `historical_predictions` from the retired kernel nightly; no code writes it now (`tests/test_backtest_window_kept.py`).
   - `analyst` is pre-existing and read-only: `SELECT` via default privileges, no DML or DDL. It must already exist before `create_roles.sql` runs (the script grants it default privileges and `verify_roles.sql` checks it).
   - Role passwords are generated into the gitignored 0600 env files (from `backend/`: `python -m scripts.write_role_url --role <r> --env-file .env.<r> --generate-password`). `create_roles.sql` reads them as plaintext from `MIGRATOR_PASSWORD`/`APP_PASSWORD` via psql `\getenv` (never argv) and sends them over `verify-full` TLS; the server stores SCRAM-SHA-256. Neon rejects pre-hashed verifiers ("Neon only supports being given plaintext passwords", 2026-09-28), so the script refuses a value that looks like a SCRAM or md5 verifier, and anything under 32 characters.
   - `create_roles.sql` also revokes the running owner's default table grants to `analyst` in `public` (prod's `neondb_owner` had one). After `alembic stamp` and `alembic upgrade head`, `REVOKE ALL ON public.alembic_version FROM app`: the stamp creates that table under `migrator`'s default `SELECT` grant to `app`.
@@ -131,22 +130,16 @@ The owner then keeps `TRAINER_DATABASE_URL` (direct host, `ssl=verify-full`) in 
 
 The archive API needs Professional (Standard excludes it; pricing read 2026-09-28, re-check before buying). One Professional month per year, started on or after 10 January: run `era5_window run --window-start <day> --max-units <cap>` on prod until it reports no chunks and no normals due, then downgrade to Standard (which the nightly forecast and its `past_days` stopgap need). Between windows no ERA5 call is made.
 
-## Nightly job
+## Scores heartbeat
 
-At 02:00 UTC, beat enqueues `compute_daily_safety_scores_optimized` (message expires after 8h). The worker:
+The kernel nightly is gone (P3 Task 23); scores are written by the monthly training run. At 02:00 UTC beat enqueues `app.tasks.scores_heartbeat.scores_heartbeat` (message expires after 1h). It computes nothing. It checks that exactly one registry version is active, that its bundle bytes match `bundle_sha256`, and that it has a `model.route_scores` row for the current UTC month for every scorable route. Healthy: it pings `HEALTHCHECKS_SCORES_URL` and `HEALTHCHECKS_NIGHTLY_URL` (kept so the old dead-man check stays meaningful). Otherwise it pings `/fail` on both, logs the reason, and returns it (`no_active_version`, `multiple_active_versions`, `bundle_missing`, `bundle_sha_mismatch`, `missing_scores` with the count). While only the kernel baseline row is active, it fails with `bundle_missing`: nothing is servable until the first model version is promoted.
 
-- takes the population lock, then computes today plus the next 2 days;
-- writes Redis score keys (2-day TTL) and `historical_predictions` rows (a route with too little evidence is stored as `risk_score` NULL + `gray`);
-- purges `historical_predictions` rows older than a year;
-- pings `HEALTHCHECKS_NIGHTLY_URL` with `/start`, then success or `/fail` (the error is re-raised). A run skipped by the lock sends no pings.
-
-Time limits: soft 5h, hard 5.5h, below the 6h lock TTL and broker visibility timeout, so a hung run is killed before a redelivered copy could start a duplicate.
+`app.tasks.cache_warming` warms `safety:{version}:{route}:{month}` from the active version's stored rows; it is not scheduled.
 
 Operator notes:
 
-- A lost broker connection cancels the in-flight nightly (`worker_cancel_long_running_tasks_on_connection_loss`). With the Redis broker the unacked message comes back only after the 6h `visibility_timeout`, so a run cancelled soon after 02:00 reruns around 08:00 UTC, and not at all if redelivery lands after the message's 8h `expires` (it is then discarded and counted as expired). The cancelled child may skip its `finally` lock release; the stale-lock recovery then applies, and it fails closed (keeps the lock) when `inspect()` does not answer.
-- `GET /api/v1/mp-routes/admin/trigger-cache-population` runs the same task, which pings `HEALTHCHECKS_NIGHTLY_URL` on success like the scheduled run. A manual run therefore resets the nightly check and can mask a missed scheduled run for up to a day.
-- Beat keeps its schedule state in `/tmp/celerybeat-schedule`, which is lost when the beat container restarts. A beat restart that straddles 02:00 UTC skips that night's run (a fresh beat does not catch up a missed crontab slot); the `safeascent-nightly` healthchecks alert catches it.
+- A lost broker connection cancels the in-flight task (`worker_cancel_long_running_tasks_on_connection_loss`). With the Redis broker the unacked message comes back only after the 6h `visibility_timeout`; the heartbeat's 1h `expires` discards a late copy, counted as expired.
+- Beat keeps its schedule state in `/tmp/celerybeat-schedule`, which is lost when the beat container restarts. A beat restart that straddles 02:00 UTC skips that day's heartbeat; the `safeascent-nightly` healthchecks alert catches it.
 
 Revoked and expired tasks are logged at ERROR; expired ones are counted per task per UTC day. `GET /health/worker` reports the 7-day counts.
 
@@ -154,7 +147,7 @@ Revoked and expired tasks are logged at ERROR; expired ones are counted per task
 
 | Check | Pinged by | Period | Grace |
 |---|---|---|---|
-| `safeascent-nightly` | the nightly job (start, success, fail) | 24h | 4h |
+| `safeascent-nightly` | the scores heartbeat (success, fail); the check predates it | 24h | 4h |
 | `safeascent-beat` | `beat_heartbeat`, scheduled by beat every 15 min and run on the worker | 15 min | 60 min |
 
 The beat check proves both that beat scheduled the task and that the worker consumed it, so a dead consumer alerts within 75 minutes.
@@ -193,6 +186,6 @@ To flip: set the variable on the `frontend` service and redeploy. Locally: `fron
 
 ## Insufficient-data rollout (2026-09-28)
 
-1. Run `alembic upgrade head` (migration `0003_hist_insufficient_data`) before the new backend/worker code runs. Without it the nightly history insert hits `risk_score NOT NULL` for any batch containing an insufficient route, and the task now fails on that.
+1. Run `alembic upgrade head` (migration `0003_hist_insufficient_data`) before the new backend/worker code runs. (Historical note: the retired kernel nightly's history insert needed it.)
 2. Deploy backend and frontend together (the frontend requires `data_status`).
-3. Right after the deploy, trigger the nightly population task (`compute_daily_safety_scores_optimized`) once, e.g. via `GET /api/v1/mp-routes/admin/trigger-cache-population` (only mounted when `ENABLE_ADMIN_ROUTES` is set) or by calling the Celery task from a worker shell. Redis still holds scores from before the deploy; reads already map a stale `0.0` to insufficient, but a fresh run rewrites every route under the new rule.
+3. The kernel nightly this rollout once triggered no longer exists; the stored-score API needs no warm-up.

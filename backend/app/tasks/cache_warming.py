@@ -1,171 +1,49 @@
-"""
-Cache warming tasks for pre-calculating safety scores.
-Runs every 6 hours via Celery Beat to warm Redis cache with popular routes.
+"""Cache warming for the stored scores (P3 Task 23).
 
-Kernel-era (2026-10-22): it still writes the legacy safety:route:* entries as plain dicts,
-which the API no longer reads; the stored-score schema would reject them (no confidence or
-range). Task 23 replaces it with a warmer over model.route_scores.
+Warms the version-keyed entries the API reads (`safety:{version}:{route}:{month}`, see
+utils.cache.build_stored_score_key) from the active model's model.route_scores, for the current
+month. A promotion changes the version in the key, so the first warm after one fills a fresh
+namespace and never overwrites what the old version served.
 """
 import asyncio
-from datetime import date, timedelta
-from typing import List
 import logging
+from typing import Any
 
 from sqlalchemy import select
 
 from app.celery_app import celery_app
 from app.db.session import AsyncSessionLocal
 from app.models.mp_route import MpRoute
-from app.schemas.prediction import PredictionRequest
-from app.api.v1.predict import predict_route_safety
-from app.api.v1.mp_routes import normalize_route_type, get_safety_color_code
-from app.services.risk_bands import INSUFFICIENT_DATA_COLOR
-from app.utils.cache import cache_set, build_safety_score_key
+from app.services import model_scores
+from app.utils.time_utils import utc_today
 
 logger = logging.getLogger(__name__)
 
+WARM_ROUTE_LIMIT = 200
+
 
 @celery_app.task(name="app.tasks.cache_warming.warm_popular_routes_cache")
-def warm_popular_routes_cache():
-    """
-    Pre-calculate safety scores for popular routes for the next 7 days.
-
-    This task:
-    1. Queries the top 200 MP routes with valid coordinates
-    2. Calculates safety scores for each route for the next 7 days
-    3. Stores results in Redis with 6-hour TTL
-
-    Runs every 6 hours via Celery Beat scheduler.
-    """
-    logger.info("Starting cache warming task for popular routes...")
-
-    try:
-        # Run the async function
-        result = asyncio.run(_warm_cache_async())
-        logger.info(f"Cache warming completed: {result}")
-        return result
-    except Exception as e:
-        logger.error(f"Cache warming failed: {e}", exc_info=True)
-        raise
+def warm_popular_routes_cache() -> dict[str, Any]:
+    result: dict[str, Any] = asyncio.run(_warm_cache_async())
+    logger.info("Cache warming completed: %s", result)
+    return result
 
 
-async def _warm_cache_async() -> dict:
-    """
-    Async implementation of cache warming.
-
-    Returns:
-        dict: Statistics about the warming process
-    """
-    # Get popular routes (routes with valid coordinates)
+async def _warm_cache_async() -> dict[str, Any]:
+    month = utc_today().month
     async with AsyncSessionLocal() as db:
-        # Query mp_routes with valid coordinates
-        # Limit to 200 routes to avoid excessive computation
-        query = (
-            select(MpRoute)
-            .where(
-                MpRoute.latitude.isnot(None),
-                MpRoute.longitude.isnot(None),
-            )
-            .order_by(MpRoute.mp_route_id)
-            .limit(200)
-        )
-
-        result = await db.execute(query)
-        routes: List[MpRoute] = result.scalars().all()
-
-        if not routes:
-            logger.warning("No routes found for cache warming")
-            return {"status": "no_routes", "warmed": 0}
-
-        logger.info(f"Warming cache for {len(routes)} popular routes...")
-
-        # Calculate safety for next 7 days
-        today = date.today()
-        dates_to_warm = [today + timedelta(days=i) for i in range(7)]
-
-        warmed_count = 0
-        failed_count = 0
-
-        # Process routes in batches to avoid overwhelming the system
-        batch_size = 10
-        for i in range(0, len(routes), batch_size):
-            batch = routes[i:i + batch_size]
-
-            # Process each route in the batch
-            for route in batch:
-                # Process each date for this route
-                for target_date in dates_to_warm:
-                    try:
-                        # Check if already cached (skip if so)
-                        cache_key = build_safety_score_key(route.mp_route_id, target_date.isoformat())
-
-                        # Normalize route type
-                        normalized_type = normalize_route_type(route.type)
-
-                        # Create prediction request
-                        prediction_request = PredictionRequest(
-                            latitude=route.latitude,
-                            longitude=route.longitude,
-                            route_type=normalized_type,
-                            planned_date=target_date,
-                            elevation_meters=None,  # Batch mode: skip external elevation lookups
-                        )
-
-                        # Calculate safety score
-                        prediction = await predict_route_safety(
-                            prediction_request,
-                            db,
-                            allow_elevation_lookup=False,
-                        )
-
-                        if prediction.risk_score is None:
-                            # Too little evidence: cache the explicit insufficient_data state
-                            # rather than skipping (a miss would trigger recomputes) or 0.
-                            safety_response = {
-                                "route_id": route.mp_route_id,
-                                "route_name": route.name,
-                                "target_date": target_date.isoformat(),
-                                "risk_score": None,
-                                "color_code": INSUFFICIENT_DATA_COLOR,
-                                "data_status": "insufficient_data",
-                            }
-                        else:
-                            # Colour must match the rounded score actually stored
-                            # (see location_safety_computation.compute_batch_route_scores
-                            # for the same fix), not the raw pre-round value.
-                            stored_score = round(prediction.risk_score, 1)
-                            safety_response = {
-                                "route_id": route.mp_route_id,
-                                "route_name": route.name,
-                                "target_date": target_date.isoformat(),
-                                "risk_score": stored_score,
-                                "color_code": get_safety_color_code(stored_score),
-                                "data_status": "ok",
-                            }
-
-                        # Cache with 6-hour TTL (matches API endpoint)
-                        cache_set(
-                            cache_key,
-                            safety_response,
-                            ttl_seconds=21600
-                        )
-
-                        warmed_count += 1
-
-                    except Exception as e:
-                        logger.error(
-                            f"Failed to warm cache for route {route.mp_route_id} "
-                            f"on {target_date}: {e}"
-                        )
-                        failed_count += 1
-
-            # Small delay between batches to avoid overwhelming the system
-            await asyncio.sleep(0.5)
-
-        return {
-            "status": "completed",
-            "routes_processed": len(routes),
-            "dates_per_route": len(dates_to_warm),
-            "total_warmed": warmed_count,
-            "total_failed": failed_count,
-        }
+        version = await model_scores.active_version(db)
+        if version is None:
+            logger.warning("No active model version; nothing to warm")
+            return {"status": "no_active_version", "warmed": 0}
+        ids = (await db.execute(
+            select(MpRoute.mp_route_id)
+            .where(MpRoute.latitude.isnot(None), MpRoute.longitude.isnot(None))
+            .order_by(MpRoute.mp_route_id).limit(WARM_ROUTE_LIMIT))).scalars().all()
+        warmed = 0
+        for route_id in ids:
+            # get_score writes the cache entry itself on a miss and skips rows it cannot serve.
+            if await model_scores.get_score(db, route_id, month) is not None:
+                warmed += 1
+    return {"status": "completed", "version": version, "month": month, "routes": len(ids), "warmed": warmed,
+            "unavailable": len(ids) - warmed}

@@ -23,7 +23,7 @@ celery_app = Celery(
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
     include=[
-        "app.tasks.safety_computation_optimized",  # Active location-level task
+        "app.tasks.scores_heartbeat",
         "app.tasks.ops",
     ],
 )
@@ -48,22 +48,20 @@ celery_app.conf.update(
     task_reject_on_worker_lost=True,
     # A lost broker connection cancels in-flight work instead of letting it finish
     # against a dead channel. The unacked message is not redelivered at once: the Redis
-    # transport restores it only after visibility_timeout (6h), so a cancelled 02:00
-    # nightly reruns around 08:00, or never if that passes its 8h `expires`. The
-    # cancelled child may also skip its `finally` lock release (stale-lock recovery covers it).
+    # transport restores it only after visibility_timeout (6h), so a cancelled 02:00 task
+    # reruns around 08:00, or never if that passes its `expires`.
     worker_cancel_long_running_tasks_on_connection_loss=True,
 )
 
 # Celery Beat schedule - periodic tasks
 celery_app.conf.beat_schedule = {
-    # Nightly pre-computation of ALL safety scores (runs at 2am UTC)
-    # Uses optimized location-level task (~2 hours for 3 days)
-    "compute-daily-safety-scores": {
-        "task": "app.tasks.safety_computation_optimized.compute_daily_safety_scores_optimized",
-        "schedule": crontab(minute=0, hour=2),  # 2:00 AM UTC daily
-        # Keep expiry beyond Redis visibility timeout (6h) so a redelivery after
-        # worker restart can still execute and finish the overnight run.
-        "options": {"expires": 28800},  # 8 hours
+    # Stored-score health at 02:00 UTC, where the kernel nightly used to run. It computes nothing:
+    # scores are written by the monthly training run. `expires` stays under the 6h visibility
+    # timeout so a redelivered stale heartbeat is dropped instead of masking a missed day.
+    "scores-heartbeat": {
+        "task": "app.tasks.scores_heartbeat.scores_heartbeat",
+        "schedule": crontab(minute=0, hour=2),
+        "options": {"expires": 3600},
     },
     # Dead-man's switch for the consumer: an alert fires within 75 min (15 min period +
     # 60 min grace on healthchecks.io) instead of at the next nightly run.

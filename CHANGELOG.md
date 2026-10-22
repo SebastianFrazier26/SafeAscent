@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Phase 3 Task 23: the kernel leaves serving; scores heartbeat - 2026-10-22
+
+- The kernel math moved (`git mv`) to `app.ml.kernel_ref`, frozen for the backtest; `tests/test_kernel_not_served.py` fails if anything served imports it or `kernel_adapter`. `weather_service` has its own plain `WeatherPattern`; `utc_today` moved to `app.utils.time_utils`; `time_utils` and `geo_utils` inline the constants they took from `algorithm_config`.
+- Removed: the kernel nightly (`safety_computation_optimized`), `location_safety_computation`, the in-process predict path in `api/v1/predict.py` (the 410 stays), the `trigger-cache-population` admin route, the kernel-only tests and `backend/scripts/perf/*`. Nothing in `app/` writes `historical_predictions` now, so the protected backtest window [2026-02-05, 2026-07-03) is guarded by `tests/test_backtest_window_kept.py`; the `app` role's write grants on it are unchanged.
+- `scores-heartbeat` (02:00 UTC) replaces `compute-daily-safety-scores`: one active version, a matching bundle digest and current-month rows for every scorable route, else `/fail` on `HEALTHCHECKS_SCORES_URL` and `HEALTHCHECKS_NIGHTLY_URL`. `cache_warming` warms `safety:{version}:{route}:{month}` from stored rows (still unscheduled).
+
 ### Phase 3 PR 3-4: stored-score reads, additive API - 2026-10-22
 
 - The API serves the active `model.registry` version's `model.route_scores` row for the route and month (CM = 1 in MVP-1), through `app.services.model_scores`; Redis keys are `safety:{model_version}:{route_id}:{month}`, so a promotion or rollback misses the cache. No live kernel call on any served path.

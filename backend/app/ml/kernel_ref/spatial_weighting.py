@@ -9,7 +9,7 @@ Formula: weight = exp(-(distance² / (2 × bandwidth²)))
 """
 import math
 
-from app.services.algorithm_config import (
+from app.ml.kernel_ref.algorithm_config import (
     SPATIAL_BANDWIDTH,
     MAX_SEARCH_RADIUS_KM,
 )

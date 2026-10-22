@@ -90,7 +90,6 @@ def test_admin_routes_absent_by_default(monkeypatch, _restore_app_modules):
         "/api/v1/mp-routes/admin/queue-info",
         "/api/v1/mp-routes/admin/purge-queue",
         "/api/v1/mp-routes/admin/redis-debug",
-        "/api/v1/mp-routes/admin/trigger-cache-population",
     ]:
         assert client.get(path).status_code == 404
 

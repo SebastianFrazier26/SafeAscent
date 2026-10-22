@@ -764,13 +764,13 @@ def test_main_reads_the_export_through_one_connection(tmp_path, monkeypatch):
 def test_the_cli_loads_or_dry_runs_a_rock_export(tmp_path, monkeypatch, capsys, dry):
     import json
 
-    from app.services import temporal_weighting
+    from app.utils import time_utils
 
     path = _export(tmp_path, [(R4, "2025-01", "lead", 2)], [(R4, 2, 1)])
     with migrated_db(seed_sql=_seed_rock_and_ice()) as name:
         url = sa_url(name)
         monkeypatch.setattr(loader, "ingest_engine", lambda: create_async_engine(url))
-        monkeypatch.setattr(temporal_weighting, "utc_today", lambda: TODAY)
+        monkeypatch.setattr(time_utils, "utc_today", lambda: TODAY)
         argv = ["mp_tick_aggregates", "--sqlite", str(path), "--scope", "rock"] + (["--dry-run"] if dry else [])
         monkeypatch.setattr("sys.argv", argv)
         loader.cli()

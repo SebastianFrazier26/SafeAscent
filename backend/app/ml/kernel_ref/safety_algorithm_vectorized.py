@@ -15,9 +15,9 @@ import math
 from datetime import date
 from typing import List, Dict, Optional, Tuple
 
-from app.services.safety_algorithm import AccidentData, SafetyPrediction
-from app.services.weather_similarity import WeatherPattern, calculate_weather_similarity
-from app.services.algorithm_config import (
+from app.ml.kernel_ref.safety_algorithm import AccidentData, SafetyPrediction
+from app.ml.kernel_ref.weather_similarity import WeatherPattern, calculate_weather_similarity
+from app.ml.kernel_ref.algorithm_config import (
     RISK_NORMALIZATION_FACTOR,
     MAX_RISK_SCORE,
     MAX_CONTRIBUTING_ACCIDENTS_UI,
@@ -38,8 +38,8 @@ from app.services.algorithm_config import (
     GRADE_HALF_WEIGHT_DIFF,
     GRADE_MIN_WEIGHT,
 )
-from app.services.grade_weighting import parse_grade
-from app.services.temporal_weighting import is_future_dated, utc_today
+from app.ml.kernel_ref.grade_weighting import parse_grade
+from app.ml.kernel_ref.temporal_weighting import is_future_dated, utc_today
 
 
 def haversine_distance_vectorized(

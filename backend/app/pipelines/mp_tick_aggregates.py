@@ -525,7 +525,7 @@ async def _load_export(
 
 
 def cli() -> None:
-    from app.services.temporal_weighting import utc_today
+    from app.utils.time_utils import utc_today
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sqlite", type=Path, required=True)

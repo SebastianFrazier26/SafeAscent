@@ -2,81 +2,11 @@
 Admin endpoints for Celery/Redis queue management.
 Not web-exposed by default - only mounted when settings.ENABLE_ADMIN_ROUTES is True.
 """
-from typing import Optional
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException
 import logging
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-
-@router.get("/mp-routes/admin/trigger-cache-population")
-async def trigger_cache_population(
-    target_date: Optional[str] = Query(None, description="Specific date (YYYY-MM-DD) or leave empty for 7-day run"),
-):
-    """
-    Manually trigger safety score cache population via Celery background task.
-
-    Returns immediately with task ID. Check Railway logs for progress.
-
-    **Options:**
-    - No params: Compute optimized 3-day window (today + 2)
-    - `target_date` is currently ignored by the optimized task (kept for backward compatibility)
-
-    **Returns:** Task ID and status message (task runs in background).
-    """
-    from app.tasks.safety_computation_optimized import (
-        compute_daily_safety_scores_optimized,
-    )
-    from app.celery_app import celery_app
-
-    logger.info("=" * 60)
-    logger.info("MANUAL CACHE POPULATION TRIGGERED VIA API")
-    logger.info("=" * 60)
-
-    try:
-        # Refuse duplicate manual triggers while optimized computation is active
-        inspect = celery_app.control.inspect()
-        active_workers = inspect.active() or {}
-        optimized_task_name = (
-            "app.tasks.safety_computation_optimized.compute_daily_safety_scores_optimized"
-        )
-        active_optimized_task_ids = []
-        for worker_tasks in active_workers.values():
-            for task in worker_tasks or []:
-                if task.get("name") == optimized_task_name:
-                    active_optimized_task_ids.append(task.get("id"))
-
-        if active_optimized_task_ids:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "status": "already_running",
-                    "message": "Optimized cache population already active; refusing duplicate trigger.",
-                    "active_count": len(active_optimized_task_ids),
-                    "active_task_ids": active_optimized_task_ids[:10],
-                },
-            )
-
-        # Use optimized location-level computation (3-day window: today + 2)
-        # target_date parameter is ignored - optimized task computes configured range
-        logger.info("Triggering OPTIMIZED Celery task (location-level computation)...")
-        task = compute_daily_safety_scores_optimized.delay()
-        return {
-            "status": "started",
-            "message": "Optimized cache population started (3-day window). Check Railway logs for progress.",
-            "task_id": task.id,
-            "estimated_time": "5-15 minutes",
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to trigger cache population: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to trigger cache population: {str(e)}"
-        )
 
 
 @router.get("/mp-routes/admin/task-status/{task_id}")

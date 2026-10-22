@@ -9,7 +9,7 @@ rare catastrophic events vs. patterns of consistent hazards.
 """
 from typing import Optional
 
-from app.services.algorithm_config import (
+from app.ml.kernel_ref.algorithm_config import (
     SEVERITY_BOOSTERS,
     DEFAULT_SEVERITY_WEIGHT,
 )

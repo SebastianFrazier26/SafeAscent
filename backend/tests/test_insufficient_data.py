@@ -1,8 +1,7 @@
 """Owner decision 2026-09-28: a route with too little evidence is "insufficient data" (null
-score, gray), never a 0.0 green. For the kernel (still in /predict's internals, the nightly batch
-and the warmer until Task 23) that means no contributing accident or a raw score < 0.05. For the
-stored Phase 3 scores the API serves (Task 22) it means the stored row has no evidence at all;
-the 0.05 floor does not apply to a stored percentile.
+score, gray), never a 0.0 green. For the stored Phase 3 scores the API serves (Task 22) it means
+the stored row has no evidence at all; the kernel-era 0.05 floor does not apply to a stored
+percentile.
 """
 from datetime import date
 from types import SimpleNamespace
@@ -12,21 +11,16 @@ import pytest
 from pydantic import ValidationError
 
 from app.api.v1 import mp_routes
-from app.api.v1 import predict as predict_module
 from app.schemas.mp_route import MpRouteSafetyResponse, SafetyScore
-from app.schemas.prediction import PredictionRequest, PredictionResponse
+from app.schemas.prediction import PredictionResponse
 from app.services import model_scores
 from app.services.model_scores import StoredScore, to_risk
-from app.services.location_safety_computation import LocationBaseScore, compute_batch_route_scores
 from app.services.risk_bands import (
     INSUFFICIENT_DATA_MESSAGE,
     MIN_ESTIMABLE_SCORE,
     cached_safety,
     estimable_score,
 )
-from app.services.safety_algorithm import SafetyPrediction
-from app.services.weather_similarity import WeatherPattern
-from app.tasks import cache_warming, safety_computation_optimized
 from app.utils import cache as cache_module
 
 INSUFFICIENT = {"risk_score": None, "color_code": "gray", "data_status": "insufficient_data"}
@@ -37,40 +31,6 @@ def _no_bundle(monkeypatch):
     # These endpoint tests use mock sessions; relative_rate needs the bundle, covered against a real
     # database in test_model_scores_api.py.
     monkeypatch.setattr(model_scores, "reference_rates", AsyncMock(return_value={}))
-
-
-def _weather() -> WeatherPattern:
-    return WeatherPattern(
-        temperature=[12.0] * 7,
-        precipitation=[0.5] * 7,
-        wind_speed=[4.0] * 7,
-        visibility=[10000.0] * 7,
-        cloud_cover=[40.0] * 7,
-        daily_temps=[(5.0, 12.0, 18.0)] * 7,
-    )
-
-
-def _accidents() -> list:
-    return [
-        predict_module.AccidentRecord(1, 40.02, -105.28, 2400.0, date(2024, 6, 1), "Rock Climbing", "fall", "Trad", "Serious"),
-        predict_module.AccidentRecord(2, 40.10, -105.35, 2600.0, date(2023, 8, 15), "Rock Climbing", "fall", "Sport", "Fatal"),
-    ]
-
-
-def _request() -> PredictionRequest:
-    return PredictionRequest(
-        latitude=40.0, longitude=-105.27, route_type="trad",
-        planned_date=date(2026, 7, 15), elevation_meters=2500.0,
-    )
-
-
-@pytest.fixture
-def offline_predict(monkeypatch):
-    monkeypatch.setattr(predict_module, "fetch_all_accidents", AsyncMock(return_value=_accidents()))
-    monkeypatch.setattr(
-        predict_module, "fetch_accident_weather_patterns", AsyncMock(return_value={1: _weather(), 2: None})
-    )
-    monkeypatch.setattr(predict_module, "fetch_weather_statistics", AsyncMock(return_value=None))
 
 
 # --- evidence rule ---------------------------------------------------------------------
@@ -227,104 +187,6 @@ def test_range_may_touch_the_score(build):
     assert body.score_range == (42.0, 42.0)
 
 
-# --- /predict --------------------------------------------------------------------------
-
-async def test_predict_with_no_accidents_is_insufficient(monkeypatch, offline_predict):
-    monkeypatch.setattr(predict_module, "fetch_all_accidents", AsyncMock(return_value=[]))
-    body = await predict_module.predict_route_safety(_request(), db=None, prefetched_weather=_weather())
-    assert body.data_status == "insufficient_data"
-    assert body.risk_score is None
-    assert body.color_code == "gray"
-
-
-@pytest.mark.parametrize("raw", [0.0, 0.0499])
-async def test_predict_below_display_threshold_is_insufficient(monkeypatch, offline_predict, raw):
-    zero = SafetyPrediction(
-        risk_score=raw,
-        num_contributing_accidents=2,
-        top_contributing_accidents=[],
-        metadata={"route_type": "trad", "search_date": "2026-07-15", "total_influence_sum": raw / 7},
-    )
-    monkeypatch.setattr(predict_module, "calculate_safety_score_vectorized", lambda **_: zero)
-    body = await predict_module.predict_route_safety(_request(), db=None, prefetched_weather=_weather())
-    assert body.data_status == "insufficient_data"
-    assert body.risk_score is None
-    assert body.color_code == "gray"
-    assert body.metadata["message"] == INSUFFICIENT_DATA_MESSAGE
-    # Counts stay truthful even when the score is withheld.
-    assert body.num_contributing_accidents == 2
-
-
-async def test_predict_far_away_accidents_are_insufficient(monkeypatch, offline_predict):
-    far = [
-        predict_module.AccidentRecord(9, -45.0, 170.0, 1000.0, date(2024, 6, 1), "Rock Climbing", "fall", "Trad", "Serious"),
-    ]
-    monkeypatch.setattr(predict_module, "fetch_all_accidents", AsyncMock(return_value=far))
-    monkeypatch.setattr(predict_module, "fetch_accident_weather_patterns", AsyncMock(return_value={9: _weather()}))
-    body = await predict_module.predict_route_safety(_request(), db=None, prefetched_weather=_weather())
-    assert body.data_status == "insufficient_data"
-    assert body.risk_score is None
-
-
-async def test_predict_with_evidence_is_unchanged(offline_predict):
-    body = await predict_module.predict_route_safety(_request(), db=None, prefetched_weather=_weather())
-    assert body.data_status == "ok"
-    # Raw value captured on 1c5a30f (before this change) with the same fixture: the formula
-    # is untouched; the response carries the 1-decimal value every surface shows.
-    assert body.metadata["raw_risk_score"] == 8.90009896995113
-    assert body.risk_score == 8.9
-    assert body.color_code == "green"
-    assert body.num_contributing_accidents == 2
-
-
-# --- nightly batch ---------------------------------------------------------------------
-
-def _evidence_base() -> LocationBaseScore:
-    return LocationBaseScore(
-        location_id=1, latitude=40.0, longitude=-105.27, elevation_m=2500.0,
-        accident_base_influences={1: 0.8, 2: 0.35},
-        accident_metadata={
-            1: {"route_type": "trad", "grade": "5.9", "distance_km": 2.0, "days_ago": 700},
-            2: {"route_type": "sport", "grade": "5.11a", "distance_km": 12.0, "days_ago": 1000},
-        },
-    )
-
-
-def test_batch_route_with_no_contributing_accidents_is_insufficient():
-    empty = LocationBaseScore(location_id=1, latitude=64.0, longitude=-150.0, elevation_m=None)
-    result = compute_batch_route_scores(empty, [{"route_id": 5, "route_type": "trad", "grade": "5.9"}])
-    assert result[5] == INSUFFICIENT
-
-
-def _single_accident_base(influence: float) -> LocationBaseScore:
-    return LocationBaseScore(
-        location_id=1, latitude=64.0, longitude=-150.0, elevation_m=None,
-        accident_base_influences={1: influence},
-        accident_metadata={1: {"route_type": "trad", "grade": None, "distance_km": 90.0, "days_ago": 10}},
-    )
-
-
-def test_batch_route_below_display_threshold_is_insufficient():
-    # trad/trad weight 1.0, no grades: raw = 0.007 * 7 = 0.049 < 0.05.
-    result = compute_batch_route_scores(_single_accident_base(0.007), [{"route_id": 5, "route_type": "trad", "grade": None}])
-    assert result[5] == INSUFFICIENT
-
-
-def test_batch_route_at_display_threshold_is_scored():
-    result = compute_batch_route_scores(_single_accident_base(0.0072), [{"route_id": 5, "route_type": "trad", "grade": None}])
-    assert result[5] == {"risk_score": 0.1, "color_code": "green", "data_status": "ok"}
-
-
-def test_batch_route_with_evidence_is_unchanged():
-    result = compute_batch_route_scores(
-        _evidence_base(),
-        [{"route_id": 10, "route_type": "trad", "grade": "5.10a"}, {"route_id": 11, "route_type": "alpine", "grade": None}],
-    )
-    # Captured on 1c5a30f (before this change) with the same fixture.
-    assert result[10] == {"risk_score": 6.5, "color_code": "green", "data_status": "ok"}
-    assert result[11] == {"risk_score": 6.7, "color_code": "green", "data_status": "ok"}
-
-
 def _fake_redis(monkeypatch) -> MagicMock:
     pipe = MagicMock()
     client = MagicMock()
@@ -359,29 +221,6 @@ def test_bulk_cache_writer_still_skips_null_score_without_status(monkeypatch):
     )
     assert written == 0
     pipe.setex.assert_not_called()
-
-
-async def test_historical_save_raises_after_failed_batches():
-    db = MagicMock()
-    db.execute = AsyncMock(side_effect=[RuntimeError("insert failed"), SimpleNamespace(rowcount=0)])
-    db.commit = AsyncMock()
-    db.rollback = AsyncMock()
-    with pytest.raises(RuntimeError, match="1 historical_predictions batch"):
-        await safety_computation_optimized._save_to_historical(db, {5: dict(INSUFFICIENT)}, date(2026, 9, 28))
-    db.rollback.assert_awaited()
-
-
-async def test_historical_save_writes_null_score_and_gray():
-    db = MagicMock()
-    db.execute = AsyncMock(return_value=SimpleNamespace(rowcount=0))
-    db.commit = AsyncMock()
-    db.rollback = AsyncMock()
-    await safety_computation_optimized._save_to_historical(
-        db, {5: dict(INSUFFICIENT), 6: {"risk_score": 30.0, "color_code": "yellow", "data_status": "ok"}}, date(2026, 9, 28)
-    )
-    insert_params = db.execute.await_args_list[0].args[1]
-    rows = {insert_params[f"route_id_{i}"]: (insert_params[f"risk_{i}"], insert_params[f"color_{i}"]) for i in range(2)}
-    assert rows == {5: (None, "gray"), 6: (30.0, "yellow")}
 
 
 # --- live endpoints (stored scores, P3 Task 22) -----------------------------------------
@@ -475,12 +314,6 @@ async def test_map_with_safety_marks_insufficient_routes_gray(monkeypatch):
     assert body.meta.insufficient_routes == 1
     assert body.meta.missing_routes == 1
     assert body.meta.computed_routes == 0 and body.meta.model_version == "eb_v1-test"
-
-
-def _insufficient_prediction() -> PredictionResponse:
-    return PredictionResponse(
-        num_contributing_accidents=0, top_contributing_accidents=[], metadata={}, **INSUFFICIENT
-    )
 
 
 def _route_coords():
@@ -582,32 +415,3 @@ async def test_historical_profile_reports_insufficient_months_without_scoring_th
     assert profile[1]["insufficient_reason"] == "no_evidence" and profile[1]["score_range"] is None
     assert (profile[2]["risk_score"], profile[2]["color_code"], profile[2]["data_status"]) == (30.0, "yellow", "ok")
     assert body["summary"] is None and body["trend"] is None
-
-
-# --- cache warming ---------------------------------------------------------------------
-
-class _FakeAsyncSession:
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc_info):
-        return False
-
-    async def execute(self, _query):
-        route = SimpleNamespace(mp_route_id=1, name="Test Route", latitude=40.0, longitude=-105.0, type="sport")
-        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [route]))
-
-
-async def test_cache_warming_stores_insufficient_explicitly(monkeypatch):
-    monkeypatch.setattr(cache_warming, "AsyncSessionLocal", lambda: _FakeAsyncSession())
-    monkeypatch.setattr(cache_warming.asyncio, "sleep", AsyncMock())
-    monkeypatch.setattr(cache_warming, "predict_route_safety", AsyncMock(return_value=_insufficient_prediction()))
-    cached = []
-    monkeypatch.setattr(cache_warming, "cache_set", lambda key, data, ttl_seconds=None: cached.append(data))
-
-    stats = await cache_warming._warm_cache_async()
-
-    assert stats["total_failed"] == 0
-    assert cached
-    for data in cached:
-        assert (data["risk_score"], data["color_code"], data["data_status"]) == (None, "gray", "insufficient_data")

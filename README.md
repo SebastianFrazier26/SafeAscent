@@ -6,7 +6,7 @@ Route-level risk forecasts for climbers, built from historical accident records 
 
 ## What it does
 
-For a climbing route and a date in the next few days, SafeAscent estimates risk on a 0–100 scale. Historical accidents near the route are weighted by distance, how recent they were, elevation, route type, severity, and how closely the weather in the days before each accident matches the coming forecast. Scores for every route are precomputed nightly for today and the next two days. See [`ALGORITHM_DESIGN.md`](./ALGORITHM_DESIGN.md) for the method.
+For a climbing route and a date in the next few days, SafeAscent estimates risk on a 0–100 scale. Historical accidents near the route are weighted by distance, how recent they were, elevation, route type, severity, and how closely the weather in the days before each accident matches the coming forecast. See [`ALGORITHM_DESIGN.md`](./ALGORITHM_DESIGN.md) for the method.
 
 How a result is shown:
 

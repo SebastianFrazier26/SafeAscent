@@ -189,7 +189,7 @@ async def _run(args: argparse.Namespace, *, today: date, mp_enabled: bool) -> di
 
 def cli() -> None:
     from app.config import settings
-    from app.services.temporal_weighting import utc_today
+    from app.utils.time_utils import utc_today
 
     parser = argparse.ArgumentParser(prog="python -m app.pipelines.exposure")
     sub = parser.add_subparsers(dest="cmd", required=True)

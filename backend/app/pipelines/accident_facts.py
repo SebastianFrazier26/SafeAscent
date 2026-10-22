@@ -564,7 +564,7 @@ async def main(path: Path, *, today: dt.date, dry_run: bool, overwrite: bool = F
 
 
 if __name__ == "__main__":
-    from app.services.temporal_weighting import utc_today
+    from app.utils.time_utils import utc_today
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--file", type=Path, required=True)

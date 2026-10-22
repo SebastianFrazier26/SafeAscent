@@ -122,8 +122,8 @@ END $$;
 
 SET ROLE migrator;
 
--- The app only reads, except for the nightly historical_predictions upsert and purge
--- (app/tasks/safety_computation_optimized.py). nextval needs USAGE on the id sequence.
+-- The app only reads. The historical_predictions write grants below date from the retired kernel
+-- nightly (removed in P3 Task 23); nothing in app/ writes the table now. nextval needs USAGE on the id sequence.
 DO $$
 DECLARE
   obj record;

@@ -2,8 +2,8 @@
 (area, type group, month) cell with training-fold accidents only; the prospective part reads the
 kernel's STORED historical_predictions and never recomputes them.
 
-The kernel is reached through the module attribute so tests can monkeypatch it (pre-flight F41);
-Task 23's `git mv` to app.ml.kernel_ref updates this one import."""
+The kernel is reached through the module attribute so tests can monkeypatch it (pre-flight F41).
+It lives in app.ml.kernel_ref, which nothing served may import (tests/test_kernel_not_served.py)."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from scipy.special import gammaln
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-import app.services.safety_algorithm_vectorized as kernel_mod
+import app.ml.kernel_ref.safety_algorithm_vectorized as kernel_mod
 from app.ml.backtest import FoldData, RawData, prepare
 from app.ml.cells import G_INDEX, TYPE_GROUPS
 from app.ml.dataset import STATIC_FEATURES, CellData
@@ -28,8 +28,8 @@ from app.ml.folds import Fold
 from app.ml.glm import fit_poisson
 from app.ml.incidents import AreaInfo, Placement
 from app.ml.metrics import MetricsReport, calibration, oe_ci, poisson_deviance, top_capture
-from app.services.safety_algorithm import AccidentData
-from app.services.weather_similarity import WeatherPattern
+from app.ml.kernel_ref.safety_algorithm import AccidentData
+from app.ml.kernel_ref.weather_similarity import WeatherPattern
 
 F64 = NDArray[np.float64]
 PREDICTIONS_SQL = text("SELECT route_id, prediction_date, risk_score FROM historical_predictions "

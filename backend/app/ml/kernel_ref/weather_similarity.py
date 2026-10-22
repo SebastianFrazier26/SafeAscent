@@ -16,7 +16,7 @@ Mathematical basis: Pearson correlation + extreme weather amplification
 """
 from typing import List, Tuple, Optional, Dict, Any
 
-from app.services.algorithm_config import (
+from app.ml.kernel_ref.algorithm_config import (
     WEATHER_FACTOR_WEIGHTS,
     EXTREME_WEATHER_SD_THRESHOLD,
     EXTREME_PENALTY_MULTIPLIERS,

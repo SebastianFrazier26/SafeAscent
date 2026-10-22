@@ -29,17 +29,17 @@ from datetime import date
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
 
-from app.services.spatial_weighting import calculate_spatial_weight_with_distance
-from app.services.temporal_weighting import calculate_temporal_weight_detailed, is_future_dated, utc_today
-from app.services.route_type_weighting import calculate_route_type_weight
-from app.services.elevation_weighting import calculate_elevation_weight
-from app.services.weather_similarity import (
+from app.ml.kernel_ref.spatial_weighting import calculate_spatial_weight_with_distance
+from app.ml.kernel_ref.temporal_weighting import calculate_temporal_weight_detailed, is_future_dated, utc_today
+from app.ml.kernel_ref.route_type_weighting import calculate_route_type_weight
+from app.ml.kernel_ref.elevation_weighting import calculate_elevation_weight
+from app.ml.kernel_ref.weather_similarity import (
     calculate_weather_similarity_detailed,
     WeatherPattern,
 )
-from app.services.severity_weighting import calculate_severity_weight
-from app.services.grade_weighting import calculate_grade_weight
-from app.services.algorithm_config import (
+from app.ml.kernel_ref.severity_weighting import calculate_severity_weight
+from app.ml.kernel_ref.grade_weighting import calculate_grade_weight
+from app.ml.kernel_ref.algorithm_config import (
     RISK_NORMALIZATION_FACTOR,
     MAX_RISK_SCORE,
     MAX_CONTRIBUTING_ACCIDENTS_UI,

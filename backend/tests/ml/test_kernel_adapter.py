@@ -4,12 +4,12 @@ from datetime import date
 import numpy as np
 import pytest
 
-import app.services.safety_algorithm_vectorized as kernel_mod
+import app.ml.kernel_ref.safety_algorithm_vectorized as kernel_mod
 from app.ml import kernel_adapter as ka
 from app.ml.backtest import prepare
 from app.ml.fixtures import synthetic_raw
 from app.ml.folds import prospective_fold, rolling_folds, spatial_folds
-from app.services.safety_algorithm import SafetyPrediction
+from app.ml.kernel_ref.safety_algorithm import SafetyPrediction
 
 CUTOFF = date(2026, 10, 1)
 

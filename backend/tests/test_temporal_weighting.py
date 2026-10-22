@@ -11,13 +11,13 @@ Key formulas tested:
 """
 import pytest
 from datetime import date
-from app.services.temporal_weighting import (
+from app.ml.kernel_ref.temporal_weighting import (
     calculate_temporal_weight,
     calculate_temporal_weight_detailed,
     get_temporal_lambda,
     get_temporal_half_life,
 )
-from app.services.algorithm_config import SEASONAL_BOOST, TEMPORAL_SEASONAL_IMPACT
+from app.ml.kernel_ref.algorithm_config import SEASONAL_BOOST, TEMPORAL_SEASONAL_IMPACT
 
 
 class TestCalculateTemporalWeight:

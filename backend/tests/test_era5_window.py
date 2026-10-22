@@ -117,11 +117,11 @@ def test_a_key_only_in_the_env_file_is_refused(monkeypatch):
     # process environment does not, so the paid run must stop before any engine or request.
     from app.config import settings
     from app.pipelines import era5_window
-    from app.services import temporal_weighting
+    from app.utils import time_utils
 
     monkeypatch.delenv("OPEN_METEO_API_KEY", raising=False)
     monkeypatch.setattr(settings, "OPEN_METEO_API_KEY", "from-env-file")
-    monkeypatch.setattr(temporal_weighting, "utc_today", lambda: WINDOW.start)
+    monkeypatch.setattr(time_utils, "utc_today", lambda: WINDOW.start)
     monkeypatch.setattr("app.pipelines.db.ingest_engine", lambda: pytest.fail("engine created"))
     args = build_parser().parse_args(["run", "--window-start", WINDOW.start.isoformat(), "--max-units", "1"])
     with pytest.raises(SystemExit, match="process environment") as refused:

@@ -285,7 +285,7 @@ def exit_status(result: dict[str, object]) -> int:
 
 async def _main(args: argparse.Namespace) -> tuple[dict[str, object], int]:
     from app.pipelines.db import ingest_engine
-    from app.services.temporal_weighting import utc_today
+    from app.utils.time_utils import utc_today
 
     today = utc_today()
     try:

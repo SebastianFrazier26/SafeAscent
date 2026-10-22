@@ -8,7 +8,7 @@ Example: If planning alpine route, sport accident with bad weather → 0.9× wei
          If planning sport route, alpine accident → 0.3× weight (less relevant)
 """
 
-from app.services.algorithm_config import (
+from app.ml.kernel_ref.algorithm_config import (
     ROUTE_TYPE_WEIGHTS,
     DEFAULT_ROUTE_TYPE_WEIGHT,
 )

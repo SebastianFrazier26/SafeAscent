@@ -57,7 +57,7 @@ def test_health_down_without_redis():
 
 
 def test_expired_counts_cover_last_seven_days_only(fake):
-    task = "app.tasks.safety_computation_optimized.compute_daily_safety_scores_optimized"
+    task = "app.tasks.scores_heartbeat.scores_heartbeat"
     record_expired(fake, task, TODAY)
     record_expired(fake, task, TODAY)
     record_expired(fake, "other", date(2026, 9, 25))

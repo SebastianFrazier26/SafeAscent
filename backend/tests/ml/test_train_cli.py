@@ -8,11 +8,11 @@ import re
 
 import pytest
 
-import app.services.safety_algorithm_vectorized as kernel_mod
+import app.ml.kernel_ref.safety_algorithm_vectorized as kernel_mod
 from app.config import settings
 from app.ml import train
 from app.ml.fixtures import TRAINING_WORLD, seed_training_db, synthetic_raw
-from app.services.safety_algorithm import SafetyPrediction
+from app.ml.kernel_ref.safety_algorithm import SafetyPrediction
 from tests.pgtest import fetch, migrated_db, requires_pg, run_on_conn, run_sql, sa_url
 
 pytestmark = requires_pg

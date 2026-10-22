@@ -7,7 +7,7 @@ If elevations are similar, slightly boost relevance; otherwise neutral (1.0).
 import math
 from typing import Optional
 
-from app.services.algorithm_config import (
+from app.ml.kernel_ref.algorithm_config import (
     ELEVATION_DECAY_CONSTANT,
     ELEVATION_BONUS_MAX,
 )
