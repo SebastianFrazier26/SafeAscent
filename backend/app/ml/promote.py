@@ -290,6 +290,9 @@ def issue_markdown(version: str, gate: GateResult, diff: DiffReport, *, public: 
                 *(f"| {k} | {_delta(v)} |" for k, v in sorted(diff.metric_deltas.items())), ""]
     out += ["### Gate", "| component | passed | marginal | value | threshold |", "|---|---|---|---|---|",
             *_gate_rows(gate)]
+    if gate.active_family == "kernel":
+        out += ["", "spatial_log_score and rolling_log_score compare the model's predictive (NegBin) log score "
+                "against the kernel's Poisson point score: not like-for-like, though they still gate."]
     if "prospective_top10" in gate.components:
         out += ["", "prospective_top10 ranks the kernel's stored prospective scores against the model's. The "
                 "kernel's prospective log score uses a calibration map fit in-window, so it is not a held-out "

@@ -258,3 +258,12 @@ def test_gate_result_is_json_ready():
     json.dumps({"components": gate.components}, allow_nan=False)
     deep = copy.deepcopy(gate.components)
     assert deep["spatial_top10"]["value"] is None
+
+
+def test_issue_labels_kernel_log_score_comparison():
+    d = diff_report(*rows_for_diff(changed_share=0.0), reference_month=10, new_family=False)
+    ch = challenger_metrics()
+    kernel = {"by_kind": {k: {"log_score": -0.7, "top10": 0.2} for k in ("spatial", "rolling")}}
+    label = "not like-for-like"
+    assert label in issue_markdown("v", evaluate_gate(ch, kernel, active_family="kernel"), d)
+    assert label not in issue_markdown("v", evaluate_gate(*_pair(), active_family="eb_v1"), d)
