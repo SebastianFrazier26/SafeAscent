@@ -3,7 +3,9 @@ from datetime import date, timedelta
 
 import pytest
 
-from app.pipelines.exposure_components import keys, mp_ticks, route_density, scope, season, season_window
+from app.pipelines.exposure_components import (
+    keys, mp_ticks, route_density, scope, season, season_blackout, season_window,
+)
 from app.pipelines.exposure_math import ICE_WINDOW, alpine_day, ice_day, rock_day
 from tests.pgtest import migrated_db, requires_pg, run_on_conn, run_sql
 
@@ -121,6 +123,32 @@ def test_a_zero_day_minimum_is_refused_at_import(monkeypatch):
         importlib.reload(mod)
     monkeypatch.undo()
     importlib.reload(mod)
+
+
+def test_season_window_edges():
+    assert season_window(date(2022, 1, 1), date(2026, 1, 1), today=TODAY) == (WIN_START, WIN_END)
+    assert season_window(date(2023, 1, 1), date(2025, 12, 31), today=date(2025, 12, 31)) == (WIN_START, WIN_END)
+    assert season_window(date(2022, 1, 1), date(2025, 12, 30), today=date(2025, 12, 31)) == (date(2022, 1, 1),
+                                                                                            date(2024, 12, 31))
+    # Pruned on 2027-01-01 to Jan 1 of 2024: no window until the January purchase extends last.
+    assert season_window(date(2024, 1, 1), date(2026, 1, 5), today=date(2027, 1, 10)) is None
+    assert season_window(date(2024, 1, 1), date(2027, 1, 5), today=date(2027, 1, 20)) == (date(2024, 1, 1),
+                                                                                          date(2026, 12, 31))
+
+
+def test_january_blackout_is_detected_and_nothing_else_is():
+    assert season_blackout(date(2024, 1, 1), date(2026, 1, 5), today=date(2027, 1, 10))
+    assert season_blackout(date(2024, 1, 1), date(2026, 12, 30), today=date(2027, 1, 10))
+    assert season_blackout(date(2024, 1, 1), date(2026, 1, 1), today=date(2027, 1, 10))
+    assert not season_blackout(date(2024, 1, 1), date(2027, 1, 5), today=date(2027, 1, 20))
+    assert not season_blackout(ERA5_FIRST, ERA5_LAST, today=TODAY)
+    # Before prune runs, the old span still holds three complete years: no blackout.
+    assert not season_blackout(date(2023, 1, 1), date(2026, 1, 5), today=date(2027, 1, 1))
+    # A series that is genuinely short is insufficient_history, not a blackout.
+    assert not season_blackout(date(2025, 6, 1), date(2027, 1, 5), today=date(2027, 1, 20))
+    assert not season_blackout(date(2025, 6, 1), date(2026, 1, 5), today=date(2027, 1, 10))
+    # Stale by a whole purchase (no 2026 days at all) is a fill gap, not the January blackout.
+    assert not season_blackout(date(2024, 1, 1), date(2025, 12, 31), today=date(2027, 1, 10))
 
 
 def test_season_window_is_complete_calendar_years():

@@ -1,6 +1,12 @@
 """Exposure component readers: one set-based query per component over the MP catalog (cells are
 areas with directly attached scorable routes, DP5). Each returns a Component for every key of the
-scope, so assembly fails loudly on a gap instead of filling one."""
+scope, so assembly fails loudly on a gap instead of filling one.
+
+January build blackout (accepted, owner ruling): on Jan 1 era5_fill.prune moves a non-incident
+series' first_era5_date up to Jan 1 of year-3, but its last_era5_date stays short of Dec 31 of
+year-1 until that January's ERA5 window lands. Until then the series holds no SEASON_YEARS complete
+years and its season reads insufficient_history. Build after the January ERA5 window completes;
+season_blackout lets the build CLI warn instead of writing a snapshot of missing seasons."""
 
 from __future__ import annotations
 
@@ -84,6 +90,15 @@ def season_window(first: date, last: date, *, today: date) -> tuple[date, date] 
     return (since, date(end_year, 12, 31)) if first <= since else None
 
 
+def season_blackout(first: date, last: date, *, today: date) -> bool:
+    """True when a series has no season window only because this year's ERA5 has not landed yet:
+    its span reaches back to the pruned floor (Jan 1 of year-SEASON_YEARS) and last year's purchase
+    did land (it has days in year-1). Without a window, last already stops short of Dec 31 of
+    year-1. A series short for any other reason, or stale by more than one purchase, is not one."""
+    return (season_window(first, last, today=today) is None
+            and first <= date(today.year - SEASON_YEARS, 1, 1) and last >= date(today.year - 1, 1, 1))
+
+
 async def season(conn: AsyncConnection, scope_: Scope, *, today: date) -> dict[Key, Component]:
     areas = sorted({a for a, _ in scope_})
     points: dict[int, tuple[int, str] | None] = {}
@@ -94,6 +109,8 @@ async def season(conn: AsyncConnection, scope_: Scope, *, today: date) -> dict[K
             continue
         points[int(a)] = (int(b), str(tz))
         spans[(int(b), str(tz))] = (first, last) if first is not None and last is not None else None
+    # Windows are per series: two areas whose series end at different last_era5_date can sit on
+    # different windows (one series filled past a new Dec 31, another not yet).
     windows = {k: season_window(v[0], v[1], today=today) for k, v in spans.items() if v is not None}
     wanted = sorted((k, w) for k, w in windows.items() if w is not None)
     shares: dict[tuple[int, str, int, str], tuple[int, float | None]] = {}

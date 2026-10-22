@@ -2353,6 +2353,12 @@ The Shell state, Secrets, Long runs and Gates rules are as in Task 3. **Owner do
 
 The re-entry block is Task 3's with `B=xp-2-rehearsal`, without the `EXPORT` line. The prod preamble is Task 3's with `GATE_DIR=../data/review/gates_xp2_prod`.
 
+**January blackout (accepted, owner ruling).** Build after the January ERA5 window completes.
+- **Cause.** On Jan 1, `era5_fill.prune` moves each non-incident series' `first_era5_date` up to Jan 1 of year−3. Its `last_era5_date` stays short of Dec 31 of year−1 until that January's `era5_window` run lands, so the series holds fewer than 3 complete ERA5 years.
+- **Effect.** Every such series' season reads `insufficient_history`. Plan 3's prune is not changed.
+- **Detection.** `exposure_components.season_blackout` flags these series.
+- **If it fires.** A build that sees it warns. Do not run any step of this runbook, branch or prod, until the January window has completed.
+
 - [ ] **Step 0 (agent): Checkout and tools.** As Task 3 Step 0 (agent part). `uv run alembic heads` prints exactly `0011_exposure_index (head)`.
 
 - [ ] **Step 1 (agent): Branch `xp-2-rehearsal`; migrate; grants**
