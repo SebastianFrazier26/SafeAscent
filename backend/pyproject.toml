@@ -148,6 +148,7 @@ module = [
     "app.ml.features",
     "app.ml.fixtures",
     "app.ml.folds",
+    "app.ml.glm",
     "app.pipelines.accident_facts",
     "app.pipelines.dem",
     "app.pipelines.epqs",
