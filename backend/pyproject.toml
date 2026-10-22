@@ -160,6 +160,7 @@ module = [
     "app.ml.posterior",
     "app.ml.explain",
     "app.ml.model",
+    "app.ml.metrics",
     "app.pipelines.accident_facts",
     "app.pipelines.dem",
     "app.pipelines.epqs",
