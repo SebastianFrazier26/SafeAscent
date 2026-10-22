@@ -20,6 +20,23 @@ from app.pipelines.geo import haversine_km
 from app.pipelines.gnis import state_code
 
 Level = Literal["cell", "state", "dropped"]
+Reason = Literal[
+    # cell
+    "route_link",  # scorable linked route: weight 1 on its group
+    "route_group_in_area",  # linked route not scorable, its known group present in its area: weight 1
+    "area_link",  # area link or unknown-type route: split by the area's scorable routes
+    "nearest_area",  # trusted point, nearest scorable area within NEAREST_AREA_KM
+    # state
+    "unresolved_link",  # link whose route has no area, or whose area is not in the lookup
+    "area_without_scorable",  # linked area holds no scorable route
+    "untrusted_precision",  # no link and a geocode precision outside TRUSTED_FOR_CELLS
+    "no_coordinates",  # trusted precision but no lat/lon
+    "beyond_3km",  # trusted point with no scorable area within NEAREST_AREA_KM
+    # dropped
+    "no_date",
+    "boulder_route",
+    "no_state",
+]
 
 
 @dataclass(frozen=True)
@@ -60,6 +77,7 @@ class AreaLookup:
         self._ids = np.array([a.area_id for a in areas], dtype=np.int64)
         self._lat = np.array([a.lat for a in areas], dtype=np.float64)
         self._lon = np.array([a.lon for a in areas], dtype=np.float64)
+        self._scorable = np.array([bool(_split(a)) for a in areas], dtype=np.bool_)
 
     def get(self, area_id: int | None) -> AreaInfo | None:
         return None if area_id is None else self._by_id.get(area_id)
@@ -69,7 +87,7 @@ class AreaLookup:
             return None
         # pre-flight F18: a fixed lon box skips true neighbours above ~45 N; scale by cos(lat)
         lon_deg = max_km / (111.0 * max(math.cos(math.radians(lat)), 0.1))
-        box = (np.abs(self._lat - lat) < max_km / 100.0) & (np.abs(self._lon - lon) < lon_deg)
+        box = self._scorable & (np.abs(self._lat - lat) < max_km / 100.0) & (np.abs(self._lon - lon) < lon_deg)
         best: tuple[float, int] | None = None
         for i in np.flatnonzero(box):
             km = haversine_km(lat, lon, float(self._lat[i]), float(self._lon[i]))
@@ -82,7 +100,7 @@ class AreaLookup:
 class Placement:
     accident_id: int
     level: Level
-    reason: str
+    reason: Reason
     area_id: int | None
     state_code: str | None
     group_weights: tuple[tuple[str, float], ...]
@@ -95,7 +113,14 @@ class Placement:
 
 def interval(row: IncidentRow) -> tuple[date, date] | None:
     """Half-open [lo, hi). None when the row has no usable time: an `unknown` or missing
-    precision is never read as a day."""
+    precision is never read as a day, and an inverted or empty range is no interval."""
+    if row.date_precision in (None, "unknown"):
+        return None
+    span = _raw_interval(row)
+    return None if span is None or span[0] >= span[1] else span
+
+
+def _raw_interval(row: IncidentRow) -> tuple[date, date] | None:
     ranged = row.year_lo is not None and row.year_hi is not None and row.year_lo < row.year_hi
     if row.date_precision == "year" or ranged:
         lo = row.year_lo if row.year_lo is not None else (row.date.year if row.date else row.year)
@@ -132,7 +157,7 @@ def place(row: IncidentRow, areas: AreaLookup) -> Placement:
     )
     st = state_code(row.state)
 
-    def out(level: Level, reason: str, info: AreaInfo | None = None,
+    def out(level: Level, reason: Reason, info: AreaInfo | None = None,
             groups: tuple[tuple[str, float], ...] = ()) -> Placement:
         return Placement(
             row.accident_id, level, reason,
@@ -148,20 +173,30 @@ def place(row: IncidentRow, areas: AreaLookup) -> Placement:
     if row.link_route_id is not None and row.route_type_group is None and row.route_area_id is not None:
         return out("dropped", "boulder_route")
     linked = areas.get(row.route_area_id if row.link_route_id is not None else row.link_area_id)
-    if row.link_route_id is not None and row.route_scorable and row.route_type_group in TYPE_GROUPS and linked:
-        return out("cell", "route_link", linked, ((str(row.route_type_group), 1.0),))
+    group = row.route_type_group if row.link_route_id is not None and row.route_type_group in TYPE_GROUPS else None
+    if group is not None and row.route_scorable and linked is not None:
+        return out("cell", "route_link", linked, ((group, 1.0),))
     if linked is not None and (split := _split(linked)):
+        # Owner ruling (Task 6 review): a known route group is real information; splitting it
+        # across the area would dilute it.
+        if group is not None and group in dict(split):
+            return out("cell", "route_group_in_area", linked, ((group, 1.0),))
         return out("cell", "area_link", linked, split)
-    if (
-        row.link_route_id is None and row.link_area_id is None and row.geocode_precision in TRUSTED_FOR_CELLS
-        and row.lat is not None and row.lon is not None
-    ):
+    state_reason: Reason
+    if row.link_route_id is not None or row.link_area_id is not None:
+        state_reason = "unresolved_link" if linked is None else "area_without_scorable"
+    elif row.geocode_precision not in TRUSTED_FOR_CELLS:
+        state_reason = "untrusted_precision"
+    elif row.lat is None or row.lon is None:
+        state_reason = "no_coordinates"
+    else:
         near = areas.nearest(row.lat, row.lon, NEAREST_AREA_KM)
-        if near is not None and (split := _split(near)):
-            return out("cell", "nearest_area", near, split)
+        if near is not None:
+            return out("cell", "nearest_area", near, _split(near))
+        state_reason = "beyond_3km"
     if st is None:
         return out("dropped", "no_state")
-    return out("state", "state_only")
+    return out("state", state_reason)
 
 
 def window_fraction(p: Placement, start: date, end: date) -> float:

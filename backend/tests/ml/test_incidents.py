@@ -44,14 +44,56 @@ def test_unknown_type_route_splits_by_area_routes():
 def test_area_link_with_no_scorable_route_is_state_not_nearest():
     areas = AreaLookup([*AREAS._by_id.values(), AreaInfo(900000130, "CO", 40.001, -105.001, {"unknown": 4})])
     p = place(row(link_method="owner", link_area_id=900000130), areas)
-    assert (p.level, p.area_id, p.group_weights) == ("state", None, ())
+    assert (p.level, p.reason, p.area_id, p.group_weights) == ("state", "area_without_scorable", None, ())
+
+
+def test_link_without_a_known_area_is_unresolved():
+    p = place(row(link_method="owner", link_route_id=900000009, route_area_id=None, route_type_group="trad",
+                  route_scorable=False), AREAS)
+    assert (p.level, p.reason, p.area_id) == ("state", "unresolved_link", None)
+    assert place(row(link_method="owner", link_area_id=900000999), AREAS).reason == "unresolved_link"
+
+
+def test_unscorable_route_with_known_group_keeps_its_group_when_the_area_has_it():
+    kept = place(row(link_method="owner", link_route_id=900000009, route_area_id=900000110,
+                     route_type_group="sport", route_scorable=False), AREAS)
+    assert (kept.level, kept.reason, kept.group_weights) == ("cell", "route_group_in_area", (("sport", 1.0),))
+    split = place(row(link_method="owner", link_route_id=900000009, route_area_id=900000110,
+                      route_type_group="ice", route_scorable=False), AREAS)
+    assert (split.level, split.reason) == ("cell", "area_link")
+    assert dict(split.group_weights) == pytest.approx({"trad": 0.75, "sport": 0.25})
+
+
+def test_nearest_skips_an_area_without_scorable_routes():
+    areas = AreaLookup([
+        AreaInfo(900000150, "CO", 40.001, -105.001, {"unknown": 5}),
+        AreaInfo(900000151, "CO", 40.00226, -105.001, {"trad": 1}),
+    ])
+    assert haversine_km(40.001, -105.001, 40.00226, -105.001) == pytest.approx(0.14, abs=0.005)
+    p = place(row(), areas)
+    assert (p.level, p.reason, p.area_id) == ("cell", "nearest_area", 900000151)
+
+
+def test_nearest_picks_the_closer_area_and_breaks_ties_by_lower_id():
+    closer = AreaLookup([
+        AreaInfo(900000160, "CO", 40.0, -105.02, {"trad": 1}),
+        AreaInfo(900000161, "CO", 40.0, -105.01, {"trad": 1}),
+    ])
+    assert closer.nearest(40.0, -105.0, 3.0) == closer.get(900000161)
+    tied = AreaLookup([
+        AreaInfo(900000171, "CO", 40.0, -104.9875, {"trad": 1}),
+        AreaInfo(900000170, "CO", 40.0, -105.0125, {"sport": 1}),
+    ])
+    assert haversine_km(40.0, -105.0, 40.0, -104.9875) == haversine_km(40.0, -105.0, 40.0, -105.0125)
+    assert tied.nearest(40.0, -105.0, 3.0) == tied.get(900000170)
 
 
 def test_point_only_uses_nearest_area_within_3km_else_state():
     near = place(row(), AREAS)
     assert (near.level, near.area_id, near.reason) == ("cell", 900000110, "nearest_area")
     far = place(row(lat=40.05, lon=-105.05), AREAS)  # ~7 km away
-    assert (far.level, far.state_code, far.area_id) == ("state", "CO", None)
+    assert (far.level, far.reason, far.state_code, far.area_id) == ("state", "beyond_3km", "CO", None)
+    assert place(row(lat=None, lon=None), AREAS).reason == "no_coordinates"
 
 
 def test_nearest_at_alaska_latitude():
@@ -66,12 +108,12 @@ def test_nearest_at_alaska_latitude():
 def test_park_centroid_and_untrusted_points_are_state_only():
     for precision in ("park_centroid", "region_fallback", "unknown", None):
         p = place(row(geocode_precision=precision), AREAS)
-        assert (p.level, p.area_id, p.group_weights) == ("state", None, ())
+        assert (p.level, p.reason, p.area_id, p.group_weights) == ("state", "untrusted_precision", None, ())
 
 
 def test_state_only_never_carries_area_or_groups_but_keeps_its_window():
     p = place(row(geocode_precision="park_centroid"), AREAS)
-    assert (p.level, p.reason, p.state_code) == ("state", "state_only", "CO")
+    assert (p.level, p.reason, p.state_code) == ("state", "untrusted_precision", "CO")
     assert p.area_id is None and p.group_weights == ()
     assert window_fraction(p, date(2010, 1, 1), date(2011, 1, 1)) == 1.0
 
@@ -86,6 +128,24 @@ def test_unknown_precision_is_never_read_as_a_day():
         p = place(row(date_precision=precision), AREAS)
         assert (p.level, p.reason) == ("dropped", "no_date")
         assert window_fraction(p, date(1990, 1, 1), date(2030, 1, 1)) == 0.0
+
+
+def test_unknown_precision_with_a_year_range_is_no_date():
+    r = row(date=None, date_precision="unknown", year_lo=2019, year_hi=2021)
+    assert interval(r) is None
+    assert (place(r, AREAS).level, place(r, AREAS).reason) == ("dropped", "no_date")
+
+
+def test_inverted_year_range_is_no_date():
+    r = row(date=None, date_precision="year", year_lo=2005, year_hi=2003)
+    assert interval(r) is None
+    assert place(r, AREAS).reason == "no_date"
+
+
+def test_row_weight_passes_through():
+    p = place(row(weight=0.5), AREAS)
+    assert p.weight == 0.5
+    assert place(row(weight=0.5, geocode_precision="park_centroid"), AREAS).weight == 0.5
 
 
 def test_year_interval_straddles_cutoff():
