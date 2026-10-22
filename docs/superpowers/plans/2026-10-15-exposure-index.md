@@ -2421,6 +2421,7 @@ Expected:
 - The build prints `status: ok` with the same `cells`, plus `tick_coverage_mean`, `full_coverage_cells` and (when defined) `spearman_point_ticks`.
 - The verify cells all pass and print coverage by type group.
 - The size is recorded; the D-11 estimate is about 120 MB.
+- `EXPLAIN (ANALYZE, BUFFERS)` of `exposure_components.SEASON_SQL` for one full `SERIES_CHUNK` (500 series) on the branch, as `ingest`, bound with that chunk's real buckets, timezones and windows. The plan should reach `cell_daily_conditions` through a nested loop on its primary key `(grid_bucket, tz, date)`, not a Seq Scan of the table. Paste the plan and its timing. A Seq Scan is a finding for the owner at Step 3, before any prod build.
 
 A high `null_points` means route-point ERA5 series are not filled yet. It is reported, never floored.
 
