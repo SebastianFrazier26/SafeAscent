@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SafeAscent: route risk forecasts</title>
+<meta name="description" content="SafeAscent estimates route-level climbing risk on a 0-100 scale from historical accidents and how closely the coming weather matches the weather before each one.">
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f6f7f4;
+  --surface: #ffffff;
+  --surface-2: #eef1ec;
+  --text: #1c2420;
+  --muted: #56615b;
+  --line: #d5dbd4;
+  --accent: #2f6f5e;
+  --accent-ink: #ffffff;
+  --node: #ffffff;
+  --node-line: #8a9890;
+  --group: #e7ece5;
+  --green: #2e8b57;
+  --yellow: #c9a227;
+  --orange: #d9772b;
+  --red: #c0392b;
+  --gray: #8a8f8c;
+  --status-bg: #fff6dc;
+  --status-line: #e3c25f;
+  --status-ink: #6b5310;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #121614;
+    --surface: #1a201d;
+    --surface-2: #222a26;
+    --text: #e4ebe6;
+    --muted: #a3b0a8;
+    --line: #34403a;
+    --accent: #6cc3a8;
+    --accent-ink: #0d1411;
+    --node: #1f2723;
+    --node-line: #6f7f76;
+    --group: #18201c;
+    --status-bg: #2b2513;
+    --status-line: #7a6424;
+    --status-ink: #f0d78a;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #121614;
+  --surface: #1a201d;
+  --surface-2: #222a26;
+  --text: #e4ebe6;
+  --muted: #a3b0a8;
+  --line: #34403a;
+  --accent: #6cc3a8;
+  --accent-ink: #0d1411;
+  --node: #1f2723;
+  --node-line: #6f7f76;
+  --group: #18201c;
+  --status-bg: #2b2513;
+  --status-line: #7a6424;
+  --status-ink: #f0d78a;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu, sans-serif;
+}
+a { color: var(--accent); }
+main { max-width: 860px; margin: 0 auto; padding: 24px 16px 40px; }
+header.hero { padding: 8px 0 4px; }
+.eyebrow { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; }
+h1 { font-size: clamp(26px, 5vw, 36px); line-height: 1.15; margin: 0 0 10px; }
+h2 { font-size: 19px; margin: 34px 0 10px; }
+h3 { font-size: 15px; margin: 18px 0 6px; }
+p { margin: 0 0 12px; }
+.lede { font-size: 17px; color: var(--muted); max-width: 62ch; }
+.status {
+  background: var(--status-bg); border: 1px solid var(--status-line); color: var(--status-ink);
+  border-radius: 8px; padding: 10px 14px; margin: 16px 0; font-size: 14px;
+}
+.links { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 0; }
+.btn {
+  display: inline-block; padding: 8px 14px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 14px;
+  border: 1px solid var(--accent); color: var(--accent); background: transparent;
+}
+.btn.primary { background: var(--accent); color: var(--accent-ink); }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.bands { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 10px 0; }
+.band { border-radius: 6px; padding: 6px 4px; text-align: center; color: #fff; font-size: 12px; font-weight: 600; }
+.band small { display: block; font-weight: 400; opacity: .9; }
+.b-green { background: var(--green); } .b-yellow { background: var(--yellow); color: #231c00; }
+.b-orange { background: var(--orange); } .b-red { background: var(--red); }
+code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+pre {
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; line-height: 1.5; margin: 8px 0 12px;
+}
+ul { padding-left: 20px; margin: 0 0 12px; }
+li { margin: 3px 0; }
+.diagram { width: 100%; height: auto; display: block; }
+.diagram text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; fill: var(--text); }
+.diagram .sub { fill: var(--muted); font-size: 11px; }
+.diagram .node { fill: var(--node); stroke: var(--node-line); stroke-width: 1.2; }
+.diagram .grp { fill: var(--group); stroke: var(--line); stroke-dasharray: 4 3; }
+.diagram .grp-label { fill: var(--muted); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
+.diagram .edge { stroke: var(--node-line); stroke-width: 1.4; fill: none; marker-end: url(#arrow); }
+.diagram .edge-label { fill: var(--muted); font-size: 10.5px; }
+.diagram #arrow path { fill: var(--node-line); }
+.toy label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 3px; }
+.toy select, .toy input[type=number] {
+  width: 100%; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface-2); color: var(--text); font: inherit;
+}
+.toy input[type=range] { width: 100%; accent-color: var(--accent); }
+.toy .row { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.toy .check { display: flex; gap: 8px; align-items: center; color: var(--text); font-size: 14px; }
+.result { display: flex; align-items: center; gap: 14px; margin: 6px 0 10px; }
+.score {
+  min-width: 92px; padding: 10px 12px; border-radius: 8px; text-align: center; color: #fff; font-weight: 700; font-size: 26px; line-height: 1.1;
+}
+.score small { display: block; font-size: 11px; font-weight: 500; letter-spacing: .04em; }
+.breakdown { width: 100%; border-collapse: collapse; font-size: 13px; }
+.breakdown td { padding: 4px 0; border-bottom: 1px solid var(--line); }
+.breakdown td:last-child { text-align: right; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.note { font-size: 13px; color: var(--muted); }
+.tag { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--status-ink); background: var(--status-bg); border: 1px solid var(--status-line); border-radius: 4px; padding: 1px 6px; vertical-align: middle; }
+footer { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+@media (max-width: 420px) {
+  body { font-size: 14px; }
+  .lede { font-size: 15px; }
+  .bands { grid-template-columns: repeat(2, 1fr); }
+}
+</style>
+<script>
+// Lets the embedding portfolio force a theme with ?theme=light|dark; otherwise the OS preference wins.
+(function () {
+  try {
+    var t = new URLSearchParams(location.search).get("theme");
+    if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+  } catch (e) {}
+})();
+</script>
+</head>
+<body>
+<main>
+  <header class="hero">
+    <p class="eyebrow">Project · open source</p>
+    <h1>SafeAscent</h1>
+    <p class="lede">Route-level risk forecasts for climbers. For a route and a day in the next few days, SafeAscent scores risk from 0 to 100 using past accidents nearby, weighted by how relevant each one is, and how closely the coming weather matches the weather before each of them.</p>
+    <div class="status" role="status"><strong>Revival in progress.</strong> safeascent.us is offline while the data pipeline, model, and operations are rebuilt, and the app is being relaunched. The code is public and changing week to week. No score shown before the rebuild should be relied on.</div>
+    <div class="links">
+      <a class="btn primary" href="https://github.com/SebastianFrazier26/SafeAscent" target="_blank" rel="noopener">Source on GitHub</a>
+      <a class="btn" href="https://github.com/SebastianFrazier26/SafeAscent/blob/main/ALGORITHM_DESIGN.md" target="_blank" rel="noopener">Algorithm design</a>
+      <a class="btn" href="https://github.com/SebastianFrazier26/SafeAscent/blob/main/CHANGELOG.md" target="_blank" rel="noopener">Changelog</a>
+    </div>
+  </header>
+
+  <section>
+    <h2>What it does</h2>
+    <div class="grid2">
+      <div class="card">
+        <h3 style="margin-top:0">One number, one scale</h3>
+        <p>Each route gets a 0–100 risk score for today and the next two days, precomputed nightly. The same four bands are used everywhere, each including its lower edge:</p>
+        <div class="bands" aria-label="Risk bands">
+          <div class="band b-green">Low<small>0 – 25</small></div>
+          <div class="band b-yellow">Moderate<small>25 – 50</small></div>
+          <div class="band b-orange">Elevated<small>50 – 75</small></div>
+          <div class="band b-red">High<small>75 – 100</small></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3 style="margin-top:0">Never a made-up number</h3>
+        <p>A score that is missing or failed to load reads <em>Unavailable</em> in gray. It never falls back to 0.</p>
+        <p style="margin:0">When no past accident contributes to a route, it reads <em>Too little evidence to estimate risk yet</em>. No local accidents is not the same as safe.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>How the score works</h2>
+    <p>Every historical accident adds some influence to a route's score. How much depends on how far away it was, how long ago, what kind of climbing it was, how severe, how close in elevation and grade, and above all on whether the weather before it looks like the weather coming up.</p>
+    <pre>influence = spatial × temporal × route_type × severity × elevation × grade × weather³
+score     = min(100, 7 × Σ influence)</pre>
+    <ul>
+      <li><strong>Weather similarity</strong> compares a 7-day weather window for the climb with the 7 days before each accident: temperature, precipitation, wind, visibility, cloud cover and freeze-thaw cycles, each matched with a weighted correlation that favors the days closest to the climb. Weather more than 2 standard deviations from that location's recent history amplifies it. It is cubed, so weather dominates, and an accident whose weather matches less than 25% is dropped.</li>
+      <li><strong>Distance</strong> fades on a Gaussian curve whose width depends on the planned route type: about 25 km for sport, 75 km for alpine. There is no hard cutoff, so a distant accident in near-identical weather can still count.</li>
+      <li><strong>Time</strong> fades slowly, over years. Terrain and objective hazards change little, so recency is deliberately a modest factor, with a small boost for accidents in the same season.</li>
+      <li><strong>Route type</strong> uses an asymmetric matrix. Sport-climbing accidents in bad weather are a strong signal for alpine routes (the canary effect), but alpine-specific accidents say less about sport routes.</li>
+      <li><strong>Severity</strong> is a mild boost: fatal 1.3×, serious 1.1×, minor 1.0×.</li>
+    </ul>
+    <p class="note">Planned next: a model that also borrows evidence from routes with similar characteristics anywhere, not only from accidents nearby, so that a route with no local history is not read as safe.</p>
+  </section>
+
+  <section>
+    <h2>Try the formula <span class="tag">Illustrative</span></h2>
+    <div class="card toy" id="toy">
+      <p class="note" style="margin-top:0">A toy version of the formula above with made-up inputs. It uses the same constants as the backend, but you set the weather similarity directly instead of computing it from two 7-day series, extreme-weather amplification is left out, and elevation and grade are held neutral (1.0). It is not a forecast for any real route.</p>
+      <div class="grid2">
+        <div>
+          <label for="planned">Route you are planning</label>
+          <select id="planned"></select>
+          <label for="acctype">Type of the past accidents</label>
+          <select id="acctype"></select>
+          <label for="severity">Their severity</label>
+          <select id="severity">
+            <option value="minor">Minor</option>
+            <option value="serious" selected>Serious</option>
+            <option value="fatal">Fatal</option>
+          </select>
+          <label for="count">How many such accidents</label>
+          <input id="count" type="number" min="1" max="50" value="5">
+        </div>
+        <div>
+          <div class="row"><label for="dist">Distance from the route</label><span class="mono" id="dist-out"></span></div>
+          <input id="dist" type="range" min="0" max="200" step="1" value="15">
+          <div class="row"><label for="years">How long ago</label><span class="mono" id="years-out"></span></div>
+          <input id="years" type="range" min="0" max="30" step="0.5" value="4">
+          <div class="row"><label for="wx">Weather similarity</label><span class="mono" id="wx-out"></span></div>
+          <input id="wx" type="range" min="0" max="1" step="0.01" value="0.8">
+          <label class="check"><input id="season" type="checkbox" checked> Same season as the climb</label>
+        </div>
+      </div>
+      <div class="result" aria-live="polite">
+        <div class="score" id="score">–</div>
+        <div id="verdict" class="note"></div>
+      </div>
+      <table class="breakdown" id="breakdown" aria-label="Weight breakdown for one accident"></table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Architecture</h2>
+    <svg class="diagram" viewBox="0 0 760 390" role="img" aria-labelledby="arch-title arch-desc">
+      <title id="arch-title">SafeAscent system architecture</title>
+      <desc id="arch-desc">The browser loads a React and Mapbox frontend, which calls a FastAPI service. A Celery beat scheduler enqueues a nightly job through Redis to a Celery worker. The worker computes scores using Open-Meteo weather, writes them to Redis and to Postgres with PostGIS. The API reads scores from Redis and Postgres.</desc>
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+      </defs>
+      <rect class="grp" x="150" y="14" width="600" height="236" rx="12"/>
+      <text class="grp-label" x="166" y="34">Railway</text>
+      <rect class="grp" x="150" y="268" width="300" height="110" rx="12"/>
+      <text class="grp-label" x="166" y="287">Neon</text>
+
+      <rect class="node" x="10" y="128" width="110" height="56" rx="8"/>
+      <text x="65" y="153" text-anchor="middle" font-size="13" font-weight="600">Browser</text>
+      <text class="sub" x="65" y="170" text-anchor="middle">climber</text>
+
+      <rect class="node" x="170" y="44" width="170" height="64" rx="8"/>
+      <text x="255" y="68" text-anchor="middle" font-size="13" font-weight="600">Frontend</text>
+      <text class="sub" x="255" y="85" text-anchor="middle">React 19 · Vite · MUI</text>
+      <text class="sub" x="255" y="99" text-anchor="middle">Mapbox GL map</text>
+
+      <rect class="node" x="170" y="160" width="170" height="64" rx="8"/>
+      <text x="255" y="184" text-anchor="middle" font-size="13" font-weight="600">API</text>
+      <text class="sub" x="255" y="201" text-anchor="middle">FastAPI · async SQLAlchemy</text>
+      <text class="sub" x="255" y="215" text-anchor="middle">/api/v1, /health</text>
+
+      <rect class="node" x="400" y="44" width="150" height="64" rx="8"/>
+      <text x="475" y="68" text-anchor="middle" font-size="13" font-weight="600">Celery beat</text>
+      <text class="sub" x="475" y="85" text-anchor="middle">scheduler, 1 replica</text>
+      <text class="sub" x="475" y="99" text-anchor="middle">nightly 02:00 UTC</text>
+
+      <rect class="node" x="400" y="160" width="150" height="64" rx="8"/>
+      <text x="475" y="186" text-anchor="middle" font-size="13" font-weight="600">Redis</text>
+      <text class="sub" x="475" y="203" text-anchor="middle">broker · score cache</text>
+
+      <rect class="node" x="600" y="100" width="135" height="64" rx="8"/>
+      <text x="667" y="124" text-anchor="middle" font-size="13" font-weight="600">Celery worker</text>
+      <text class="sub" x="667" y="141" text-anchor="middle">scores every route</text>
+      <text class="sub" x="667" y="155" text-anchor="middle">today + 2 days</text>
+
+      <rect class="node" x="170" y="300" width="260" height="60" rx="8"/>
+      <text x="300" y="325" text-anchor="middle" font-size="13" font-weight="600">Postgres 16 + PostGIS</text>
+      <text class="sub" x="300" y="343" text-anchor="middle">Alembic-owned schema · least-privilege roles</text>
+
+      <rect class="node" x="600" y="300" width="135" height="60" rx="8"/>
+      <text x="667" y="325" text-anchor="middle" font-size="13" font-weight="600">Open-Meteo</text>
+      <text class="sub" x="667" y="343" text-anchor="middle">forecasts · ERA5</text>
+
+      <path class="edge" d="M120,145 L168,84"/>
+      <path class="edge" d="M120,168 L168,186"/>
+      <path class="edge" d="M475,108 L475,158"/>
+      <text class="edge-label" x="482" y="138">enqueue</text>
+      <path class="edge" d="M342,192 L398,192"/>
+      <text class="edge-label" x="352" y="185">cache</text>
+      <path class="edge" d="M552,178 L598,146"/>
+      <path class="edge" d="M628,166 Q610,215 552,210"/>
+      <text class="edge-label" x="578" y="236">scores</text>
+      <path class="edge" d="M255,226 L255,298"/>
+      <text class="edge-label" x="262" y="266">reads</text>
+      <path class="edge" d="M650,166 L432,312"/>
+      <text class="edge-label" x="500" y="292">writes scores</text>
+      <path class="edge" d="M690,166 L690,298"/>
+      <text class="edge-label" x="697" y="266">weather</text>
+    </svg>
+    <p class="note">Hosted on Railway (frontend, API, worker, beat, Redis) with Postgres on Neon. The API reads with a role that can write only the score history table; data jobs run with their own separately scoped role. Missed nightly runs page through healthchecks.io dead-man checks.</p>
+  </section>
+
+  <section>
+    <h2>Data and rules</h2>
+    <ul>
+      <li><strong>Accidents:</strong> American Alpine Club, Avalanche.org/CAIC and NPS records, cleaned and de-duplicated by audited repair jobs. Not redistributed.</li>
+      <li><strong>Weather:</strong> Open-Meteo forecasts and ERA5 reanalysis history keyed to each crag's local calendar day. The live app never calls a weather API at request time for history.</li>
+      <li><strong>Licensing:</strong> code is Apache-2.0; data follows <a href="https://github.com/SebastianFrazier26/SafeAscent/blob/main/DATA_LICENSE.md" target="_blank" rel="noopener">DATA_LICENSE.md</a>. CI guards block scraper code anywhere in the repository and third-party route identifiers in its data, docs and test fixtures.</li>
+    </ul>
+  </section>
+
+  <footer>
+    SafeAscent by Sebastian Frazier · <a href="https://github.com/SebastianFrazier26/SafeAscent" target="_blank" rel="noopener">github.com/SebastianFrazier26/SafeAscent</a>
+    <!-- build-stamp -->
+  </footer>
+</main>
+
+<script type="application/json" id="model-constants">
+{
+  "spatial_bandwidth_km": {"alpine": 75.0, "ice": 50.0, "mixed": 60.0, "trad": 40.0, "sport": 25.0, "aid": 30.0},
+  "temporal_lambda": {"alpine": 0.9998, "ice": 0.9997, "mixed": 0.9997, "trad": 0.9995, "sport": 0.999, "aid": 0.9995},
+  "temporal_decay_impact": 0.35,
+  "temporal_decay_shape": 1.5,
+  "temporal_seasonal_impact": 0.10,
+  "seasonal_boost": 1.5,
+  "severity_boosters": {"fatal": 1.3, "serious": 1.1, "minor": 1.0},
+  "route_type_weights": {
+    "sport":  {"sport": 1.0, "trad": 0.7, "alpine": 0.3, "ice": 0.2, "mixed": 0.3, "aid": 0.5},
+    "trad":   {"sport": 0.6, "trad": 1.0, "alpine": 0.6, "ice": 0.3, "mixed": 0.5, "aid": 0.8},
+    "alpine": {"sport": 0.9, "trad": 0.8, "alpine": 1.0, "ice": 0.8, "mixed": 0.9, "aid": 0.6},
+    "ice":    {"sport": 0.4, "trad": 0.5, "alpine": 0.9, "ice": 1.0, "mixed": 0.9, "aid": 0.4},
+    "mixed":  {"sport": 0.5, "trad": 0.6, "alpine": 0.9, "ice": 0.9, "mixed": 1.0, "aid": 0.5},
+    "aid":    {"sport": 0.5, "trad": 0.8, "alpine": 0.6, "ice": 0.3, "mixed": 0.5, "aid": 1.0}
+  },
+  "weather_power": 3,
+  "weather_exclusion_threshold": 0.25,
+  "risk_normalization_factor": 7.0,
+  "max_risk_score": 100,
+  "risk_band_thresholds": [25.0, 50.0, 75.0],
+  "min_estimable_score": 0.05
+}
+</script>
+<script>
+(function () {
+  var M = JSON.parse(document.getElementById("model-constants").textContent);
+  var TYPES = ["sport", "trad", "alpine", "ice", "mixed", "aid"];
+  var $ = function (id) { return document.getElementById(id); };
+
+  function fill(sel, value) {
+    TYPES.forEach(function (t) {
+      var o = document.createElement("option");
+      o.value = t; o.textContent = t.charAt(0).toUpperCase() + t.slice(1);
+      if (t === value) o.selected = true;
+      sel.appendChild(o);
+    });
+  }
+  fill($("planned"), "alpine");
+  fill($("acctype"), "sport");
+
+  function band(score) {
+    var t = M.risk_band_thresholds;
+    if (score < t[0]) return ["Low", "var(--green)"];
+    if (score < t[1]) return ["Moderate", "var(--yellow)"];
+    if (score < t[2]) return ["Elevated", "var(--orange)"];
+    return ["High", "var(--red)"];
+  }
+
+  function compute() {
+    var planned = $("planned").value, acc = $("acctype").value;
+    var dist = +$("dist").value, years = +$("years").value, wx = +$("wx").value;
+    var n = Math.max(1, Math.min(50, Math.round(+$("count").value) || 1));
+    var sameSeason = $("season").checked;
+
+    var h = M.spatial_bandwidth_km[planned];
+    var spatial = Math.exp(-(dist * dist) / (2 * h * h));
+
+    var days = Math.round(years * 365.25);
+    var decay = Math.pow(M.temporal_lambda[planned], days);
+    var temporal = 1 - M.temporal_decay_impact * (1 - Math.pow(decay, M.temporal_decay_shape));
+    if (sameSeason) temporal *= 1 + (M.seasonal_boost - 1) * M.temporal_seasonal_impact;
+
+    var routeType = M.route_type_weights[planned][acc];
+    var severity = M.severity_boosters[$("severity").value];
+    var excluded = wx < M.weather_exclusion_threshold;
+    var weather = excluded ? 0 : Math.pow(wx, M.weather_power);
+
+    var one = spatial * temporal * routeType * severity * weather;
+    var raw = Math.min(M.max_risk_score, Math.max(0, n * one * M.risk_normalization_factor));
+
+    $("dist-out").textContent = dist + " km";
+    $("years-out").textContent = years + (years === 1 ? " year" : " years");
+    $("wx-out").textContent = Math.round(wx * 100) + "%";
+
+    var scoreEl = $("score"), verdict = $("verdict");
+    if (excluded || raw < M.min_estimable_score) {
+      scoreEl.style.background = "var(--gray)";
+      scoreEl.innerHTML = "–<small>NO SCORE</small>";
+      verdict.textContent = excluded
+        ? "Weather match below 25%: these accidents are dropped, so nothing contributes. The app would show “Too little evidence to estimate risk yet”."
+        : "Too little evidence to estimate risk yet.";
+    } else {
+      var b = band(raw);
+      scoreEl.style.background = b[1];
+      scoreEl.innerHTML = raw.toFixed(1) + "<small>" + b[0].toUpperCase() + "</small>";
+      verdict.textContent = n + " accident" + (n === 1 ? "" : "s") + " × " + one.toFixed(3) +
+        " influence each × " + M.risk_normalization_factor + (raw >= M.max_risk_score ? ", capped at 100." : ".");
+    }
+
+    var rows = [
+      ["Spatial (Gaussian, " + h + " km width)", spatial],
+      ["Temporal" + (sameSeason ? " (incl. same-season boost)" : ""), temporal],
+      ["Route type (" + planned + " ← " + acc + ")", routeType],
+      ["Severity", severity],
+      ["Elevation, grade (held neutral)", 1],
+      ["Weather similarity³" + (excluded ? " (excluded)" : ""), weather],
+      ["Influence of one accident", one]
+    ];
+    var tbl = $("breakdown");
+    tbl.textContent = "";
+    rows.forEach(function (r, i) {
+      var tr = tbl.insertRow(), a = tr.insertCell(), c = tr.insertCell();
+      a.textContent = r[0]; c.textContent = r[1].toFixed(3);
+      if (i === rows.length - 1) tr.style.fontWeight = "600";
+    });
+  }
+
+  ["planned", "acctype", "severity", "count", "dist", "years", "wx", "season"].forEach(function (id) {
+    $(id).addEventListener("input", compute);
+    $(id).addEventListener("change", compute);
+  });
+  compute();
+})();
+</script>
+</body>
+</html>

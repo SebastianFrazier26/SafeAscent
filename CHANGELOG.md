@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Project page on GitHub Pages — 2026-10-22
+
+- `site/index.html`: a static project page (what SafeAscent does, the scoring method, an inline architecture diagram, current status, links) for the owner's portfolio to embed while safeascent.us is offline. No data, no API calls, light/dark, framable. Includes an illustrative toy scorer using the backend's constants with weather similarity set by hand; `backend/tests/test_site_model_constants.py` fails if those constants drift from `algorithm_config.py`/`risk_bands.py`/`safety_algorithm.py`.
+- `.github/workflows/pages.yml`: deploys `site/` to GitHub Pages on every push to `main` and on dispatch (actions pinned by SHA). The owner enables Pages (Source: GitHub Actions) once; see `DEPLOYMENT.md`.
+
 ### MP catalog final-review fixes — 2026-10-15
 
 - Route types `rt-mp-v3` (2026-10-14): a route whose only discipline evidence is toprope or aid ("Rock, TR" included) maps to `rock` (sport or trad, unknown), no longer `trad`; a V grade means a boulder whatever the type flags. The first refresh under the new version rewrites every route's `facts_sha256` once.
