@@ -273,6 +273,7 @@ import { format, parseISO } from 'date-fns';
 import {
   CONFIDENCE_LABEL,
   INSUFFICIENT_DATA_LABEL,
+  markerStyle,
   INSUFFICIENT_DATA_MESSAGE,
   NO_RISK_HEX,
   UNAVAILABLE_CHIP_STYLE,
@@ -285,6 +286,7 @@ import {
 } from '../utils/riskUtils';
 import { SCORE_UNAVAILABLE_MESSAGE } from '../services/api';
 import RiskScoreSummary from './RiskScoreSummary';
+import RiskSwatch from './RiskSwatch';
 import { readableTextOn } from '../utils/color';
 import {
   LOGGED_ASCENTS_NOTE,
@@ -448,9 +450,14 @@ function headerRiskChip(safety) {
     return { label: 'Risk: Unavailable', colors: UNAVAILABLE_CHIP_STYLE };
   }
   if (safety.status === 'insufficient') {
-    return { label: `Risk: ${INSUFFICIENT_DATA_LABEL}`, colors: riskChipStyle(safety.data) };
+    return { label: `Risk: ${INSUFFICIENT_DATA_LABEL}`, colors: riskChipStyle(safety.data), cell: safety.data };
   }
-  return { label: `Risk: ${formatRiskScore(safety.data.risk_score)}`, colors: riskChipStyle(safety.data) };
+  const lowConfidence = safety.data.confidence === 'low' ? ` (${CONFIDENCE_LABEL.low.toLowerCase()})` : '';
+  return {
+    label: `Risk: ${formatRiskScore(safety.data.risk_score)}${lowConfidence}`,
+    colors: riskChipStyle(safety.data),
+    cell: safety.data,
+  };
 }
 
 // Tab panel component
@@ -497,6 +504,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
   const [exportMenuAnchor, setExportMenuAnchor] = useState(null);
   const displayRouteName = formatRouteNameWithType(routeData?.name, routeData?.type);
   const riskChip = headerRiskChip(safety);
+  const headerHatch = markerStyle(riskChip.cell);
 
   // Reset tab when modal opens - default to Route Details (tab 1)
   useEffect(() => {
@@ -761,6 +769,9 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
           </Box>
           <Chip
             label={riskChip.label}
+            icon={headerHatch.hatch ? (
+              <RiskSwatch fill={headerHatch.fill} hatch borderColor={riskChip.colors.color} testId="risk-header-hatch" />
+            ) : undefined}
             sx={{
               ...riskChip.colors,
               fontWeight: 600,

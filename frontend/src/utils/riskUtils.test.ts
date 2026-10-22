@@ -12,12 +12,14 @@ import {
   formatScoreWithRange,
   getRiskDescription,
   markerStyle,
+  riskChipStyle,
   getMarkerColor,
   getRiskColor,
   getRiskColorCode,
   getRiskLevel,
   isRiskScore,
 } from './riskUtils';
+import { contrastRatio } from './color';
 
 describe('isRiskScore', () => {
   it('accepts finite numbers including 0', () => {
@@ -152,5 +154,21 @@ describe('score text', () => {
     expect(RISK_DISCLAIMER).toBe(
       'Based on reported incidents and estimated climbing traffic, not on the current condition of this route.',
     );
+  });
+});
+
+describe('riskChipStyle', () => {
+  const cells = [
+    ...[10, 30, 60, 90].map((risk_score) => ({ data_status: 'ok', risk_score, confidence: 'low' })),
+    { data_status: 'insufficient_data', risk_score: null },
+  ];
+
+  it.each(cells)('text on the flat fill reaches 4.5:1 (%o)', (cell) => {
+    const style = riskChipStyle(cell);
+    expect(contrastRatio(style.color, style.bgcolor)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('never puts the hatch behind chip text', () => {
+    for (const cell of cells) expect(riskChipStyle(cell)).not.toHaveProperty('backgroundImage');
   });
 });

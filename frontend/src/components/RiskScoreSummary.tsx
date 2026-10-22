@@ -17,16 +17,20 @@ import {
   markerStyle,
   riskChipStyle,
 } from '../utils/riskUtils';
+import RiskSwatch from './RiskSwatch';
 
 type Cell = Parameters<typeof markerStyle>[0];
 
 function SummaryChip({ label, cell }: { label: string; cell: Cell }) {
+  const { fill, hatch } = markerStyle(cell);
+  const style = riskChipStyle(cell);
   return (
     <Chip
       data-testid="risk-summary-chip"
-      data-hatch={String(markerStyle(cell).hatch)}
+      data-hatch={String(hatch)}
+      icon={hatch ? <RiskSwatch fill={fill} hatch borderColor={style.color} testId="risk-summary-hatch" /> : undefined}
       label={label}
-      sx={{ ...riskChipStyle(cell), fontWeight: 600, fontSize: '1rem', height: 'auto', py: 0.5 }}
+      sx={{ ...style, fontWeight: 600, fontSize: '1rem', height: 'auto', py: 0.5 }}
     />
   );
 }

@@ -44,6 +44,8 @@ const ROUTE_COLOR_MATCH_ARMS = [
   'gray', NO_RISK_HEX,
 ];
 const UNAVAILABLE_FILL = 'rgba(0, 0, 0, 0)';
+// An unfilled cluster's count sits on the map itself, so it takes the route-label colour.
+const CLUSTER_RING_TEXT_HEX = '#2c3e50';
 const HATCH_IMAGE_ID = 'risk-hatch';
 // Drawn at 2x so its 24px image covers the 12px cluster-view marker at icon-size 1.
 const HATCH_PIXEL_RATIO = 2;
@@ -566,23 +568,24 @@ export default function MapView({ selectedRouteForZoom }) {
                 risk_score_sum: ['+', ['coalesce', ['get', 'risk_score'], 0]],
                 // Unscored routes must not count toward the average, or they drag it greener.
                 risk_score_count: ['+', ['case', ['==', ['typeof', ['get', 'risk_score']], 'number'], 1, 0]],
+                insufficient_count: ['+', ['case', ['==', ['get', 'data_status'], 'insufficient_data'], 1, 0]],
               }}
             >
-              {/* Clustered points - gray unless half are scored, else the scored average */}
+              {/* Clustered points - scored average when half are scored, else gray or the unavailable ring */}
               <Layer
                 id="clusters"
                 type="circle"
                 source="routes"
                 filter={['has', 'point_count']}
                 paint={{
-                  'circle-color': clusterColorExpression(RISK_COLOR_HEX, NO_RISK_HEX),
+                  'circle-color': clusterColorExpression(RISK_COLOR_HEX, NO_RISK_HEX, UNAVAILABLE_FILL),
                   'circle-radius': [
                     'step',
                     ['get', 'point_count'],
                     15, 100, 22, 750, 30,
                   ],
                   'circle-stroke-width': 1.5,
-                  'circle-stroke-color': '#fff',
+                  'circle-stroke-color': MARKER_OUTLINE_HEX,
                 }}
               />
 
@@ -598,7 +601,7 @@ export default function MapView({ selectedRouteForZoom }) {
                   'text-size': 14,
                 }}
                 paint={{
-                  'text-color': clusterColorExpression(RISK_TEXT_ON_HEX, NO_RISK_TEXT_HEX),
+                  'text-color': clusterColorExpression(RISK_TEXT_ON_HEX, NO_RISK_TEXT_HEX, CLUSTER_RING_TEXT_HEX),
                 }}
               />
 

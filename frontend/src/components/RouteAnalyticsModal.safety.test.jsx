@@ -139,7 +139,10 @@ describe('RouteAnalyticsModal risk display', () => {
     expect(within(summary).getByText('≈ 2 local, 12 from similar routes elsewhere')).toBeInTheDocument();
     const chip = within(summary).getByTestId('risk-summary-chip');
     expect(chip).toHaveStyle({ backgroundColor: RISK_COLOR_HEX.yellow });
-    expect(chip).toHaveAttribute('data-hatch', 'true');
+    expectHatchDot(chip);
+    expect(within(chip).getByText('40.0 (likely 20.0–60.0)')).not.toContainElement(chip.querySelector('svg'));
+    const header = screen.getByText('Risk: 40.0/100 (low confidence)').closest('.MuiChip-root');
+    expectHatchDot(header);
   });
 
   it('shows a medium-confidence score with its range and no hatch', async () => {
@@ -149,7 +152,8 @@ describe('RouteAnalyticsModal risk display', () => {
     const summary = await screen.findByTestId('risk-summary');
     expect(within(summary).getByText('61.3 (likely 20.0–70.0)')).toBeInTheDocument();
     expect(within(summary).getByText('Medium confidence')).toBeInTheDocument();
-    expect(within(summary).getByTestId('risk-summary-chip')).toHaveAttribute('data-hatch', 'false');
+    expect(within(summary).getByTestId('risk-summary-chip').querySelector('pattern')).toBeNull();
+    expect(screen.getByText('Risk: 61.3/100').closest('.MuiChip-root').querySelector('pattern')).toBeNull();
   });
 
   it('draws the lowest band in neutral slate, labelled lower than typical, never Low Risk', async () => {
@@ -181,6 +185,7 @@ describe('RouteAnalyticsModal risk display', () => {
     const chip = within(summary).getByTestId('risk-summary-chip');
     expect(chip).toHaveTextContent(INSUFFICIENT_DATA_MESSAGE);
     expect(chip).toHaveStyle({ backgroundColor: NO_RISK_HEX });
+    expectHatchDot(chip);
     expect(summary.textContent).not.toMatch(/\d/);
     expect(within(summary).queryByText(/likely|confidence/i)).toBeNull();
     expect(screen.getByText('Risk: Not enough evidence').textContent).not.toMatch(/\d/);
@@ -195,7 +200,7 @@ describe('RouteAnalyticsModal risk display', () => {
     const chip = within(summary).getByTestId('risk-summary-chip');
     expect(chip).toHaveTextContent('—');
     expect(chip).not.toHaveStyle({ backgroundColor: NO_RISK_HEX });
-    expect(chip).toHaveAttribute('data-hatch', 'false');
+    expect(chip.querySelector('pattern')).toBeNull();
     expect(summary.textContent).not.toMatch(/\d/);
     const header = screen.getByText('Risk: Unavailable');
     expect(header.closest('.MuiChip-root')).not.toHaveStyle({ backgroundColor: NO_RISK_HEX });
@@ -217,4 +222,12 @@ function stored(overrides) {
     per_10k_reason: null,
     ...overrides,
   };
+}
+
+// The hatch is a real SVG pattern on a leading dot, filled through, not just a flag.
+function expectHatchDot(chip) {
+  const pattern = chip.querySelector('svg pattern');
+  expect(pattern).not.toBeNull();
+  expect(chip.querySelector(`rect[fill="url(#${pattern.id})"]`)).not.toBeNull();
+  expect(chip.querySelector('.MuiChip-label').querySelector('svg')).toBeNull();
 }

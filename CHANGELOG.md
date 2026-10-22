@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Phase 3 Task 28: honest score display - 2026-10-22
+
+- Low confidence still shows the number and its likely range ("40.0 (likely 20.0–60.0)") with a "Low confidence" label; map markers get a diagonal hatch overlay, and chips a hatched leading dot (never stripes behind text, so chip text keeps >= 4.5:1).
+- Gray means no evidence only: an insufficient score is the gray, hatched "Not enough reported incidents or similar routes to estimate" with no number. Unavailable (bulk `safety: null`, a 404, a malformed entry) has no colour: an empty ring on the map, an em-dash and "Score unavailable for this route." in the modal. A cluster with under half its routes scored is gray only when insufficient routes are at least as many as unavailable ones, else an empty ring.
+- The lowest band is drawn in neutral slate (`#607d8b`), labelled "Lower than typical for this type", never "Low Risk" or "safe"; the wire `color_code` stays `green`. Every score carries the disclaimer and an "≈ geo local, similar from similar routes elsewhere" evidence line.
+- `confidence` means only the string level: the numeric `getConfidenceInfo`/`formatConfidence` helpers are removed.
+
 ### Phase 3 Task 25: score parity, no-coalesce guard, MVP-1 docs - 2026-10-22
 
 - `tests/test_parity_scores.py`: `/safety`, `map-with-safety` and `/risk-breakdown` return the same `risk_score`, colour, `confidence`, `score_range` and `relative_rate` for every seeded route, and the breakdown terms rebuild the stored `rr_mean` from the cell's static features (minimum over the area's routes, as training read them). `tests/test_no_coalesce_in_ml.py` bans `coalesce(`, `or 0`, `nan_to_num(` and `fillna(0` in `app/ml` and `model_scores.py` outside a line-content allowlist. `tests/verify/test_model_scores.py` (`-m db`) checks the stored scores on prod or a branch.

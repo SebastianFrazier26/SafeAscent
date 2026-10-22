@@ -3,7 +3,8 @@
  * the unavailable ring, all from the shared palette in riskUtils.
  */
 import { Box, Divider, Paper, Typography } from '@mui/material';
-import { HATCH_CSS, LEGEND_PANEL_BG, LEGEND_SWATCHES, legendSwatchBorder } from '../utils/riskUtils';
+import { LEGEND_PANEL_BG, LEGEND_SWATCHES, legendSwatchBorder } from '../utils/riskUtils';
+import RiskSwatch from './RiskSwatch';
 
 export default function RiskLegend() {
   return (
@@ -30,19 +31,12 @@ export default function RiskLegend() {
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
         {LEGEND_SWATCHES.map(({ label, caption, fill, hatch }) => (
           <Box key={label} sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-            <Box
-              data-testid={`legend-swatch-${label}`}
-              data-hatch={String(hatch)}
-              sx={{
-                width: 24,
-                height: 24,
-                borderRadius: '50%',
-                bgcolor: fill ?? 'transparent',
-                backgroundImage: hatch ? HATCH_CSS : 'none',
-                border: '2px solid',
-                borderColor: legendSwatchBorder(fill, LEGEND_PANEL_BG),
-                boxShadow: 1,
-              }}
+            <RiskSwatch
+              testId={`legend-swatch-${label}`}
+              fill={fill}
+              hatch={hatch}
+              size={24}
+              borderColor={legendSwatchBorder(fill, LEGEND_PANEL_BG)}
             />
             <Box>
               <Typography variant="body2" fontWeight={500}>
@@ -62,7 +56,7 @@ export default function RiskLegend() {
         💡 <strong>Heatmap:</strong> Regional risk coverage across entire map
       </Typography>
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-        📍 <strong>Markers:</strong> Individual routes • Clusters show average score, gray when fewer than half their routes have one • Hatched: low confidence
+        📍 <strong>Markers:</strong> Individual routes • Clusters show the average when at least half their routes have a score; otherwise gray if most of the rest lack evidence, or an empty ring if most are unavailable • Hatched: low confidence
       </Typography>
     </Paper>
   );

@@ -39,4 +39,14 @@ describe('RiskLegend', () => {
       if (fill) expect(swatch).toHaveStyle({ backgroundColor: fill });
     }
   });
+
+  it('renders the SVG hatch only on the low-confidence and no-evidence swatches', () => {
+    render(<RiskLegend />);
+    for (const { label, hatch } of LEGEND_SWATCHES) {
+      const pattern = screen.getByTestId(`legend-swatch-${label}`).querySelector('svg pattern');
+      if (hatch) expect(pattern, label).not.toBeNull();
+      else expect(pattern, label).toBeNull();
+    }
+    expect(LEGEND_SWATCHES.filter((s) => s.hatch).map((s) => s.label)).toEqual(['Low confidence', 'Not enough evidence']);
+  });
 });

@@ -173,10 +173,8 @@ export const markerStyle = (cell: ScoreLike | null | undefined): MarkerStyle => 
 };
 
 const HATCH_LINE_RGBA: [number, number, number, number] = [33, 33, 33, 110];
-const HATCH_LINE_CSS = `rgba(${HATCH_LINE_RGBA.slice(0, 3).join(', ')}, ${(HATCH_LINE_RGBA[3] / 255).toFixed(2)})`;
-
-/** The same diagonal hatch as the map overlay, for HTML swatches and chips. */
-export const HATCH_CSS = `repeating-linear-gradient(45deg, ${HATCH_LINE_CSS} 0 2px, transparent 2px 5px)`;
+/** The map overlay's stripe colour, for the HTML swatch (RiskSwatch). */
+export const HATCH_LINE_CSS = `rgba(${HATCH_LINE_RGBA.slice(0, 3).join(', ')}, ${(HATCH_LINE_RGBA[3] / 255).toFixed(2)})`;
 
 /**
  * Mapbox circle layers take no pattern fill, so the hatch is a circular stripe image drawn
@@ -202,16 +200,17 @@ export interface ChipStyle {
   bgcolor: string;
   color: string;
   border?: string;
-  backgroundImage?: string;
 }
 
 // Loading, failed and unavailable read as "no colour": an outline, never the no-evidence gray.
 export const UNAVAILABLE_CHIP_STYLE: ChipStyle = { bgcolor: 'transparent', color: 'inherit', border: '1px dashed' };
 
+// Flat fill only: the hatch goes on a leading RiskSwatch, never behind the text, so the
+// black/white pick keeps its >= 4.5:1 contrast.
 export const riskChipStyle = (cell: ScoreLike | null | undefined): ChipStyle => {
-  const { fill, hatch } = markerStyle(cell);
+  const { fill } = markerStyle(cell);
   if (fill === null) return UNAVAILABLE_CHIP_STYLE;
-  return { bgcolor: fill, color: readableTextOn(fill), ...(hatch ? { backgroundImage: HATCH_CSS } : {}) };
+  return { bgcolor: fill, color: readableTextOn(fill) };
 };
 
 export interface RouteSafetyProps {
