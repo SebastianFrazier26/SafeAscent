@@ -84,9 +84,31 @@ describe('parseSafety against the backend wire shape (explicit nulls)', () => {
     expect(parsed.risk_score).toBeNull();
   });
 
-  it('parses an insufficient body that still carries a per-10k interval', () => {
-    const body = { ...WIRE_INSUFFICIENT, per_10k_logged_ascents: { mean: 1, lo: 0.5, hi: 2 }, per_10k_reason: null };
-    expect(isInsufficient(parseSafety(body))).toBe(true);
+  it.each([
+    ['a per-10k interval', { per_10k_logged_ascents: { mean: 1, lo: 0.5, hi: 2 } }],
+    ['a per-10k reason', { per_10k_reason: 'ticks_missing' }],
+    ['a relative_rate', { relative_rate: { mean: 1, lo: 0.5, hi: 2 } }],
+  ])('throws on an insufficient body carrying %s', (_label, extra) => {
+    expect(() => parseSafety({ ...WIRE_INSUFFICIENT, ...extra })).toThrow('Malformed safety response');
+  });
+
+  it.each([
+    ['unordered per-10k interval', { per_10k_logged_ascents: { mean: 9, lo: 0.5, hi: 2 } }],
+    ['non-numeric per-10k interval', { per_10k_logged_ascents: { mean: 'x', lo: 0.5, hi: 2 } }],
+    ['non-string per-10k reason', { per_10k_reason: 5 }],
+    ['negative relative_rate lo', { relative_rate: { mean: 1, lo: -1, hi: 2 } }],
+  ])('throws on an ok body with %s', (_label, extra) => {
+    expect(() => parseSafety({ ...WIRE_OK, ...extra })).toThrow('Malformed safety response');
+  });
+
+  it('parses an ok body with valid per-10k and relative_rate intervals', () => {
+    const body = {
+      ...WIRE_OK,
+      relative_rate: { mean: 1.3, lo: 0.8, hi: 2.1 },
+      per_10k_logged_ascents: { mean: 2.5, lo: 1, hi: 4 },
+      per_10k_reason: null,
+    };
+    expect(isStoredScore(parseSafety(body))).toBe(true);
   });
 
   it('reads an all-null body as the old shape', () => {

@@ -171,8 +171,8 @@ const isStoredInsufficient = (body: Record<string, unknown>): boolean =>
   body.score_range == null &&
   body.evidence == null &&
   body.relative_rate == null &&
-  isOptionalInterval(body.per_10k_logged_ascents) &&
-  (body.per_10k_reason == null || typeof body.per_10k_reason === 'string');
+  body.per_10k_logged_ascents == null &&
+  body.per_10k_reason == null;
 
 // Any stored-score key present means the body claims the new contract and must meet all of
 // it; none present is the old shape. A half-formed body is never read as the old shape.

@@ -97,7 +97,7 @@ class StoredScoreFields(BaseModel):
 
 def check_stored_fields(m: StoredScoreFields, risk_score: Optional[float], data_status: str) -> None:
     """confidence, score_range and evidence exactly when ok; the range brackets the shown score;
-    an insufficient result says why and carries no ok-only number."""
+    an insufficient result says why and carries no ok-only number or per-10k figure."""
     ok_only = (m.confidence, m.score_range, m.evidence)
     if data_status == "ok":
         if any(v is None for v in ok_only):
@@ -111,6 +111,8 @@ def check_stored_fields(m: StoredScoreFields, risk_score: Optional[float], data_
     else:
         if any(v is not None for v in ok_only) or m.relative_rate is not None:
             raise ValueError("insufficient_data carries no confidence, range, evidence or rate")
+        if m.per_10k_logged_ascents is not None or m.per_10k_reason is not None:
+            raise ValueError("insufficient_data carries no per-10k figure or reason")
         if m.insufficient_reason is None:
             raise ValueError("insufficient_data needs insufficient_reason")
 

@@ -255,8 +255,8 @@ def score_fields(s: StoredScore, r_ref: float | None) -> dict[str, Any]:
         if ok and s.n_eff_geo is not None and s.n_eff_feature is not None else None,
         "insufficient_reason": None if ok else s.insufficient_reason,
         "relative_rate": _relative_rate(s, r_ref) if ok else None,
-        "per_10k_logged_ascents": _interval(s.per10k_mean, s.per10k_q05, s.per10k_q95, 3),
-        "per_10k_reason": s.per10k_reason,
+        "per_10k_logged_ascents": _interval(s.per10k_mean, s.per10k_q05, s.per10k_q95, 3) if ok else None,
+        "per_10k_reason": s.per10k_reason if ok else None,
     }
     return out
 

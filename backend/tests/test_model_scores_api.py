@@ -235,3 +235,33 @@ def test_relative_rate_is_rr_times_the_reference_rate():
     # Significant digits, so a small national rate never rounds to 0.
     assert rr == {"mean": pytest.approx(3.5e-4), "lo": pytest.approx(2.25e-4), "hi": pytest.approx(5.5e-4)}
     assert score_fields(row, None)["relative_rate"] is None
+
+
+def _insufficient_row(**over):
+    from app.services.model_scores import StoredScore
+
+    base = dict(route_id=900000003, month=7, model_version="v", type_group="trad", insufficient=True,
+                insufficient_reason="no_evidence", rr_mean=None, rr_q05=None, rr_q95=None, percentile=None,
+                pct_q05=None, pct_q95=None, conf_level="low", n_eff_geo=None, n_eff_feature=None,
+                per10k_mean=2.5, per10k_q05=1.0, per10k_q95=4.0, per10k_reason="stray")
+    return StoredScore(**{**base, **over})
+
+
+def test_insufficient_score_fields_carry_no_per_10k():
+    from app.services.model_scores import score_fields
+
+    out = score_fields(_insufficient_row(), 2.5e-4)
+    assert out["per_10k_logged_ascents"] is None and out["per_10k_reason"] is None
+
+
+def test_schema_rejects_per_10k_on_an_insufficient_body():
+    from pydantic import ValidationError
+
+    from app.schemas.mp_route import MpRouteSafetyResponse
+
+    body = dict(route_id=1, route_name="r", target_date="2026-07-04", risk_score=None, color_code="gray",
+                data_status="insufficient_data", model_version="v", insufficient_reason="no_evidence")
+    MpRouteSafetyResponse(**body)
+    for extra in ({"per_10k_logged_ascents": {"mean": 1.0, "lo": 0.5, "hi": 2.0}}, {"per_10k_reason": "x"}):
+        with pytest.raises(ValidationError):
+            MpRouteSafetyResponse(**body, **extra)
