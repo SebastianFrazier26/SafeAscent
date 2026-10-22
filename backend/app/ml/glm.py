@@ -7,12 +7,15 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
 
 ETA_CLIP = 30.0
 _MIN_STEP = 1e-10
+# Rounding floor for the relative gradient check; a caller's tol below it could never be met.
+_GRAD_TOL_FLOOR = 1e-10
 
 
 @dataclass(frozen=True)
@@ -24,25 +27,44 @@ class GlmFit:
     deviance: float
 
 
+def _dot(a: NDArray[np.floating[Any]], b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
+    # numpy 2.2 on Apple Accelerate flags spurious divide/over/invalid on finite matmul (results are correct).
+    with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+        return np.asarray(a @ b, dtype=np.float64)
+
+
 def linear_predictor(X: NDArray[np.float64], coef: NDArray[np.float64]) -> NDArray[np.float64]:
-    return np.asarray(X @ coef, dtype=np.float64)
+    return _dot(X, coef)
 
 
 def _mu(X: NDArray[np.float64], b: NDArray[np.float64]) -> NDArray[np.float64]:
-    return np.asarray(np.exp(np.clip(X @ b, -ETA_CLIP, ETA_CLIP)), dtype=np.float64)
+    return np.asarray(np.exp(np.clip(_dot(X, b), -ETA_CLIP, ETA_CLIP)), dtype=np.float64)
 
 
 def _objective(
     X: NDArray[np.float64], y: NDArray[np.float64], b: NDArray[np.float64], pen: NDArray[np.float64]
 ) -> float:
-    eta = np.clip(X @ b, -ETA_CLIP, ETA_CLIP)
+    eta = np.clip(_dot(X, b), -ETA_CLIP, ETA_CLIP)
     return float(np.sum(np.exp(eta) - y * eta) + 0.5 * np.sum(pen * b * b))
 
 
 def _gradient(
     X: NDArray[np.float64], y: NDArray[np.float64], b: NDArray[np.float64], pen: NDArray[np.float64]
 ) -> NDArray[np.float64]:
-    return np.asarray(X.T @ (_mu(X, b) - y) + pen * b, dtype=np.float64)
+    return _dot(X.T, _mu(X, b) - y) + pen * b
+
+
+def _gradient_ok(
+    X: NDArray[np.float64],
+    y: NDArray[np.float64],
+    b: NDArray[np.float64],
+    pen: NDArray[np.float64],
+    tol: float,
+) -> bool:
+    # Each score component is a sum of terms of size |x|(mu + y); judge it relative to that scale.
+    mu = _mu(X, b)
+    scale = 1.0 + _dot(np.abs(X).T, mu + y) + pen * np.abs(b)
+    return bool(np.all(np.abs(_gradient(X, y, b, pen)) <= max(tol, _GRAD_TOL_FLOOR) * scale))
 
 
 def _irls(
@@ -57,8 +79,8 @@ def _irls(
     obj = _objective(X, y, b, pen)
     for it in range(1, max_iter + 1):
         mu = _mu(X, b)
-        grad = X.T @ (mu - y) + pen * b
-        hess = (X.T * mu) @ X + np.diag(pen)
+        grad = _dot(X.T, mu - y) + pen * b
+        hess = _dot(X.T * mu, X) + np.diag(pen)
         try:
             step = np.linalg.solve(hess, grad)
         except np.linalg.LinAlgError:
@@ -72,12 +94,12 @@ def _irls(
                 break
             t /= 2.0
             if t < _MIN_STEP:
-                # No descent along the Newton direction: stationary only if the step is negligible.
-                small = bool(np.max(np.abs(step)) < tol * (1.0 + np.max(np.abs(b))))
-                return b, it, small
-        done = np.max(np.abs(cand - b)) < tol * (1.0 + np.max(np.abs(b)))
+                return b, it, _gradient_ok(X, y, b, pen, tol)
+        # Converged only on an accepted full Newton step: a damped step being small says nothing
+        # about distance to the optimum (it is how a stall at the eta clip looks).
+        small = t == 1.0 and np.max(np.abs(step)) < tol * (1.0 + np.max(np.abs(b)))
         b, obj = cand, cand_obj
-        if done:
+        if small and _gradient_ok(X, y, b, pen, tol):
             return b, it, True
     return b, max_iter, False
 
@@ -114,21 +136,23 @@ def fit_poisson(
     if any(j <= 0 or j >= n_col for j in nonneg):
         raise ValueError("nonneg indices must name non-intercept columns")
 
-    if not np.any(y > 0):
-        # The MLE sits at eta = -inf; no finite fit exists, so say so rather than invent one.
+    # An all-zero column is unidentified (flat likelihood); 0 is its minimum-norm value.
+    dead = {j for j in range(1, n_col) if not np.any(X[:, j])}
+    live = [j for j in range(n_col) if j not in dead]
+    if not np.any(y > 0) and np.any(penalty[live] == 0.0):
+        # An unpenalized column can drive eta to -inf, so no finite fit exists; say so rather than
+        # invent one. With every column penalized the objective is coercive and IRLS finds it.
         coef = np.zeros(n_col)
         coef[0] = -ETA_CLIP
         return GlmFit(coef, 0, False, (), _deviance(y, _mu(X, coef)))
 
-    # An all-zero column is unidentified (flat likelihood); 0 is its minimum-norm value.
-    dead = {j for j in range(1, n_col) if not np.any(X[:, j])}
     nonneg_set = set(nonneg)
     fixed: set[int] = set()
     total_iters = 0
     seen: set[frozenset[int]] = set()
     while True:
         seen.add(frozenset(fixed))
-        keep = [j for j in range(n_col) if j not in fixed and j not in dead]
+        keep = [j for j in live if j not in fixed]
         b_keep, iters, ok = _irls(X[:, keep], y, penalty[keep], tol, max_iter)
         total_iters += iters
         coef = np.zeros(n_col)

@@ -4,6 +4,12 @@ import pytest
 from app.ml.glm import fit_poisson, linear_predictor
 
 
+def _mm(a, b):
+    # numpy 2.2 on Apple Accelerate flags spurious divide/over/invalid on finite matmul (results are correct).
+    with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+        return a @ b
+
+
 def test_intercept_only_recovers_the_mean():
     y = np.array([0.0, 1.0, 2.0, 5.0])
     fit = fit_poisson(np.ones((4, 1)), y, np.zeros(1))
@@ -14,7 +20,7 @@ def test_recovers_known_coefficients():
     rng = np.random.default_rng(0)
     X = np.column_stack([np.ones(20000), rng.normal(size=20000), rng.integers(0, 2, 20000)])
     beta = np.array([-1.0, 0.4, -0.7])
-    y = rng.poisson(np.exp(X @ beta)).astype(float)
+    y = rng.poisson(np.exp(_mm(X, beta))).astype(float)
     fit = fit_poisson(X, y, np.zeros(3))
     np.testing.assert_allclose(fit.coef, beta, atol=0.05)
 
@@ -44,8 +50,8 @@ def test_fractional_counts_are_accepted_and_negative_refused():
 
 
 def _first_order_conditions(X, y, coef, pen):
-    mu = np.exp(X @ coef)
-    return X.T @ (mu - y) + pen * coef
+    mu = np.exp(_mm(X, coef))
+    return _mm(X.T, mu - y) + pen * coef
 
 
 def test_penalized_fit_satisfies_its_own_score_equations():
@@ -127,10 +133,39 @@ def test_linear_predictor_is_x_times_coef():
 def test_a_fixed_column_is_released_when_a_later_fix_makes_it_want_positive():
     # Fixing alone ends at (1, 2, 3) here; the constrained optimum (brute-forced) frees 2 and 3.
     rng = np.random.default_rng(6)
-    X = np.column_stack([np.ones(2000), rng.normal(size=(2000, 3)) @ rng.normal(size=(3, 3))])
+    X = np.column_stack([np.ones(2000), _mm(rng.normal(size=(2000, 3)), rng.normal(size=(3, 3)))])
     b = np.r_[0.0, rng.normal(size=3) * 0.5]
-    y = rng.poisson(np.exp(np.clip(X @ b, -5, 3))).astype(float)
+    y = rng.poisson(np.exp(np.clip(_mm(X, b), -5, 3))).astype(float)
     fit = fit_poisson(X, y, np.zeros(4), nonneg=(1, 2, 3))
     assert fit.converged and fit.fixed_zero == (1,)
     g = _first_order_conditions(X, y, fit.coef, np.zeros(4))
     assert np.all(np.abs(g[[0, 2, 3]]) < 1e-5) and g[1] >= 0 and np.all(fit.coef[2:] >= 0)
+
+
+def test_a_fit_stalled_at_the_eta_clip_is_not_reported_converged():
+    x = np.linspace(0.0, 1.0, 200)
+    X = np.column_stack([np.ones(200), x])
+    y = np.round(np.exp(32.0 * x))
+    fit = fit_poisson(X, y, np.zeros(2))
+    g = _first_order_conditions(X, y, fit.coef, np.zeros(2))
+    # The optimum (slope ~32) sits past the eta clip, so the gradient stays large; it must not pass.
+    assert np.max(np.abs(g)) > 1.0 and not fit.converged
+
+
+def test_heavy_penalties_converge_to_the_penalized_optimum():
+    rng = np.random.default_rng(7)
+    X = np.column_stack([np.ones(800), rng.normal(size=(800, 5))])
+    beta = np.array([0.5, 0.8, -0.6, 0.3, 0.0, -0.2])
+    y = rng.poisson(np.exp(_mm(X, beta))).astype(float)
+    pen = np.array([1e3, 5e3, 5e3, 5e3, 5e3, 5e3])
+    fit = fit_poisson(X, y, pen)
+    assert fit.converged
+    np.testing.assert_allclose(_first_order_conditions(X, y, fit.coef, pen), 0.0, atol=1e-6)
+
+
+def test_all_zero_counts_with_every_column_penalized_have_a_finite_optimum():
+    X = np.column_stack([np.ones(4), np.arange(4.0)])
+    pen = np.array([1.0, 1.0])
+    fit = fit_poisson(X, np.zeros(4), pen)
+    assert fit.converged and np.all(np.isfinite(fit.coef))
+    np.testing.assert_allclose(_first_order_conditions(X, np.zeros(4), fit.coef, pen), 0.0, atol=1e-9)
