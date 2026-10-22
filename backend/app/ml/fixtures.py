@@ -1,10 +1,14 @@
-"""Synthetic CellData for model tests: no DB, no real ids (area ids start at 900000000). Built through
-assemble_cells so the fixture shares the production cell layout. Task 20 extends this module; the
-synthetic_cells signature is fixed (pre-flight pair 8 <-> 20)."""
+"""Synthetic data for model tests, no real ids (every id is at least 900000000): CellData built through
+assemble_cells so fixtures share the production cell layout (synthetic_cells, fitted_toy,
+synthetic_problem), RawData for backtests (synthetic_raw), selector and gate inputs (fold_results_toy,
+challenger_metrics, rows_for_diff), and seed_training_db, which writes a synthetic_raw world into a
+migrated database for the train CLI test. The synthetic_cells signature is fixed (pre-flight pair
+8 <-> 20), and _world's rng call order is part of synthetic_problem's contract."""
 
 from __future__ import annotations
 
 import dataclasses
+import json
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import TYPE_CHECKING, Any
@@ -545,3 +549,187 @@ def rows_for_diff(*, changed_share: float, coverage_shift: float = 0.0,
     extra = int(np.ceil(n * coverage_shift / (1.0 - coverage_shift))) if coverage_shift > 0 else 0
     challenger += [(SYNTHETIC_ID_FLOOR + n + j, TYPE_GROUPS[0], states[0], None) for j in range(extra)]
     return challenger, active
+
+
+ROUTE_ID_BASE = SYNTHETIC_ID_FLOOR + 2_000_000
+# A world whose model passes every gate component against a kernel with no signal, stability and
+# confidence selection included: smaller or sparser worlds fail stability churn (measured 2026-10-22).
+TRAINING_WORLD: dict[str, Any] = {"seed": 1, "rate_scale": 6.0, "n_areas": 200}
+PREDICTION_MONTHS = (2, 3, 4, 5, 6)  # the prospective window (folds.PROSPECTIVE) holds Feb 5 - Jul 3, 2026
+
+
+async def _bulk(conn: Any, table: str, cols: dict[str, tuple[Any, ...]]) -> None:
+    """One parameterized INSERT ... SELECT FROM unnest(...) per call. cols maps a column to (array cast,
+    values) or (array cast, values, select expression over the unnested column). Table and column names
+    are constants of this module, never input."""
+    from sqlalchemy import text
+
+    names = list(cols)
+    sql = (f"INSERT INTO {table} ({', '.join(names)}) SELECT "
+           + ", ".join(cols[n][2] if len(cols[n]) > 2 else n for n in names) + " FROM unnest("
+           + ", ".join(f"CAST(:{n} AS {cols[n][0]})" for n in names) + f") AS t({', '.join(names)})")
+    await conn.execute(text(sql), {n: cols[n][1] for n in names})
+
+
+def _accident_fields(p: Any) -> tuple[date | None, str, int | None, int | None, int | None]:
+    """(date, date_precision, year, year_lo, year_hi) that incidents.place reads back as p's interval."""
+    if p.lo is None or p.hi is None:
+        return None, "unknown", None, None, None
+    days = (p.hi - p.lo).days
+    if days == 1:
+        return p.lo, "day", p.lo.year, None, None
+    if p.month is not None and p.lo.day == 1 and days <= 31:
+        return p.lo, "month", p.lo.year, None, None
+    return None, "year", p.lo.year, p.lo.year, p.hi.year - 1
+
+
+async def seed_training_db(conn: Any, raw: Any, *, prediction_seed: int = 0) -> dict[str, int]:
+    """Writes `raw` (a synthetic_raw world) into a migrated database as the tables training reads: MP
+    locations and routes with fixture names only, the canonical catalog, per-route static features and
+    climate normals, one exposure snapshot per cutoff (all built on the production day), accidents with
+    route links (llm_link incidents through an R10 llm link), and the old kernel's stored predictions
+    over the prospective window, drawn at random so the kernel carries no signal. Fully synthetic: every
+    id is at least SYNTHETIC_ID_FLOOR. Returns row counts."""
+    import uuid
+
+    from app.data.repair.activity import APPROACH_FLAG
+
+    area_by_id = {a.area_id: a for a in raw.areas}
+    static_by_area: dict[int, dict[int, tuple[float | None, ...]]] = {}
+    for s in raw.static:
+        static_by_area.setdefault(s.area_id, {})[s.month] = s.values
+    state_of_node: dict[int, str] = {}
+    parent: dict[int, int | None] = {}
+    path_of: dict[int, str] = {}
+    for area_id, path in raw.paths.items():
+        labels = [int(x) for x in path.split(".")]
+        for depth, node in enumerate(labels):
+            state_of_node.setdefault(node, area_by_id[area_id].state_code)
+            parent[node] = labels[depth - 1] if depth else None
+            path_of[node] = ".".join(str(x) for x in labels[: depth + 1])
+    nodes = sorted(path_of)
+    leaf = [n in area_by_id for n in nodes]
+
+    def key(a: AreaInfo) -> str:
+        return f"{a.lat:.5f}:{a.lon:.5f}"
+
+    await _bulk(conn, "mp_locations", {
+        "mp_id": ("bigint[]", nodes), "name": ("text[]", [f"Fixture Area {n}" for n in nodes]),
+        "parent_id": ("bigint[]", [parent[n] for n in nodes]),
+        "latitude": ("double precision[]", [area_by_id[n].lat if f else None for n, f in zip(nodes, leaf)]),
+        "longitude": ("double precision[]", [area_by_id[n].lon if f else None for n, f in zip(nodes, leaf)])})
+    await _bulk(conn, "canonical_areas", {
+        "area_id": ("bigint[]", nodes), "parent_id": ("bigint[]", [parent[n] for n in nodes]),
+        "path": ("ltree[]", [path_of[n] for n in nodes]),
+        "depth": ("smallint[]", [path_of[n].count(".") + 1 for n in nodes]),
+        "tree_status": ("text[]", ["us"] * len(nodes)), "state_code": ("text[]", [state_of_node[n] for n in nodes]),
+        "lat": ("double precision[]", [area_by_id[n].lat if f else None for n, f in zip(nodes, leaf)]),
+        "lon": ("double precision[]", [area_by_id[n].lon if f else None for n, f in zip(nodes, leaf)]),
+        "coord_precision": ("text[]", ["own" if f else "none" for f in leaf]),
+        "coord_source_id": ("bigint[]", [n if f else None for n, f in zip(nodes, leaf)]),
+        "point_key": ("text[]", [key(area_by_id[n]) if f else None for n, f in zip(nodes, leaf)]),
+        "catalog_version": ("text[]", ["fixture"] * len(nodes))})
+
+    route_of: dict[tuple[int, str], int] = {}
+    routes: list[tuple[int, int, str]] = []
+    for a in raw.areas:
+        for g, n in sorted(a.routes_by_group.items()):
+            for _ in range(n):
+                rid = ROUTE_ID_BASE + len(routes)
+                route_of.setdefault((a.area_id, g), rid)
+                routes.append((rid, a.area_id, g))
+    rids = [r for r, _, _ in routes]
+    await _bulk(conn, "mp_routes", {
+        "mp_route_id": ("bigint[]", rids), "name": ("text[]", [f"Fixture Route {r}" for r in rids]),
+        "location_id": ("bigint[]", [a for _, a, _ in routes]), "type": ("text[]", [g for _, _, g in routes])})
+    await _bulk(conn, "canonical_routes", {
+        "route_id": ("bigint[]", rids), "area_id": ("bigint[]", [a for _, a, _ in routes]),
+        "type_group": ("text[]", [g for _, _, g in routes]), "is_boulder": ("boolean[]", [False] * len(rids)),
+        "disciplines": ("text[]", [g for _, _, g in routes], "ARRAY[disciplines]"),
+        "type_rule_version": ("text[]", ["rt-mp-v3"] * len(rids)), "scorable": ("boolean[]", [True] * len(rids)),
+        "facts_sha256": ("text[]", ["fixture"] * len(rids)), "catalog_version": ("text[]", ["fixture"] * len(rids))})
+
+    # One grid bucket and one feature point per area, so every route's min() over the area is the area's value.
+    bucket = {a.area_id: i + 1 for i, a in enumerate(raw.areas)}
+    await _bulk(conn, "feature_points", {
+        "point_key": ("text[]", [key(a) for a in raw.areas]),
+        "lat": ("double precision[]", [a.lat for a in raw.areas]),
+        "lon": ("double precision[]", [a.lon for a in raw.areas]),
+        "grid_bucket": ("integer[]", [bucket[a.area_id] for a in raw.areas]),
+        "h3_r5": ("text[]", ["fixture"] * len(raw.areas)), "h3_r7": ("text[]", ["fixture"] * len(raw.areas)),
+        "tz": ("text[]", ["America/Denver"] * len(raw.areas)),
+        "elevation_m": ("real[]", [static_by_area[a.area_id][1][0] for a in raw.areas]),
+        "feature_version": ("text[]", ["fixture"] * len(raw.areas))})
+    await _bulk(conn, "route_static_features", {
+        "route_id": ("bigint[]", rids), "source": ("text[]", ["mp"] * len(rids)),
+        "point_key": ("text[]", [key(area_by_id[a]) for _, a, _ in routes]),
+        "lat": ("double precision[]", [static_by_area[a][1][1] for _, a, _ in routes]),
+        "elevation_m": ("real[]", [static_by_area[a][1][0] for _, a, _ in routes]),
+        "grid_bucket": ("integer[]", [bucket[a] for _, a, _ in routes]),
+        "coord_precision": ("text[]", ["own"] * len(rids)), "feature_version": ("text[]", ["fixture"] * len(rids))})
+    await _bulk(conn, "cell_normals_status", {
+        "grid_bucket": ("integer[]", list(bucket.values())), "status": ("text[]", ["complete"] * len(bucket))})
+    normals = [(bucket[a], m, v) for a, by_month in static_by_area.items() for m, v in sorted(by_month.items())]
+    await _bulk(conn, "cell_climate_normals", {
+        "grid_bucket": ("integer[]", [b for b, _, _ in normals]), "month": ("smallint[]", [m for _, m, _ in normals]),
+        **{c: ("real[]", [v[i] for _, _, v in normals]) for i, c in enumerate(
+            ("tmax_mean", "tmin_mean", "precip_mm", "snowfall_cm", "freeze_thaw_days"), start=2)},
+        "n_years": ("smallint[]", [10] * len(normals)), "period_start_year": ("smallint[]", [2016] * len(normals)),
+        "period_end_year": ("smallint[]", [2025] * len(normals)),
+        "source": ("text[]", ["derived_cell_daily_conditions"] * len(normals)),
+        "normals_version": ("text[]", ["fixture"] * len(normals))})
+
+    n_exposure = 0
+    for cutoff, rows in sorted(raw.exposure_by_cutoff.items()):
+        def comp(value: float | None, **extra: Any) -> dict[str, Any]:
+            return {"value": None, "missing": True} if value is None else {"value": value, "missing": False, **extra}
+
+        await _bulk(conn, "internal.exposure_index", {
+            "area_id": ("bigint[]", [e.area_id for e in rows]), "type_group": ("text[]", [e.type_group for e in rows]),
+            "month": ("smallint[]", [e.month for e in rows]), "n_routes": ("integer[]", [e.n_routes for e in rows]),
+            "proxy": ("jsonb[]", [json.dumps({"season_share": comp(e.season_share),
+                                              "mp_ticks": comp(e.ticks_value, per_route_mean=e.ticks_per_route)},
+                                             allow_nan=False) for e in rows]),
+            "proxy_version": ("text[]", ["x-mp-v1"] * len(rows)),
+            "as_of": ("date[]", [raw.production_cutoff] * len(rows)), "data_cutoff": ("date[]", [cutoff] * len(rows)),
+            "tick_coverage": ("real[]", [e.tick_coverage for e in rows])})
+        n_exposure += len(rows)
+
+    acc: dict[str, list[Any]] = {c: [] for c in ("accident_id", "source", "date", "year", "state", "date_precision",
+                                                  "year_lo", "year_hi", "geocode_precision", "country",
+                                                  "activity_class", "inclusion_flag", "mp_route_id")}
+    llm: list[tuple[int, int]] = []
+    for p in raw.placements:
+        day, precision, year, lo, hi = _accident_fields(p)
+        route = None
+        if p.level == "cell":
+            route = route_of[(p.area_id, p.group_weights[0][0])]
+            if "llm_link" in p.flags:
+                llm.append((p.accident_id, route))
+                route = None
+        for c, v in (("accident_id", p.accident_id), ("source", "AAC"), ("date", day), ("year", year),
+                     ("state", p.state_code), ("date_precision", precision), ("year_lo", lo), ("year_hi", hi),
+                     ("geocode_precision", "area" if p.level == "cell" else "unknown"), ("country", "US"),
+                     ("activity_class", "climbing"),
+                     ("inclusion_flag", APPROACH_FLAG if "ski_approach" in p.flags else None), ("mp_route_id", route)):
+            acc[c].append(v)
+    casts = {"accident_id": "integer[]", "date": "date[]", "year": "double precision[]", "year_lo": "smallint[]",
+             "year_hi": "smallint[]", "mp_route_id": "bigint[]"}
+    await _bulk(conn, "accidents", {c: (casts.get(c, "text[]"), v) for c, v in acc.items()})
+    await _bulk(conn, "accident_legacy_links", {
+        "accident_id": ("integer[]", [a for a, _ in llm]), "route_id": ("bigint[]", [r for _, r in llm]),
+        "method": ("text[]", ["llm"] * len(llm)), "r10_version": ("text[]", ["fixture"] * len(llm)),
+        "llm_call_id": ("uuid[]", [str(uuid.UUID(int=a)) for a, _ in llm])})
+
+    rng = np.random.default_rng(prediction_seed)
+    pred = [(r, date(2026, m, 15), float(rng.uniform(0.0, 100.0))) for r in rids for m in PREDICTION_MONTHS]
+    await _bulk(conn, "historical_predictions", {
+        "route_id": ("integer[]", [r for r, _, _ in pred]), "prediction_date": ("date[]", [d for _, d, _ in pred]),
+        "risk_score": ("double precision[]", [s for _, _, s in pred]),
+        "color_code": ("text[]", ["green"] * len(pred))})
+    from sqlalchemy import text
+
+    # Fresh bulk loads have no planner statistics; without them the incidents join plans as a nested loop.
+    await conn.execute(text("ANALYZE"))
+    return {"areas": len(nodes), "routes": len(rids), "exposure": n_exposure, "accidents": len(acc["accident_id"]),
+            "llm_links": len(llm), "predictions": len(pred)}

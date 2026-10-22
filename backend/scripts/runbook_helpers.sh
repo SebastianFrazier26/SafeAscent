@@ -125,6 +125,12 @@ MIG() { ( _need_target && _load ./.env.migrator || exit 1
   url="$(_retarget "${MIGRATOR_DATABASE_URL:-}")" || exit 1
   MIGRATOR_DATABASE_URL="$url" uv run alembic "$@" ); }
 
+# Phase 3 training as `trainer`, from the owner's Mac only (pre-flight F48/F50): run, kernel-baseline,
+# rollback. Precede every `TRAIN run` with `INGMOD app.pipelines.exposure build` (F21).
+TRAIN() { ( _need_target && _load ./.env.trainer || exit 1
+  url="$(_retarget "${TRAINER_DATABASE_URL:-}")" || exit 1
+  TRAINER_DATABASE_URL="$url" DATABASE_URL="$url" uv run --group train python -m app.ml.train "$@" ); }
+
 OWNER_PSQL() { ( _need_target && _load ./.env.owner || exit 1
   url="$(_retarget "${OWNER_DATABASE_URL:-}")" || exit 1
   _split_verified "$url" && _need_psql || exit 1

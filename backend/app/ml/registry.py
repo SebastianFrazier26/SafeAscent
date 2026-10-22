@@ -14,6 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from app.ml.bundle import ModelBundle, sha256
 
 
+def _dumps(value: Any) -> str:
+    return json.dumps(value, allow_nan=False)
+
+
 class PromotionRefused(RuntimeError):
     pass
 
@@ -61,8 +65,8 @@ async def insert_candidate(conn: AsyncConnection, *, version: str, family: str, 
         "(:version, :family, :data_hash, :train_start, :data_cutoff, :exposure_as_of, CAST(:metrics AS jsonb), "
         "CAST(:thresholds AS jsonb), CAST(:model_card AS jsonb), :bundle, :sha, :nbytes, 'candidate', :parent)"),
         {"version": version, "family": family, "data_hash": data_hash, "train_start": train_start,
-         "data_cutoff": data_cutoff, "exposure_as_of": exposure_as_of, "metrics": json.dumps(metrics),
-         "thresholds": None if thresholds is None else json.dumps(thresholds), "model_card": json.dumps(model_card),
+         "data_cutoff": data_cutoff, "exposure_as_of": exposure_as_of, "metrics": _dumps(metrics),
+         "thresholds": None if thresholds is None else _dumps(thresholds), "model_card": _dumps(model_card),
          "bundle": bundle, "sha": None if bundle is None else sha256(bundle),
          "nbytes": None if bundle is None else len(bundle), "parent": parent_version})
 
@@ -73,7 +77,7 @@ async def set_gate(conn: AsyncConnection, version: str, gate_result: dict[str, A
     res = await conn.execute(text(
         "UPDATE model.registry SET gate_result = CAST(:g AS jsonb), diff_report = CAST(:d AS jsonb), "
         "scores_rows = :n WHERE version = :v AND status = 'candidate'"),
-        {"g": json.dumps(gate_result), "d": json.dumps(diff_report), "n": scores_rows, "v": version})
+        {"g": _dumps(gate_result), "d": _dumps(diff_report), "n": scores_rows, "v": version})
     if res.rowcount != 1:  # pre-flight F14: never a silent no-op
         raise PromotionRefused(f"{version} is not a candidate")
 

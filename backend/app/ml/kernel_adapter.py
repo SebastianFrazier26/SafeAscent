@@ -179,10 +179,8 @@ def _block(kf: Sequence[KernelFold]) -> MetricsReport:
             "oe": [float(v) for v in oe_ci(o, e)] if e > 0 else None}
 
 
-def kernel_report(raw: RawData, folds: Sequence[Fold]) -> MetricsReport:
-    """The kernel's metrics on the same folds and test cells as the model (pooled plus by_kind). A
-    spatial fold's held-out states lend the kernel no accidents. The kernel has no interval, so coverage
-    is None; top10 ranks the raw scores."""
+def kernel_folds(raw: RawData, folds: Sequence[Fold]) -> list[KernelFold]:
+    """One KernelFold per fold, in order. A spatial fold's held-out states lend the kernel no accidents."""
     results = []
     for fold in folds:
         fd = prepare(raw, fold)
@@ -190,9 +188,19 @@ def kernel_report(raw: RawData, folds: Sequence[Fold]) -> MetricsReport:
         scores = kernel_cell_scores(fd.cells, train_pl, raw.areas, train_end=fold.train_end,
                                     reference_year=_reference_year(fold))
         results.append(fold_predictions(fd, scores))
+    return results
+
+
+def report_from(results: Sequence[KernelFold]) -> MetricsReport:
     out = _block(results)
     out["by_kind"] = {k: _block([r for r in results if r.kind == k]) for k in sorted({r.kind for r in results})}
     return out
+
+
+def kernel_report(raw: RawData, folds: Sequence[Fold]) -> MetricsReport:
+    """The kernel's metrics on the same folds and test cells as the model (pooled plus by_kind). The
+    kernel has no interval, so coverage is None; top10 ranks the raw scores."""
+    return report_from(kernel_folds(raw, folds))
 
 
 async def prospective_kernel(conn: AsyncConnection, fold: Fold, cells: CellData) -> F64:

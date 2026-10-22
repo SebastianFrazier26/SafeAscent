@@ -164,6 +164,8 @@ module = [
     "app.ml.metrics",
     "app.ml.backtest",
     "app.ml.kernel_adapter",
+    "app.ml.materialize",
+    "app.ml.train",
     "app.pipelines.accident_facts",
     "app.pipelines.dem",
     "app.pipelines.epqs",

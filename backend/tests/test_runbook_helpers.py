@@ -57,7 +57,7 @@ def test_retarget_refuses_a_url_it_cannot_rewrite(shell, tmp_path):
     assert out.returncode != 0 and out.stdout == ""
 
 
-@pytest.mark.parametrize("helper", ["ING r9", "INGMOD app.pipelines.gnis", "INGLLM app.data.repair.r10_llm plan", "MIG current", "OWNER_PSQL -c 'SELECT 1'",
+@pytest.mark.parametrize("helper", ["ING r9", "INGMOD app.pipelines.gnis", "INGLLM app.data.repair.r10_llm plan", "MIG current", "TRAIN run", "OWNER_PSQL -c 'SELECT 1'",
                                     "ANALYST_PSQL -c 'SELECT 1'", "VERIFY tests/verify"])
 def test_every_helper_refuses_before_reading_env_files_when_target_is_unset(shell, tmp_path, helper):
     out = _run(shell, f"{helper}; echo rc=$?", tmp_path)
@@ -68,6 +68,12 @@ def test_every_helper_refuses_before_reading_env_files_when_target_is_unset(shel
 def test_a_helper_refuses_a_missing_env_file(shell, tmp_path):
     out = _run(shell, "OWNER_PSQL -c 'SELECT 1'; echo rc=$?", tmp_path, {"TARGET_HOST": "production"})
     assert "missing ./.env.owner" in out.stderr
+    assert out.stdout.strip() == "rc=1"
+
+
+def test_train_refuses_a_missing_trainer_env_file(shell, tmp_path):
+    out = _run(shell, "TRAIN rollback; echo rc=$?", tmp_path, {"TARGET_HOST": "ep-branch.example"})
+    assert "missing ./.env.trainer" in out.stderr
     assert out.stdout.strip() == "rc=1"
 
 

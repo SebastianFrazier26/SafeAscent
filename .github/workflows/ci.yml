@@ -75,6 +75,10 @@ jobs:
         env:
           MIGRATIONS_TEST_ADMIN_URL: postgresql://test_user:test_password@localhost:5432/postgres
 
+      # Credential-free: the suite on a synthetic world, no database, no network (pre-flight F48).
+      - name: Fixture backtest
+        run: uv run --group train python -m app.ml.backtest --fixture small
+
       - name: Build image and smoke-test imports
         run: |
           docker build -t safeascent-backend:ci .
