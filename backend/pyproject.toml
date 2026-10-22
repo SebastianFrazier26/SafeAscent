@@ -150,6 +150,7 @@ module = [
     "app.ml.folds",
     "app.ml.glm",
     "app.ml.archetypes",
+    "app.ml.eb",
     "app.pipelines.accident_facts",
     "app.pipelines.dem",
     "app.pipelines.epqs",
