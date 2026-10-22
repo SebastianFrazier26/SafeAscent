@@ -89,7 +89,7 @@ export const isInsufficient = (r: RiskResult): r is InsufficientRisk | LegacyIns
   r.data_status === 'insufficient_data';
 
 export const isStoredScore = (r: RiskResult): r is ScoredRisk =>
-  r.data_status === 'ok' && 'confidence' in r && r.confidence !== undefined;
+  r.data_status === 'ok' && 'confidence' in r && r.confidence != null;
 
 const COLOR_CODES: readonly string[] = ['green', 'yellow', 'orange', 'red'];
 const CONFIDENCES: readonly string[] = ['high', 'medium', 'low'];
@@ -132,8 +132,9 @@ const isInterval = (v: unknown): boolean =>
   v.lo <= v.mean &&
   v.mean <= v.hi;
 
-// null and absent both mean "no interval"; the bundle's reference rate can be unreadable.
-const isOptionalInterval = (v: unknown): boolean => v === undefined || v === null || isInterval(v);
+// The backend serialises absent optional fields as explicit null (no exclude_none), so null
+// and undefined both mean "absent" everywhere below.
+const isOptionalInterval = (v: unknown): boolean => v == null || isInterval(v);
 
 const isStoredOk = (body: Record<string, unknown>): boolean => {
   const score = body.risk_score as number;
@@ -156,20 +157,22 @@ const isStoredOk = (body: Record<string, unknown>): boolean => {
     isFiniteNumber(evidence.similar) &&
     evidence.geo >= 0 &&
     evidence.similar >= 0 &&
-    body.insufficient_reason === undefined &&
+    body.insufficient_reason == null &&
     isOptionalInterval(body.relative_rate) &&
     isOptionalInterval(body.per_10k_logged_ascents) &&
-    (body.per_10k_reason === undefined || body.per_10k_reason === null || typeof body.per_10k_reason === 'string')
+    (body.per_10k_reason == null || typeof body.per_10k_reason === 'string')
   );
 };
 
 const isStoredInsufficient = (body: Record<string, unknown>): boolean =>
   body.insufficient_reason === 'no_evidence' &&
   typeof body.model_version === 'string' &&
-  body.confidence === undefined &&
-  body.score_range === undefined &&
-  body.evidence === undefined &&
-  (body.relative_rate === undefined || body.relative_rate === null);
+  body.confidence == null &&
+  body.score_range == null &&
+  body.evidence == null &&
+  body.relative_rate == null &&
+  isOptionalInterval(body.per_10k_logged_ascents) &&
+  (body.per_10k_reason == null || typeof body.per_10k_reason === 'string');
 
 // Any stored-score key present means the body claims the new contract and must meet all of
 // it; none present is the old shape. A half-formed body is never read as the old shape.
@@ -184,7 +187,7 @@ export const isSafetyResponse = (value: unknown): value is SafetyResponse => {
   ) {
     return false;
   }
-  if (STORED_KEYS.every((key) => body[key] === undefined)) return true;
+  if (STORED_KEYS.every((key) => body[key] == null)) return true;
   return body.data_status === 'ok' ? isStoredOk(body) : isStoredInsufficient(body);
 };
 

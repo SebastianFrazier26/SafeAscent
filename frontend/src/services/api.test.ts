@@ -47,6 +47,62 @@ const notFound = () =>
     status: 404, statusText: 'Not Found', data: { detail: 'score unavailable' }, headers: {}, config: { headers: new AxiosHeaders() },
   });
 
+// Exact key set of backend StoredScoreFields: the API sends absent fields as explicit null.
+const WIRE_OK = {
+  ...OK,
+  confidence: 'medium',
+  score_range: [30.1, 61.0],
+  model_version: 'eb_v1-2026-10-20',
+  evidence: { geo: 1.4, similar: 6.2 },
+  insufficient_reason: null,
+  relative_rate: null,
+  per_10k_logged_ascents: null,
+  per_10k_reason: null,
+};
+const WIRE_INSUFFICIENT = {
+  ...INSUFFICIENT,
+  confidence: null,
+  score_range: null,
+  model_version: 'eb_v1-2026-10-20',
+  evidence: null,
+  insufficient_reason: 'no_evidence',
+  relative_rate: null,
+  per_10k_logged_ascents: null,
+  per_10k_reason: null,
+};
+
+describe('parseSafety against the backend wire shape (explicit nulls)', () => {
+  it('parses an ok body whose nullable fields are null', () => {
+    const parsed = parseSafety(WIRE_OK);
+    expect(isStoredScore(parsed)).toBe(true);
+    expect(parsed.risk_score).toBe(42.3);
+  });
+
+  it('parses an insufficient body whose ok-only fields are null', () => {
+    const parsed = parseSafety(WIRE_INSUFFICIENT);
+    expect(isInsufficient(parsed)).toBe(true);
+    expect(parsed.risk_score).toBeNull();
+  });
+
+  it('parses an insufficient body that still carries a per-10k interval', () => {
+    const body = { ...WIRE_INSUFFICIENT, per_10k_logged_ascents: { mean: 1, lo: 0.5, hi: 2 }, per_10k_reason: null };
+    expect(isInsufficient(parseSafety(body))).toBe(true);
+  });
+
+  it('reads an all-null body as the old shape', () => {
+    const allNull = { ...OK, confidence: null, score_range: null, model_version: null, evidence: null, insufficient_reason: null };
+    expect(isStoredScore(parseSafety(allNull))).toBe(false);
+  });
+
+  it('still throws when a null-padded ok body lacks its range', () => {
+    expect(() => parseSafety({ ...WIRE_OK, score_range: null })).toThrow('Malformed safety response');
+  });
+
+  it('still throws on a null-padded insufficient body without a reason', () => {
+    expect(() => parseSafety({ ...WIRE_INSUFFICIENT, insufficient_reason: null })).toThrow('Malformed safety response');
+  });
+});
+
 describe('parseSafety', () => {
   it('parses a low-confidence payload and keeps the number and its range', () => {
     const parsed = parseSafety(STORED);
