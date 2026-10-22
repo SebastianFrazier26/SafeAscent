@@ -15,7 +15,7 @@ import json
 from calendar import monthrange
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from typing import Any
 
@@ -115,6 +115,29 @@ class CellData:
     @property
     def n(self) -> int:
         return int(self.g.size)
+
+    def take(self, rows: NDArray[np.int64]) -> CellData:
+        """The cells at `rows`, in that order; area, region and state tables are kept whole so the
+        indices still mean the same areas."""
+        rows = np.asarray(rows, dtype=np.int64)
+        if rows.ndim != 1 or (rows.size and (rows.min() < 0 or rows.max() >= self.n)):
+            raise ValueError("rows must be a 1-d array of cell positions")
+        if np.unique(rows).size != rows.size:
+            raise ValueError("rows must not repeat a cell")
+        pos = {int(old): new for new, old in enumerate(rows)}
+        return replace(
+            self, area_idx=self.area_idx[rows], g=self.g[rows], month=self.month[rows],
+            n_routes=self.n_routes[rows], season_share=self.season_share[rows],
+            ticks_value=self.ticks_value[rows], ticks_per_route=self.ticks_per_route[rows],
+            tick_coverage=self.tick_coverage[rows], static=self.static[rows],
+            index={k: pos[v] for k, v in self.index.items() if v in pos},
+        )
+
+    def subset(self, mask: NDArray[np.bool_]) -> CellData:
+        mask = np.asarray(mask)
+        if mask.dtype != np.bool_ or mask.shape != (self.n,):
+            raise ValueError("mask must be a bool array with one value per cell")
+        return self.take(np.flatnonzero(mask))
 
 
 @dataclass(frozen=True)

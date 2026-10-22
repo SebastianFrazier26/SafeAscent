@@ -240,3 +240,75 @@ def bundle_reference_terms(bundle: Any, row: dict[str, Any]) -> ReferenceTerms:
     sel = (toy.cells.g == gi) & (toy.cells.month == row["month"])
     r_ref = float((mu0[sel] * mean[sel]).sum() / np.exp(eta_exp[sel]).sum())
     return ReferenceTerms(float(eta[c] - eta_exp[c] - np.log(r_ref)), float(np.log(mean[c])))
+
+
+# Archetype prototypes: (elevation_m, monthly precip_mm, monthly snowfall_cm, freeze-thaw days). The true
+# risk effect is per prototype x type group, so a GLM additive in features and type cannot absorb it and
+# only feature-space pooling (archetype x group) can carry it into a held-out state.
+_PROTOTYPES = ((600.0, 90.0, 0.0, 1.0), (1700.0, 45.0, 8.0, 6.0), (2900.0, 25.0, 40.0, 14.0),
+               (3900.0, 15.0, 90.0, 22.0))
+
+
+def synthetic_problem(seed: int, return_truth: bool = False, n_areas: int = 96) -> Any:
+    """Cells, Poisson counts and (with return_truth) the true per-cell rates, from a log-linear model:
+    route density, season share, a type-group effect, a prototype x group effect shared across
+    states, and per-area noise. Every month and both families carry incidents, so the GLM converges."""
+    from app.ml.dataset import Counts
+
+    rng = np.random.default_rng(seed)
+    effect = rng.normal(0.0, 0.9, size=(len(_PROTOTYPES), len(TYPE_GROUPS)))
+    type_effect = rng.normal(0.0, 0.3, size=len(TYPE_GROUPS))
+    state_codes = tuple(STATES)
+    exposure: list[ExposureRow] = []
+    static: list[StaticRow] = []
+    areas: list[AreaInfo] = []
+    paths: dict[int, str] = {}
+    log_rate: dict[tuple[int, int, int], float] = {}
+    for k in range(n_areas):
+        st = state_codes[k % len(state_codes)]
+        area_id = SYNTHETIC_ID_FLOOR + 1000 + k
+        root = SYNTHETIC_ID_FLOOR + 100 * (1 + state_codes.index(st))
+        paths[area_id] = f"{root}.{root + 1 + (k // len(state_codes)) % 3}.{area_id}"
+        lat0, lon0 = STATES[st]
+        lat = lat0 + float(rng.normal(0, 0.5))
+        p = int(rng.integers(len(_PROTOTYPES)))
+        elev0, precip0, snow0, ft0 = _PROTOTYPES[p]
+        elevation = elev0 + float(rng.normal(0, 150.0))
+        noise = float(rng.normal(0, 0.2))
+        groups = sorted(int(x) for x in rng.choice(len(TYPE_GROUPS), size=int(rng.integers(1, 4)), replace=False))
+        by_group: dict[str, int] = {}
+        for gi in groups:
+            n_routes = int(rng.integers(3, 40))
+            by_group[TYPE_GROUPS[gi]] = n_routes
+            raw = 1.0 + 0.5 * np.cos(2 * np.pi * (np.arange(1, 13) - int(rng.integers(1, 13))) / 12)
+            share = raw / raw.sum()
+            for m in range(1, 13):
+                exposure.append(ExposureRow(area_id, TYPE_GROUPS[gi], m, n_routes, float(share[m - 1]),
+                                            None, None, None))
+                log_rate[(area_id, gi, m)] = (-1.8 + 0.7 * np.log(n_routes) + np.log(12 * share[m - 1])
+                                              + type_effect[gi] + effect[p, gi] + noise)
+        areas.append(AreaInfo(area_id, st, lat, lon0, by_group))
+        for m in range(1, 13):
+            tmax = 25.0 - 0.006 * elevation - 12.0 * np.cos(2 * np.pi * (m - 7) / 12)
+            static.append(StaticRow(area_id, m, (
+                elevation, lat, tmax, tmax - 12.0, precip0 * float(rng.uniform(0.8, 1.2)),
+                snow0 * float(rng.uniform(0.8, 1.2)), ft0 + float(rng.integers(0, 3)),
+            )))
+    cells = assemble_cells(exposure, static, areas, paths)
+    truth = np.empty(cells.n)
+    for key, i in cells.index.items():
+        truth[i] = np.exp(log_rate[key])
+    y = rng.poisson(truth).astype(np.float64)
+    counts = Counts(y=y, state_mass=np.zeros((len(cells.states), len(TYPE_GROUPS))), years=20.0,
+                    dropped={}, placed={"cell": float(y.sum())})
+    return (cells, counts, truth) if return_truth else (cells, counts)
+
+
+def permute_problem(cells: CellData, counts: Any, perm: NDArray[np.int64]) -> tuple[CellData, Any]:
+    """Cells and counts with every per-cell array (and cells.index) reordered by perm."""
+    import dataclasses
+
+    perm = np.asarray(perm, dtype=np.int64)
+    if np.sort(perm).tolist() != list(range(cells.n)):
+        raise ValueError("perm must be a permutation of the cells")
+    return cells.take(perm), dataclasses.replace(counts, y=counts.y[perm])

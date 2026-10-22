@@ -159,6 +159,7 @@ module = [
     "app.ml.eb",
     "app.ml.posterior",
     "app.ml.explain",
+    "app.ml.model",
     "app.pipelines.accident_facts",
     "app.pipelines.dem",
     "app.pipelines.epqs",

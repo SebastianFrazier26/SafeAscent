@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Phase 3: fit/predict orchestration and bundle export - 2026-10-22
+
+- `app.ml.model`: `fit_model(cells, counts, params, *, train_mask)` runs the stage-1 GLM, archetypes and stage-2 EB with held-out cells kept out of both stages, of the covariate statistics, of the archetype centres and of the evidence points. A GLM that did not converge (separation) is refused with `ModelFitError`, never used. EB keys regions as `state|region` so a border-split MP region nests in its state. `fold_train_mask(cells, fold)` drops a spatial fold's held-out states from training.
+- `Fitted.predict` / `Fitted.summarize` / `Fitted.to_bundle`: the bundle holds numeric arrays (`coef`, `center`, `scale`, `arch_centers`, `arch_weights`, `std_mean`, `std_sd`, `log_rref`, `hazard_center`) plus a JSON manifest (names, constants, thresholds with `d_star = null` for "never gray by distance", params, kappas, model-card notes, runbook diagnostics). Export is refused (`BundleParityError`) unless `explain()` reproduces each sampled cell's log posterior mean as its evidence term.
+- `geo_evidence` is the chain's own geographic mass; state-only incident mass (DP4) is reported in diagnostics, not counted as evidence.
+- `CellData.take`/`subset`; synthetic `synthetic_problem`/`permute_problem` fixtures. `docs/model-card.md` skeleton for Task 20's generator.
+
 ### Phase 3: CV folds - 2026-10-22
 
 - `app.ml.folds`: 8 spatial folds (one per state group, exposure cutoff = production cutoff), rolling origins 2004/2008/2012/2016 with a 3-year test, and the prospective 2026-02-05..2026-07-03 fold. Half-open windows: test starts where training ends; exposure cutoff never exceeds `train_end`.
