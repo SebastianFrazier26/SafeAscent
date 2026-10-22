@@ -28,6 +28,13 @@ BAD_ENTRIES = [
 VERSION = "eb_v1-test"
 
 
+@pytest.fixture(autouse=True)
+def _no_bundle(monkeypatch):
+    # These endpoint tests use mock sessions; relative_rate needs the bundle, covered against a real
+    # database in test_model_scores_api.py.
+    monkeypatch.setattr(model_scores, "reference_rates", AsyncMock(return_value={}))
+
+
 def stored(route_id: int = 7, *, month: int = 9, percentile: float | None = 61.3, insufficient: bool = False,
            **over) -> StoredScore:
     fields = dict(

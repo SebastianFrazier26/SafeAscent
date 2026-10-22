@@ -32,6 +32,13 @@ from app.utils import cache as cache_module
 INSUFFICIENT = {"risk_score": None, "color_code": "gray", "data_status": "insufficient_data"}
 
 
+@pytest.fixture(autouse=True)
+def _no_bundle(monkeypatch):
+    # These endpoint tests use mock sessions; relative_rate needs the bundle, covered against a real
+    # database in test_model_scores_api.py.
+    monkeypatch.setattr(model_scores, "reference_rates", AsyncMock(return_value={}))
+
+
 def _weather() -> WeatherPattern:
     return WeatherPattern(
         temperature=[12.0] * 7,

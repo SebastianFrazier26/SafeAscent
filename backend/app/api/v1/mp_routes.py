@@ -27,10 +27,9 @@ from app.schemas.mp_route import (
     MpRouteMapWithSafetyMeta,
     SafetyScore,
 )
-from app.ml.bundle import ModelBundle
 from app.ml.dataset import STATIC_FEATURES
 from app.ml.explain import explain
-from app.ml.registry import BundleCorrupt, BundleMissing, load_bundle
+from app.ml.registry import BundleCorrupt, BundleMissing
 from app.services import model_scores
 from app.services.weather_service import (
     WEATHER_API_URL,
@@ -200,26 +199,12 @@ AREA_STATIC_SQL = text("""
                        WHERE model_version = :version AND route_id = :route_id AND month = :month)
 """)
 
-_bundle_cache: dict[str, ModelBundle] = {}
-
-
-async def _bundle_for(db: AsyncSession, version: str) -> ModelBundle:
-    # A version's bundle never changes (its sha is fixed at insert), so one cached copy per
-    # process is enough; a promotion loads the new version once.
-    bundle = _bundle_cache.get(version)
-    if bundle is None:
-        bundle = await load_bundle(db, version)
-        _bundle_cache.clear()
-        _bundle_cache[version] = bundle
-    return bundle
-
-
 def _num(v) -> Optional[float]:
     return None if v is None else float(v)
 
 
 async def _explain_terms(db: AsyncSession, stored: model_scores.StoredScore) -> list[dict]:
-    bundle = await _bundle_for(db, stored.model_version)
+    bundle = await model_scores.get_bundle(db, stored.model_version)
     row = (await db.execute(AREA_STATIC_SQL, {"version": stored.model_version, "route_id": stored.route_id,
                                               "month": stored.month})).one_or_none()
     raw: dict[str, Optional[float]] = {f: None for f in STATIC_FEATURES}
@@ -234,22 +219,23 @@ async def _explain_terms(db: AsyncSession, stored: model_scores.StoredScore) -> 
              "multiplier": round(math.exp(t.log_effect), 2)} for t in terms]
 
 
-def _validated_score_fields(stored: model_scores.StoredScore) -> dict:
+def _validated_score_fields(stored: model_scores.StoredScore, r_ref: Optional[float]) -> dict:
     """score_fields through the SafetyScore validator, so every surface serves only a shape the
     contract allows (range brackets the score, ok-only fields only when ok)."""
-    return SafetyScore(**model_scores.score_fields(stored)).model_dump(exclude={"status"})
+    return SafetyScore(**model_scores.score_fields(stored, r_ref)).model_dump(exclude={"status"})
 
 
-def _stored_safety_response(route_id: int, route_name: str, date_str: str,
-                            stored: model_scores.StoredScore) -> MpRouteSafetyResponse:
+async def _stored_safety_response(db: AsyncSession, route_id: int, route_name: str, date_str: str,
+                                  stored: model_scores.StoredScore) -> MpRouteSafetyResponse:
+    r_ref = await model_scores.reference_rate(db, stored)
     return MpRouteSafetyResponse(route_id=route_id, route_name=route_name, target_date=date_str,
-                                 **model_scores.score_fields(stored))
+                                 **model_scores.score_fields(stored, r_ref))
 
 
-def _day_score_fields(stored: Optional[model_scores.StoredScore]) -> dict:
+def _day_score_fields(stored: Optional[model_scores.StoredScore], r_ref: Optional[float]) -> dict:
     if stored is None:
         return dict(_MISSING_SCORE)
-    f = _validated_score_fields(stored)
+    f = _validated_score_fields(stored, r_ref)
     return {k: f[k] for k in ("risk_score", "color_code", "data_status", "confidence", "score_range")}
 
 
@@ -545,6 +531,7 @@ async def get_mp_routes_with_safety(
     # One stored row per route for the month (CM = 1 in MVP-1). A route without a row is
     # missing (safety=None), never 0 and never gray.
     scores = await model_scores.get_scores(db, route_ids, target_date.month) if version else {}
+    rates = await model_scores.reference_rates(db, version) if scores and version else {}
 
     routes_with_safety = []
     stored_count = 0
@@ -554,7 +541,8 @@ async def get_mp_routes_with_safety(
     for row in rows:
         stored = scores.get(row.mp_route_id)
         if stored is not None:
-            safety = SafetyScore(**model_scores.score_fields(stored), status="stored")
+            safety = SafetyScore(**model_scores.score_fields(stored, rates.get((stored.type_group, stored.month))),
+                                 status="stored")
             stored_count += 1
             if safety.data_status == "insufficient_data":
                 insufficient_count += 1
@@ -675,7 +663,7 @@ async def calculate_mp_route_safety(
     name = (await db.execute(select(MpRoute.name).where(MpRoute.mp_route_id == mp_route_id))).scalar_one_or_none()
     if name is None:
         raise HTTPException(status_code=404, detail="Route not found")
-    return _stored_safety_response(mp_route_id, name, target_date.isoformat(), stored)
+    return await _stored_safety_response(db, mp_route_id, name, target_date.isoformat(), stored)
 
 
 # ============================================================================
@@ -716,6 +704,7 @@ async def get_route_forecast(
     # Each day carries its month's stored score (CM = 1 in MVP-1): no per-day model call.
     version = await model_scores.active_version(db)
     month_scores = {m: await model_scores.get_score(db, mp_route_id, m) for m in sorted({d.month for d in days})}
+    month_rates = {m: await model_scores.reference_rate(db, sc) for m, sc in month_scores.items() if sc is not None}
 
     for target_date in days:
         stored = month_scores[target_date.month]
@@ -769,7 +758,7 @@ async def get_route_forecast(
 
             forecast_days.append({
                 "date": target_date.isoformat(),
-                **_day_score_fields(stored),
+                **_day_score_fields(stored, month_rates.get(target_date.month)),
                 "weather_summary": weather_summary,
                 "temp_high": round(temp_max, 1) if temp_max is not None else None,
                 "temp_low": round(temp_min, 1) if temp_min is not None else None,
@@ -1029,7 +1018,10 @@ async def get_risk_breakdown(
     name = (await db.execute(select(MpRoute.name).where(MpRoute.mp_route_id == mp_route_id))).scalar_one_or_none()
     if name is None:
         raise HTTPException(status_code=404, detail="Route not found")
-    body = _stored_safety_response(mp_route_id, name, target_date.isoformat(), stored).model_dump()
+    body = (await _stored_safety_response(db, mp_route_id, name, target_date.isoformat(), stored)).model_dump()
+
+    # Kernel-era keys kept, empty, so the response stays additive for older clients (F54).
+    body = {**body, "factors": None, "top_accidents": [], "extreme_weather": None, "num_contributing_accidents": None}
 
     if body["data_status"] == "insufficient_data":
         # No number, so nothing to decompose: an empty term list, never zero-effect terms.
@@ -1164,8 +1156,10 @@ async def get_time_of_day_analysis(
         hourly_data.append({
             "hour": hour,
             "time": time_str,
-            # risk_score stays for older clients; both are null until hourly risk is modelled.
+            # risk_score/color_code/data_status stay (null) for older clients until hourly risk is modelled.
             "risk_score": None,
+            "color_code": None,
+            "data_status": None,
             "risk": None,
             "risk_note": HOURLY_RISK_NOTE,
             "temperature": round(temp, 1) if temp is not None else None,
@@ -1185,6 +1179,7 @@ async def get_time_of_day_analysis(
         "route_name": route.name,
         "target_date": target_date.isoformat(),
         "base_daily_risk": None,
+        "data_status": None,
         "risk_note": HOURLY_RISK_NOTE,
         "hourly_data": hourly_data,
         "climbing_windows": [],
@@ -1216,9 +1211,11 @@ async def get_historical_trends(
     version, rows = await model_scores.get_profile(db, mp_route_id)
     profile = None
     if version is not None and rows:
+        rates = await model_scores.reference_rates(db, version)
         profile = [
             {"month": m, "month_label": calendar.month_abbr[m],
-             **(_validated_score_fields(rows[m]) if m in rows else _MISSING_SCORE)}
+             **(_validated_score_fields(rows[m], rates.get((rows[m].type_group, m))) if m in rows
+                else _MISSING_SCORE)}
             for m in range(1, 13)
         ]
 
