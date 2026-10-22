@@ -13,8 +13,7 @@ import tempfile
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
-# trainer is NOLOGIN until Phase 3 (D13), which adds it here along with its grants.
-ROLES = ("migrator", "app", "ingest")
+ROLES = ("migrator", "app", "ingest", "trainer")
 
 
 def build_role_url(owner_url: str, role: str, password: str) -> str:

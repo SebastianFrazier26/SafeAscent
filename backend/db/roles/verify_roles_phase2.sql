@@ -33,14 +33,12 @@ SELECT 'nobody but CURRENT_USER holds ADMIN on ' || r,
 FROM unnest(ARRAY['ingest', 'trainer']) AS r;
 
 INSERT INTO role_checks VALUES
-  ('trainer cannot log in until Phase 3', NOT (SELECT rolcanlogin FROM pg_roles WHERE rolname = 'trainer')),
   ('ingest can log in', (SELECT rolcanlogin FROM pg_roles WHERE rolname = 'ingest')),
   ('schema internal is owned by migrator',
      (SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = 'internal') = 'migrator'),
   -- PG16 lets CREATE without USAGE create tables in a schema, so both are checked.
   ('app has no USAGE on schema internal', NOT has_schema_privilege('app', 'internal', 'USAGE')),
   ('app has no CREATE on schema internal', NOT has_schema_privilege('app', 'internal', 'CREATE')),
-  ('trainer has no USAGE on schema internal', NOT has_schema_privilege('trainer', 'internal', 'USAGE')),
   ('trainer has no CREATE on schema internal', NOT has_schema_privilege('trainer', 'internal', 'CREATE')),
   ('ingest cannot CREATE in internal', NOT has_schema_privilege('ingest', 'internal', 'CREATE')),
   ('analyst cannot CREATE in internal', NOT has_schema_privilege('analyst', 'internal', 'CREATE')),
@@ -166,7 +164,10 @@ SELECT 'trainer holds no privilege on ' || tbl,
        NOT (has_table_privilege('trainer', oid, 'SELECT') OR has_table_privilege('trainer', oid, 'INSERT')
             OR has_table_privilege('trainer', oid, 'UPDATE') OR has_table_privilege('trainer', oid, 'DELETE')
             OR has_table_privilege('trainer', oid, 'TRUNCATE'))
-FROM rels WHERE relkind <> 'S';
+-- Phase 3 grants these (verify_roles_phase3.sql owns trainer from here).
+FROM rels WHERE relkind <> 'S' AND tbl NOT IN ('public.accidents_clean', 'public.accident_route_links',
+  'public.canonical_areas', 'public.canonical_routes', 'public.scorable_routes', 'public.scoring_unit_features',
+  'public.historical_predictions', 'internal.exposure_index');
 
 -- ingest's column grants on mp_ticks: SELECT exactly what R8 reads (never climber_name),
 -- UPDATE exactly the two quarantine columns.
@@ -296,7 +297,7 @@ INSERT INTO role_checks VALUES
 -- views, the conditions tables, accident_conditions, the catalog and its features through migrator's default
 -- privileges and hold nothing else on them
 -- (a simple view is auto-updatable, so writes are checked too). ingest's SELECT is in the exact
--- set above; trainer holds nothing until Phase 3 (D13), per the trainer check above.
+-- set above; trainer's reads are verify_roles_phase3.sql's.
 INSERT INTO role_checks
 SELECT 'clean view exists: ' || v, EXISTS (SELECT 1 FROM rels WHERE tbl = v AND relkind = 'v')
 FROM unnest(ARRAY['public.accidents_clean', 'public.accidents_clean_daily', 'public.accident_conditions']) AS v
