@@ -5,7 +5,7 @@ import pytest
 
 from app.ml import registry
 from app.ml.bundle import ModelBundle
-from tests.pgtest import fetch, migrated_db, requires_pg, run_on_conn, run_sql
+from tests.pgtest import fetch, migrated_db, requires_pg, run_on_conn, run_on_engine, run_sql
 from tests.test_migration_0012 import SEED
 
 pytestmark = requires_pg
@@ -173,3 +173,56 @@ def test_prune():
         assert len(fetch(name, "SELECT 1 FROM model.registry")) == 7
         with pytest.raises(registry.BundleMissing, match="pruned"):
             run_on_conn(name, lambda c: registry.load_bundle(c, "e1"))
+        assert fetch(name, "SELECT version, scores_rows FROM model.registry WHERE version IN ('e1', 'r1', 'c1') "
+                           "ORDER BY version") == [("c1", 0), ("e1", 0), ("r1", 0)]
+        with pytest.raises(registry.PromotionRefused, match="no bundle"):
+            run_on_conn(name, lambda c: registry.promote(c, "e1", by="owner"))
+        with pytest.raises(registry.PromotionRefused, match="no bundle"):
+            _promote(name, "c1")
+        assert fetch(name, "SELECT version FROM model.registry WHERE status = 'active'") == [("e3",)]
+
+
+def test_promote_refuses_a_gated_count_without_score_rows():
+    with migrated_db(revision="0012_model_registry", seed_sql=SEED) as name:
+        _insert(name, "e1")
+        run_on_conn(name, lambda c: registry.set_gate(c, "e1", {"passed": True}, {}, 5))
+        with pytest.raises(registry.PromotionRefused, match="no materialized scores"):
+            _promote(name, "e1")
+
+
+def test_rejected_version_needs_an_explicit_owner_override():
+    with migrated_db(revision="0012_model_registry", seed_sql=SEED) as name:
+        run_sql(name, KERNEL_ACTIVE)
+        _candidate(name, "e1")
+        run_on_conn(name, lambda c: registry.reject(c, "e1"))
+        with pytest.raises(registry.PromotionRefused, match="rejected"):
+            run_on_conn(name, lambda c: registry.promote(c, "e1", by="owner"))
+        with pytest.raises(registry.PromotionRefused, match="rejected"):
+            run_on_conn(name, lambda c: registry.promote(c, "e1", by="auto", override_rejection=True))
+        assert run_on_conn(name, lambda c: registry.promote(c, "e1", by="owner", override_rejection=True)) is None
+        assert fetch(name, "SELECT status, promoted_by FROM model.registry WHERE version = 'e1'") == [
+            ("active", "owner")]
+
+
+def test_transitions_refuse_to_run_outside_a_transaction():
+    with migrated_db(revision="0012_model_registry", seed_sql=SEED) as name:
+        run_sql(name, KERNEL_ACTIVE)
+        _candidate(name, "e1")
+        calls = [
+            lambda c: registry.promote(c, "e1", by="auto"),
+            registry.rollback,
+            lambda c: registry.reject(c, "e1"),
+            lambda c: registry.set_gate(c, "e1", {"passed": True}, {}, 1),
+            lambda c: registry.prune(c, today=date(2030, 1, 1)),
+            lambda c: registry.insert_candidate(
+                c, version="e2", family="eb_v1", data_hash="h", train_start=date(1990, 1, 1),
+                data_cutoff=date(2026, 10, 1), exposure_as_of=None, metrics={}, thresholds={}, model_card={},
+                bundle=b"z", parent_version=None),
+        ]
+        for call in calls:
+            async def go(engine, call=call):
+                async with engine.connect() as conn:
+                    await call(conn)
+            with pytest.raises(RuntimeError, match="inside a transaction"):
+                run_on_engine(name, go)
+        assert dict(fetch(name, "SELECT version, status FROM model.registry")) == {"e1": "candidate", "k0": "active"}

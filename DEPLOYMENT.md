@@ -44,6 +44,13 @@ Worker notes for the relaunch:
 - Frontend build args: `VITE_API_BASE_URL` (the API's `/api/v1` URL), `VITE_MAPBOX_TOKEN` (public token), `MAINTENANCE_MODE`.
 - `MIGRATOR_DATABASE_URL` is set on **no** service. It lives only in the owner's gitignored `backend/.env.migrator`, for the explicit migration step.
 
+## Trainer (Phase 3)
+
+- `TRAINER_DATABASE_URL` (the `trainer` role) lives only in the owner's gitignored `backend/.env.trainer` on the Mac. Training, promotion and rollback run from there through the runbook.
+- It is never a Railway service variable and never a GitHub Actions secret (pre-flight F48, 2026-10-22): the repo is public, and no workflow holds a production credential.
+- Neon's **direct** host with verify-full TLS, as for ingest: `app.ml.db.trainer_engine` refuses an unset URL, the `-pooler.` host, and any `ssl`/`sslmode` weaker than verify-full, and never puts the URL in an error message.
+- `HEALTHCHECKS_TRAIN_URL` (35-day dead-man check for the monthly training) goes in `backend/.env.trainer` too. `HEALTHCHECKS_SCORES_URL` is the daily stored-score heartbeat.
+
 ## Database, roles, and migrations
 
 - Alembic owns the schema (`backend/alembic/`). Revisions: `0001_baseline` (replays a sanitized schema-only dump; prod was **stamped** at it, never upgraded through it), `0002_drop_ascents_climbers`, `0003_hist_insufficient_data`, `0004_phase2a_foundation`. Treat every revision as forward-only.

@@ -227,7 +227,7 @@ JAX NUTS runs well on CPU and parallelizes chains across cores. Only the trainin
 - two consecutive runs cross a warning threshold, or
 - one run hits the hard limit.
 
-**Credentials (DECIDED):** Actions secret `TRAINER_DATABASE_URL`. The `trainer` Postgres role is created **via SQL** (Phase 1 role procedure), not `neonctl`. It has SELECT on data tables and write access limited to model tables (INSERT/UPDATE on `model_registry`; any future model-output table is granted explicitly in its migration). It is separate from the read-only `analyst` role, which still runs the full backtest.
+**Credentials (DECIDED):** Actions secret `TRAINER_DATABASE_URL`. *(Superseded by F48 2026-10-22: no GitHub secret; `TRAINER_DATABASE_URL` lives only in `backend/.env.trainer` on the owner's Mac, and training runs from there. See DEPLOYMENT.md, Trainer.)* The `trainer` Postgres role is created **via SQL** (Phase 1 role procedure), not `neonctl`. It has SELECT on data tables and write access limited to model tables (INSERT/UPDATE on `model_registry`; any future model-output table is granted explicitly in its migration). It is separate from the read-only `analyst` role, which still runs the full backtest.
 
 ### M3 — Artifacts stored **in Neon** (DECIDED)
 

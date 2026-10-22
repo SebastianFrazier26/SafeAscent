@@ -19,9 +19,4 @@ def trainer_engine() -> AsyncEngine:
     if not url:
         raise SystemExit(f"{VAR} is not set (the trainer role's URL); see DEPLOYMENT.md")
     require_direct_host(url, var=VAR)
-    try:
-        connect_args = verified_connect_args(url, var=VAR)
-    except ValueError:
-        # connect_args_for's message embeds the (password-masked) URL; the host is still not ours to print.
-        raise SystemExit(f"{VAR} has no host to verify") from None
-    return create_async_engine(url, poolclass=NullPool, connect_args=connect_args)
+    return create_async_engine(url, poolclass=NullPool, connect_args=verified_connect_args(url, var=VAR))

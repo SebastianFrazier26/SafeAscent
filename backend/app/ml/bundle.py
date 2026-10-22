@@ -21,6 +21,8 @@ from numpy.typing import NDArray
 _EPOCH = (1980, 1, 1, 0, 0, 0)
 _UNIX = 3
 MANIFEST = "manifest.json"
+# A fitted bundle is a few MB; the cap only stops a corrupt or hostile zip from inflating without bound.
+MAX_MEMBER_BYTES = 64 * 1024 * 1024
 
 
 def sha256(raw: bytes) -> str:
@@ -36,6 +38,16 @@ def _check_finite(value: Any, path: str) -> None:
     elif isinstance(value, (list, tuple)):
         for i, v in enumerate(value):
             _check_finite(v, f"{path}[{i}]")
+
+
+def _read(z: zipfile.ZipFile, name: str) -> bytes:
+    if z.getinfo(name).file_size > MAX_MEMBER_BYTES:
+        raise ValueError(f"bundle member {name} exceeds {MAX_MEMBER_BYTES} bytes")
+    with z.open(name) as f:
+        data = f.read(MAX_MEMBER_BYTES + 1)
+    if len(data) > MAX_MEMBER_BYTES:
+        raise ValueError(f"bundle member {name} exceeds {MAX_MEMBER_BYTES} bytes")
+    return data
 
 
 def _member(name: str) -> zipfile.ZipInfo:
@@ -60,7 +72,7 @@ class ModelBundle:
             for name in sorted(self.arrays):
                 if not name or "/" in name or "\\" in name:
                     raise ValueError(f"array name {name!r} is not a plain member name")
-                arr = np.ascontiguousarray(self.arrays[name])
+                arr = np.asarray(self.arrays[name], order="C")  # ascontiguousarray would turn a 0-d array into 1-d
                 if arr.dtype == object:
                     raise ValueError(f"array {name} has dtype object; bundles hold numeric arrays only")
                 member = io.BytesIO()
@@ -79,7 +91,7 @@ class ModelBundle:
                 raise ValueError("duplicate member in bundle")
             if MANIFEST not in names:
                 raise ValueError("bundle has no manifest.json")
-            head = json.loads(z.read(MANIFEST))
+            head = json.loads(_read(z, MANIFEST))
             if not (isinstance(head, dict) and isinstance(head.get("arrays"), list)
                     and isinstance(head.get("manifest"), dict)):
                 raise ValueError("bundle manifest.json is malformed")
@@ -89,6 +101,6 @@ class ModelBundle:
                     raise ValueError(f"unexpected member in bundle: {member}")
             if len(names) != len(expected):
                 raise ValueError("bundle is missing an array its manifest lists")
-            arrays = {n: np.load(io.BytesIO(z.read(f"{n}.npy")), allow_pickle=False) for n in head["arrays"]}
+            arrays = {n: np.load(io.BytesIO(_read(z, f"{n}.npy")), allow_pickle=False) for n in head["arrays"]}
         return cls(version=str(head["version"]), family=str(head["family"]), arrays=arrays,
                    manifest=head["manifest"])

@@ -22,7 +22,11 @@ TLS_QUERY_KEYS = ("ssl", "sslmode")
 
 
 def verified_connect_args(url: str, *, var: str = "INGEST_DATABASE_URL") -> dict[str, object]:
-    args = connect_args_for(url)
+    try:
+        args = connect_args_for(url)
+    except ValueError:
+        # connect_args_for's message embeds the (password-masked) URL; no URL ever goes in a message here.
+        raise SystemExit(f"{var} has no host to verify") from None
     if not args:
         return args
     query = make_url(url).query

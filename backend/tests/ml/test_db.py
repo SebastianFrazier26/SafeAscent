@@ -31,6 +31,7 @@ def _refused(monkeypatch, url):
     message = str(refused.value)
     assert "TRAINER_DATABASE_URL" in message
     assert "secret-pw" not in message and "neon.tech" not in message and "trainer:" not in message
+    assert "***" not in message and "neondb" not in message
     return message
 
 

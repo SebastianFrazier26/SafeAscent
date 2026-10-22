@@ -4,6 +4,7 @@ import zipfile
 import numpy as np
 import pytest
 
+import app.ml.bundle as bundle_mod
 from app.ml.bundle import ModelBundle, sha256
 
 
@@ -74,4 +75,19 @@ def test_from_bytes_never_unpickles():
     raw = _zip({"manifest.json": '{"version": "v", "family": "eb_v1", "arrays": ["x"], "manifest": {}}',
                 "x.npy": member.getvalue()})
     with pytest.raises(ValueError, match="allow_pickle"):
+        ModelBundle.from_bytes(raw)
+
+
+def test_zero_dim_arrays_round_trip():
+    raw = ModelBundle(version="v", family="eb_v1", arrays={"phi": np.array(1.5), "k": np.array(3, dtype=np.int16)},
+                      manifest={}).to_bytes()
+    back = ModelBundle.from_bytes(raw)
+    assert back.arrays["phi"].shape == () and float(back.arrays["phi"]) == 1.5
+    assert back.arrays["k"].shape == () and back.arrays["k"].dtype == np.int16
+
+
+def test_from_bytes_caps_member_size(monkeypatch):
+    raw = ModelBundle(version="v", family="eb_v1", arrays={"big": np.zeros(4096)}, manifest={}).to_bytes()
+    monkeypatch.setattr(bundle_mod, "MAX_MEMBER_BYTES", 1024)
+    with pytest.raises(ValueError, match="exceeds 1024 bytes"):
         ModelBundle.from_bytes(raw)
