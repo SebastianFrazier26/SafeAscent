@@ -346,7 +346,7 @@ RAW_START = date(1990, 1, 1)
 RAW_END = date(2026, 10, 1)
 
 
-def synthetic_raw(seed: int, drop_cutoffs: tuple[date, ...] = (), n_areas: int = 120) -> Any:
+def synthetic_raw(seed: int, drop_cutoffs: tuple[date, ...] = (), n_areas: int = 120, rate_scale: float = 1.0) -> Any:
     """RawData for backtests: the synthetic_problem world over RAW_STATES, with incidents drawn as
     placements over [1990-01-01, 2026-10-01) at the world's true rate (log_rate is a 20-year count).
     Precision mix: day (most), month, and 1-3 year intervals with no month; about 5% carry ski_approach
@@ -375,7 +375,7 @@ def synthetic_raw(seed: int, drop_cutoffs: tuple[date, ...] = (), n_areas: int =
 
     for (area_id, gi, m), lr in sorted(w.log_rate.items()):
         years = [y for y in range(RAW_START.year, RAW_END.year + 1) if date(y, m, 1) < RAW_END]
-        n = int(rng.poisson(np.exp(lr) / 20.0 * len(years)))
+        n = int(rng.poisson(rate_scale * np.exp(lr) / 20.0 * len(years)))
         for _ in range(n):
             y = years[int(rng.integers(len(years)))]
             kind = rng.random()
@@ -406,3 +406,87 @@ def synthetic_raw(seed: int, drop_cutoffs: tuple[date, ...] = (), n_areas: int =
     cutoffs = [c for c in (*BACKTEST_CUTOFFS, RAW_END) if c not in drop_cutoffs]
     return RawData(placements=placements, areas=list(w.areas), paths=dict(w.paths), static=list(w.static),
                    exposure_by_cutoff={c: list(exposure) for c in cutoffs}, production_cutoff=RAW_END)
+
+
+def synthetic_fold_data(seed: int, n_areas: int = 120) -> Any:
+    """prepare() over synthetic_raw's spatial folds (production cutoff) and rolling folds."""
+    from app.ml.backtest import prepare
+    from app.ml.folds import rolling_folds, spatial_folds
+
+    raw = synthetic_raw(seed, n_areas=n_areas)
+    return [prepare(raw, f) for f in spatial_folds(raw.production_cutoff) + rolling_folds()]
+
+
+def _toy_result(shape: Any, rate: Any, scale: Any, obs: Any, dist: Any) -> Any:
+    from app.ml.backtest import FoldResult
+    from app.ml.folds import Fold
+
+    n = obs.size
+
+    def f64(v: float) -> NDArray[np.float64]:
+        return np.full(n, v, dtype=np.float64)
+
+    return FoldResult(
+        fold=Fold("toy", "spatial", RAW_START, RAW_END, RAW_START, RAW_END, frozenset(), RAW_END), shape=shape, rate=rate, scale=scale, obs=obs,
+        mu_point=np.asarray(shape / rate * scale, dtype=np.float64), conf=np.full(n, "low", dtype=object),
+        insufficient=np.zeros(n, dtype=np.bool_), zero_history=np.zeros(n, dtype=np.bool_),
+        group=np.zeros(n, dtype=np.int64), routes=f64(10.0), evidence_dist=dist,
+        geo_evidence=np.ones(n, dtype=np.bool_), percentile=f64(50.0), n_eff_geo=f64(20.0),
+        n_eff_feature=f64(1.0), y_own=f64(0.0))
+
+
+TOY_TIERS = ((40.0, 6000), (8.0, 2000), (2.0, 600))
+
+
+def fold_results_toy(*, gain_by_band: tuple[float, ...] | None = None, calibrated: bool = True,
+                     tiers: tuple[tuple[float, int], ...] = TOY_TIERS, true_phi: float = 1.0,
+                     seed: int = 0) -> tuple[Any, Any, Any]:
+    """(pooled, geo, dist) FoldResult lists for the tuning selectors.
+
+    With gain_by_band: cells split into the tuning BAND_QUANTILES bands of evidence distance; geo-only
+    predicts a mean of 2.5 where counts are Poisson(1), and pooled's mean per band is solved so its mean
+    log-score gain over geo-only in that band equals the given value.
+
+    Without: posterior-width tiers of (shape, cells), by default many narrow cells and few wide ones,
+    so pooled O/E error grows as confidence drops. Counts come from the stated Gamma widened by
+    true_phi (1: calibrated); calibrated=False also makes every true rate 3 times the stated one, so no
+    level covers. geo is pooled."""
+    from scipy.optimize import brentq
+
+    from app.ml.metrics import nb_logpmf
+    from app.ml.tuning import BAND_QUANTILES
+
+    rng = np.random.default_rng(seed)
+    if gain_by_band is not None:
+        if len(gain_by_band) != len(BAND_QUANTILES) - 1:
+            raise ValueError("one gain per band")
+        n = 4000
+        dist = np.linspace(0.1, 5.0, n)
+        edges = np.quantile(dist, BAND_QUANTILES)
+        band = np.searchsorted(edges[1:], dist, side="left")
+        obs = rng.poisson(1.0, n).astype(np.float64)
+        a = np.full(n, 200.0)
+        geo_mean = 2.5
+        pooled_rate = np.empty(n)
+        for b, target in enumerate(gain_by_band):
+            sel = band == b
+            k, s = obs[sel], a[sel]
+            base = nb_logpmf(k, s, s / geo_mean, np.ones(k.size))
+
+            def gap(m: float) -> float:
+                return float(np.mean(nb_logpmf(k, s, s / m, np.ones(k.size)) - base)) - target  # noqa: B023
+
+            m = brentq(gap, float(k.mean()), geo_mean) if target > 0 else brentq(gap, geo_mean, 100.0)
+            pooled_rate[sel] = a[sel] / m
+        one = np.ones(n)
+        pooled = _toy_result(a, pooled_rate, one, obs, dist)
+        geo = _toy_result(a, a / geo_mean, one, obs, dist)
+        return [pooled], [geo], dist
+    shape = np.concatenate([np.full(n, a) for a, n in tiers])
+    rate = shape.copy()
+    scale = rng.uniform(0.5, 2.0, shape.size)
+    theta = rng.gamma(shape / true_phi, true_phi / rate)
+    obs = rng.poisson(theta * scale * (1.0 if calibrated else 3.0)).astype(np.float64)
+    dist = np.zeros(shape.size)
+    res = _toy_result(shape, rate, scale, obs, dist)
+    return [res], [res], dist

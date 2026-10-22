@@ -129,12 +129,18 @@ def _cells(raw: RawData, cutoff: date, *, mp_ticks: bool = True) -> CellData:
     return assemble_cells(rows, raw.static, raw.areas, raw.paths)
 
 
-def fit_full(raw: RawData, params: ModelParams, *, cutoff: date | None) -> tuple[Fitted, CellData, Counts]:
-    """Every cell trains, on [TRAIN_START, cutoff); cutoff None is the production snapshot."""
+def fit_full(raw: RawData, params: ModelParams, *, cutoff: date | None,
+             states: frozenset[str] | None = None) -> tuple[Fitted, CellData, Counts]:
+    """Trains on [TRAIN_START, cutoff); cutoff None is the production snapshot. states None trains every
+    cell; otherwise only cells in those states train (the stability bootstrap), the rest are held out
+    as in a spatial fold."""
     end = raw.production_cutoff if cutoff is None else cutoff
     cells = _cells(raw, end)
     counts = count_incidents(raw.placements, cells, start=TRAIN_START, end=end)
-    return fit_model(cells, counts, params), cells, counts
+    mask = None
+    if states is not None:
+        mask = np.isin(np.asarray(cells.states)[cells.state_idx[cells.area_idx]], sorted(states))
+    return fit_model(cells, counts, params, train_mask=mask), cells, counts
 
 
 @dataclass(frozen=True)
@@ -185,7 +191,8 @@ def prepare(raw: RawData, fold: Fold, *, exclude_flags: frozenset[str] = frozens
 @dataclass(frozen=True)
 class FoldResult:
     """Test cells of one fold. percentile is the shown within-type-group percentile (NaN when
-    insufficient), which the G7 band tables need."""
+    insufficient), which the G7 band tables need. n_eff_geo, n_eff_feature (NaN when insufficient) and
+    y_own carry the evidence gate on "high", so tuning can re-level cells as summarize would."""
 
     fold: Fold
     shape: F64
@@ -201,6 +208,9 @@ class FoldResult:
     evidence_dist: F64
     geo_evidence: BoolArr
     percentile: F64
+    n_eff_geo: F64
+    n_eff_feature: F64
+    y_own: F64
 
 
 def _stage1_key(fold: Fold, params: ModelParams) -> str:
@@ -231,6 +241,7 @@ def run_fold(fd: FoldData, params: ModelParams, thresholds: Thresholds, *,
         mu_point=np.asarray(shape / rate * scale, dtype=np.float64), conf=s.conf_level[t], insufficient=s.insufficient[t],
         zero_history=zero_history[t], group=cells.g[t].astype(np.int64), routes=cells.n_routes[t],
         evidence_dist=dist[t], geo_evidence=geo[t], percentile=s.percentile[t],
+        n_eff_geo=s.n_eff_geo[t], n_eff_feature=s.n_eff_feature[t], y_own=np.asarray(y_own[t], dtype=np.float64),
     )
 
 
