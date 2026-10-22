@@ -57,21 +57,21 @@ jobs:
           cache-dependency-glob: backend/uv.lock
 
       - name: Install
-        run: uv sync --frozen --group pipelines
+        run: uv sync --frozen --group pipelines --group train
 
       - name: Lint
         run: uv run ruff check . ../scripts/
 
       - name: Type check
-        run: uv run mypy
+        run: uv run --group train mypy
 
       - name: Dependency audit
         run: |
-          uv export --frozen --no-dev --group pipelines --group llm --no-emit-project --format requirements.txt \
+          uv export --frozen --no-dev --group pipelines --group llm --group train --no-emit-project --format requirements.txt \
             | uv run pip-audit -r /dev/stdin --require-hashes --disable-pip
 
       - name: Test
-        run: uv run pytest
+        run: uv run --group train pytest
         env:
           MIGRATIONS_TEST_ADMIN_URL: postgresql://test_user:test_password@localhost:5432/postgres
 

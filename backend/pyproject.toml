@@ -33,11 +33,17 @@ dev = [
     "mypy==2.3.1",
     "pip-audit==2.10.1",
     "fakeredis==2.38.0",
+    "hypothesis==6.170.5",
 ]
 # R10 LLM pass only (app.data.repair.r10_llm). Not in default-groups, so no image and no
 # plain `uv sync` installs it; run with `uv run --group llm`. CI audits it via the export.
 llm = [
     "anthropic==1.13.0",
+]
+# Model training (app.ml.posterior and later trainer stages). Not in default-groups, so neither
+# image installs it; run with `uv run --group train`. CI syncs it for the test job.
+train = [
+    "scipy==1.18.1",
 ]
 # Data-job dependencies (local days now; later plans append). Not in the API image: the
 # Dockerfile syncs with --no-group pipelines; Dockerfile.jobs (catalog-cycle cron) includes it.
@@ -151,6 +157,7 @@ module = [
     "app.ml.glm",
     "app.ml.archetypes",
     "app.ml.eb",
+    "app.ml.posterior",
     "app.pipelines.accident_facts",
     "app.pipelines.dem",
     "app.pipelines.epqs",
