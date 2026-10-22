@@ -109,6 +109,15 @@ def percentile_in(x: F64, ref: F64, w: F64) -> F64:
     return np.asarray(100.0 * (below + 0.5 * (upto - below)) / c0[-1], dtype=np.float64)
 
 
+def n_eff_geo(cp: CellPost) -> F64:
+    """Geographic effective incident mass behind a cell: its own incidents plus what its prior borrows
+    from area, region and state. The one definition; model.predict and summarize both call it."""
+    ch, b, wc = cp.chain, cp.blend_geo, cp.omega_cell
+    inner = ch["omega_area"] * ch["O_area"] + (1 - ch["omega_area"]) * (
+        ch["omega_region"] * ch["O_region"] + (1 - ch["omega_region"]) * ch["omega_state"] * ch["O_state"])
+    return np.asarray(wc * np.maximum(cp.y_own, 0.0) + (1 - wc) * b * inner, dtype=np.float64)
+
+
 def insufficient_mask(geo_evidence: NDArray[np.bool_], n_eff_feature: F64, evidence_dist: F64,
                       d_star: float) -> NDArray[np.bool_]:
     """Gray only with no evidence at all: no geo incident, no archetype incident, no neighbour within d*."""
@@ -163,14 +172,13 @@ def summarize(cells: CellData, design: Design, coef: F64, cp: CellPost, *,
     exposure = np.exp(eta_exp)
 
     ch, b, wc = cp.chain, cp.blend_geo, cp.omega_cell
-    geo_inner = ch["omega_area"] * ch["O_area"] + (1 - ch["omega_area"]) * (
-        ch["omega_region"] * ch["O_region"] + (1 - ch["omega_region"]) * ch["omega_state"] * ch["O_state"])
-    n_geo = wc * np.maximum(cp.y_own, 0.0) + (1 - wc) * b * geo_inner
+    n_geo = n_eff_geo(cp)
     n_feat = np.asarray((1 - wc) * (1 - b) * ch["omega_arch"] * ch["O_arch"], dtype=np.float64)
 
-    # geo_evidence stays an input (the interface); it must agree with the chain's own geo mass.
-    if np.any(geo_evidence != (n_geo > GEO_TOL)):
-        raise ValueError("geo_evidence disagrees with n_eff_geo > 0 on some cell")
+    # geo_evidence may exceed the chain (state-only incidents, DP4, never in any level's O), but a cell
+    # whose chain carries geo mass must never be reported as lacking it.
+    if np.any((n_geo > GEO_TOL) & ~geo_evidence):
+        raise ValueError("geo_evidence is False on a cell whose n_eff_geo > 0")
     insufficient = insufficient_mask(geo_evidence, n_feat, evidence_dist, thresholds.d_star)
     suff = ~insufficient
     if np.any(cells.n_routes[suff] <= 0):

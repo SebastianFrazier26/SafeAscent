@@ -6,9 +6,10 @@ EB keys regions as "state|region": an area's state (GNIS/lat-lon) can disagree w
 borders, and fit_eb refuses a region that does not nest in one state (controller ruling 2026-10-22; a
 border-split region then pools as two groups).
 
-geo_evidence is the chain's own geographic mass (n_eff_geo > GEO_TOL), the definition posterior.summarize
-enforces. The brief also counted a state's state_mass (state-only incidents, DP4); summarize refuses any
-geo_evidence its chain does not carry, so state_mass is reported in diagnostics only (2026-10-22)."""
+geo_evidence is the chain's geographic mass (posterior.n_eff_geo > GEO_TOL) or state-only incident mass
+for the cell's (state, group) (DP4, controller ruling 2026-10-22): such incidents never enter an EB level's
+O, but they keep a cell out of gray. Only states holding a training area count, so a held-out state never
+lights up its own evidence."""
 
 from __future__ import annotations
 
@@ -37,7 +38,7 @@ from app.ml.explain import EVIDENCE, TYPE_SEASON, explain
 from app.ml.features import Design, Lambdas, TickPolicy, build_design
 from app.ml.folds import Fold
 from app.ml.glm import ETA_CLIP, GlmFit, fit_poisson, linear_predictor
-from app.ml.posterior import GEO_TOL, CellSummary, Thresholds, interval90, summarize
+from app.ml.posterior import GEO_TOL, CellSummary, Thresholds, interval90, n_eff_geo, summarize
 
 F64 = NDArray[np.float64]
 I64 = NDArray[np.int64]
@@ -50,7 +51,12 @@ MODEL_CARD_NOTES = (
     "The design is rank-deficient in fam_mountain vs the ridged a_* group effects; it is identifiable "
     "through the ridge, and the unpenalized fam_mountain absorbs the shared family effect (DP3).",
     "State-only incidents (park_centroid, region_fallback, unknown, far points) never enter an EB level's O "
-    "(DP4, F39); the card reports the state-only incident share per state (diagnostics.state_only_mass).",
+    "(DP4, F39), but they count as geo evidence for their (state, type group): such a cell is scored, never "
+    "gray, and reads at most 'low' unless other evidence lifts it. The card reports the state-only share per "
+    "state (diagnostics.state_only_share) and the cells kept out of gray only by it.",
+    "hazard_center[g, m] is log of the exposure-weighted mean hazard exp(eta - eta_exposure) over the cells "
+    "of type group g and month m; log_rref - hazard_center = log theta_bar(g, m), the exposure-weighted "
+    "posterior mean the evidence term is measured against (about 0 when the EB is centred).",
     "Rolling-origin folds are point-in-time for ticks only (F22): season_share and route_density use "
     "today's climate window and catalog, so backtests are not fully point-in-time.",
 )
@@ -118,15 +124,6 @@ def _quantiles(x: NDArray[Any]) -> dict[str, float]:
             "p75": float(q[4]), "p90": float(q[5]), "max": float(q[6]), "mean": float(x.mean())}
 
 
-def _n_eff_geo(cp: CellPost) -> F64:
-    # Same expression as posterior.summarize, which rejects any geo_evidence that disagrees with it.
-    ch, b, wc = cp.chain, cp.blend_geo, cp.omega_cell
-    inner = ch["omega_area"] * ch["O_area"] + (1 - ch["omega_area"]) * (
-        ch["omega_region"] * ch["O_region"] + (1 - ch["omega_region"]) * ch["omega_state"] * ch["O_state"])
-    out: F64 = np.asarray(wc * np.maximum(cp.y_own, 0.0) + (1 - wc) * b * inner, dtype=np.float64)
-    return out
-
-
 @dataclass(frozen=True)
 class Fitted:
     design: Design
@@ -140,11 +137,18 @@ class Fitted:
     arch_centers: F64
     area_ids: I64
     y_train: F64  # y * mask in the caller's cell order: the default y_own for to_bundle
+    state_evidence: NDArray[np.bool_]  # (states, groups): state-only mass > GEO_TOL, training states only
+    state_idx: I64
+    region_idx: I64
+    states: tuple[str, ...]
+    regions: tuple[str, ...]
     diagnostics: Mapping[str, Any] = field(default_factory=dict)
 
     def _check_cells(self, cells: CellData) -> None:
         # EB levels are keyed by area/region/state index, so only the same area table can be scored.
-        if not np.array_equal(cells.area_id, self.area_ids):
+        if not (np.array_equal(cells.area_id, self.area_ids) and np.array_equal(cells.state_idx, self.state_idx)
+                and np.array_equal(cells.region_idx, self.region_idx) and cells.states == self.states
+                and cells.regions == self.regions):
             raise ValueError("cells carry a different area table than the fit; EB keys would not line up")
 
     def design_for(self, cells: CellData) -> Design:
@@ -168,8 +172,12 @@ class Fitted:
                 continue
             areas, inv = np.unique(cells.area_idx[sel], return_inverse=True)
             dist[sel] = nearest_distance(Z[areas], self.ev_points[gi], w)[inv]
-        geo = np.asarray(_n_eff_geo(cp) > GEO_TOL, dtype=np.bool_)
+        geo = np.asarray((n_eff_geo(cp) > GEO_TOL) | self._state_only(cells), dtype=np.bool_)
         return mu0, cp, dist, geo
+
+    def _state_only(self, cells: CellData) -> NDArray[np.bool_]:
+        out: NDArray[np.bool_] = self.state_evidence[cells.state_idx[cells.area_idx], cells.g.astype(np.int64)]
+        return out
 
     def summarize(self, cells: CellData, y_own: F64, thresholds: Thresholds) -> CellSummary:
         _, cp, dist, geo = self.predict(cells, y_own)
@@ -227,10 +235,26 @@ class Fitted:
                                  for k in ("state", "region", "area", "arch", "cell")},
                       "notes": list(MODEL_CARD_NOTES)},
         )
-        median = check_parity(bundle, cells, s, mean)
+        # Parity runs on the bytes that ship, not on the in-memory object.
+        shipped = ModelBundle.from_bytes(bundle.to_bytes())
+        _check_shipped(shipped, design)
+        median = check_parity(shipped, cells, s, mean)
+        kept = geo & ~(n_eff_geo(cp) > GEO_TOL) & (s.n_eff_feature == 0) & (dist > thresholds.d_star)
         diagnostics = {**self.diagnostics, "median_route": median,
-                       "theta_bar_gm": _finite_quantiles(log_rref - hazard_center)}
+                       "theta_bar_gm": _finite_quantiles(log_rref - hazard_center),
+                       "cells_kept_out_of_gray_only_by_state_mass": int(kept.sum())}
         return dataclasses.replace(bundle, manifest={**bundle.manifest, "diagnostics": diagnostics})
+
+
+def _check_shipped(shipped: ModelBundle, design: Design) -> None:
+    """The exposure side cancels out of explain(), so parity cannot see it; compare it directly."""
+    ex = list(design.exposure_cols)
+    ok = (shipped.manifest["tick_ref"] == design.tick_ref
+          and shipped.manifest["families_on"] == sorted(design.families_on)
+          and np.array_equal(shipped.arrays["center"][ex], design.center[ex])
+          and np.array_equal(shipped.arrays["scale"][ex], design.scale[ex]))
+    if not ok:
+        raise BundleParityError("shipped bundle's tick_ref, families_on or exposure center/scale differ from the fit")
 
 
 def _finite_quantiles(x: F64) -> dict[str, float]:
@@ -243,7 +267,7 @@ def _raw_features(cells: CellData, c: int) -> dict[str, float | None]:
 
 def check_parity(bundle: ModelBundle, cells: CellData, s: CellSummary, mean: F64) -> dict[str, Any]:
     """explain()'s evidence term must equal log(posterior mean) and its terms must sum to log(rr_mean),
-    within PARITY_TOL, on an evenly spaced sample of sufficient cells plus the median route. Returns the
+    within PARITY_TOL, on an evenly spaced sample of sufficient cells, one per (g, m), and the median route. Returns the
     median route's type_season and evidence terms (the theta_bar ~ 1 check, for the runbook)."""
     suff = np.flatnonzero(~s.insufficient)
     if suff.size == 0:
@@ -252,8 +276,10 @@ def check_parity(bundle: ModelBundle, cells: CellData, s: CellSummary, mean: F64
     order = np.argsort(s.rr_mean[suff], kind="stable")
     cum = np.cumsum(w[order])
     med = int(suff[order[int(np.searchsorted(cum, 0.5 * cum[-1]))]])
-    sample = np.unique(np.concatenate([suff[np.linspace(0, suff.size - 1, min(PARITY_SAMPLE, suff.size))
-                                            .astype(np.int64)], [med]]))
+    spread = suff[np.linspace(0, suff.size - 1, min(PARITY_SAMPLE, suff.size)).astype(np.int64)]
+    gm = cells.g[suff].astype(np.int64) * 12 + cells.month[suff].astype(np.int64)
+    _, first = np.unique(gm, return_index=True)  # every (g, m) with a sufficient cell gets one
+    sample = np.unique(np.concatenate([spread, suff[first], [med]]))
     out: dict[str, Any] = {}
     for c in sample.tolist():
         rr = float(s.rr_mean[c])
@@ -314,9 +340,18 @@ def fit_model(cells: CellData, counts: Counts, params: ModelParams, *,
         areas = np.unique(cc.area_idx[(cc.g == gi) & (y_tr > 0)])
         ev_points.append(Z[areas])
 
+    state_mass = np.asarray(counts.state_mass, dtype=np.float64)
+    if state_mass.shape != (len(cells.states), len(TYPE_GROUPS)):
+        raise ValueError("counts.state_mass must be (states, type groups)")
+    train_states = np.unique(cc.state_idx[train_areas])
+    is_train_state = np.zeros(len(cells.states), dtype=np.bool_)
+    is_train_state[train_states] = True
+    # A held-out state's own state-only incidents are test data: they must not mark its cells as evidenced.
+    state_evidence = (state_mass > GEO_TOL) & is_train_state[:, None]
+
     labels = arch_of_area[train_areas]
     region_of_train = ecc.region_idx[train_areas]
-    train_states = np.unique(cc.state_idx[train_areas])
+    cell_y_by_state = np.bincount(cc.state_idx[cc.area_idx], weights=y_tr, minlength=len(cells.states))
     diagnostics: dict[str, Any] = {
         "glm_iterations": int(glm.iterations),
         "glm_fixed_zero": [design.names[j] for j in glm.fixed_zero],
@@ -325,14 +360,20 @@ def fit_model(cells: CellData, counts: Counts, params: ModelParams, *,
         "kappa": {k: float(getattr(eb, f"kappa_{k}")) for k in ("state", "region", "area", "arch", "cell")},
         "arch_sizes": [int(v) for v in np.bincount(labels[labels >= 0], minlength=centers.shape[0])],
         "areas_without_archetype": int((arch_of_area < 0).sum()),
-        "dropped_by_reason": {str(k): float(v) for k, v in sorted(counts.dropped.items())},
-        "placed_by_level": {str(k): float(v) for k, v in sorted(counts.placed.items())},
-        "state_only_mass": {cc.states[int(si)]: float(np.asarray(counts.state_mass)[si].sum())
-                            for si in train_states},
+        # Whole counting-window totals (Counts), not restricted to training cells.
+        "dropped_by_reason_window_total": {str(k): float(v) for k, v in sorted(counts.dropped.items())},
+        "placed_by_level_window_total": {str(k): float(v) for k, v in sorted(counts.placed.items())},
+        "state_only_mass_window_total": {cc.states[int(si)]: float(state_mass[si].sum()) for si in train_states},
+        "state_only_share": {
+            cc.states[int(si)]: (float(state_mass[si].sum() / (state_mass[si].sum() + cell_y_by_state[si]))
+                                 if state_mass[si].sum() + cell_y_by_state[si] > 0 else None)
+            for si in train_states},
     }
     return Fitted(design=build_design(cells, policy=params.tick_policy, lambdas=params.lambdas,
                                       fit_stats=train_design),
                   glm=glm, eb=eb, arch_of_area=arch_of_area, std=std, ev_points=tuple(ev_points), params=params,
                   years=float(counts.years), arch_centers=np.asarray(centers, dtype=np.float64),
                   area_ids=np.asarray(cells.area_id, dtype=np.int64), y_train=np.where(mask, y_in, 0.0),
+                  state_evidence=state_evidence, state_idx=cells.state_idx.copy(),
+                  region_idx=cells.region_idx.copy(), states=cells.states, regions=cells.regions,
                   diagnostics=diagnostics)

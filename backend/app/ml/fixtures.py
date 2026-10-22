@@ -249,10 +249,12 @@ _PROTOTYPES = ((600.0, 90.0, 0.0, 1.0), (1700.0, 45.0, 8.0, 6.0), (2900.0, 25.0,
                (3900.0, 15.0, 90.0, 22.0))
 
 
-def synthetic_problem(seed: int, return_truth: bool = False, n_areas: int = 96) -> Any:
+def synthetic_problem(seed: int, return_truth: bool = False, n_areas: int = 96,
+                      state_mass: dict[str, float] | None = None) -> Any:
     """Cells, Poisson counts and (with return_truth) the true per-cell rates, from a log-linear model:
     route density, season share, a type-group effect, a prototype x group effect shared across
-    states, and per-area noise. Every month and both families carry incidents, so the GLM converges."""
+    states, and per-area noise. Every month and both families carry incidents, so the GLM converges.
+    state_mass maps a state code to state-only incident mass, spread over the groups present there."""
     from app.ml.dataset import Counts
 
     rng = np.random.default_rng(seed)
@@ -299,8 +301,13 @@ def synthetic_problem(seed: int, return_truth: bool = False, n_areas: int = 96) 
     for key, i in cells.index.items():
         truth[i] = np.exp(log_rate[key])
     y = rng.poisson(truth).astype(np.float64)
-    counts = Counts(y=y, state_mass=np.zeros((len(cells.states), len(TYPE_GROUPS))), years=20.0,
-                    dropped={}, placed={"cell": float(y.sum())})
+    sm = np.zeros((len(cells.states), len(TYPE_GROUPS)))
+    for code, mass in (state_mass or {}).items():
+        si = cells.states.index(code)
+        present = np.unique(cells.g[cells.state_idx[cells.area_idx] == si]).astype(np.int64)
+        sm[si, present] = mass / present.size
+    counts = Counts(y=y, state_mass=sm, years=20.0, dropped={},
+                    placed={"cell": float(y.sum()), "state": float(sm.sum())})
     return (cells, counts, truth) if return_truth else (cells, counts)
 
 

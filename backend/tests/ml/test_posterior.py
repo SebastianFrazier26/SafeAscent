@@ -334,11 +334,17 @@ def test_medium_needs_some_evidence():
         "low", "low", "medium"]
 
 
-def test_geo_evidence_must_agree_with_n_eff_geo():
+def test_geo_evidence_may_exceed_the_chain_but_never_fall_short():
     toy = fitted_toy(local_incidents=0, archetype_incidents=3)
     kw = toy.inputs(thresholds=TH)
     geo = kw["geo_evidence"].copy()
-    geo[toy.target_cell] = True                       # caller claims geo evidence the chain does not have
+    assert not geo[toy.target_cell]
+    geo[toy.target_cell] = True                       # state-only evidence the chain does not carry: allowed
     kw["geo_evidence"] = geo
-    with pytest.raises(ValueError, match="disagrees"):
+    summarize(**kw)
+    with_mass = int(np.flatnonzero(toy.geo_evidence)[0])
+    geo = toy.geo_evidence.copy()
+    geo[with_mass] = False                            # chain has geo mass, caller denies it: refused
+    kw["geo_evidence"] = geo
+    with pytest.raises(ValueError, match="n_eff_geo > 0"):
         summarize(**kw)

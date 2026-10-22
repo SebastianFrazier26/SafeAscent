@@ -183,7 +183,8 @@ def test_bundle_round_trips_and_carries_the_contract():
             else:
                 assert str(m) not in man["const"][g] and np.isnan(again.arrays["log_rref"][gi, m - 1])
     diag = man["diagnostics"]
-    assert {"glm_iterations", "kappa", "areas_per_region", "dropped_by_reason", "median_route"} <= set(diag)
+    assert {"glm_iterations", "kappa", "areas_per_region", "dropped_by_reason_window_total", "median_route",
+            "state_only_share", "cells_kept_out_of_gray_only_by_state_mass"} <= set(diag)
     assert {"type_season", "evidence"} <= set(diag["median_route"])
 
 
@@ -248,3 +249,109 @@ def test_bad_inputs_raise():
     sub = cells.subset(cells.month == 1)
     assert sub.n == int((cells.month == 1).sum()) and all(sub.month == 1)
     assert all(sub.index[k] < sub.n for k in sub.index) and len(sub.index) == sub.n
+
+
+def _state_only_problem(mass):
+    cells, counts = synthetic_problem(seed=25, state_mass={"NH": mass} if mass else None)
+    nh = cells.state_idx[cells.area_idx] == cells.states.index("NH")
+    return cells, dataclasses.replace(counts, y=np.where(nh, 0.0, counts.y)), nh
+
+
+GRAY_BY_DISTANCE = Thresholds(d_star=0.0, conf_high=3.0, conf_medium=8.0, phi=1.0)
+
+
+def test_state_only_mass_keeps_a_cell_out_of_gray_and_reads_low():
+    # blend=False and no NH cell incidents: NH has no chain evidence at all, only state-only mass.
+    cells, counts, nh = _state_only_problem(0.0)
+    bare = fit_model(cells, counts, ModelParams(blend=False))
+    assert np.all(bare.summarize(cells, counts.y, GRAY_BY_DISTANCE).insufficient[nh])
+    cells, counts, nh = _state_only_problem(3.0)
+    fit = fit_model(cells, counts, ModelParams(blend=False))
+    s = fit.summarize(cells, counts.y, GRAY_BY_DISTANCE)
+    assert not s.insufficient[nh].any() and np.all(np.isfinite(s.rr_mean[nh]))
+    assert set(s.conf_level[nh]) == {"low"}
+    b = fit.to_bundle("v", GRAY_BY_DISTANCE, cells)
+    assert b.manifest["diagnostics"]["cells_kept_out_of_gray_only_by_state_mass"] == int(nh.sum())
+    assert b.manifest["diagnostics"]["state_only_share"]["NH"] == pytest.approx(1.0)
+
+
+def test_held_out_state_mass_does_not_light_up_its_own_cells():
+    cells, counts, nh = _state_only_problem(3.0)
+    fit = fit_model(cells, counts, ModelParams(blend=False), train_mask=~nh)
+    _, _, _, geo = fit.predict(cells, np.zeros(cells.n))
+    assert not geo[nh].any()
+    assert np.all(fit.summarize(cells, np.zeros(cells.n), GRAY_BY_DISTANCE).insufficient[nh])
+
+
+def test_held_out_area_features_do_not_move_standardizer_or_archetypes():
+    cells, counts = synthetic_problem(seed=26)
+    mask = cells.state_idx[cells.area_idx] != 0
+    held_areas = np.unique(cells.area_idx[~mask])
+    train_areas = np.unique(cells.area_idx[mask])
+    fit = fit_model(cells, counts, ModelParams(), train_mask=mask)
+    area_static = cells.area_static.copy()
+    area_static[held_areas] = area_static[held_areas] * 3.0 + 500.0
+    fit2 = fit_model(dataclasses.replace(cells, area_static=area_static), counts, ModelParams(), train_mask=mask)
+    np.testing.assert_array_equal(fit.std.mean, fit2.std.mean)
+    np.testing.assert_array_equal(fit.std.sd, fit2.std.sd)
+    np.testing.assert_array_equal(fit.arch_centers, fit2.arch_centers)
+    np.testing.assert_array_equal(fit.arch_of_area[train_areas], fit2.arch_of_area[train_areas])
+
+
+def test_take_slices_every_per_cell_field():
+    cells, _ = synthetic_problem(seed=27)
+    assert cells.area_id.size != cells.n
+    per_cell = [f.name for f in dataclasses.fields(cells)
+                if isinstance(getattr(cells, f.name), np.ndarray) and getattr(cells, f.name).shape[:1] == (cells.n,)]
+    assert {"area_idx", "g", "month", "static"} <= set(per_cell)
+    rows = np.random.default_rng(1).permutation(cells.n)[: cells.n // 2]
+    sub = cells.take(rows)
+    for name in per_cell:
+        np.testing.assert_array_equal(getattr(sub, name), getattr(cells, name)[rows], err_msg=name)
+    for f in dataclasses.fields(cells):
+        if f.name not in per_cell and f.name != "index":
+            assert getattr(sub, f.name) is getattr(cells, f.name), f.name
+    for key, i in sub.index.items():
+        assert cells.index[key] == rows[i]
+
+
+def test_predict_refuses_a_changed_state_or_region_table():
+    cells, counts = synthetic_problem(seed=28)
+    fit = fit_model(cells, counts, ModelParams())
+    state_idx = cells.state_idx.copy()
+    state_idx[0] = (state_idx[0] + 1) % len(cells.states)
+    for other in (dataclasses.replace(cells, state_idx=state_idx),
+                  dataclasses.replace(cells, region_idx=cells.region_idx[::-1].copy()),
+                  dataclasses.replace(cells, regions=tuple(reversed(cells.regions)))):
+        with pytest.raises(ValueError, match="area table"):
+            fit.predict(other, np.zeros(other.n))
+
+
+def test_shipped_exposure_side_must_match_the_fit():
+    cells, counts = synthetic_problem(seed=29)
+    fit = fit_model(cells, counts, ModelParams())
+    bundle = fit.to_bundle("v", TH, cells)
+    design = fit.design_for(cells)
+    model_mod._check_shipped(ModelBundle.from_bytes(bundle.to_bytes()), design)
+    for bad in ({**bundle.manifest, "tick_ref": design.tick_ref * 2},
+                {**bundle.manifest, "families_on": []}):
+        with pytest.raises(BundleParityError):
+            model_mod._check_shipped(dataclasses.replace(bundle, manifest=bad), design)
+    scale = bundle.arrays["scale"].copy()
+    scale[design.names.index("x_density")] *= 2
+    with pytest.raises(BundleParityError):
+        model_mod._check_shipped(dataclasses.replace(bundle, arrays={**bundle.arrays, "scale": scale}), design)
+
+
+def test_to_bundle_checks_the_shipped_bytes(monkeypatch):
+    cells, counts = synthetic_problem(seed=30)
+    fit = fit_model(cells, counts, ModelParams())
+    real = ModelBundle.from_bytes.__func__
+
+    def lossy(cls, raw):
+        b = real(cls, raw)
+        return dataclasses.replace(b, manifest={**b.manifest, "tick_ref": b.manifest["tick_ref"] + 1.0})
+
+    monkeypatch.setattr(ModelBundle, "from_bytes", classmethod(lossy))
+    with pytest.raises(BundleParityError):
+        fit.to_bundle("v", TH, cells)
