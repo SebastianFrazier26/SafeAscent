@@ -99,16 +99,32 @@ def season_blackout(first: date, last: date, *, today: date) -> bool:
             and first <= date(today.year - SEASON_YEARS, 1, 1) and last >= date(today.year - 1, 1, 1))
 
 
-async def season(conn: AsyncConnection, scope_: Scope, *, today: date) -> dict[Key, Component]:
+Series = tuple[int, str]
+
+
+async def _area_series(
+    conn: AsyncConnection, scope_: Scope,
+) -> tuple[dict[int, Series | None], dict[Series, tuple[date, date] | None]]:
     areas = sorted({a for a, _ in scope_})
-    points: dict[int, tuple[int, str] | None] = {}
-    spans: dict[tuple[int, str], tuple[date, date] | None] = {}
+    points: dict[int, Series | None] = {}
+    spans: dict[Series, tuple[date, date] | None] = {}
     for a, b, tz, first, last in (await conn.execute(AREA_SERIES_SQL, {"areas": areas})).all():
         if tz is None:
             points[int(a)] = None
             continue
         points[int(a)] = (int(b), str(tz))
         spans[(int(b), str(tz))] = (first, last) if first is not None and last is not None else None
+    return points, spans
+
+
+async def blackout_series(conn: AsyncConnection, scope_: Scope, *, today: date) -> int:
+    """Series in scope whose season reads missing only because this January's ERA5 has not landed."""
+    _, spans = await _area_series(conn, scope_)
+    return sum(1 for v in spans.values() if v is not None and season_blackout(v[0], v[1], today=today))
+
+
+async def season(conn: AsyncConnection, scope_: Scope, *, today: date) -> dict[Key, Component]:
+    points, spans = await _area_series(conn, scope_)
     # Windows are per series: two areas whose series end at different last_era5_date can sit on
     # different windows (one series filled past a new Dec 31, another not yet).
     windows = {k: season_window(v[0], v[1], today=today) for k, v in spans.items() if v is not None}
@@ -129,9 +145,9 @@ async def season(conn: AsyncConnection, scope_: Scope, *, today: date) -> dict[K
 
 def _season_cell(
     area: int,
-    points: dict[int, tuple[int, str] | None],
-    spans: dict[tuple[int, str], tuple[date, date] | None],
-    windows: dict[tuple[int, str], tuple[date, date] | None],
+    points: dict[int, Series | None],
+    spans: dict[Series, tuple[date, date] | None],
+    windows: dict[Series, tuple[date, date] | None],
     shares: dict[tuple[int, str, int, str], tuple[int, float | None]],
     month: int,
     rule: str,
@@ -159,6 +175,11 @@ STATUS_SQL = text(
 # Each complete route's window is the TICK_WINDOW_MONTHS months ending at the last month that is both
 # within complete_through and fully before the cutoff (DP3); route_tick_months already hides every
 # month after complete_through, so an absent row inside the window is a real zero.
+# Counts are frozen at each route's scrape: a backtest cutoff bounds which months are read, not when
+# a tick was logged, so ticks logged after the cutoff against older months are included (Task 9's
+# runbook documents this in full).
+# tick_status = 'complete' stays although complete_through is NULL on every other status: it is
+# defence in depth, because LEAST ignores NULL and would otherwise cap a non-complete route at the cutoff.
 WINDOW_TICKS_SQL = text(f"""
 WITH lim AS (
   SELECT s.route_id, s.area_id, s.type_group,
@@ -176,6 +197,16 @@ GROUP BY 1, 2, 3
 """)
 
 
+# The window arithmetic assumes complete_through is the last day of a month (the loader's
+# partial_month rule); a mid-month value would silently count a partial month as whole.
+NOT_MONTH_END_SQL = text(
+    "SELECT c.route_id, c.complete_through FROM scorable_routes s "
+    "JOIN internal.route_tick_coverage c ON c.route_id = s.route_id "
+    "WHERE c.tick_status = 'complete' "
+    "AND c.complete_through <> (date_trunc('month', c.complete_through) + interval '1 month - 1 day')::date "
+    "ORDER BY 1 LIMIT 5")
+
+
 async def _exists(conn: AsyncConnection, name: str) -> bool:
     return (await conn.execute(text("SELECT to_regclass(:n) IS NOT NULL"), {"n": name})).scalar() is True
 
@@ -185,6 +216,10 @@ async def mp_ticks(conn: AsyncConnection, scope_: Scope, *, enabled: bool, cutof
         return {k: Component.absent("disabled") for k in keys(scope_)}
     if not (await _exists(conn, "internal.route_tick_months") and await _exists(conn, "internal.route_tick_coverage")):
         return {k: Component.absent("table_dropped") for k in keys(scope_)}
+    bad = (await conn.execute(NOT_MONTH_END_SQL)).all()
+    if bad:
+        raise ValueError(f"complete_through must be a month-end; first offenders (route_id, date): "
+                         f"{[(int(r), str(d)) for r, d in bad]}")
     statuses: dict[tuple[int, str], dict[str, int]] = defaultdict(dict)
     for a, tg, status, n in (await conn.execute(STATUS_SQL)).all():
         statuses[(int(a), str(tg))][str(status)] = int(n)

@@ -37,6 +37,34 @@ def test_0011_checks():
                 run_sql(name, _row(**{"month": "9", **bad}))
 
 
+def test_0011_duplicate_snapshot_cell_is_refused():
+    with migrated_db(revision=PIN, seed_sql=SEED) as name:
+        run_sql(name, _row())
+        with pytest.raises(asyncpg.UniqueViolationError):
+            run_sql(name, _row(n_routes="2"))
+
+
+def _bounded(point: str, lo: str, hi: str) -> str:
+    return _row(month="10", exposure_point=point, exposure_lo=lo, exposure_hi=hi)
+
+
+def test_0011_bounds_are_ordered_non_negative_and_finite():
+    with migrated_db(revision=PIN, seed_sql=SEED) as name:
+        run_sql(name, _bounded("0", "0", "0"))
+        run_sql(name, "DELETE FROM internal.exposure_index")
+        for point, lo, hi in (("2", "3", "6"), ("2", "0.5", "1"), ("-1", "-3", "-0.3"),
+                              ("'NaN'", "'NaN'", "'NaN'"), ("2", "0.6", "'NaN'"),
+                              ("'Infinity'", "'Infinity'", "'Infinity'"), ("2", "'-Infinity'", "6")):
+            with pytest.raises(asyncpg.CheckViolationError, match="exposure_index_bounds_order_check"):
+                run_sql(name, _bounded(point, lo, hi))
+
+
+def test_0011_nan_coverage_is_refused():
+    with migrated_db(revision=PIN, seed_sql=SEED) as name:
+        with pytest.raises(asyncpg.CheckViolationError, match="exposure_index_tick_coverage_check"):
+            run_sql(name, _row(tick_coverage="'NaN'"))
+
+
 def test_0011_models_match_at_head():
     with migrated_db() as name:
         command.check(_alembic_cfg(name))

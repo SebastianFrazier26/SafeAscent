@@ -4,7 +4,7 @@ from datetime import date, timedelta
 import pytest
 
 from app.pipelines.exposure_components import (
-    keys, mp_ticks, route_density, scope, season, season_blackout, season_window,
+    blackout_series, keys, mp_ticks, route_density, scope, season, season_blackout, season_window,
 )
 from app.pipelines.exposure_math import ICE_WINDOW, alpine_day, ice_day, rock_day
 from tests.pgtest import migrated_db, requires_pg, run_on_conn, run_sql
@@ -458,3 +458,39 @@ def test_disabled_and_dropped_are_missing_with_no_coverage():
         gone = _ticks(name)
     assert off[(CRAG, "trad", 7)].to_json() == {"value": None, "missing": True, "reason": "disabled"}
     assert gone[(CRAG, "trad", 7)].to_json() == {"value": None, "missing": True, "reason": "table_dropped"}
+
+
+@requires_pg
+def test_a_missing_coverage_view_is_table_dropped():
+    with migrated_db(seed_sql=SEED + TICKS) as name:
+        run_sql(name, "DROP VIEW internal.route_tick_coverage")
+        gone = _ticks(name)
+    assert {c.reason for c in gone.values()} == {"table_dropped"}
+    assert all(c.missing and c.get("coverage") is None for c in gone.values())
+
+
+@requires_pg
+def test_a_mid_month_complete_through_is_refused():
+    with migrated_db(seed_sql=SEED + TICKS) as name:
+        run_sql(name, "UPDATE internal.route_tick_scrapes SET complete_through = DATE '2026-08-30' "
+                      "WHERE mp_route_id = 900000001")
+        with pytest.raises(ValueError, match="month-end"):
+            _ticks(name)
+
+
+@requires_pg
+def test_blackout_series_counts_only_series_waiting_on_january_era5():
+    climate, _ = _climate()
+    with migrated_db(seed_sql=SEED + climate) as name:
+        def count(today):
+            async def go(conn):
+                return await blackout_series(conn, await scope(conn), today=today)
+            return go
+
+        assert run_on_conn(name, count(TODAY)) == 0
+        # Pruned on 2027-01-01 to Jan 1 of 2024, last still 2026-01-05: both series wait on January.
+        run_sql(name, "UPDATE grid_bucket_series SET first_era5_date = DATE '2024-01-01'")
+        assert run_on_conn(name, count(date(2027, 1, 10))) == 2
+        run_sql(name, "UPDATE grid_bucket_series SET last_era5_date = DATE '2027-01-05' WHERE grid_bucket = 11")
+        assert run_on_conn(name, count(date(2027, 1, 20))) == 1
+

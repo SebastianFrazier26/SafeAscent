@@ -18,6 +18,7 @@ from app.data.repair import r10_llm as r10_llm_mod
 from app.data.repair.checks import record_check
 from app.data.repair.framework import LOCATION, Change, run_step
 from app.pipelines import accident_facts, cell_conditions, gnis, localday, mp_tick_aggregates, mp_ticks_quarantine
+from app.pipelines import exposure
 from app.pipelines.validate import ValidationReport
 from tests.pgtest import requires_pg
 from tests.test_gnis import HEADER as GNIS_HEADER
@@ -61,7 +62,7 @@ INSERT INTO accidents (accident_id, source, date, latitude, longitude) VALUES
 """
 
 
-def _run_real_jobs_as_ingest(ingest_url: str, tmp_path, monkeypatch) -> None:
+def _run_real_jobs_as_ingest(ingest_url: str, owner_url: str, tmp_path, monkeypatch) -> None:
     sa_ingest = ingest_url.replace("postgresql://", "postgresql+asyncpg://", 1)
 
     async def r8() -> dict[str, int]:
@@ -254,6 +255,46 @@ def _run_real_jobs_as_ingest(ingest_url: str, tmp_path, monkeypatch) -> None:
     fill = facts_csv("r11-fill.csv", "900000002")
     assert asyncio.run(accident_facts.main(fill, today=JOB_TODAY, dry_run=False, route_ids=True))["updated"] == 1
 
+    # F6: a rock-scope route the ice-mixed fixture doesn't cover, so the loader's route_tick_scrapes
+    # writes and exposure's reads/writes all run as ingest too. Last, so its located area can't
+    # shift the register/R11 counts above.
+    rock_seed = (
+        "INSERT INTO mp_locations (mp_id, name, latitude, longitude) VALUES (900000951, 'Fixture Rock Area', 40.0, -105.0);"
+        "INSERT INTO mp_routes (mp_route_id, name, location_id, type) VALUES (900000950, 'Fixture Rock', 900000951, 'Trad');"
+        "INSERT INTO feature_points (point_key, lat, lon, grid_bucket, h3_r5, h3_r7, tz, feature_version) "
+        "VALUES ('40.00000:-105.00000', 40.0, -105.0, 950, 'a', 'b', 'America/Denver', 'f-v1');"
+        "INSERT INTO canonical_areas (area_id, parent_id, path, depth, tree_status, state_code, lat, lon, coord_precision, "
+        "coord_source_id, point_key, catalog_version) VALUES (900000951, NULL, '900000951', 1, 'us', 'CO', 40.0, -105.0, "
+        "'own', 900000951, '40.00000:-105.00000', 'v');"
+        "INSERT INTO canonical_routes (route_id, area_id, type_group, is_boulder, disciplines, type_rule_version, "
+        "scorable, unscorable_reason, facts_sha256, catalog_version) "
+        "VALUES (900000950, 900000951, 'trad', false, '{trad}', 'rt-mp-v3', true, NULL, 'h', 'v');"
+    )
+
+    # The catalog is fixture data the owner's scrape load and refresh would write; ingest only runs the jobs.
+    _as(owner_url, rock_seed)
+    rock_export = _export(tmp_path, [(900000950, "2025-01", "lead", 2)], [(900000950, 2, 1)], name="rock.sqlite")
+    rock_out = asyncio.run(
+        mp_tick_aggregates.main(rock_export, today=JOB_TODAY, max_quarantine_share=1.0, dry_run=False, scope="rock")
+    )
+    assert rock_out["status"] == "ok"
+
+    async def run_exposure() -> dict[str, object]:
+        engine = create_async_engine(sa_ingest)
+        try:
+            async with engine.begin() as conn:
+                built = await exposure.build(conn, today=JOB_TODAY, mp_enabled=True)
+                checked = await exposure.validate(conn, as_of=JOB_TODAY, data_cutoff=JOB_TODAY)
+                dropped = await exposure.drop_snapshot(conn, as_of=JOB_TODAY, data_cutoff=JOB_TODAY)
+                return {"built": built, "checked": checked, "dropped": dropped}
+        finally:
+            await engine.dispose()
+
+    exposure_out = asyncio.run(run_exposure())
+    assert exposure_out["built"]["cells"] >= 12
+    assert exposure_out["dropped"] == exposure_out["built"]["cells"]
+    assert exposure_out["checked"]["cells"] == exposure_out["built"]["cells"]
+
 
 # PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views; those belong to the
 # extension, not to any grant this project makes, so the check skips them as verify_roles.sql does.
@@ -364,10 +405,11 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
     # The seed lands after 0004's snapshot; the migrator owns accidents_raw, so it stands in for it.
     _as(migrator_url, "INSERT INTO internal.accidents_raw (accident_id, source, source_id, date, year, latitude, longitude) "
         "SELECT accident_id, source, source_id, date, year, latitude, longitude FROM accidents")
-    _run_real_jobs_as_ingest(ingest, tmp_path, monkeypatch)
-    # The loader, as ingest, also wrote the tick-source seam for its one complete route.
-    assert _fetch_row(fresh_db, "SELECT mp_route_id, complete_through::text, total_ticks "
-                      "FROM internal.route_tick_scrapes") == [900000002, "2026-08-31", 3]
+    _run_real_jobs_as_ingest(ingest, owner_url, tmp_path, monkeypatch)
+    # The loader, as ingest, also wrote the tick-source seam for its one complete route per scope.
+    assert _fetch_row(fresh_db, "SELECT array_agg(mp_route_id ORDER BY 1), array_agg(complete_through::text ORDER BY 1), "
+                      "array_agg(total_ticks ORDER BY 1) FROM internal.route_tick_scrapes") == [
+        [900000002, 900000950], ["2026-08-31", "2026-08-31"], [3, 2]]
     _as(ingest, "SELECT count(*) FROM accidents")
     _as(ingest, "SELECT mp_id, parent_id, name, latitude, longitude FROM mp_locations")
     _denied(ingest, "SELECT url FROM mp_locations")

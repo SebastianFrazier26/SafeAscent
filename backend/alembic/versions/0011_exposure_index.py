@@ -44,6 +44,11 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "(exposure_point IS NULL) = (exposure_lo IS NULL) AND (exposure_lo IS NULL) = (exposure_hi IS NULL)",
             name="exposure_index_bounds_check"),
+        # NaN sorts above every number in Postgres, so "< 'Infinity'" is what refuses NaN as well as inf.
+        sa.CheckConstraint(
+            "exposure_lo IS NULL OR (exposure_lo >= 0 AND exposure_lo <= exposure_point "
+            "AND exposure_point <= exposure_hi AND exposure_hi < 'Infinity')",
+            name="exposure_index_bounds_order_check"),
         schema="internal",
     )
     op.create_index("ix_exposure_index_snapshot", "exposure_index", ["as_of", "data_cutoff"], schema="internal")

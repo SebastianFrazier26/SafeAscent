@@ -27,6 +27,11 @@ class ExposureIndex(Base):
         CheckConstraint(
             "(exposure_point IS NULL) = (exposure_lo IS NULL) AND (exposure_lo IS NULL) = (exposure_hi IS NULL)",
             name="exposure_index_bounds_check"),
+        # NaN sorts above every number in Postgres, so "< 'Infinity'" is what refuses NaN as well as inf.
+        CheckConstraint(
+            "exposure_lo IS NULL OR (exposure_lo >= 0 AND exposure_lo <= exposure_point "
+            "AND exposure_point <= exposure_hi AND exposure_hi < 'Infinity')",
+            name="exposure_index_bounds_order_check"),
         Index("ix_exposure_index_snapshot", "as_of", "data_cutoff"),
         {"schema": "internal"},
     )

@@ -145,6 +145,7 @@ module = [
     "app.pipelines.catalog_cycle",
     "app.pipelines.exposure_math",
     "app.pipelines.exposure_components",
+    "app.pipelines.exposure",
     "app.models.types",
 ]
 ignore_errors = false
