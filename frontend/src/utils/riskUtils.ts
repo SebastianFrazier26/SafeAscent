@@ -3,7 +3,7 @@
  * callers check isRiskScore and show "Unavailable" instead.
  */
 
-import type { DataStatus, RiskColorCode } from '../services/api';
+import type { Confidence, DataStatus, RiskColorCode } from '../services/api';
 import { darkenToContrast, readableTextOn } from './color';
 
 export type RiskLevel = 'low' | 'moderate' | 'high' | 'extreme';
@@ -15,12 +15,6 @@ export type RiskLevel = 'low' | 'moderate' | 'high' | 'extreme';
  * backend/tests/test_risk_bands.py parses this line and fails if they drift.
  */
 export const RISK_BAND_THRESHOLDS = [25, 50, 75] as const;
-
-export interface ConfidenceInfo {
-  level: string;
-  description: string;
-  color: string;
-}
 
 export const isRiskScore = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value);
@@ -53,8 +47,12 @@ const RISK_BG_CLASS: Record<RiskLevel, string> = {
 
 export const getRiskColor = (riskScore: number): string => RISK_BG_CLASS[getRiskLevel(riskScore)];
 
+// DP12: the lowest band is a percentile among routes of the same type, not a verdict, so it
+// never says "safe" or "Low Risk".
+export const LOWEST_BAND_LABEL = 'Lower than typical for this type';
+
 const RISK_DESCRIPTIONS: Record<RiskLevel, string> = {
-  low: 'Low Risk - Favorable conditions based on historical data',
+  low: `${LOWEST_BAND_LABEL} - relative to reported incidents on similar routes`,
   moderate: 'Moderate Risk - Exercise caution and prepare accordingly',
   high: 'High Risk - Significant hazards present, reconsider route',
   extreme: 'Extreme Risk - Dangerous conditions, strongly advise against',
@@ -63,48 +61,46 @@ const RISK_DESCRIPTIONS: Record<RiskLevel, string> = {
 export const getRiskDescription = (riskScore: number): string =>
   RISK_DESCRIPTIONS[getRiskLevel(riskScore)];
 
-export const getConfidenceInfo = (confidence: number): ConfidenceInfo => {
-  if (confidence >= 75) {
-    return {
-      level: 'High',
-      description: 'Prediction based on substantial accident data in this region',
-      color: 'text-green-600',
-    };
-  }
-  if (confidence >= 50) {
-    return {
-      level: 'Medium',
-      description: 'Moderate amount of accident data available for this area',
-      color: 'text-yellow-600',
-    };
-  }
-  if (confidence >= 25) {
-    return {
-      level: 'Low',
-      description: 'Limited accident data in this region - use caution',
-      color: 'text-orange-600',
-    };
-  }
-  return {
-    level: 'Very Low',
-    description: 'Very limited data - prediction may be unreliable',
-    color: 'text-red-600',
-  };
-};
-
 // One decimal everywhere, the same value the backend stores and colours (owner decision 2026-09-28).
 export const formatRiskScore = (riskScore: number | null | undefined): string =>
   isRiskScore(riskScore) ? `${riskScore.toFixed(1)}/100` : 'Unavailable';
 
-export const formatConfidence = (confidence: number): string => `${Math.round(confidence)}%`;
+export const CONFIDENCE_LABEL: Record<Confidence, string> = {
+  high: 'High confidence',
+  medium: 'Medium confidence',
+  low: 'Low confidence',
+};
+
+export const isConfidence = (value: unknown): value is Confidence =>
+  value === 'high' || value === 'medium' || value === 'low';
+
+const isScoreRange = (range: unknown): range is [number, number] =>
+  Array.isArray(range) && range.length === 2 && range.every(isRiskScore);
+
+/** "40.0 (likely 20.0–60.0)"; just the number when there is no range (legacy scores). */
+export const formatScoreWithRange = (riskScore: number, range: unknown): string =>
+  isScoreRange(range)
+    ? `${riskScore.toFixed(1)} (likely ${range[0].toFixed(1)}–${range[1].toFixed(1)})`
+    : riskScore.toFixed(1);
+
+// Effective counts are fractional (shrinkage weights), so they are rounded and always hedged.
+export const formatEvidence = (evidence: { geo: number; similar: number }): string =>
+  `≈ ${Math.round(evidence.geo)} local, ${Math.round(evidence.similar)} from similar routes elsewhere`;
+
+export const RISK_DISCLAIMER =
+  'Based on reported incidents and estimated climbing traffic, not on the current condition of this route.';
 
 /**
  * The only band -> hex palette (controller ruling 2026-09-28: the map marker colours).
  * Map markers, clusters, legend and modal chips all read it, so one
  * score is one colour everywhere.
  */
+export const LOWEST_BAND_HEX = '#607d8b';
+
+// Keyed by the wire colour_code; 'green' stays the wire value for the lowest band (DP12) so
+// the backend contract is unchanged, but it is drawn in neutral slate, not a reassuring green.
 export const RISK_COLOR_HEX: Record<RiskColorCode, string> = {
-  green: '#4caf50',
+  green: LOWEST_BAND_HEX,
   yellow: '#fdd835',
   orange: '#ff9800',
   red: '#f44336',
@@ -132,13 +128,12 @@ export const NO_RISK_ICON_HEX = darkenToContrast(NO_RISK_HEX, '#ffffff', ICON_MI
 export const getMarkerColor = (riskScore: number): string => RISK_COLOR_HEX[getRiskColorCode(riskScore)];
 
 /**
- * Owner decision 2026-09-28: a route with too little evidence (no contributing accident, or a
- * score that would show as 0.0) is "insufficient data" (null score, gray), never a 0 shown
- * green. Interim until the Phase 3 similarity model.
+ * Insufficient is a stored model state (model.route_scores.insufficient: no reported incidents
+ * here or on similar routes to borrow from), so it has no number and is the only gray.
+ * Unavailable (no stored row, or a 404) is a different state: no colour, never gray, never 0.
  */
-export const INSUFFICIENT_DATA_LABEL = 'Insufficient data';
-export const INSUFFICIENT_DATA_MESSAGE = 'Too little evidence to estimate risk yet';
-const INSUFFICIENT_DATA_TOOLTIP = 'Too little evidence';
+export const INSUFFICIENT_DATA_LABEL = 'Not enough evidence';
+export const INSUFFICIENT_DATA_MESSAGE = 'Not enough reported incidents or similar routes to estimate';
 
 export const isInsufficientData = (value: unknown): boolean =>
   typeof value === 'object' && value !== null && (value as { data_status?: unknown }).data_status === 'insufficient_data';
@@ -149,31 +144,113 @@ export const formatRiskTooltip = (
   name: string,
   item: { payload?: unknown } | undefined,
 ): [string, string] => [
-  isInsufficientData(item?.payload) ? INSUFFICIENT_DATA_TOOLTIP : formatRiskScore(isRiskScore(value) ? value : null),
+  isInsufficientData(item?.payload) ? INSUFFICIENT_DATA_LABEL : formatRiskScore(isRiskScore(value) ? value : null),
   name,
 ];
 
-export interface RouteSafetyProps {
-  risk_score: number | null;
-  color_code: RiskColorCode | 'gray';
-  data_status: DataStatus | null;
+export interface MarkerStyle {
+  fill: string | null;
+  hatch: boolean;
 }
 
-const UNSCORED: RouteSafetyProps = { risk_score: null, color_code: 'gray', data_status: null };
+interface ScoreLike {
+  risk_score?: unknown;
+  data_status?: unknown;
+  confidence?: unknown;
+}
+
+/**
+ * One rule for every surface that colours a score (map marker, legend, chips): insufficient is
+ * gray with the neutral hatch, a score is its band colour (hatched when confidence is low), and
+ * anything else is unavailable with no colour at all.
+ */
+export const markerStyle = (cell: ScoreLike | null | undefined): MarkerStyle => {
+  if (cell?.data_status === 'insufficient_data') return { fill: NO_RISK_HEX, hatch: true };
+  if (isRiskScore(cell?.risk_score)) {
+    return { fill: RISK_COLOR_HEX[getRiskColorCode(cell.risk_score)], hatch: cell.confidence === 'low' };
+  }
+  return { fill: null, hatch: false };
+};
+
+const HATCH_LINE_RGBA: [number, number, number, number] = [33, 33, 33, 110];
+const HATCH_LINE_CSS = `rgba(${HATCH_LINE_RGBA.slice(0, 3).join(', ')}, ${(HATCH_LINE_RGBA[3] / 255).toFixed(2)})`;
+
+/** The same diagonal hatch as the map overlay, for HTML swatches and chips. */
+export const HATCH_CSS = `repeating-linear-gradient(45deg, ${HATCH_LINE_CSS} 0 2px, transparent 2px 5px)`;
+
+/**
+ * Mapbox circle layers take no pattern fill, so the hatch is a circular stripe image drawn
+ * over the marker by a symbol layer; raw RGBA keeps it synchronous (no image decode on load).
+ */
+export const hatchImage = (size: number): { width: number; height: number; data: Uint8Array } => {
+  const data = new Uint8Array(size * size * 4);
+  const r = size / 2;
+  const period = Math.max(4, Math.round(size / 4));
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const dx = x + 0.5 - r;
+      const dy = y + 0.5 - r;
+      if (dx * dx + dy * dy > r * r) continue;
+      if ((x + y) % period >= period / 2) continue;
+      data.set(HATCH_LINE_RGBA, (y * size + x) * 4);
+    }
+  }
+  return { width: size, height: size, data };
+};
+
+export interface ChipStyle {
+  bgcolor: string;
+  color: string;
+  border?: string;
+  backgroundImage?: string;
+}
+
+// Loading, failed and unavailable read as "no colour": an outline, never the no-evidence gray.
+export const UNAVAILABLE_CHIP_STYLE: ChipStyle = { bgcolor: 'transparent', color: 'inherit', border: '1px dashed' };
+
+export const riskChipStyle = (cell: ScoreLike | null | undefined): ChipStyle => {
+  const { fill, hatch } = markerStyle(cell);
+  if (fill === null) return UNAVAILABLE_CHIP_STYLE;
+  return { bgcolor: fill, color: readableTextOn(fill), ...(hatch ? { backgroundImage: HATCH_CSS } : {}) };
+};
+
+export interface RouteSafetyProps {
+  risk_score: number | null;
+  color_code: RiskColorCode | 'gray' | null;
+  data_status: DataStatus | null;
+  confidence: Confidence | null;
+  hatch: boolean;
+}
+
+/** A route the bulk map sent with safety: null (no stored row), or a malformed entry. */
+export const UNAVAILABLE_SAFETY: RouteSafetyProps = {
+  risk_score: null,
+  color_code: null,
+  data_status: null,
+  confidence: null,
+  hatch: false,
+};
 
 const inRange = (value: unknown): value is number => isRiskScore(value) && value >= 0 && value <= 100;
 
-/** Map feature properties for one route's embedded bulk safety entry; unscored is gray + null. */
+/** Map feature properties for one route's embedded bulk safety entry. */
 export const routeSafetyProps = (safety: unknown): RouteSafetyProps => {
-  if (typeof safety !== 'object' || safety === null) return UNSCORED;
-  const { risk_score, color_code, data_status } = safety as Record<string, unknown>;
+  if (safety === null || typeof safety !== 'object') return UNAVAILABLE_SAFETY;
+  const { risk_score, color_code, data_status, confidence } = safety as Record<string, unknown>;
   if (data_status === 'insufficient_data' && risk_score === null && color_code === 'gray') {
-    return { risk_score: null, color_code: 'gray', data_status: 'insufficient_data' };
+    return { risk_score: null, color_code: 'gray', data_status: 'insufficient_data', confidence: null, hatch: true };
   }
   if (data_status === 'ok' && inRange(risk_score)) {
-    return { risk_score, color_code: getRiskColorCode(risk_score), data_status: 'ok' };
+    const level = isConfidence(confidence) ? confidence : null;
+    return {
+      risk_score,
+      color_code: getRiskColorCode(risk_score),
+      data_status: 'ok',
+      confidence: level,
+      hatch: markerStyle({ data_status, risk_score, confidence: level }).hatch,
+    };
   }
-  return UNSCORED;
+  return UNAVAILABLE_SAFETY;
 };
 
 // The legend Paper renders on exactly this colour (theme background.paper, with MUI's
@@ -181,22 +258,28 @@ export const routeSafetyProps = (safety: unknown): RouteSafetyProps => {
 export const LEGEND_PANEL_BG = '#1e1e1e';
 const LEGEND_BORDER_MIN_CONTRAST = 3;
 
+// Every map marker's ring; an unavailable route is this ring alone, on the map and in the legend.
+export const MARKER_OUTLINE_HEX = '#ffffff';
+
 /** Swatch border that reaches 3:1 on the panel (WCAG 1.4.11); the fill stays the palette hex. */
-export const legendSwatchBorder = (fill: string, panel: string = LEGEND_PANEL_BG): string =>
-  darkenToContrast(fill, panel, LEGEND_BORDER_MIN_CONTRAST);
+export const legendSwatchBorder = (fill: string | null, panel: string = LEGEND_PANEL_BG): string =>
+  darkenToContrast(fill ?? MARKER_OUTLINE_HEX, panel, LEGEND_BORDER_MIN_CONTRAST);
 
 const [LOW_MAX, MODERATE_MAX, HIGH_MAX] = RISK_BAND_THRESHOLDS;
 
 export interface LegendSwatch {
   label: string;
   caption: string;
-  fill: string;
+  fill: string | null;
+  hatch: boolean;
 }
 
 export const LEGEND_SWATCHES: readonly LegendSwatch[] = [
-  { label: `Safe (0-${LOW_MAX})`, caption: 'Favorable conditions', fill: RISK_COLOR_HEX.green },
-  { label: `Moderate (${LOW_MAX}-${MODERATE_MAX})`, caption: 'Increased caution', fill: RISK_COLOR_HEX.yellow },
-  { label: `Elevated (${MODERATE_MAX}-${HIGH_MAX})`, caption: 'Consider postponing', fill: RISK_COLOR_HEX.orange },
-  { label: `High Risk (${HIGH_MAX}+)`, caption: 'Not recommended', fill: RISK_COLOR_HEX.red },
-  { label: INSUFFICIENT_DATA_LABEL, caption: `${INSUFFICIENT_DATA_MESSAGE}, or not scored`, fill: NO_RISK_HEX },
+  { label: `Lower (0-${LOW_MAX})`, caption: LOWEST_BAND_LABEL, fill: RISK_COLOR_HEX.green, hatch: false },
+  { label: `Moderate (${LOW_MAX}-${MODERATE_MAX})`, caption: 'Increased caution', fill: RISK_COLOR_HEX.yellow, hatch: false },
+  { label: `Elevated (${MODERATE_MAX}-${HIGH_MAX})`, caption: 'Consider postponing', fill: RISK_COLOR_HEX.orange, hatch: false },
+  { label: `High Risk (${HIGH_MAX}+)`, caption: 'Not recommended', fill: RISK_COLOR_HEX.red, hatch: false },
+  { label: CONFIDENCE_LABEL.low, caption: 'Any band, hatched: a wide likely range', fill: '#ffffff', hatch: true },
+  { label: INSUFFICIENT_DATA_LABEL, caption: INSUFFICIENT_DATA_MESSAGE, fill: NO_RISK_HEX, hatch: true },
+  { label: 'Unavailable', caption: 'No score for this route yet', fill: null, hatch: false },
 ];

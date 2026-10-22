@@ -1,10 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import userEvent from '@testing-library/user-event';
-import { render, screen } from '../test/utils';
+import { render, screen, within } from '../test/utils';
 import RouteAnalyticsModal from './RouteAnalyticsModal';
 import { useRouteSafety } from '../hooks/useRouteSafety';
-import { fetchRouteSafety } from '../services/api';
-import { INSUFFICIENT_DATA_MESSAGE, NO_RISK_HEX, RISK_COLOR_HEX } from '../utils/riskUtils';
+import { SCORE_UNAVAILABLE_MESSAGE, fetchRouteSafety } from '../services/api';
+import {
+  INSUFFICIENT_DATA_MESSAGE,
+  LOWEST_BAND_HEX,
+  NO_RISK_HEX,
+  RISK_COLOR_HEX,
+  RISK_DISCLAIMER,
+} from '../utils/riskUtils';
 
 vi.mock('../services/api', async (importOriginal) => ({
   ...(await importOriginal()),
@@ -55,7 +61,8 @@ describe('RouteAnalyticsModal risk display', () => {
     expect(await screen.findByText(/couldn.t load the risk score/i)).toBeInTheDocument();
     expect(screen.getByText(/Cannot connect to SafeAscent API\./)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument();
-    expect(screen.getByText('Risk: Unavailable')).toBeInTheDocument();
+    const chip = screen.getByText('Risk: Unavailable');
+    expect(chip.closest('.MuiChip-root')).not.toHaveStyle({ backgroundColor: NO_RISK_HEX });
     expect(screen.queryByText(/0\.0/)).toBeNull();
     expect(screen.queryByText(/Risk:\s*\d/)).toBeNull();
   });
@@ -114,10 +121,100 @@ describe('RouteAnalyticsModal risk display', () => {
     render(<Harness />);
 
     expect(await screen.findByText(INSUFFICIENT_DATA_MESSAGE)).toBeInTheDocument();
-    const chip = screen.getByText('Risk: Insufficient data');
+    const chip = screen.getByText('Risk: Not enough evidence');
     expect(chip.closest('.MuiChip-root')).toHaveStyle({ backgroundColor: NO_RISK_HEX });
     expect(screen.queryByRole('button', { name: /retry/i })).toBeNull();
     expect(screen.queryByText(/couldn.t load the risk score/i)).toBeNull();
     expect(screen.queryByText(/Risk:\s*\d/)).toBeNull();
   });
+
+  it('shows a low-confidence score with its number, range, label, hatch and the disclaimer', async () => {
+    vi.mocked(fetchRouteSafety).mockResolvedValueOnce(stored({ risk_score: 40, color_code: 'yellow', confidence: 'low', score_range: [20, 60] }));
+    render(<Harness />);
+
+    const summary = await screen.findByTestId('risk-summary');
+    expect(within(summary).getByText('40.0 (likely 20.0–60.0)')).toBeInTheDocument();
+    expect(within(summary).getByText('Low confidence')).toBeInTheDocument();
+    expect(within(summary).getByText(RISK_DISCLAIMER)).toBeInTheDocument();
+    expect(within(summary).getByText('≈ 2 local, 12 from similar routes elsewhere')).toBeInTheDocument();
+    const chip = within(summary).getByTestId('risk-summary-chip');
+    expect(chip).toHaveStyle({ backgroundColor: RISK_COLOR_HEX.yellow });
+    expect(chip).toHaveAttribute('data-hatch', 'true');
+  });
+
+  it('shows a medium-confidence score with its range and no hatch', async () => {
+    vi.mocked(fetchRouteSafety).mockResolvedValueOnce(stored({ risk_score: 61.3, color_code: 'orange', confidence: 'medium' }));
+    render(<Harness />);
+
+    const summary = await screen.findByTestId('risk-summary');
+    expect(within(summary).getByText('61.3 (likely 20.0–70.0)')).toBeInTheDocument();
+    expect(within(summary).getByText('Medium confidence')).toBeInTheDocument();
+    expect(within(summary).getByTestId('risk-summary-chip')).toHaveAttribute('data-hatch', 'false');
+  });
+
+  it('draws the lowest band in neutral slate, labelled lower than typical, never Low Risk', async () => {
+    vi.mocked(fetchRouteSafety).mockResolvedValueOnce(
+      stored({ risk_score: 10, color_code: 'green', confidence: 'high', score_range: [4, 18] }),
+    );
+    render(<Harness />);
+
+    const summary = await screen.findByTestId('risk-summary');
+    expect(within(summary).getByTestId('risk-summary-chip')).toHaveStyle({ backgroundColor: LOWEST_BAND_HEX });
+    expect(within(summary).getByText(/Lower than typical for this type/)).toBeInTheDocument();
+    expect(screen.queryByText(/low risk|\bsafe\b/i)).toBeNull();
+  });
+
+  it('shows insufficient evidence as the gray chip with no digits at all', async () => {
+    vi.mocked(fetchRouteSafety).mockResolvedValueOnce({
+      route_id: 42,
+      route_name: 'Test Route',
+      target_date: '2026-09-27',
+      risk_score: null,
+      color_code: 'gray',
+      data_status: 'insufficient_data',
+      insufficient_reason: 'no_evidence',
+      model_version: 'v2',
+    });
+    render(<Harness />);
+
+    const summary = await screen.findByTestId('risk-summary');
+    const chip = within(summary).getByTestId('risk-summary-chip');
+    expect(chip).toHaveTextContent(INSUFFICIENT_DATA_MESSAGE);
+    expect(chip).toHaveStyle({ backgroundColor: NO_RISK_HEX });
+    expect(summary.textContent).not.toMatch(/\d/);
+    expect(within(summary).queryByText(/likely|confidence/i)).toBeNull();
+    expect(screen.getByText('Risk: Not enough evidence').textContent).not.toMatch(/\d/);
+  });
+
+  it('shows a 404 as Unavailable: an em-dash, not gray, not 0, no Retry', async () => {
+    vi.mocked(fetchRouteSafety).mockRejectedValueOnce(new Error(SCORE_UNAVAILABLE_MESSAGE));
+    render(<Harness />);
+
+    const summary = await screen.findByTestId('risk-summary');
+    expect(within(summary).getByText(SCORE_UNAVAILABLE_MESSAGE)).toBeInTheDocument();
+    const chip = within(summary).getByTestId('risk-summary-chip');
+    expect(chip).toHaveTextContent('—');
+    expect(chip).not.toHaveStyle({ backgroundColor: NO_RISK_HEX });
+    expect(chip).toHaveAttribute('data-hatch', 'false');
+    expect(summary.textContent).not.toMatch(/\d/);
+    const header = screen.getByText('Risk: Unavailable');
+    expect(header.closest('.MuiChip-root')).not.toHaveStyle({ backgroundColor: NO_RISK_HEX });
+    expect(screen.queryByRole('button', { name: /retry/i })).toBeNull();
+  });
 });
+
+function stored(overrides) {
+  return {
+    route_id: 42,
+    route_name: 'Test Route',
+    target_date: '2026-09-27',
+    data_status: 'ok',
+    score_range: [20, 70],
+    model_version: 'v2',
+    evidence: { geo: 2.4, similar: 11.6 },
+    relative_rate: null,
+    per_10k_logged_ascents: null,
+    per_10k_reason: null,
+    ...overrides,
+  };
+}

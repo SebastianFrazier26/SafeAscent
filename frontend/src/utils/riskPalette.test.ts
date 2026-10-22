@@ -43,14 +43,15 @@ describe('components use the shared palette, not their own', () => {
   // A band-keyed colour table (`green: '#...'`, mapbox `'green', '#...'`) is a second palette.
   const bandKeyedPalette = /['"]?\b(green|yellow|orange|red)\b['"]?\s*[:,]\s*['"](#|[a-z]+\.(main|dark|light))/i;
 
-  it.each(['MapView.jsx', 'RouteAnalyticsModal.jsx'])(
-    '%s imports RISK_COLOR_HEX and defines no band-keyed palette of its own',
-    (name) => {
-      const text = source(name);
-      expect(text).toMatch(/import\s*{[^}]*\bRISK_COLOR_HEX\b[^}]*}\s*from\s*'\.\.\/utils\/riskUtils'/);
-      expect(text).not.toMatch(bandKeyedPalette);
-    },
-  );
+  // The modal colours every chip through riskChipStyle, which reads RISK_COLOR_HEX.
+  it.each([
+    ['MapView.jsx', 'RISK_COLOR_HEX'],
+    ['RouteAnalyticsModal.jsx', 'riskChipStyle'],
+  ])('%s imports %s and defines no band-keyed palette of its own', (name, shared) => {
+    const text = source(name);
+    expect(text).toMatch(new RegExp(`import\\s*{[^}]*\\b${shared}\\b[^}]*}\\s*from\\s*'\\.\\./utils/riskUtils'`));
+    expect(text).not.toMatch(bandKeyedPalette);
+  });
 
   // The modal reuses some of these hexes for unrelated things (route-type badges, chart
   // series), so the literal-hex ban is MapView-only, where every one of them was a band.
@@ -102,5 +103,17 @@ describe('MapView heatmap ramps', () => {
     }
     expect(text).toContain('hexToRgba(hex,alpha)');
     expect(text.match(/'heatmap-color':HEATMAP_COLOR\./g)).toHaveLength(5);
+  });
+});
+
+describe('MapView honest markers', () => {
+  it('leaves unavailable routes unfilled and hatches by the hatch property', () => {
+    const text = source('MapView.jsx');
+    expect(text).not.toContain('#11b4da');
+    expect(text).toContain("const UNAVAILABLE_FILL = 'rgba(0, 0, 0, 0)'");
+    expect(text.match(/\.\.\.ROUTE_COLOR_MATCH_ARMS,\s*UNAVAILABLE_FILL/g)).toHaveLength(2);
+    expect(text.match(/'icon-image': HATCH_IMAGE_ID/g)).toHaveLength(2);
+    expect(text).toContain("['==', ['get', 'hatch'], true]");
+    expect(text).toContain('map.addImage(HATCH_IMAGE_ID');
   });
 });

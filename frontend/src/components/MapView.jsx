@@ -24,6 +24,8 @@ import {
   RISK_BAND_THRESHOLDS,
   RISK_COLOR_HEX,
   RISK_TEXT_ON_HEX,
+  MARKER_OUTLINE_HEX,
+  hatchImage,
   routeSafetyProps,
 } from '../utils/riskUtils';
 import { hexToRgba, mixHex } from '../utils/color';
@@ -35,11 +37,18 @@ const [RISK_LOW_MAX, RISK_MODERATE_MAX, RISK_HIGH_MAX] = RISK_BAND_THRESHOLDS;
 // Heatmap layers overlap by this many points either side of each band edge so adjacent
 // colours blend. It is a rendering overlap only; markers/clusters/legend use exact edges.
 const HEATMAP_BLEND = 2;
-// 'gray' is what the map endpoint sends for a route with no score.
+// 'gray' is insufficient evidence only. An unavailable route (color_code null) falls through
+// to the match default: an empty white ring, never gray and never a band colour.
 const ROUTE_COLOR_MATCH_ARMS = [
   ...Object.entries(RISK_COLOR_HEX).flat(),
   'gray', NO_RISK_HEX,
 ];
+const UNAVAILABLE_FILL = 'rgba(0, 0, 0, 0)';
+const HATCH_IMAGE_ID = 'risk-hatch';
+// Drawn at 2x so its 24px image covers the 12px cluster-view marker at icon-size 1.
+const HATCH_PIXEL_RATIO = 2;
+const HATCH_IMAGE = hatchImage(24);
+const HATCH_FILTER = ['==', ['get', 'hatch'], true];
 // Heatmap ramps come from the band palette so the heatmap cannot drift from the markers.
 // Edges and peaks lean toward the neighbouring band's hue so overlapping layers blend.
 const BLACK = '#000000';
@@ -504,6 +513,8 @@ export default function MapView({ selectedRouteForZoom }) {
   const handleMapLoad = useCallback(() => {
     const map = mapRef.current?.getMap();
     if (!map) return;
+    // MapGL is keyed on the style, so every style switch remounts and re-runs this.
+    if (!map.hasImage(HATCH_IMAGE_ID)) map.addImage(HATCH_IMAGE_ID, HATCH_IMAGE, { pixelRatio: HATCH_PIXEL_RATIO });
 
     // Log map info after load
     console.log('🗺️ Map loaded successfully');
@@ -602,11 +613,23 @@ export default function MapView({ selectedRouteForZoom }) {
                     'match',
                     ['get', 'color_code'],
                     ...ROUTE_COLOR_MATCH_ARMS,
-                    '#11b4da'
+                    UNAVAILABLE_FILL
                   ],
                   'circle-radius': 6,
                   'circle-stroke-width': 1.5,
-                  'circle-stroke-color': '#fff',
+                  'circle-stroke-color': MARKER_OUTLINE_HEX,
+                }}
+              />
+
+              <Layer
+                id="unclustered-hatch"
+                type="symbol"
+                source="routes"
+                filter={['all', ['!', ['has', 'point_count']], HATCH_FILTER]}
+                layout={{
+                  'icon-image': HATCH_IMAGE_ID,
+                  'icon-allow-overlap': true,
+                  'icon-ignore-placement': true,
                 }}
               />
 
@@ -672,7 +695,7 @@ export default function MapView({ selectedRouteForZoom }) {
                 }}
               />
 
-              {/* Layer 1: LOW RISK - Green heatmap (band + HEATMAP_BLEND overlap) */}
+              {/* Layer 1: lowest band, slate heatmap (band + HEATMAP_BLEND overlap) */}
               <Layer
                 id="risk-low"
                 type="heatmap"
@@ -780,7 +803,7 @@ export default function MapView({ selectedRouteForZoom }) {
                     'match',
                     ['get', 'color_code'],
                     ...ROUTE_COLOR_MATCH_ARMS,
-                    '#11b4da'
+                    UNAVAILABLE_FILL
                   ],
                   // Smaller markers in risk view to avoid clutter
                   'circle-radius': [
@@ -794,7 +817,22 @@ export default function MapView({ selectedRouteForZoom }) {
                     16, 7,    // Normal size when zoomed in
                   ],
                   'circle-stroke-width': 1,
-                  'circle-stroke-color': '#fff',
+                  'circle-stroke-color': MARKER_OUTLINE_HEX,
+                }}
+              />
+
+              <Layer
+                id="individual-hatch"
+                type="symbol"
+                source="routes"
+                minzoom={HEATMAP_MIN_ZOOM}
+                filter={HATCH_FILTER}
+                layout={{
+                  'icon-image': HATCH_IMAGE_ID,
+                  'icon-allow-overlap': true,
+                  'icon-ignore-placement': true,
+                  // Tracks the circle radius above (radius / 6, the cluster-view radius).
+                  'icon-size': ['interpolate', ['linear'], ['zoom'], 0, 1 / 6, 6, 2 / 6, 8, 3 / 6, 12, 5 / 6, 16, 7 / 6],
                 }}
               />
 

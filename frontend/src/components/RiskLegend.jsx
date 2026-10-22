@@ -1,9 +1,9 @@
 /**
- * Map legend: one swatch per risk band plus the insufficient-data gray, all from the
- * shared palette in riskUtils.
+ * Map legend: one swatch per risk band, the low-confidence hatch, the no-evidence gray and
+ * the unavailable ring, all from the shared palette in riskUtils.
  */
 import { Box, Divider, Paper, Typography } from '@mui/material';
-import { LEGEND_PANEL_BG, LEGEND_SWATCHES, legendSwatchBorder } from '../utils/riskUtils';
+import { HATCH_CSS, LEGEND_PANEL_BG, LEGEND_SWATCHES, legendSwatchBorder } from '../utils/riskUtils';
 
 export default function RiskLegend() {
   return (
@@ -28,15 +28,17 @@ export default function RiskLegend() {
       </Typography>
 
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-        {LEGEND_SWATCHES.map(({ label, caption, fill }) => (
+        {LEGEND_SWATCHES.map(({ label, caption, fill, hatch }) => (
           <Box key={label} sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
             <Box
               data-testid={`legend-swatch-${label}`}
+              data-hatch={String(hatch)}
               sx={{
                 width: 24,
                 height: 24,
                 borderRadius: '50%',
-                bgcolor: fill,
+                bgcolor: fill ?? 'transparent',
+                backgroundImage: hatch ? HATCH_CSS : 'none',
                 border: '2px solid',
                 borderColor: legendSwatchBorder(fill, LEGEND_PANEL_BG),
                 boxShadow: 1,
@@ -60,7 +62,7 @@ export default function RiskLegend() {
         💡 <strong>Heatmap:</strong> Regional risk coverage across entire map
       </Typography>
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-        📍 <strong>Markers:</strong> Individual routes • Clusters show average score, gray when fewer than half their routes have one
+        📍 <strong>Markers:</strong> Individual routes • Clusters show average score, gray when fewer than half their routes have one • Hatched: low confidence
       </Typography>
     </Paper>
   );
