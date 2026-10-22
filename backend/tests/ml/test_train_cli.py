@@ -59,6 +59,12 @@ def test_run_promotes_then_rejects_corrupted_data_and_rollback_refuses(db, tmp_p
     (scores,) = fetch(db, f"SELECT count(*) FROM model.route_scores WHERE model_version = 'eb-{TODAY}'")[0]
     assert scores > 0 and fetch(db, f"SELECT scores_rows FROM model.registry WHERE version = 'eb-{TODAY}'") == [
         (scores,)]
+    # The card's conf_counts is what tests/verify/test_model_scores.py compares the live table with.
+    (card,) = fetch(db, f"SELECT model_card -> 'conf_counts' FROM model.registry WHERE version = 'eb-{TODAY}'")[0]
+    written = dict(fetch(db, "SELECT conf_level, count(*) FROM model.route_scores "
+                             f"WHERE model_version = 'eb-{TODAY}' GROUP BY conf_level"))
+    assert json.loads(card) == {k: written.get(k, 0) for k in ("high", "medium", "low", "insufficient")}
+    assert sum(json.loads(card).values()) == scores
     md = (first / "issue.md").read_text()
     assert "promoted" in md and not SYNTHETIC_ID.search(md)
     status = json.loads((first / "status.json").read_text())

@@ -134,7 +134,7 @@ The archive API needs Professional (Standard excludes it; pricing read 2026-09-2
 
 The kernel nightly is gone (P3 Task 23); scores are written by the monthly training run. At 02:00 UTC beat enqueues `app.tasks.scores_heartbeat.scores_heartbeat` (message expires after 1h). It computes nothing. It checks that exactly one registry version is active, that its bundle bytes match `bundle_sha256`, and that it has a `model.route_scores` row for the current UTC month for every scorable route. Healthy: it pings `HEALTHCHECKS_SCORES_URL` and `HEALTHCHECKS_NIGHTLY_URL` (kept so the old dead-man check stays meaningful). Otherwise it pings `/fail` on both, logs the reason, and returns it (`no_active_version`, `multiple_active_versions`, `bundle_missing`, `bundle_sha_mismatch`, `missing_scores` with the count). While only the kernel baseline row is active, it fails with `bundle_missing`: nothing is servable until the first model version is promoted.
 
-`tests/verify/test_model_scores.py` (`-m db`, analyst) checks one active version, 12 months per scorable route, no number on an insufficient row, and the model card's `conf_counts`.
+`tests/verify/test_model_scores.py` (`-m db`, analyst) checks one active version, 12 months per scorable route, no number on an insufficient row, and that the active version's `model_card.conf_counts` (written by the train CLI; the check skips for a version trained before that key existed) equals the live `conf_level` row counts.
 
 `app.tasks.cache_warming` warms `safety:{version}:{route}:{month}` from the active version's stored rows; it is not scheduled.
 

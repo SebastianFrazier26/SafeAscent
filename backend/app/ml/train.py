@@ -44,7 +44,7 @@ from app.ml.bundle import ModelBundle
 from app.ml.cells import TRAIN_START
 from app.ml.features import Lambdas, TickPolicy
 from app.ml.folds import BACKTEST_CUTOFFS, Fold, prospective_fold, rolling_folds, spatial_folds
-from app.ml.materialize import RouteRow, read_routes, write_scores
+from app.ml.materialize import RouteRow, conf_counts, read_routes, write_scores
 from app.ml.metrics import MetricsReport
 from app.ml.model import FAMILY, MODEL_CARD_NOTES, Fitted, ModelParams, fit_model
 from app.ml.posterior import Thresholds
@@ -268,6 +268,7 @@ def build_candidate(loaded: Loaded, *, today: date, t0: float, benchmark: bool) 
     bundle = fit.to_bundle(version, th, cells)
     bundle_bytes = bundle.to_bytes()
     stab = stability(raw, params, th, cutoff=None)
+    counts_by_conf = conf_counts(cells, fit.summarize(cells, fit.y_train, th), loaded.routes)
     metrics: dict[str, Any] = suite.to_dict()
     metrics["prospective_kernel"] = (None if suite.prospective is None
                                      else ka.prospective_kernel_report(loaded.prospective, loaded.prospective_scores))
@@ -284,7 +285,7 @@ def build_candidate(loaded: Loaded, *, today: date, t0: float, benchmark: bool) 
         "version": version, "family": FAMILY, "data_cutoff": raw.production_cutoff.isoformat(),
         "train_start": TRAIN_START.isoformat(), "notes": list(MODEL_CARD_NOTES),
         "params": bundle.manifest["params"], "thresholds": metrics["thresholds"], "tuning": tuned.report,
-        "incidents_in_cells": float(counts.y.sum()), "state_only_mass": float(counts.state_mass.sum()),
+        "conf_counts": counts_by_conf, "incidents_in_cells": float(counts.y.sum()), "state_only_mass": float(counts.state_mass.sum()),
         "sensitivity_log_score": {k: v.get("log_score") for k, v in suite.sensitivity.items()},
         "main_log_score": suite.main.get("log_score"), "stability": {k: stab[k] for k in (
             "method", "median_spearman", "median_band_churn", "n_subsamples", "n_failed", "passed")},

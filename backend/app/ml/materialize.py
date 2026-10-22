@@ -73,6 +73,21 @@ def score_rows(version: str, cells: CellData, summary: CellSummary,
     return cols
 
 
+def conf_counts(cells: CellData, summary: CellSummary, routes_by_cell: Sequence[RouteRow]) -> dict[str, int]:
+    """Rows per conf_level over exactly the rows score_rows would write (route x month), for the model
+    card. All four levels are always present, so a level with no rows reads 0, never absent."""
+    counts = {"high": 0, "medium": 0, "low": 0, "insufficient": 0}
+    for _, area_id, group in routes_by_cell:
+        gi = G_INDEX.get(group)
+        if gi is None:
+            continue
+        for m in MONTHS:
+            c = cells.index.get((area_id, gi, m))
+            if c is not None:
+                counts[str(summary.conf_level[c])] += 1
+    return counts
+
+
 async def write_scores(conn: AsyncConnection, version: str, cells: CellData, summary: CellSummary,
                        routes_by_cell: Sequence[RouteRow]) -> int:
     """Inserts in batches of BATCH_ROUTES routes; returns the rows written. Never replaces: a second

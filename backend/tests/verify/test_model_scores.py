@@ -50,7 +50,7 @@ def test_every_scored_row_has_a_number_and_a_level():
 def test_conf_level_counts_match_the_model_card():
     [card] = fetch(f"SELECT model_card->'conf_counts' AS counts FROM model.registry WHERE version = {ACTIVE}")
     if card["counts"] is None:
-        pytest.skip("the active version's model_card records no conf_counts yet")
+        pytest.skip("the active version predates model_card.conf_counts (kernel baseline or an older run)")
     expected = json.loads(card["counts"])
     got = {r["conf_level"]: r["n"] for r in fetch(
         "SELECT conf_level, count(*) AS n FROM model.route_scores "
