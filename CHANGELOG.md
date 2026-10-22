@@ -8,9 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Phase 3 Task 24: `0013_drop_legacy_weather` (MVP-1 hard gate) - 2026-10-22
 
-- `0013` drops `public.weather`; `upgrade()` refuses unless `source_ingest_log` holds an `ok` `r6_verify` row, `downgrade()` raises (rollback is the `pre-p3-4` snapshot branch; no dump is committed). It is a contract migration and runs on prod only behind the Task 26 runbook gate.
+- `0013` drops `public.weather`; `upgrade()` refuses a non-empty `weather` unless `source_ingest_log` holds an `ok` `r6_verify` row meeting n > 100, r_tmax > 0.95, p99_gust < 60 (an empty table drops freely), `downgrade()` raises (rollback is the `pre-p3-4` snapshot branch; no dump is committed). It is a contract migration and runs on prod only behind the Task 26 runbook gate.
 - Deleted: `app.models.weather`, `app.pipelines.r6_verify`, its tests and verify cell. `grants_phase2.sql` no longer grants `ingest` SELECT on `weather` and revokes it where the table still exists; `verify_roles_phase2.sql` drops the row.
-- Test helper `_upgrade_head` seeds the `r6_verify` evidence at `0012` so fresh test databases can reach head.
+- `test_ascent_analytics` seeds a catalog point for the seasonal-patterns route (the endpoint places routes through it since Task 22).
 
 ### Phase 3 Task 23: the kernel leaves serving; scores heartbeat - 2026-10-22
 

@@ -63,22 +63,7 @@ def _alembic_cfg(dbname: str) -> Config:
     return cfg
 
 
-# 0013 refuses to drop weather without an ok r6_verify run, so a test that migrates a fresh database
-# to head seeds one at 0012 (the evidence a real database holds from plan 3) and removes it after, so
-# tests that count ingest-log rows see an empty log.
-R6_EVIDENCE_SQL = (
-    "INSERT INTO source_ingest_log (run_id, source, status, finished_at) "
-    "VALUES (gen_random_uuid(), 'r6_verify', 'ok', now())"
-)
 PRE_WEATHER_DROP = "0012_model_registry"
-
-
-def _upgrade_head(dbname: str, cfg: Config | None = None) -> None:
-    cfg = cfg or _alembic_cfg(dbname)
-    command.upgrade(cfg, PRE_WEATHER_DROP)
-    _run(dbname, R6_EVIDENCE_SQL)
-    command.upgrade(cfg, "head")
-    _run(dbname, "DELETE FROM source_ingest_log WHERE source = 'r6_verify'")
 
 
 @pytest.fixture
@@ -101,12 +86,12 @@ def test_baseline_builds_live_schema_and_models_match(fresh_db):
         "to_regclass('public.routes')::text, to_regclass('public.mountains')::text",
     )
     assert row == ["accidents", "weather", "routes", "mountains"]
-    _upgrade_head(fresh_db, cfg)
+    command.upgrade(cfg, "head")
     command.check(cfg)
 
 
 def test_head_drops_ascents_and_climbers_but_keeps_legacy_tables(fresh_db):
-    _upgrade_head(fresh_db)
+    command.upgrade(_alembic_cfg(fresh_db), "head")
     row = _fetch_row(
         fresh_db,
         "SELECT to_regclass('public.ascents')::text, to_regclass('public.climbers')::text, "
@@ -141,7 +126,7 @@ async def _insert_history(url: str, rows: list[tuple[int, object, str]]) -> None
 
 def test_0003_stores_insufficient_days_as_null_gray_and_rejects_mixed_pairs(fresh_db):
     cfg = _alembic_cfg(fresh_db)
-    _upgrade_head(fresh_db, cfg)
+    command.upgrade(cfg, "head")
     url = _db_url(fresh_db)
     asyncio.run(_insert_history(url, [(1, None, "gray"), (2, 30.0, "yellow")]))
     assert _fetch_row(fresh_db, "SELECT risk_score FROM historical_predictions WHERE route_id = 1") == [None]
@@ -307,7 +292,7 @@ def _alembic_cfg_as(dbname: str, url: str) -> Config:
 def test_role_scripts_create_least_privilege_roles(role_cleanup, fresh_db):
     _require_psql()
     owner_url = _owner_db(fresh_db)
-    _upgrade_head(fresh_db, _alembic_cfg_as(fresh_db, owner_url))
+    command.upgrade(_alembic_cfg_as(fresh_db, owner_url), "head")
     _as(owner_url, ANALYST_FIXTURE_SQL)
 
     created = _psql(owner_url, ROLES_DIR / "create_roles.sql", ROLE_PASSWORD_ENV)
@@ -393,7 +378,7 @@ def test_stamp_then_revoke_alembic_version_passes_verify(role_cleanup, fresh_db)
     migrator_url = _role_url(fresh_db, "migrator", PASSWORDS["migrator"])
     cfg = _alembic_cfg_as(fresh_db, migrator_url)
     command.stamp(cfg, "0001_baseline")
-    _upgrade_head(fresh_db, cfg)
+    command.upgrade(cfg, "head")
     command.check(cfg)
 
     unrevoked = _psql(owner_url, ROLES_DIR / "verify_roles.sql", {})
@@ -429,7 +414,7 @@ def test_create_roles_refuses_verifiers_and_short_passwords(role_cleanup, fresh_
 
 def test_create_roles_refuses_a_rerun_before_sending_any_password(role_cleanup, fresh_db):
     _require_psql()
-    _upgrade_head(fresh_db)
+    command.upgrade(_alembic_cfg(fresh_db), "head")
     _run(fresh_db, ANALYST_FIXTURE_SQL)
     first = _psql(_db_url(fresh_db), ROLES_DIR / "create_roles.sql", ROLE_PASSWORD_ENV)
     assert first.returncode == 0, first.stderr

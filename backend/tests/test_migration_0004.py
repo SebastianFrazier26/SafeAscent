@@ -7,7 +7,7 @@ from alembic import command
 
 from app.pipelines.grid import grid_bucket, grid_bucket_sql
 from tests.pgtest import migrated_db, pg_url, requires_pg, run_sql
-from tests.test_migrations import PRE_WEATHER_DROP, _alembic_cfg, _upgrade_head
+from tests.test_migrations import PRE_WEATHER_DROP, _alembic_cfg
 
 pytestmark = requires_pg
 
@@ -32,7 +32,7 @@ def _val(name: str, sql: str) -> object:
 def test_0004_snapshots_accidents_before_adding_columns_and_checks_clean():
     with migrated_db("0003_hist_insufficient_data", SEED) as name:
         cfg = _alembic_cfg(name)
-        _upgrade_head(name, cfg)
+        command.upgrade(cfg, "head")
         command.check(cfg)
         assert _val(name, "SELECT count(*) FROM internal.accidents_raw") == 2
         assert _val(
