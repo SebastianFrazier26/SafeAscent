@@ -149,6 +149,7 @@ module = [
     "app.ml.fixtures",
     "app.ml.folds",
     "app.ml.glm",
+    "app.ml.archetypes",
     "app.pipelines.accident_facts",
     "app.pipelines.dem",
     "app.pipelines.epqs",
