@@ -12,7 +12,7 @@ How a result is shown:
 
 - **One set of bands everywhere:** green below 25, yellow 25–50, orange 50–75, red 75 and up. Each band includes its lower edge, so 25.0 is yellow.
 - **Never a made-up number.** A score that is missing, malformed, or failed to load reads "Unavailable" in neutral gray. It never falls back to 0.
-- **"Too little evidence to estimate risk yet"** (gray) when no historical accident contributes to a route, or its raw score is below 0.05. This is an interim rule. The current model can only use accidents near a route; the planned Phase 3 model will borrow evidence from routes with similar characteristics anywhere.
+- **"Too little evidence to estimate risk yet"** (gray) only when the model holds no evidence at all for the route: no accident nearby and none on characteristically similar routes within the model's distance limit. That is a stored model state, not a score threshold. A low-confidence score still shows its number, its range and a hatch; a route with no stored score reads "Unavailable".
 
 ## Architecture
 
@@ -21,8 +21,8 @@ How a result is shown:
 Diagram sources are in [`docs/diagrams/`](./docs/diagrams/) (Mermaid; regenerate the PNGs with `npx -y @mermaid-js/mermaid-cli@11 -i docs/diagrams/<name>.mmd -o <name>.png -b white -w 1600`).
 
 - **API:** FastAPI (async SQLAlchemy + asyncpg) serving `/api/v1`, plus `/health` and `/health/worker`.
-- **Jobs:** a Celery worker and a separate Celery beat service (never combined). At 02:00 UTC beat enqueues the nightly job, which writes scores to Redis and to the `historical_predictions` table.
-- **Data:** Postgres + PostGIS on Neon. Alembic owns the schema (`backend/alembic/`). The app connects as a least-privilege role that can write only `historical_predictions`. See [`data/DATABASE_STRUCTURE.md`](./data/DATABASE_STRUCTURE.md) and the [data model diagram](./data_model.png).
+- **Jobs:** a Celery worker and a separate Celery beat service (never combined). Scores are written by the monthly training run into `model.route_scores`; at 02:00 UTC beat enqueues a scores heartbeat that computes nothing and only checks the active version's rows and bundle, pinging healthchecks.io.
+- **Data:** Postgres + PostGIS on Neon. Alembic owns the schema (`backend/alembic/`). The app connects as a least-privilege role and serves the active model version's stored scores (Redis caches them under version-keyed keys). See [`data/DATABASE_STRUCTURE.md`](./data/DATABASE_STRUCTURE.md) and the [data model diagram](./data_model.png).
 - **Frontend:** React 19 + Vite + MUI + Mapbox GL, moving to TypeScript incrementally.
 - **Hosting:** Railway (frontend, api, worker, beat, Redis). healthchecks.io alerts when the nightly job or the beat heartbeat goes quiet. See [`DEPLOYMENT.md`](./DEPLOYMENT.md).
 

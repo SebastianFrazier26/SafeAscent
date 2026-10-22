@@ -17,7 +17,7 @@ One repo; each Railway service builds from its own root directory and config fil
 | Beat | `beat` (**owner creates it**) | `backend/railway-beat.toml` | `celery -A app.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule` | Exactly one replica; a second double-schedules every task |
 | Catalog cycle | `catalog-cycle` (**owner creates it**) | `backend/railway-catalog-cycle.toml` | `python -m app.pipelines.catalog_cycle run` | Cron `0 9 2 1 *` (UTC), built from `backend/Dockerfile.jobs`. Auto-deploy off; deployed by hand after merges that touch `app/pipelines`. See Scheduled jobs |
 | Frontend | `frontend` | `frontend/railway.toml` | nginx serving the Vite build | Healthcheck `/health`. `MAINTENANCE_MODE` build arg, see below |
-| Redis | Railway Redis | — | — | Celery broker, result backend, and score cache |
+| Redis | Railway Redis | — | — | Celery broker, result backend, and stored-score cache (keys carry the model version) |
 
 The API, worker, and beat all build from `backend/Dockerfile` (Python 3.12, uv, non-root). `catalog-cycle` builds from `backend/Dockerfile.jobs`: the same image plus the `pipelines` dependency group (h3, rasterio, timezonefinder), which the API image leaves out. The frontend builds from `frontend/Dockerfile` (Node 22 build, nginx serve).
 
@@ -133,6 +133,8 @@ The archive API needs Professional (Standard excludes it; pricing read 2026-09-2
 ## Scores heartbeat
 
 The kernel nightly is gone (P3 Task 23); scores are written by the monthly training run. At 02:00 UTC beat enqueues `app.tasks.scores_heartbeat.scores_heartbeat` (message expires after 1h). It computes nothing. It checks that exactly one registry version is active, that its bundle bytes match `bundle_sha256`, and that it has a `model.route_scores` row for the current UTC month for every scorable route. Healthy: it pings `HEALTHCHECKS_SCORES_URL` and `HEALTHCHECKS_NIGHTLY_URL` (kept so the old dead-man check stays meaningful). Otherwise it pings `/fail` on both, logs the reason, and returns it (`no_active_version`, `multiple_active_versions`, `bundle_missing`, `bundle_sha_mismatch`, `missing_scores` with the count). While only the kernel baseline row is active, it fails with `bundle_missing`: nothing is servable until the first model version is promoted.
+
+`tests/verify/test_model_scores.py` (`-m db`, analyst) checks one active version, 12 months per scorable route, no number on an insufficient row, and the model card's `conf_counts`.
 
 `app.tasks.cache_warming` warms `safety:{version}:{route}:{month}` from the active version's stored rows; it is not scheduled.
 

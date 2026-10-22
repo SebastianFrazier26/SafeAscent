@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Phase 3 Task 25: score parity, no-coalesce guard, MVP-1 docs - 2026-10-22
+
+- `tests/test_parity_scores.py`: `/safety`, `map-with-safety` and `/risk-breakdown` return the same `risk_score`, colour, `confidence`, `score_range` and `relative_rate` for every seeded route, and the breakdown terms rebuild the stored `rr_mean` from the cell's static features (minimum over the area's routes, as training read them). `tests/test_no_coalesce_in_ml.py` bans `coalesce(`, `or 0`, `nan_to_num(` and `fillna(0` in `app/ml` and `model_scores.py` outside a line-content allowlist. `tests/verify/test_model_scores.py` (`-m db`) checks the stored scores on prod or a branch.
+- `risk_bands.py`: `MIN_ESTIMABLE_SCORE` and `estimable_score` deleted; `displayed_risk` and `cached_safety` have no floor (a 0.0 is a real rank). Insufficient is a stored model state.
+- Docs: model card gains the gate thresholds as implemented, the state-group subsample note and the kernel log-score caveat; README, `system_design.mmd`, `ALGORITHM_DESIGN.md`, CLAUDE.md, DEPLOYMENT.md and the `map-with-safety` docstring describe stored scores plus the scores heartbeat.
+
 ### Phase 3 Task 24: `0013_drop_legacy_weather` (MVP-1 hard gate) - 2026-10-22
 
 - `0013` drops `public.weather`; `upgrade()` refuses a non-empty `weather` unless `source_ingest_log` holds an `ok` `r6_verify` row meeting n > 100, r_tmax > 0.95, p99_gust < 60 (an empty table drops freely), `downgrade()` raises (rollback is the `pre-p3-4` snapshot branch; no dump is committed). It is a contract migration and runs on prod only behind the Task 26 runbook gate.

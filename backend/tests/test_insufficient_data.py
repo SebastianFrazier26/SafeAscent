@@ -15,12 +15,8 @@ from app.schemas.mp_route import MpRouteSafetyResponse, SafetyScore
 from app.schemas.prediction import PredictionResponse
 from app.services import model_scores
 from app.services.model_scores import StoredScore, to_risk
-from app.services.risk_bands import (
-    INSUFFICIENT_DATA_MESSAGE,
-    MIN_ESTIMABLE_SCORE,
-    cached_safety,
-    estimable_score,
-)
+from app.services import risk_bands
+from app.services.risk_bands import INSUFFICIENT_DATA_MESSAGE, cached_safety, displayed_risk
 from app.utils import cache as cache_module
 
 INSUFFICIENT = {"risk_score": None, "color_code": "gray", "data_status": "insufficient_data"}
@@ -35,27 +31,21 @@ def _no_bundle(monkeypatch):
 
 # --- evidence rule ---------------------------------------------------------------------
 
-def test_owner_threshold_is_the_display_rounding_edge():
-    assert MIN_ESTIMABLE_SCORE == 0.05
+def test_the_kernel_floor_is_retired():
+    # Phase 3 MVP-1: insufficient is a stored model state, not a raw-score threshold.
     assert INSUFFICIENT_DATA_MESSAGE == "Too little evidence to estimate risk yet"
+    assert not hasattr(risk_bands, "MIN_ESTIMABLE_SCORE") and not hasattr(risk_bands, "estimable_score")
 
 
-@pytest.mark.parametrize(
-    "count,raw,expected",
-    [
-        (0, 42.0, None),
-        (3, None, None),
-        (3, 0.0, None),
-        (3, 1e-9, None),
-        (3, 0.0499, None),
-        (3, float("nan"), None),
-        (3, 0.05, 0.05),
-        (47, 68.4, 68.4),
-        (1, 100.0, 100.0),
-    ],
-)
-def test_estimable_score(count, raw, expected):
-    assert estimable_score(count, raw) == expected
+@pytest.mark.parametrize("raw,expected", [
+    (None, (None, "gray", "insufficient_data")),
+    (0.0, (0.0, "green", "ok")),
+    (0.04, (0.0, "green", "ok")),
+    (24.96, (25.0, "yellow", "ok")),
+    (68.44, (68.4, "orange", "ok")),
+])
+def test_displayed_risk_has_no_floor(raw, expected):
+    assert displayed_risk(raw) == expected
 
 
 @pytest.mark.parametrize(
@@ -64,10 +54,10 @@ def test_estimable_score(count, raw, expected):
         (INSUFFICIENT, (None, "gray", "insufficient_data")),
         ({"risk_score": 27.0, "color_code": "green"}, (27.0, "yellow", "ok")),
         ({"risk_score": 27.0, "color_code": "yellow", "data_status": "ok"}, (27.0, "yellow", "ok")),
-        # Pre-deploy entries stored a 0.0 green for no evidence; they read as insufficient.
-        ({"risk_score": 0.0, "color_code": "green"}, (None, "gray", "insufficient_data")),
-        ({"risk_score": 0.0, "color_code": "green", "data_status": "ok"}, (None, "gray", "insufficient_data")),
-        ({"risk_score": 0.04, "color_code": "green"}, (None, "gray", "insufficient_data")),
+        # A 0.0 is a real rank now; only an explicit insufficient entry is gray.
+        ({"risk_score": 0.0, "color_code": "green"}, (0.0, "green", "ok")),
+        ({"risk_score": 0.0, "color_code": "green", "data_status": "ok"}, (0.0, "green", "ok")),
+        ({"risk_score": 0.04, "color_code": "green"}, (0.0, "green", "ok")),
         ({"risk_score": 0.1, "color_code": "green"}, (0.1, "green", "ok")),
         # No explicit status: a null score is a miss, never insufficient and never 0.
         ({"risk_score": None, "color_code": "gray"}, None),
@@ -258,7 +248,7 @@ def test_stored_insufficient_row_is_gray_with_no_number():
 @pytest.mark.parametrize("percentile,expected", [(0.0, (0.0, "green", "ok")), (0.04, (0.0, "green", "ok")),
                                                  (24.96, (25.0, "yellow", "ok"))])
 def test_stored_ok_row_shows_its_rank_without_the_kernel_floor(percentile, expected):
-    # MIN_ESTIMABLE_SCORE (0.05) was a kernel rule (A:144): a stored percentile of 0.04 is the
+    # The kernel's 0.05 floor (A:144) is retired: a stored percentile of 0.04 is the
     # route's real rank among its type, not "too little evidence". Only an insufficient row is gray.
     assert to_risk(_stored(percentile=percentile)) == expected
 

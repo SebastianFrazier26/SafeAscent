@@ -457,8 +457,9 @@ async def get_mp_routes_with_safety(
     with safety scores already embedded, eliminating the need for individual
     safety API calls per route.
 
-    Safety scores are pre-computed nightly at 2am UTC and cached in Redis.
-    If a score is not cached (cache miss), it returns safety=None for that route.
+    Scores are the active model version's stored rows (model.route_scores) for the month of
+    target_date, written by the monthly training run; nothing is computed here. A route without
+    a stored row (or no active version) returns safety=None, never 0 and never gray.
 
     **Performance**: This endpoint returns ~168K routes with safety scores in
     a single response (~2-3 seconds) instead of requiring 168K individual

@@ -4,7 +4,7 @@ Redis Cache Service
 Provides caching functionality for expensive operations:
 - Weather API calls (Open-Meteo)
 - Database queries (weather statistics)
-- Pre-computed safety scores (nightly batch job)
+- Stored model scores, keyed by model version
 
 Uses Redis for fast in-memory storage with automatic expiration (TTL).
 Fails gracefully if Redis is unavailable (returns None, logs warning).
