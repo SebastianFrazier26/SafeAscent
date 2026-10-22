@@ -145,6 +145,8 @@ module = [
     "app.ml.cells",
     "app.ml.incidents",
     "app.ml.dataset",
+    "app.ml.features",
+    "app.ml.fixtures",
     "app.pipelines.accident_facts",
     "app.pipelines.dem",
     "app.pipelines.epqs",
