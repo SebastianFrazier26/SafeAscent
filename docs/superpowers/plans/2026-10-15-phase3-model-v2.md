@@ -4,10 +4,25 @@
 
 **Status (2026-10-15):** drafted overnight under the owner's instruction not to pause for decisions. Every design call this plan makes is marked `[default pending: DPn]` with the recommended default it is written against (Appendix A). The owner reviews them before execution starts; any overruled DP changes only the tasks that cite it.
 
+## Pre-flight rulings 2026-10-22
+
+The pre-flight scan (`.superpowers/sdd/2026-10-15-phase3-model-v2/preflight.md`, 69 findings F1–F69) has been applied to this plan. Every correction is folded into the task it touches, marked `(pre-flight Fn)`. The owner-facing calls below are controller rulings of 2026-10-22; the owner may override any of them.
+
+| # | Call | Ruling (controller 2026-10-22; owner may override) |
+|---|---|---|
+| F48 (security) | Production `TRAINER_DATABASE_URL` as a GitHub Actions secret in a public repo | **Training does not run on GitHub Actions with a prod credential.** No `TRAINER_DATABASE_URL` secret on GitHub, no `model-train.yml`/`model-rollback.yml` workflows. Training, promotion and rollback run from the owner's Mac through the runbook (`TRAIN` helper), like the data jobs. CI that needs no credential stays (unit tests, the `--fixture small` backtest). |
+| F49 (security) | Raw CLI output reaching public issues/logs | Never post raw stdout/stderr to a public issue. The CLI prints a fixed one-line outcome; only aggregate status (`out/issue.md`, `out/status.json`) is ever posted, and posting is the owner's `gh` call. |
+| F21 | 35-day exposure staleness gate vs yearly exposure builds | Rebuild exposure (`python -m app.pipelines.exposure build`, as `ingest`, `INGMOD`) immediately before every training run; keep the 35-day `StaleExposure` gate. |
+| F22 | Backtest snapshots are point-in-time for ticks only | Accept the plan's default: static-catalog, static-climate leakage in rolling folds is accepted and recorded in the model card; ticks stay gated by the DP5 90 % coverage rule. Controller ruling 2026-10-22; owner may override. |
+| F39 | DP4: state-only incidents feed only `geo_evidence` | Accept DP4 as written; the model card reports the state-only incident share per state. Controller ruling 2026-10-22; owner may override. |
+| F52 | DP16: per-state aggregate table in the promotion issue | Accept DP16 aggregate-only as written. Controller ruling 2026-10-22; owner may override. |
+
+Other controller rulings applied: F54 (PR 3-4 stays additive for the live frontend; the `App.jsx` `/predict` flow and the trends/time-of-day callers change inside PR 3-4; `/predict` keeps working until those callers change), F58 (`0013` runs only after PR 3-4 is deployed and the nightly has switched, behind its own runbook gate), F55 (`/seasonal-patterns` reads AAC year rows as `year_lo`/`year_hi` intervals and shows no second risk number), F60 (Task 26 targets PR #15's Phase 4 numbering, `0014`–`0016`).
+
 **Goal:** Replace the hand-tuned kernel with an in-house, data-fit risk model. It is a Poisson GLM baseline plus empirical-Bayes shrinkage toward a blend of the geographic parent and a feature-similar archetype parent. It carries confidence and ranges, is calibrated and backtested (including against the kernel's `historical_predictions`), auto-promoted through a hard gate, and served from one stored score that the map, popup and breakdown all read.
 
 **Architecture:**
-- **Offline (GitHub Actions, `trainer` role).** `app.ml.train run` reads the clean views, R10 links, the MP catalog, `scoring_unit_features` and one `internal.exposure_index` snapshot. It assembles cells (MP area × type group × month) with point-in-time incident counts, then:
+- **Offline (owner's Mac through the runbook, `trainer` role; pre-flight F48: no prod credential on GitHub).** Each run is preceded by an exposure rebuild as `ingest` (pre-flight F21). `app.ml.train run` reads the clean views, R10 links, the MP catalog, `scoring_unit_features` and one `internal.exposure_index` snapshot. It assembles cells (MP area × type group × month) with point-in-time incident counts, then:
   - fits the stage-1 Poisson GLM (exposure + static covariates);
   - fits the stage-2 EB (geo hierarchy blended with feature archetypes);
   - tunes d\*, confidence thresholds and the interval factor on spatial and rolling-origin CV;
@@ -17,7 +32,7 @@
 - **Serving (API, `app` role, read-only).** Endpoints read the active version's stored row. `explain()` decomposes that same number using the bundle. No score is computed at request time, and the nightly kernel is deleted.
 - **Purity.** All new model code lives in `backend/app/ml/`. Everything except `dataset.py`, `registry.py`, `materialize.py` and `train.py` is pure (no DB, no network).
 
-**Tech Stack:** Python 3.12, numpy (serving and training), scipy (`train` group only: gamma quantiles, `gammaln`) `[default pending: DP8]`, SQLAlchemy async + asyncpg, Alembic, Postgres (`ltree`), pytest + Hypothesis, GitHub Actions, React 19 + TypeScript (frontend contract).
+**Tech Stack:** Python 3.12, numpy (serving and training), scipy (`train` group only: gamma quantiles, `gammaln`) `[default pending: DP8]`, SQLAlchemy async + asyncpg, Alembic, Postgres (`ltree`), pytest + Hypothesis, GitHub Actions (credential-free CI only, F48), React 19 + TypeScript (frontend contract).
 
 **Spec:**
 - `docs/superpowers/specs/2026-09-27-phase3-model-v2-design.md` (cited "P3:line").
@@ -64,7 +79,7 @@
 | 3-4 | `feat/p3-mvp1-serving` | 22–26 | `0013_drop_legacy_weather` | MVP-1: stored-score API, kernel removal, `weather` drop (hard gate), parity |
 | 3-5 | `feat/p3-frontend-contract` | 27–29 | none | MVP-1: honest display (confidence, range, hatch, gray) |
 
-PRs merge in order. 3-5 may open in parallel with 3-4 because 3-4's response contract is additive (Task 22), but it merges after.
+PRs merge in order. PR 3-4 stays additive for the live frontend (pre-flight F54): the frontend callers whose response shape changes (`App.jsx`'s arbitrary-point `/predict` flow and `predictRouteSafety`, the `/historical-trends` and `/time-of-day` consumers in `RouteAnalyticsModal.jsx`) are updated **inside PR 3-4** (Task 22), and `POST /predict` keeps working until those callers have changed. Railway auto-deploys `main`, so nothing in 3-4 may break the deployed UI. 3-5 may open in parallel with 3-4 but merges after.
 
 ## Migration numbering
 
@@ -76,7 +91,8 @@ PRs merge in order. 3-5 may open in parallel with 3-4 because 3-4's response con
   - `0015_reports`;
   - `0016_report_promotions`.
 
-  The same renumbering covers its `test_migration_*` files, its `migrated_db(...)` pins, its downgrade targets and its runbook `MIG current` lines. Task 26 Step 5 edits that plan document. If Phase 4 PRs 4-1..4-7 are executed before PR 3-4 merges, `0013_drop_legacy_weather` is renumbered to follow them instead, and Task 24 re-pins its `down_revision`. The owner picks the order: "Phase 3 first" (2026-10-12) means this plan's numbers stand.
+  The same renumbering covers its `test_migration_*` files, its `migrated_db(...)` pins, its downgrade targets and its runbook `MIG current` lines. Task 26 Step 5 edits that plan document, rewriting from whatever numbers it holds on `main` at that time (pre-flight F60). If Phase 4 PRs 4-1..4-7 are executed before PR 3-4 merges, `0013_drop_legacy_weather` is renumbered to follow them instead, and Task 24 re-pins its `down_revision`. The owner picks the order: "Phase 3 first" (2026-10-12) means this plan's numbers stand.
+- (pre-flight F60) PR #15's Phase 4 plan is the numbering target: whatever numbers the Phase 4 plan on `main` holds at Task 26 time (this worktree's copy still says `0008_accounts`/`0009_reports`/`0010_report_promotions`) are rewritten to `0014`/`0015`/`0016`.
 - Before writing each migration, run `cd backend && uv run alembic heads` and confirm the single head is the expected `down_revision`.
 
 ## Global Constraints
@@ -97,10 +113,11 @@ The foundations, MP-catalog and exposure plans' Global Constraints apply. Also:
   - `app` and `analyst` get SELECT on `model.*` only.
   - `ingest` gets nothing on `model`.
   - Grants change only in lockstep: `grants_phase3.sql`, `verify_roles_phase3.sql` and `test_roles_phase3.py`, plus the edits to `verify_roles_phase2.sql`/`test_roles_phase2.py` that Task 3 names.
-- **Parameterised SQL only.** Arrays travel as `CAST(:x AS bigint[])`/`real[]`/`text[]`. The only f-strings in SQL interpolate module constants. There is no DDL in `app/`.
+- **Parameterised SQL only.** Arrays travel as `CAST(:x AS bigint[])`/`double precision[]`/`real[]`/`text[]` (rr/pct/per10k always `double precision[]`, pre-flight F31). The only f-strings in SQL interpolate module constants. There is no DDL in `app/`.
 - **Synthetic fixtures only.** MP ids ≥ 900000000, `Fixture …` names, generated incidents. No real export, no MP prose, no real ids in `docs/`, `data/` or `backend/tests/` (`scripts/check_no_mp_data.py`).
 - **No LLM and no hosted model in scoring** (P3:19). Jev stays Phase 4 triage only.
-- **Public artifacts are aggregate-only** `[default pending: DP16]`. Workflow logs, issue bodies and uploaded artifacts never carry route ids, coordinates or names. Per-route movers stay in `model.registry.diff_report`.
+- **Public artifacts are aggregate-only** `[default pending: DP16]`. Workflow logs, issue bodies and uploaded artifacts never carry route ids, coordinates or names. Per-route movers stay in `model.registry.diff_report`. (pre-flight F49) Raw stdout/stderr never goes to a public issue or log: CLIs print a fixed one-line outcome, exceptions are logged without connection details, and only aggregate status is posted.
+- **No production credential on GitHub** (pre-flight F48, controller ruling 2026-10-22; owner may override). `TRAINER_DATABASE_URL` lives only in the owner's gitignored `backend/.env.trainer`; training, promotion and rollback run from the owner's Mac through the runbook.
 - **Runbooks** follow the plan-2 safety structure:
   - a Neon branch rehearsal first;
   - a snapshot branch before the first prod write;
@@ -119,7 +136,7 @@ The foundations, MP-catalog and exposure plans' Global Constraints apply. Also:
 2. **An AAC row with `date_precision = 'year'`, `year_lo = 2003`, `year_hi = 2005` and a rolling-origin cutoff of 2004-01-01.** Expect 1/3 of its weight in training and 2/3 in the test window, spread across months by the type group's seasonal profile, and never counted at July 1 2004 (Task 6 `test_year_interval_straddles_cutoff`).
 3. **A rock cell whose tick coverage is partial while national rock coverage is below 0.90.** Expect the tick covariate off for every rock-family cell, with no coverage or missingness term entering the fit (MNAR, X-conflict 5), and the design identical to a run with ticks disabled for that family (Task 8 `test_rock_ticks_gated_until_coverage`).
 4. **A route whose stored row is missing, or whose registry has no active version.** Expect HTTP 404 "Unavailable" from `/safety` and `safety: null` in bulk, never a gray "insufficient" and never a number (Task 22 `test_missing_row_is_unavailable_not_insufficient`).
-5. **An `/rollback` comment from someone other than the owner, or when `previous` is the kernel row.** Expect a refusal comment and no status change (Task 19 `test_rollback_refuses_kernel_and_non_owner`, Task 20 workflow guard).
+5. **A rollback when `previous` is the kernel row or missing.** Expect a refusal (`RollbackRefused`) and no status change (Task 2 `test_rollback_refuses_without_servable_previous`). Rollback runs only from the owner's Mac (`TRAIN rollback`, pre-flight F48); there is no comment-triggered workflow.
 6. **A Gamma posterior with tiny shape** (κ → 0 in a heterogeneous level). Expect `q05 ≤ mean ≤ q95` still to hold because of the prior-shape floor (Task 13 property test).
 7. **An incident linked to a boulder route, or a point-only incident 5 km from the nearest scorable area.** Expect the boulder incident dropped `boulder_route`, and the far one placed at state level only (Task 6 tests).
 
@@ -143,12 +160,14 @@ The foundations, MP-catalog and exposure plans' Global Constraints apply. Also:
 | `backend/app/ml/glm.py`, `archetypes.py`, `eb.py`, `posterior.py`, `explain.py`, `model.py` | Create | The model. |
 | `backend/app/ml/metrics.py`, `backtest.py`, `kernel_adapter.py`, `tuning.py`, `promote.py`, `materialize.py`, `train.py`, `fixtures.py` | Create | Evaluation, gate, CLI, synthetic data. |
 | `backend/app/ml/kernel_ref/` | Create (3-4, `git mv`) | Frozen kernel math, used only by `kernel_adapter`. |
-| `.github/workflows/model-train.yml`, `model-rollback.yml`, `ci.yml` | Create / Modify | Training, rollback, the CI fixture backtest. |
+| `.github/workflows/ci.yml` | Modify | The credential-free CI fixture backtest. No training or rollback workflow (pre-flight F48). |
+| `backend/scripts/runbook_helpers.sh` | Modify | `TRAIN()` helper: training, promotion and rollback from the owner's Mac (pre-flight F48/F50). |
 | `backend/pyproject.toml`, `backend/uv.lock` | Modify | `train` group (scipy, hypothesis in dev); mypy allowlist. |
 | `backend/app/services/model_scores.py` | Create | Stored-score reads for the API. |
 | `backend/app/api/v1/mp_routes.py`, `predict.py`, `backend/app/schemas/mp_route.py`, `backend/app/utils/cache.py`, `backend/app/celery_app.py`, `backend/app/tasks/scores_heartbeat.py` | Modify / Create | Serving on stored scores; the heartbeat replaces the nightly kernel. |
 | `backend/alembic/versions/0013_drop_legacy_weather.py` | Create | Hard MVP-1 gate. |
 | `backend/app/pipelines/r6_verify.py`, `backend/app/models/weather.py`, `tests/test_r6_verify.py` | Delete (3-4) | The `weather` readers. |
+| `frontend/src/App.jsx`, `frontend/src/services/api.ts` (`predictRouteSafety`), `frontend/src/components/RouteAnalyticsModal.jsx` (trends/hourly views) | Modify (3-4) | Callers of the endpoints whose shape changes, updated in PR 3-4 (pre-flight F54). |
 | `frontend/src/services/api.ts`, `frontend/src/utils/riskUtils.ts`, `frontend/src/components/{MapView,RouteAnalyticsModal,RiskLegend}.jsx`, `frontend/src/hooks/useRouteSafety.ts` | Modify | The display contract. |
 | tests under `backend/tests/ml/`, `backend/tests/`, `backend/tests/verify/` | Create | Per task. |
 | `CHANGELOG.md`, `CLAUDE.md`, `DEPLOYMENT.md`, `data/DATABASE_STRUCTURE.md`, `docs/model-card.md`, `docs/superpowers/plans/2026-10-12-phase4-users-incident-reporting.md` | Modify / Create | Docs; Phase 4 renumbering. |
@@ -165,9 +184,9 @@ The foundations, MP-catalog and exposure plans' Global Constraints apply. Also:
 | 10–14 | 15 | `fit_poisson`, `kmeans`, `nearest_distance`, `fit_eb`, `EbFit.predict`, `posterior_rows`, `explain` | Frozen per task. |
 | 15 | 17–20 | `fit_model(cells, counts, params) -> Fitted`, `Fitted.predict(cells, counts_train) -> CellPrediction` | Frozen in Task 15. |
 | 16 | 17–19 | metric function names and `MetricsReport` keys | Frozen in Task 16. |
-| 22 | 27–29 | API fields `confidence`, `score_range`, `model_version`, `evidence`, `insufficient_reason` | Additive; frozen in Task 22. |
+| 22 | 27–29 | API fields `confidence`, `score_range`, `model_version`, `evidence`, `insufficient_reason` | Additive; frozen in Task 22. The non-additive endpoint changes (`/predict`, trends, time-of-day) ship with their frontend callers in 3-4 (F54). |
 | 3 | exposure plan Task 4 | `trainer` on `internal.exposure_index` | Granted here (X-conflict 1). |
-| 24 | plan 3 (R6) | `public.weather` | Dropped here; `grants_phase2.sql` loses its `weather` grant in the same PR. |
+| 24 | plan 3 (R6) | `public.weather` | Dropped here; `grants_phase2.sql` loses its `weather` grant in the same PR. `0013` runs on prod only after PR 3-4 is deployed and the nightly has switched (F58). |
 
 ---
 
@@ -219,14 +238,14 @@ The foundations, MP-catalog and exposure plans' Global Constraints apply. Also:
     | `route_id` | bigint FK → `canonical_routes` |
     | `month` | smallint 1..12 |
     | `type_group` | text in the six groups |
-    | `area_id` | bigint NOT NULL |
+    | `area_id` | bigint NOT NULL FK → `canonical_areas` RESTRICT (pre-flight F3) |
     | `insufficient` | bool |
     | `insufficient_reason` | text NULL CHECK IN (`no_evidence`) |
-    | `rr_mean`, `rr_q05`, `rr_q95` | real NULL |
-    | `percentile`, `pct_q05`, `pct_q95` | real NULL, 0..100 |
+    | `rr_mean`, `rr_q05`, `rr_q95` | double precision NULL (pre-flight F31: `real` underflows `rr_q05` to 0 at the shape floor) |
+    | `percentile`, `pct_q05`, `pct_q95` | double precision NULL, 0..100 |
     | `conf_level` | text CHECK IN (`high`, `medium`, `low`, `insufficient`) |
     | `n_eff_geo`, `n_eff_feature` | real NULL |
-    | `per10k_mean`, `per10k_q05`, `per10k_q95` | real NULL |
+    | `per10k_mean`, `per10k_q05`, `per10k_q95` | double precision NULL |
     | `per10k_reason` | text NULL |
 
     PK `(model_version, route_id, month)`. CHECKs:
@@ -287,7 +306,7 @@ def test_0012_route_scores_checks():
             {"rr": "1.0, 1.5, 2.0"},                       # q05 above mean
             {"rr": "0, 0, 0"},                              # a zero rate
             {"pct": "40, 50, 60"},                          # pct_q05 above percentile
-            {"ins": "true", "reason": "'no_evidence'"},     # insufficient with numbers
+            {"ins": "true", "reason": "'no_evidence'", "conf": "insufficient", "p10reason": "NULL"},  # numbers only (F12)
             {"conf": "insufficient"},                       # level without the flag
             {"p10reason": "NULL"},                          # per10k neither present nor explained
         ]
@@ -411,6 +430,7 @@ def upgrade() -> None:
     op.create_index("ux_registry_one_previous", "registry", [sa.text("(true)")], unique=True, schema="model",
                     postgresql_where=sa.text("status = 'previous'"))
     real = sa.REAL()
+    dbl = sa.Double()  # pre-flight F31: rr/pct/per10k in double precision; float32 underflows rr_q05 to 0
     op.create_table(
         "route_scores",
         sa.Column("model_version", sa.Text(), sa.ForeignKey("model.registry.version", ondelete="RESTRICT"),
@@ -419,14 +439,15 @@ def upgrade() -> None:
                   nullable=False),
         sa.Column("month", sa.SmallInteger(), nullable=False),
         sa.Column("type_group", sa.Text(), nullable=False),
-        sa.Column("area_id", sa.BigInteger(), nullable=False),
+        sa.Column("area_id", sa.BigInteger(), sa.ForeignKey("canonical_areas.area_id", ondelete="RESTRICT"),
+                  nullable=False),
         sa.Column("insufficient", sa.Boolean(), nullable=False),
         sa.Column("insufficient_reason", sa.Text(), nullable=True),
-        *(sa.Column(c, real, nullable=True) for c in ("rr_mean", "rr_q05", "rr_q95", "percentile", "pct_q05",
-                                                       "pct_q95")),
+        *(sa.Column(c, dbl, nullable=True) for c in ("rr_mean", "rr_q05", "rr_q95", "percentile", "pct_q05",
+                                                      "pct_q95")),
         sa.Column("conf_level", sa.Text(), nullable=False),
-        *(sa.Column(c, real, nullable=True) for c in ("n_eff_geo", "n_eff_feature", "per10k_mean", "per10k_q05",
-                                                       "per10k_q95")),
+        *(sa.Column(c, real, nullable=True) for c in ("n_eff_geo", "n_eff_feature")),
+        *(sa.Column(c, dbl, nullable=True) for c in ("per10k_mean", "per10k_q05", "per10k_q95")),
         sa.Column("per10k_reason", sa.Text(), nullable=True),
         sa.PrimaryKeyConstraint("model_version", "route_id", "month"),
         sa.CheckConstraint("month BETWEEN 1 AND 12", name="route_scores_month_check"),
@@ -468,9 +489,11 @@ def downgrade() -> None:
 
 `tests/pgtest.migrated_db` creates databases as a superuser, so `_ensure_model_schema` creates the schema itself there. That matches the 0004 pattern for `internal`.
 
-- [ ] **Step 4: Run the tests.** `cd backend && uv run pytest tests/test_migration_0012.py tests/test_migrations.py -q && uv run mypy` → PASS.
+**Role tests after 0012 is head (pre-flight F1).** `test_roles_phase2.py` upgrades to `"head"` as `migrator` in four tests; once `0012` is head, `_ensure_model_schema` fails there because `migrator` lacks CREATE on the database. Mirror the prod order in those tests: a shared helper runs `backend/db/owner/schema_model_phase3.sql` as owner after `create_roles.sql` (so `migrator` exists for `AUTHORIZATION migrator`) and before `upgrade head`. Edit by content, not line numbers.
 
-- [ ] **Step 5: Commit.** `git add backend/db/owner/schema_model_phase3.sql backend/alembic/versions/0012_model_registry.py backend/app/models/ backend/pyproject.toml backend/tests/test_migration_0012.py && git commit -m "feat(db): 0012 model.registry and model.route_scores"`
+- [ ] **Step 4: Run the tests.** `cd backend && PATH=/opt/homebrew/opt/libpq/bin:$PATH CI=1 uv run pytest tests/test_migration_0012.py tests/test_migrations.py tests/test_roles_phase2.py -q && uv run mypy` → PASS (pre-flight F1: the role tests run here, not first in Task 3).
+
+- [ ] **Step 5: Commit.** `git add backend/db/owner/schema_model_phase3.sql backend/alembic/versions/0012_model_registry.py backend/app/models/ backend/pyproject.toml backend/tests/test_migration_0012.py backend/tests/test_roles_phase2.py && git commit -m "feat(db): 0012 model.registry and model.route_scores"`
 
 ---
 
@@ -709,6 +732,10 @@ class PromotionRefused(RuntimeError):
     pass
 
 
+class BundleMissing(RuntimeError):
+    pass
+
+
 class RollbackRefused(RuntimeError):
     pass
 
@@ -744,15 +771,19 @@ async def insert_candidate(conn: AsyncConnection, *, version: str, family: str, 
 
 async def set_gate(conn: AsyncConnection, version: str, gate_result: dict[str, Any], diff_report: dict[str, Any],
                    scores_rows: int) -> None:
-    await conn.execute(text(
+    res = await conn.execute(text(
         "UPDATE model.registry SET gate_result = CAST(:g AS jsonb), diff_report = CAST(:d AS jsonb), "
         "scores_rows = :n WHERE version = :v AND status = 'candidate'"),
         {"g": json.dumps(gate_result), "d": json.dumps(diff_report), "n": scores_rows, "v": version})
+    if res.rowcount != 1:  # pre-flight F14: never a silent no-op
+        raise PromotionRefused(f"{version} is not a candidate")
 
 
 async def reject(conn: AsyncConnection, version: str) -> None:
-    await conn.execute(text("UPDATE model.registry SET status = 'rejected' WHERE version = :v AND status = 'candidate'"),
-                       {"v": version})
+    res = await conn.execute(text(
+        "UPDATE model.registry SET status = 'rejected' WHERE version = :v AND status = 'candidate'"), {"v": version})
+    if res.rowcount != 1:  # pre-flight F14
+        raise PromotionRefused(f"{version} is not a candidate")
 
 
 async def promote(conn: AsyncConnection, version: str, *, by: Literal["auto", "owner"]) -> str | None:
@@ -783,9 +814,11 @@ async def rollback(conn: AsyncConnection) -> tuple[str, str]:
         "SELECT version FROM model.registry WHERE status = 'previous' AND family <> 'kernel' "
         "AND bundle IS NOT NULL FOR UPDATE"))).scalar_one_or_none()
     if prev is None:
-        raise RollbackRefused("no previous version to restore; promote a specific version with workflow_dispatch")
+        raise RollbackRefused("no previous version to restore; promote a specific version with TRAIN rollback --version")
     cur = (await conn.execute(text(
-        "UPDATE model.registry SET status = 'retired' WHERE status = 'active' RETURNING version"))).scalar_one()
+        "UPDATE model.registry SET status = 'retired' WHERE status = 'active' RETURNING version"))).scalar_one_or_none()
+    if cur is None:  # pre-flight F15
+        raise RollbackRefused("no active version")
     await conn.execute(text(
         "UPDATE model.registry SET status = 'active', promoted_at = now(), promoted_by = 'owner' WHERE version = :v"),
         {"v": prev})
@@ -801,6 +834,8 @@ async def active(conn: AsyncConnection) -> ActiveVersion | None:
 async def load_bundle(conn: AsyncConnection, version: str) -> ModelBundle:
     row = (await conn.execute(text("SELECT bundle, bundle_sha256 FROM model.registry WHERE version = :v"),
                               {"v": version})).one()
+    if row[0] is None:  # pre-flight F13: pruned bundle
+        raise BundleMissing(f"bundle of {version} was pruned")
     raw, digest = bytes(row[0]), row[1]
     if sha256(raw) != digest:
         raise RuntimeError(f"bundle of {version} does not match its sha256")
@@ -825,7 +860,13 @@ async def prune(conn: AsyncConnection, *, today: date, keep_days: int = 90) -> P
 
 The registry rows never get `DELETE`, so the FK from `route_scores` (RESTRICT) can never block a prune.
 
-`app/pipelines/db.py`: give `verified_connect_args` a keyword `var: str = "INGEST_DATABASE_URL"`, and use `{var}` in its three messages. `require_direct_host` gets the same keyword. The existing ingest calls stay byte-identical in behaviour.
+Extra tests in `test_registry.py` (pre-flight F13, F14, F15):
+- `test_prune`: a stale retired `eb_v1` row loses its scores and bundle; the active and previous rows are untouched; `load_bundle` on the pruned row raises `BundleMissing`;
+- `test_promote_refuses_unscored_or_ungated` also covers an unscored candidate that passed the gate (`scores_rows` NULL/0);
+- `set_gate`/`reject` on a non-candidate raise;
+- `rollback` with a `previous` row but no active row raises `RollbackRefused("no active version")`.
+
+`app/pipelines/db.py`: give `verified_connect_args` a keyword `var: str = "INGEST_DATABASE_URL"`, and use `{var}` in all four messages that name the variable (two in `verified_connect_args`, two in `require_direct_host`; pre-flight F4). `require_direct_host` gets the same keyword; `ingest_engine` keeps passing positionally with the defaults. The existing ingest calls stay byte-identical in behaviour.
 
 `backend/app/ml/db.py`:
 
@@ -852,7 +893,7 @@ def trainer_engine() -> AsyncEngine:
 ```
 
 `config.py` gets three fields, each with a one-line comment:
-- `TRAINER_DATABASE_URL`: trainer role, training job only, never a service;
+- `TRAINER_DATABASE_URL`: trainer role, the owner's Mac only (`backend/.env.trainer`), never a service and never a GitHub secret (pre-flight F48);
 - `HEALTHCHECKS_TRAIN_URL`: 35-day dead-man check for the monthly training (P3:204);
 - `HEALTHCHECKS_SCORES_URL`: the daily stored-score heartbeat (Task 23).
 
@@ -881,18 +922,19 @@ def trainer_engine() -> AsyncEngine:
   - **analyst:** USAGE on `model`; SELECT on both.
   - **ingest:** nothing on `model`.
 
-- [ ] **Step 1: Write the failing test.** `backend/tests/test_roles_phase3.py`. It follows `test_roles_phase2.py`'s fixtures (`role_cleanup`, `fresh_db`, `_owner_db`, `_alembic_cfg_as`, `_as`, `_denied`, `_psql`, `_require_psql`, `PASSWORDS`, `_role_url`), imported from it:
+- [ ] **Step 1: Write the failing test.** `backend/tests/test_roles_phase3.py`. It uses the shared helpers from their home, `tests.test_migrations` (`PASSWORDS`, `PHASE2_PASSWORDS`, `ROLES_DIR` (a `Path`), `_psql(url, script: Path, …)`, `_owner_db`, the `fresh_db`/`role_cleanup` fixtures, …), not re-exports via `test_roles_phase2` (pre-flight F5, F6); only `run_phase2_roles` comes from `test_roles_phase2`:
 
 ```python
 import pytest
 from alembic import command
 
-from tests.test_roles_phase2 import (  # noqa: F401  (fixtures)
-    PASSWORDS, _alembic_cfg_as, _as, _denied, _fetch_row, _owner_db, _psql, _require_psql, _role_url, fresh_db,
-    role_cleanup, run_phase2_roles,
+from tests.test_migrations import (  # noqa: F401  (fresh_db, role_cleanup are fixtures)
+    PASSWORDS, PHASE2_PASSWORDS, ROLES_DIR, _alembic_cfg_as, _as, _denied, _fetch_row, _owner_db, _psql,
+    _require_psql, _role_url, fresh_db, role_cleanup,
 )
+from tests.test_roles_phase2 import run_phase2_roles
 
-ROLES_DIR = "db/roles"
+OWNER_SCHEMA_SQL = ROLES_DIR.parent / "owner" / "schema_model_phase3.sql"
 TRAINER_PASSWORD = "t" * 40
 ALLOW_SELECT = ("public.accidents_clean", "public.accident_route_links", "public.canonical_areas",
                 "public.canonical_routes", "public.scorable_routes", "public.scoring_unit_features",
@@ -901,12 +943,11 @@ ALLOW_SELECT = ("public.accidents_clean", "public.accident_route_links", "public
 
 def _phase3(fresh_db):
     owner = _owner_db(fresh_db)
-    run_phase2_roles(fresh_db)  # create_roles + create_roles_phase2 + upgrade head + grants_phase2
-    _psql(owner, f"{ROLES_DIR}/../owner/schema_model_phase3.sql", {})
+    run_phase2_roles(fresh_db)  # owner db, 0003, create_roles(+_phase2), schema_model_phase3, head, grants_phase2
     command.upgrade(_alembic_cfg_as(fresh_db, owner), "head")
-    login = _psql(owner, f"{ROLES_DIR}/trainer_login_phase3.sql", {"TRAINER_PASSWORD": TRAINER_PASSWORD})
+    login = _psql(owner, ROLES_DIR / "trainer_login_phase3.sql", {"TRAINER_PASSWORD": TRAINER_PASSWORD})
     assert login.returncode == 0, login.stderr
-    grants = _psql(owner, f"{ROLES_DIR}/grants_phase3.sql", {})
+    grants = _psql(owner, ROLES_DIR / "grants_phase3.sql", {})
     assert grants.returncode == 0, grants.stderr
     return owner, _role_url(fresh_db, "trainer", TRAINER_PASSWORD)
 
@@ -929,19 +970,29 @@ def test_trainer_reads_allowlist_and_writes_only_model(role_cleanup, fresh_db):
     app = _role_url(fresh_db, "app", PASSWORDS["app"])
     _as(app, "SELECT count(*) FROM model.registry; SELECT count(*) FROM model.route_scores")
     _denied(app, "DELETE FROM model.route_scores WHERE false")
-    ingest = _role_url(fresh_db, "ingest", PASSWORDS["ingest"])
+    ingest = _role_url(fresh_db, "ingest", PHASE2_PASSWORDS["ingest"])
     _denied(ingest, "SELECT count(*) FROM model.registry")
-    verify = _psql(owner, f"{ROLES_DIR}/verify_roles_phase3.sql", {})
+    verify = _psql(owner, ROLES_DIR / "verify_roles_phase3.sql", {})
     assert verify.returncode == 0, verify.stdout + verify.stderr
-    verify2 = _psql(owner, f"{ROLES_DIR}/verify_roles_phase2.sql", {})
+    verify2 = _psql(owner, ROLES_DIR / "verify_roles_phase2.sql", {})
     assert verify2.returncode == 0, verify2.stdout + verify2.stderr
 
 
 def test_trainer_login_refuses_rerun_and_bad_passwords(role_cleanup, fresh_db):
     _require_psql()
     owner, _ = _phase3(fresh_db)
-    again = _psql(owner, f"{ROLES_DIR}/trainer_login_phase3.sql", {"TRAINER_PASSWORD": TRAINER_PASSWORD})
+    again = _psql(owner, ROLES_DIR / "trainer_login_phase3.sql", {"TRAINER_PASSWORD": TRAINER_PASSWORD})
     assert again.returncode != 0 and "trainer can already log in" in again.stderr
+
+
+@pytest.mark.parametrize("bad", ["short", "SCRAM-SHA-256$4096:" + "a" * 40, "md5" + "0" * 32])
+def test_trainer_login_refuses_bad_passwords(role_cleanup, fresh_db, bad):  # pre-flight F69
+    _require_psql()
+    owner = _owner_db(fresh_db)
+    run_phase2_roles(fresh_db)
+    out = _psql(owner, ROLES_DIR / "trainer_login_phase3.sql", {"TRAINER_PASSWORD": bad})
+    assert out.returncode != 0
+    assert bad not in out.stdout + out.stderr
 
 
 def test_verify_phase3_catches_stray_grants(role_cleanup, fresh_db):
@@ -949,7 +1000,7 @@ def test_verify_phase3_catches_stray_grants(role_cleanup, fresh_db):
     owner, _ = _phase3(fresh_db)
     _as(owner, "GRANT SELECT ON public.accidents TO trainer; GRANT UPDATE ON model.route_scores TO trainer; "
                "GRANT INSERT ON model.route_scores TO app; GRANT SELECT ON model.registry TO ingest;")
-    out = _psql(owner, f"{ROLES_DIR}/verify_roles_phase3.sql", {})
+    out = _psql(owner, ROLES_DIR / "verify_roles_phase3.sql", {})
     assert out.returncode != 0
     for check in ("trainer privileges match the allowlist on public.accidents",
                   "trainer privileges match the allowlist on model.route_scores",
@@ -958,19 +1009,21 @@ def test_verify_phase3_catches_stray_grants(role_cleanup, fresh_db):
         assert check in out.stdout, check
 ```
 
-`run_phase2_roles(fresh_db)` is a new helper extracted in `test_roles_phase2.py` from the body of `test_phase2_roles_least_privilege`'s setup (create roles, upgrade, `grants_phase2.sql`). Extract it as a pure refactor in this step, and keep the original test calling it.
+`run_phase2_roles(fresh_db)` is a **new, minimal helper** in `test_roles_phase2.py` (pre-flight F7), not an extraction: `test_phase2_roles_least_privilege`'s setup is interleaved with assertions. It mirrors `test_verify_phase2_catches_stray_grants`'s setup: owner db → upgrade `0003` → analyst fixture → `create_roles.sql` → `create_roles_phase2.sql` → `schema_model_phase3.sql` (as owner) → `upgrade head` as `migrator` → `grants_phase2.sql`. Leave the big test untouched.
 
 Change `test_roles_phase2.py` in three places:
 - `test_phase2_roles_least_privilege` still asserts `TRAINER_STATE_SQL == [False, False]`. It never runs Phase 3 scripts, so that stays true.
-- In `test_verify_phase2_catches_stray_grants`, delete the trainer stray lines whose grants are now legal: `accidents_clean`, `scorable_routes`, `scoring_unit_features` and `accident_route_links`. Keep `GRANT SELECT ON public.accidents TO trainer;` and `GRANT SELECT ON public.accident_conditions TO trainer;`; Phase 2's check still owns those.
+- In `test_verify_phase2_catches_stray_grants`, delete the trainer stray lines whose grants are now legal (all of them, pre-flight F8): `accidents_clean`, `scorable_routes`, `scoring_unit_features` and `accident_route_links`. Find them by content. Keep `GRANT SELECT ON public.accidents TO trainer;` and `GRANT SELECT ON public.accident_conditions TO trainer;`; Phase 2's check still owns those.
 - Remove the matching expected-failure strings.
+
+`backend/scripts/write_role_url.py`: when adding `trainer` to `ROLES`, delete the stale comment "trainer is NOLOGIN until Phase 3…, which adds it here" (pre-flight F9).
 
 - [ ] **Step 2: Run to confirm failure.** `cd backend && PATH=/opt/homebrew/opt/libpq/bin:$PATH CI=1 uv run pytest tests/test_roles_phase3.py -q` → FAIL (missing scripts).
 
 - [ ] **Step 3: Implement.** `backend/db/roles/trainer_login_phase3.sql`:
 
 ```sql
--- Phase 3 (D13/DP17): trainer gains LOGIN for the training job (Actions secret TRAINER_DATABASE_URL).
+-- Phase 3 (D13/DP17): trainer gains LOGIN for the training job, run from the owner's Mac (.env.trainer; never a GitHub secret).
 -- Run once as the owner; the password reaches psql only via \getenv, never argv.
 \set ON_ERROR_STOP on
 \getenv trainer_password TRAINER_PASSWORD
@@ -1060,7 +1113,7 @@ def test_purge_keeps_the_phase3_backtest_window():
 
 Docs:
 - **`CLAUDE.md`**: Database section gains `0012_model_registry` (`model.registry`/`model.route_scores`; needs `backend/db/owner/schema_model_phase3.sql` first; refuses downgrade while any row exists). Roles: `trainer` (Phase 3: LOGIN, the allowlist, `grants_phase3.sql` then `verify_roles_phase3.sql` after every Phase 3 migration). Commands: `uv run --group train python -m app.ml.train …` (filled in by Task 20).
-- **`DEPLOYMENT.md`**: "Phase 3 roles" (the owner creates schema `model`, then runs `trainer_login_phase3.sql` with `TRAINER_PASSWORD` from `.env.trainer`, then `grants_phase3.sql`/`verify_roles_phase3.sql`; then the Actions secret).
+- **`DEPLOYMENT.md`**: "Phase 3 roles" (the owner creates schema `model`, then runs `trainer_login_phase3.sql` with `TRAINER_PASSWORD` from `.env.trainer`, then `grants_phase3.sql`/`verify_roles_phase3.sql`; the trainer URL stays in `.env.trainer` on the owner's Mac and never becomes a GitHub secret, pre-flight F48).
 - **`data/DATABASE_STRUCTURE.md`**: both model tables, plus the purge guard.
 - **`CHANGELOG.md`**: a dated entry.
 
@@ -1078,25 +1131,25 @@ save_once ../data/review/p3-0/current-before.txt MIG current            # expect
 ```
 
 STOP. The owner, on the branch:
-- runs `psql "$OWNER_URL" -f backend/db/owner/schema_model_phase3.sql`;
+- runs `OWNER_PSQL -f db/owner/schema_model_phase3.sql`;
 - generates the trainer password with `uv run python -m scripts.write_role_url --role trainer --env-file .env.trainer --generate-password` (agents never read that file);
-- runs `TRAINER_PASSWORD=… psql "$OWNER_URL" -f backend/db/roles/trainer_login_phase3.sql`.
+- runs the trainer login by hand, with `TRAINER_PASSWORD` loaded from `.env.trainer` in their own shell: `OWNER_PSQL -f db/roles/trainer_login_phase3.sql` (pre-flight F10; agents never read `.env.trainer`).
 
 Then the agent:
 
 ```bash
 MIG upgrade 0012_model_registry && save_once ../data/review/p3-0/current-after.txt MIG current
-psql "$MIGRATOR_URL" -f db/roles/grants_phase3.sql && psql "$OWNER_URL" -f db/roles/verify_roles_phase3.sql \
-  && psql "$OWNER_URL" -f db/roles/verify_roles_phase2.sql && gate_pass p3_0_branch
+OWNER_PSQL -f db/roles/grants_phase3.sql && OWNER_PSQL -f db/roles/verify_roles_phase3.sql \
+  && OWNER_PSQL -f db/roles/verify_roles_phase2.sql && gate_pass p3_0_branch
 ```
 
-`MIG`, `OWNER_URL` and `MIGRATOR_URL` are the helpers and variables `runbook_helpers.sh` already defines for Phase 2 runbooks. A failed verify row stops here, and nothing reaches prod.
+`MIG` and `OWNER_PSQL` are the helpers `runbook_helpers.sh` defines (pre-flight F10: there is no `$OWNER_URL`/`$MIGRATOR_URL`). `grants_phase3.sql` does `SET ROLE migrator`, which the owner holds. A failed verify row stops here, and nothing reaches prod.
 
 - [ ] **Step 7 (owner, then agent, prod).**
   - STOP for the owner's go.
   - The owner creates the snapshot branch `pre-p3-0` from `production`, then runs the schema and trainer-login scripts on prod.
   - The agent re-targets: `export TARGET_HOST=production`, `gate_require p3_0_branch`, then the Step 6 upgrade/grants/verify block, ending in `gate_pass p3_0_prod`.
-  - The owner adds the Actions secret `TRAINER_DATABASE_URL` (its direct host, `ssl=verify-full`) and the healthchecks.io check `train` (period 35 days, grace 3 days) as `HEALTHCHECKS_TRAIN_URL`.
+  - The owner keeps `TRAINER_DATABASE_URL` (direct host, `ssl=verify-full`) in `backend/.env.trainer` only, with no GitHub secret (pre-flight F48), and creates the healthchecks.io check `train` (period 35 days, grace 3 days), adding its URL as `HEALTHCHECKS_TRAIN_URL` to `.env.trainer`.
 
 ---
 
@@ -1110,7 +1163,7 @@ psql "$MIGRATOR_URL" -f db/roles/grants_phase3.sql && psql "$OWNER_URL" -f db/ro
 
 **Interfaces:**
 - Produces:
-  - `TYPE_GROUPS = ("sport","trad","rock","alpine","ice","mixed")` `[default pending: DP3]`;
+  - `TYPE_GROUPS = ("sport","trad","rock","alpine","ice","mixed")` `[default pending: DP3]`, imported from `app.pipelines.exposure_math.TYPE_GROUPS` rather than redeclared (pre-flight F66; if the import is impossible, `test_cells.py` asserts the two are equal);
   - `G_INDEX: dict[str,int]`;
   - `FAMILY_OF: dict[str, Literal["rock_family","mountain"]]`;
   - `MONTHS = tuple(range(1,13))`;
@@ -1295,7 +1348,7 @@ def test_year_interval_straddles_cutoff():
 
 def test_month_precision_is_its_month_and_day_is_its_day():
     m = place(row(date=date(1998, 3, 15), date_precision="month"), AREAS)
-    assert m.month == 3 and window_fraction(m, date(1998, 3, 20), date(1999, 1, 1)) == pytest.approx(19 / 31)
+    assert m.month == 3 and window_fraction(m, date(1998, 3, 20), date(1999, 1, 1)) == pytest.approx(12 / 31)  # F17: half-open 03-20..04-01
     d = place(row(), AREAS)
     assert window_fraction(d, date(2010, 7, 14), date(2010, 7, 15)) == 1.0
     assert window_fraction(d, date(2010, 7, 15), date(2011, 1, 1)) == 0.0
@@ -1374,7 +1427,9 @@ class AreaLookup:
     def nearest(self, lat: float, lon: float, max_km: float) -> AreaInfo | None:
         if self._ids.size == 0:
             return None
-        box = (np.abs(self._lat - lat) < max_km / 100.0) & (np.abs(self._lon - lon) < max_km / 60.0)
+        # pre-flight F18: a fixed lon box skips true neighbours above ~45 N; scale by cos(lat)
+        lon_deg = max_km / (111.0 * max(math.cos(math.radians(lat)), 0.1))
+        box = (np.abs(self._lat - lat) < max_km / 100.0) & (np.abs(self._lon - lon) < lon_deg)
         best: tuple[float, int] | None = None
         for i in np.flatnonzero(box):
             km = haversine_km(lat, lon, float(self._lat[i]), float(self._lon[i]))
@@ -1419,7 +1474,7 @@ def _split(info: AreaInfo) -> tuple[tuple[str, float], ...]:
 
 def place(row: IncidentRow, areas: AreaLookup) -> Placement:
     span = interval(row)
-    flags = frozenset(f for f, on in (("ski_approach", row.inclusion_flag == "ski_approach_best_effort"),
+    flags = frozenset(f for f, on in (("ski_approach", row.inclusion_flag == APPROACH_FLAG),  # F19: repair.activity
                                       ("llm_link", row.link_method == "llm")) if on)
     point_month = row.date.month if (span is not None and row.date is not None
                                      and row.date_precision in ("day", "month")
@@ -1463,6 +1518,8 @@ A route link to a non-scorable route that is neither a boulder nor `unknown` (fo
 - [ ] **Step 4: Run** → PASS. **Step 5: Commit** `feat(ml): incident placement and interval time weights`.
 
 ---
+
+`incidents.py` imports `math` and `from app.data.repair.activity import APPROACH_FLAG` (pre-flight F19). Add `test_nearest_at_alaska_latitude` (pre-flight F18): an area at 61° N whose true distance is 2.9 km but whose longitude offset exceeds 0.05° is found by `nearest(..., max_km=3)`.
 
 ### Task 7: SQL readers and cell assembly
 
@@ -1560,7 +1617,7 @@ def test_seasonal_profile_smooths_and_sums_to_one():
     assert prof[1, 6] > prof[1, 0] > 0.0                     # trad July above an empty month, never zero
 ```
 
-`test_dataset_sql.py` (`requires_pg`) seeds a migrated database with:
+`test_dataset_sql.py` (`requires_pg`) seeds a migrated database (its accident rows must carry the repair columns the `0004` CHECKs require, per the pre-flight self-consistency note) with:
 - 0012 head;
 - `canonical_areas`/`canonical_routes`/`mp_routes`/`mp_locations` as in Task 1's SEED, plus a second area;
 - `feature_points`, `route_static_features` and `cell_normals_status`/`cell_climate_normals` rows for one area only;
@@ -1571,7 +1628,7 @@ It asserts:
 - `read_incidents` returns 2 rows, the excluded one absent, and the route-linked row carrying `route_type_group`;
 - `read_static` yields `None` for the unsampled area's elevation and its pending normals, never 0;
 - `pick_snapshot(..., data_cutoff=date(2004,1,1), production=False)` → 2026-10-01;
-- `pick_snapshot(..., production=True, today=date(2026,12,1))` raises `StaleExposure` (older than 35 days);
+- `pick_snapshot(..., production=True, today=date(2026,12,1))` raises `StaleExposure` (older than 35 days); the 35-day gate stays (pre-flight F21, controller ruling 2026-10-22), and the training runbook rebuilds exposure (`INGMOD app.pipelines.exposure build`) before every run so it holds;
 - `read_exposure` maps `{"value": null, "missing": true}` to `None` and a measured `0.0` to `0.0`.
 
 - [ ] **Step 2: Run** → FAIL.
@@ -1635,6 +1692,10 @@ FROM scoring_unit_features u JOIN scorable_routes s ON s.route_id = u.unit_id
 WHERE u.unit_kind = 'route'
 GROUP BY s.area_id, u.month
 """
+
+
+class MissingAreas(RuntimeError):
+    pass
 
 
 class StaleExposure(RuntimeError):
@@ -1725,7 +1786,8 @@ async def pick_snapshot(conn: AsyncConnection, *, data_cutoff: date, production:
     if production:
         as_of = (await conn.execute(text(LATEST_PRODUCTION_SQL))).scalar_one()
         if as_of is None or (today - as_of).days > MAX_SNAPSHOT_AGE_DAYS:
-            raise StaleExposure(f"newest production exposure snapshot is {as_of}; run exposure build first")
+            raise StaleExposure(f"newest production exposure snapshot is {as_of}; run "
+                                "INGMOD app.pipelines.exposure build first")  # F21: the runbook rebuilds before every run
         return as_of
     as_of = (await conn.execute(text(SNAPSHOT_SQL), {"cutoff": data_cutoff, "production": False})).scalar_one()
     if as_of is None:
@@ -1761,6 +1823,9 @@ def assemble_cells(exposure: Sequence[ExposureRow], static: Sequence[StaticRow],
     area_ids = sorted({e.area_id for e in exposure})
     a_pos = {a: i for i, a in enumerate(area_ids)}
     st_of = {a.area_id: a.state_code for a in areas}
+    missing = sorted(a for a in area_ids if a not in st_of or a not in paths)
+    if missing:  # pre-flight F24: a named error, not a KeyError
+        raise MissingAreas(f"exposure areas absent from read_areas/paths: {missing[:20]}")
     states = tuple(sorted({st_of[a] for a in area_ids}))
     regions = tuple(sorted({region_key(paths[a]) for a in area_ids}))
     area_static = np.full((len(area_ids), 12, len(STATIC_FEATURES)), np.nan)
@@ -1803,6 +1868,8 @@ def count_incidents(placements: Sequence[Placement], cells: CellData, *, start: 
                     exclude_flags: frozenset[str] = frozenset(),
                     profile: NDArray[np.float64] | None = None) -> Counts:
     prof = seasonal_profile(placements, start=start, end=end) if profile is None else profile
+    # pre-flight F23: the January-only state split relies on every (area, g) carrying all 12 months
+    assert len(cells.index) == 12 * len({(a, g) for a, g, _ in cells.index}), "partial exposure snapshot"
     y = np.zeros(cells.n)
     state_mass = np.zeros((len(cells.states), len(TYPE_GROUPS)))
     dropped: Counter[str] = Counter()
@@ -1877,6 +1944,8 @@ Column order:
 - [ ] **Step 1: Write the failing tests.**
 
 ```python
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -1913,8 +1982,13 @@ def test_rock_ticks_gated_until_coverage():
     rock = np.isin(cells.g, [0, 1, 2])
     np.testing.assert_array_equal(d.X[rock][:, col["x_ticks"]], 0.0)
     np.testing.assert_array_equal(d.X[rock][:, col["ind_ticks_off"]], 1.0)
-    assert not any(n in d.names for n in ("tick_coverage", "ind_ticks_missing"))
     np.testing.assert_array_equal(off.X[:, col["ind_ticks_off"]], 1.0)
+    # pre-flight F25 (Review Focus 3): rock rows equal a run where rock carries no tick data at all
+    no_rock_ticks = dataclasses.replace(cells, **{f: np.where(rock, np.nan, getattr(cells, f))
+                                                  for f in ("ticks_value", "ticks_per_route", "tick_coverage")})
+    d2 = build_design(no_rock_ticks, policy=TickPolicy())
+    assert d2.names == d.names
+    np.testing.assert_array_equal(d.X[rock], d2.X[rock])
 
 
 def test_penalty_and_nonneg_layout():
@@ -1926,7 +2000,7 @@ def test_penalty_and_nonneg_layout():
     assert d.X.shape[1] == len(d.names) == 2 + 6 + 11 + 72 + 5 + 9
 ```
 
-`app.ml.fixtures.synthetic_cells(seed, n_areas, rock_tick_coverage=1.0) -> CellData` is created in this task. It is the start of the Task 20 fixture module. It builds areas across four synthetic states (`CO`, `UT`, `WA`, `NH`, so CV groups exist), with one to three type groups per area and 12 months each. Columns are drawn from fixed distributions; `rock_tick_coverage` sets `tick_coverage` on rock-family cells, with NaN `ticks_per_route` on the uncovered share. No DB and no real ids: area ids start at 900000000.
+`app.ml.fixtures.synthetic_cells(seed, n_areas, rock_tick_coverage=1.0) -> CellData` is created in this task; Task 20 extends the module but must not change this signature (pre-flight pair 8 ↔ 20). It is the start of the Task 20 fixture module. It builds areas across four synthetic states (`CO`, `UT`, `WA`, `NH`, so CV groups exist), with one to three type groups per area and 12 months each. Columns are drawn from fixed distributions; `rock_tick_coverage` sets `tick_coverage` on rock-family cells, with NaN `ticks_per_route` on the uncovered share. No DB and no real ids: area ids start at 900000000.
 
 - [ ] **Step 2: Run** → FAIL.
 
@@ -2320,7 +2394,7 @@ def fit_poisson(X: NDArray[np.float64], y: NDArray[np.float64], penalty: NDArray
   - `ARCH_FEATURES = ("elevation_m", "lat", "tmax_jul", "tmin_jan", "precip_year", "snow_year", "freeze_thaw_year")`;
   - `area_feature_matrix(cells: CellData) -> NDArray (A, 7)` (NaN when an input month is missing);
   - `Standardizer.fit(F) / .apply(F)`;
-  - `weighted_sqdist(A, B, w) -> NDArray (len(A), len(B))`: a partial distance over shared non-NaN features, rescaled by `sum(w)/sum(w_shared)`, and NaN when no feature is shared;
+  - `weighted_sqdist(A, B, w, *, min_shared=MIN_SHARED_FEATURES) -> NDArray (len(A), len(B))`: a partial distance over shared non-NaN features, rescaled by `sum(w)/sum(w_shared)`, and NaN (read as infinite distance: `nanmin` skips it, `nearest_distance` maps it to `inf`) when fewer than `MIN_SHARED_FEATURES = 3` features are shared (pre-flight F67: partial-feature similarity must not mint feature evidence);
   - `kmeans(Z, k, w, *, seed=0, iters=50) -> tuple[labels (A,), centers (k, f)]`: k-means++ with a fixed seed, NaN-aware, an all-NaN row labelled −1;
   - `nearest_distance(Zq, Zev, w, *, chunk=4096) -> NDArray`: Euclidean (sqrt of the weighted square), +inf when there is no evidence row or no shared feature.
 
@@ -2336,11 +2410,18 @@ from app.ml.archetypes import kmeans, nearest_distance, weighted_sqdist
 
 
 def test_partial_distance_skips_missing_and_rescales():
-    a = np.array([[0.0, np.nan, 2.0]])
-    b = np.array([[1.0, 5.0, 2.0]])
-    d = weighted_sqdist(a, b, np.array([1.0, 1.0, 1.0]))
-    assert d[0, 0] == pytest.approx(1.0 * 3 / 2)
+    a = np.array([[0.0, np.nan, 2.0, 3.0]])
+    b = np.array([[1.0, 5.0, 2.0, 3.0]])
+    d = weighted_sqdist(a, b, np.ones(4))
+    assert d[0, 0] == pytest.approx(1.0 * 4 / 3)
     assert np.isnan(weighted_sqdist(np.array([[np.nan, 1.0]]), np.array([[1.0, np.nan]]), np.ones(2))[0, 0])
+
+
+def test_too_few_shared_features_is_no_evidence():  # pre-flight F67
+    a = np.array([[0.0, np.nan, np.nan, 3.0]])
+    b = np.array([[0.0, 5.0, 2.0, 3.0]])
+    assert np.isnan(weighted_sqdist(a, b, np.ones(4))[0, 0])
+    assert np.isinf(nearest_distance(a, b, np.ones(4))[0])
 
 
 def test_kmeans_is_deterministic_and_separates_clusters():
@@ -2411,17 +2492,23 @@ class Standardizer:
         return (F - self.mean) / self.sd
 
 
-def weighted_sqdist(A: NDArray[np.float64], B: NDArray[np.float64], w: NDArray[np.float64]) -> NDArray[np.float64]:
+MIN_SHARED_FEATURES = 3
+
+
+def weighted_sqdist(A: NDArray[np.float64], B: NDArray[np.float64], w: NDArray[np.float64], *,
+                    min_shared: int = MIN_SHARED_FEATURES) -> NDArray[np.float64]:
     total = float(w.sum())
     num = np.zeros((A.shape[0], B.shape[0]))
     wsum = np.zeros_like(num)
+    nshared = np.zeros(num.shape, dtype=np.int64)
     for f in range(A.shape[1]):
         a, b = A[:, f][:, None], B[:, f][None, :]
         both = ~np.isnan(a) & ~np.isnan(b)
         num += np.where(both, w[f] * (a - b) ** 2, 0.0)
         wsum += np.where(both, w[f], 0.0)
+        nshared += both
     with np.errstate(invalid="ignore", divide="ignore"):
-        return np.where(wsum > 0, num * total / wsum, np.nan)
+        return np.where((wsum > 0) & (nshared >= min_shared), num * total / wsum, np.nan)
 
 
 def kmeans(Z: NDArray[np.float64], k: int, w: NDArray[np.float64], *, seed: int = 0,
@@ -2570,7 +2657,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from numpy.typing import NDArray
 
-from app.ml.cells import TYPE_GROUPS, region_key  # noqa: F401  (region keys come from CellData)
+from app.ml.cells import TYPE_GROUPS
 from app.ml.dataset import CellData
 
 MIN_PRIOR_SHAPE = 0.05
@@ -2594,6 +2681,7 @@ class CellPost:
     prior_mean: NDArray[np.float64]
     omega_cell: NDArray[np.float64]
     blend_geo: NDArray[np.float64]
+    y_own: NDArray[np.float64]  # pre-flight F32: carried, never reconstructed from shape - kappa*pi
     chain: dict[str, NDArray[np.float64]] = field(default_factory=dict)
 
 
@@ -2614,9 +2702,11 @@ def _shape(O: float, kappa: float, parent: float) -> float:
 
 def _level(keys: NDArray[np.int64], y: NDArray[np.float64], mu0: NDArray[np.float64],
            parent_of: dict[int, float]) -> tuple[Level, float]:
-    uniq = np.unique(keys[keys >= 0])
-    O = np.array([y[keys == k].sum() for k in uniq])
-    E = np.array([mu0[keys == k].sum() for k in uniq])
+    # pre-flight F29: O(n) via bincount; a per-key mask is O(K*n), hours per fit at catalog scale
+    ok = keys >= 0
+    uniq, inv = np.unique(keys[ok], return_inverse=True)
+    O = np.bincount(inv, weights=y[ok], minlength=uniq.size)
+    E = np.bincount(inv, weights=mu0[ok], minlength=uniq.size)
     P = np.array([parent_of[int(k)] for k in uniq])
     kappa = mom_kappa(O, E, P)
     return ({int(k): (float(o), float(e), _shape(float(o), kappa, float(p)), float(e) + kappa)
@@ -2674,7 +2764,7 @@ class EbFit:
                 chain[f"O_{name}"][i] = O
         shape = y_own + np.maximum(self.kappa_cell * prior, MIN_PRIOR_SHAPE)
         rate = mu0 + self.kappa_cell
-        return CellPost(GammaPost(shape, rate), prior, mu0 / (mu0 + self.kappa_cell), bgeo, chain)
+        return CellPost(GammaPost(shape, rate), prior, mu0 / (mu0 + self.kappa_cell), bgeo, y_own, chain)
 
 
 def fit_eb(cells: CellData, y: NDArray[np.float64], mu0: NDArray[np.float64], arch_of_area: NDArray[np.int64],
@@ -2701,7 +2791,7 @@ def fit_eb(cells: CellData, y: NDArray[np.float64], mu0: NDArray[np.float64], ar
 Notes for the implementer:
 - `_level` with zero-E groups (a held-out region's cells passed with `mu0 = 0`) still records the group with `O = E = 0`, so its posterior equals the prior. That is the intended inheritance.
 - Fit-time callers pass training `y` and `mu0`, masked to 0 for held-out cells (Task 15).
-- The per-cell Python loop is O(n). At ~450K cells it runs in seconds to tens of seconds; Task 21's capacity benchmark measures it. If the benchmark exceeds budget, vectorize it with `np.searchsorted` lookups. The loop is kept here for readability, and the behaviour is pinned by these tests.
+- (pre-flight F29) Vectorize `cell_posterior` now, not "if the benchmark fails": it runs per fold × tuning grid. Replace the per-cell Python loop with `np.searchsorted` lookups of each level's key arrays (area, region, state, archetype). The tests above pin the behaviour; add one asserting the vectorized result equals a straightforward per-cell reference on a 200-cell synthetic set.
 
 - [ ] **Step 4: Run** → PASS. **Step 5: Commit** `feat(ml): EB with geo/archetype blend`.
 
@@ -2891,7 +2981,7 @@ def summarize(cells: CellData, design: Design, coef: NDArray[np.float64], cp: Ce
     ch, b, wc = cp.chain, cp.blend_geo, cp.omega_cell
     geo_inner = ch["omega_area"] * ch["O_area"] + (1 - ch["omega_area"]) * (
         ch["omega_region"] * ch["O_region"] + (1 - ch["omega_region"]) * ch["omega_state"] * ch["O_state"])
-    y_own = cp.post.shape - np.maximum(cp.post.rate - mu0, 0.0) * cp.prior_mean  # = y_c (shape - kappa*pi)
+    y_own = cp.y_own
     n_geo = wc * np.maximum(y_own, 0.0) + (1 - wc) * b * geo_inner
     n_feat = (1 - wc) * (1 - b) * ch["omega_arch"] * ch["O_arch"]
     per_year = mu0 * np.vstack([lo, mean, hi]) / years
@@ -2907,9 +2997,11 @@ def summarize(cells: CellData, design: Design, coef: NDArray[np.float64], cp: Ce
                        p10[1], p10[0], p10[2], reason)
 ```
 
-The `y_own` reconstruction relies on `rate − μ0 = κ_c`, so `shape − κ_c π_c = y_c` (above the shape floor). If the floor bound, `y_own` slightly understates. n_eff is labelled "≈" in the UI, so this is acceptable; the comment on that line says so.
+`y_own` comes from `CellPost.y_own` (pre-flight F32), so it is exact even when the shape floor binds.
 
-The `ticks_missing` reason applies when `tick_coverage` is NaN or `ticks_value` is NaN. The `ticks_incomplete` reason applies when `tick_coverage < 1` and ticks are present. Add a test row for each.
+The `ticks_missing` reason applies when `tick_coverage` is NaN or `ticks_value` is NaN. The `ticks_incomplete` reason applies when `tick_coverage < 1` and ticks are present. Parametrize `test_per10k_only_at_full_tick_coverage` over every case (pre-flight F33): `ticks_incomplete`, `ticks_missing`, `no_ticks_logged`, and a full-coverage cell whose `per10k_mean` is present with `per10k_reason` NULL.
+
+**float32 at storage (pre-flight F31).** `route_scores` stores rr/pct/per10k as `double precision` (Task 1), so `rr_q05` at the shape floor (`gammaincinv(a, 0.05)` ≈ 1e-26…1e-104) stays positive. Extend the Hypothesis property (Review Focus 6) to assert `0 < rr_q05` after the values pass through the `materialize` array path (Task 20 sends `CAST(:x AS double precision[])`, never `real[]`).
 
 - [ ] **Step 4: Run** → PASS (including the Hypothesis property). **Step 5: Commit** `feat(ml): posterior summaries, confidence, evidence, per-10K`.
 
@@ -2923,13 +3015,13 @@ The `ticks_missing` reason applies when `tick_coverage` is NaN or `ticks_value` 
 **Interfaces:**
 - Produces:
   - `Term(name: str, label: str, log_effect: float)`;
-  - `explain(bundle: ModelBundle, *, type_group: str, month: int, raw_features: Mapping[str, float | None], rr_mean: float, n_eff_geo: float, n_eff_feature: float) -> list[Term]`. It returns the top 3 non-exposure terms by |effect| plus one evidence term. The terms sum, with the bundle's reference constant for (g, m), to `log(rr_mean)` within 1e-6 (parity anchor).
+  - `explain(bundle: ModelBundle, *, type_group: str, month: int, raw_features: Mapping[str, float | None], rr_mean: float, n_eff_geo: float, n_eff_feature: float, top: int | None = 3) -> list[Term]` (pre-flight F34: `top` added). It returns the top 3 non-exposure terms by |effect| plus one evidence term. The terms sum, with the bundle's reference constant for (g, m), to `log(rr_mean)` within 1e-6 (parity anchor).
   - `LABELS: dict[str, str]`: plain language, for example `z_elevation_m` → "Elevation", `z_freeze_thaw_days` → "Freeze-thaw days this month", `d_*`/`m_*`/`a_*` → "Season for this route type", and evidence → "Reported incidents here and on similar routes". Labels never say "safe".
 
 The bundle carries:
 - `coef`, `names`, `center`, `scale`, `tick_ref`, `families_on`;
 - `log_rref` (6×12): the per-(g,m) `log r_ref`;
-- `hazard_center`: the reference linear predictor removed so the terms are relative to the national typical route of that type and month.
+- `hazard_center`: the reference linear predictor removed so the terms are relative to the national typical route of that type and month. Task 15's `to_bundle` writes it as an array (pre-flight F34).
 
 The evidence term is `log(rr_mean) − Σ hazard terms − const(g,m)`, so the decomposition is exact by construction. The test checks it against an independent recomputation from Task 13's `summarize` on the toy fixture.
 
@@ -2953,7 +3045,14 @@ def test_terms_reconstruct_the_stored_rr_and_name_no_exposure():
     full = explain(bundle, **row, top=None)
     assert sum(t.log_effect for t in full) + const == pytest.approx(math.log(row["rr_mean"]), abs=1e-6)
     assert all("safe" not in t.label.lower() for t in full)
+    # pre-flight F35: independent of the residual definition
+    ref = bundle_reference_terms(bundle, row)  # fixtures: hazard/r_ref and theta/mean from Task 13's summarize
+    hazard = sum(t.log_effect for t in full if t.name != "evidence")
+    assert hazard + const == pytest.approx(ref.log_hazard_over_rref, abs=1e-6)
+    assert full[-1].log_effect == pytest.approx(ref.log_theta_over_mean, abs=1e-6)
 ```
+
+`fixtures.bundle_reference_terms(bundle, row)` recomputes `log(hazard/r_ref)` and the `log(θ/mean)` part directly from Task 13's `summarize` on the toy, without going through `explain` (pre-flight F35).
 
 - [ ] **Step 2: Run** → FAIL.
 
@@ -2965,7 +3064,7 @@ def test_terms_reconstruct_the_stored_rr_and_name_no_exposure():
 
 `const(g, m) = −log_rref[g, m]`, written into `bundle.manifest["const"]` by `model.to_bundle` (Task 15).
 
-- [ ] **Step 4: Run** → PASS. **Step 5: Commit** `feat(ml): explain() decomposes the stored RR exactly`.
+- [ ] **Step 4: Run** `cd backend && uv run --group train pytest tests/ml/test_explain.py tests/ml/test_features.py -q` → PASS (pre-flight F36: the `transform_static` refactor edits Task 8's file, so its tests re-run here). **Step 5: Commit** `feat(ml): explain() decomposes the stored RR exactly`.
 
 ---
 
@@ -2989,9 +3088,12 @@ def test_terms_reconstruct_the_stored_rr_and_name_no_exposure():
 - [ ] **Step 1: Write the failing tests.**
 
 ```python
-import numpy as np
+import dataclasses
 
-from app.ml.fixtures import synthetic_problem
+import numpy as np
+import pytest
+
+from app.ml.fixtures import permute_problem, synthetic_problem
 from app.ml.model import ModelParams, fit_model
 
 
@@ -3000,6 +3102,11 @@ def test_fit_is_deterministic_and_row_order_invariant():
     a = fit_model(cells, counts, ModelParams()).predict(cells, counts.y)[1].post.mean
     b = fit_model(cells, counts, ModelParams()).predict(cells, counts.y)[1].post.mean
     np.testing.assert_array_equal(a, b)
+    # pre-flight F38: actually permute rows
+    perm = np.random.default_rng(0).permutation(cells.n)
+    pc, pk = permute_problem(cells, counts, perm)  # fixtures helper: reorders per-cell arrays and the index
+    c = fit_model(pc, pk, ModelParams()).predict(pc, pk.y)[1].post.mean
+    np.testing.assert_allclose(c, a[perm], rtol=1e-9)
 
 
 def test_held_out_cells_do_not_see_their_own_counts():
@@ -3011,6 +3118,13 @@ def test_held_out_cells_do_not_see_their_own_counts():
     fit2 = fit_model(cells, type(counts)(bumped, counts.state_mass, counts.years, counts.dropped, counts.placed),
                      ModelParams(), train_mask=mask)
     np.testing.assert_allclose(fit.glm.coef, fit2.glm.coef)
+    for k in ("kappa_cell", "kappa_area", "kappa_region", "kappa_state", "kappa_arch"):  # pre-flight F38
+        assert getattr(fit.eb, k) == pytest.approx(getattr(fit2.eb, k))
+    # pre-flight F37 (G5): held-out covariates must not move the standardization
+    shifted = dataclasses.replace(cells, static=np.where(mask[:, None], cells.static, cells.static + 50.0))
+    fit3 = fit_model(shifted, counts, ModelParams(), train_mask=mask)
+    np.testing.assert_array_equal(fit3.design.center, fit.design.center)
+    assert fit3.design.tick_ref == fit.design.tick_ref
 
 
 def test_pooling_beats_geo_only_on_feature_driven_synthetic_risk():
@@ -3023,12 +3137,12 @@ def test_pooling_beats_geo_only_on_feature_driven_synthetic_risk():
     assert err(pooled) < err(geo)
 ```
 
-`synthetic_problem(seed, return_truth=False)` (in `fixtures.py`) draws true per-cell rates from a feature-driven log-linear model, with archetype-level effects shared across states, plus noise. It then draws Poisson counts and returns `CellData`, `Counts` and (optionally) the true rates. This is the synthetic ground truth CI backtests on (Task 20).
+`synthetic_problem(seed, return_truth=False)` (in `fixtures.py`) draws true per-cell rates from a feature-driven log-linear model, with archetype-level effects shared across states, plus noise. It then draws Poisson counts and returns `CellData`, `Counts` and (optionally) the true rates. This is the synthetic ground truth CI backtests on (Task 20). `permute_problem(cells, counts, perm)` reorders every per-cell array (and `cells.index`) by `perm` (pre-flight F38); `CellData.subset(mask)` returns the masked cells for F37.
 
 - [ ] **Step 2: Run** → FAIL.
 
 - [ ] **Step 3: Implement.** `model.py`:
-1. **`fit_model`:** builds the design, then calls `fit_poisson(design.X[mask], counts.y[mask], design.penalty, nonneg=design.nonneg)`.
+1. **`fit_model`:** builds the design on the training cells only (`build_design(cells.subset(mask), …)`), then applies it to all cells with `fit_stats=` (pre-flight F37, G5: `center`/`scale`, `tick_families` and `tick_ref` never see held-out cells), then calls `fit_poisson(design.X[mask], counts.y[mask], design.penalty, nonneg=design.nonneg)`.
 2. Computes `mu0 = exp(X @ coef)` for all cells.
 3. Builds the area feature matrix and standardizer from the training areas.
 4. Runs `kmeans` with `params.k_arch`, `np.array(params.arch_weights)` and `params.seed` on the training areas' standardized features, then assigns every area (training and held-out) to its nearest center with `weighted_sqdist` (−1 when all its features are missing).
@@ -3036,8 +3150,13 @@ def test_pooling_beats_geo_only_on_feature_driven_synthetic_risk():
 6. Builds evidence points per group from training cells with `y > 0`.
 7. **`predict`:** calls `eb.cell_posterior` with the given `y_own`, and computes `nearest_distance` per group and `geo_evidence` from `eb` levels (`O > 0`) and `counts.state_mass`.
 8. **`to_bundle`:** writes into the bundle:
-   - arrays: `coef`, `center`, `scale`, `arch_centers`, `arch_weights`, `std_mean`, `std_sd`, `log_rref` (6×12, from the summaries of all cells);
+   - arrays: `coef`, `center`, `scale`, `arch_centers`, `arch_weights`, `std_mean`, `std_sd`, `log_rref` (6×12, from the summaries of all cells), `hazard_center` (pre-flight F34);
    - manifest: `names`, `tick_ref`, `families_on`, `const`, `thresholds`, `params`, `years`, `kappas`.
+
+Model-card notes written by this task's `to_bundle`/Task 20's card (pre-flight F26, F39, F22):
+- the design is rank-deficient in `fam_mountain` vs the ridged `a_*` group effects; identifiable through the ridge, and `fam_mountain` (unpenalised) absorbs the shared family effect (DP3);
+- DP4 as written (F39, controller ruling 2026-10-22; owner may override): state-only incidents (`park_centroid`, `region_fallback`, `unknown`, far points) feed only `geo_evidence`, never an EB level's `O`; the card reports the state-only incident share per state;
+- rolling-origin folds are point-in-time for ticks only (F22, controller ruling 2026-10-22; owner may override): `season_share` and `route_density` use today's climate window and catalog. The card states this limitation and never claims full point-in-time backtests.
 
 It does not include per-cell posteriors; those live in `model.route_scores`.
 
@@ -3210,13 +3329,10 @@ def oe_ci(O: float, E: float, level: float = 0.90) -> tuple[float, float, float]
 
 
 def spearman(a: Arr, b: Arr) -> float | None:
-    if a.size < 3 or np.unique(a).size < 2 or np.unique(b).size < 2:
-        return None
-    from app.pipelines.exposure_math import spearman as tie_aware  # the exposure plan's tie-aware version
-    return tie_aware(a.tolist(), b.tolist())
+    return exposure_spearman(a.tolist(), b.tolist())
 ```
 
-`app.pipelines.exposure_math.spearman` exists once the exposure plan's Task 5 has merged (a prerequisite). The two-element case returns `None` there too.
+with `from app.pipelines.exposure_math import spearman as exposure_spearman` at the top of `metrics.py` (pre-flight F40: no wrapper guards; `exposure_math.spearman` already returns `None` for len < 3, non-finite or zero-variance input, so duplicating those guards here would only let the two drift).
 
 - [ ] **Step 4: Run** → PASS. **Step 5: Commit** `feat(ml): held-out metrics`.
 
@@ -3226,6 +3342,9 @@ def spearman(a: Arr, b: Arr) -> float | None:
 
 **Files:**
 - Create: `backend/app/ml/backtest.py`, `backend/app/ml/kernel_adapter.py`, `backend/tests/ml/test_backtest.py`, `backend/tests/ml/test_kernel_adapter.py`
+- Modify: `backend/app/ml/model.py` (`fit_model(..., reuse_stage1: Fitted | None = None)`, moved here from Task 18 because `run_fold`'s `stage1_cache` depends on it; pre-flight F68), `backend/pyproject.toml` (register the `slow` marker if absent)
+
+**Budget (pre-flight F42).** `run_suite` is ≈ 75 full fits, times Task 18's tuning grid. F29 (`_level` via `bincount`, vectorized `cell_posterior`) is a precondition. Task 21 runs `--benchmark` on the branch before any prod run; if over budget, cut the sensitivity variants to spatial folds only.
 
 **Interfaces:**
 - Consumes: Tasks 6–9, 15 and 16.
@@ -3291,6 +3410,7 @@ def test_rolling_fold_counts_split_at_origin_and_scale_by_years():
     assert 0 < fd.scale_tau < 1
 
 
+@pytest.mark.slow  # pre-flight F43: a full run_suite; CI covers it through `app.ml.backtest --fixture small`
 def test_report_has_strata_and_pooling_beats_geo_only_on_synthetic():
     raw = synthetic_raw(seed=23)
     suite = run_suite(raw, ModelParams(), TH, cutoff=date(2026, 10, 1))
@@ -3309,7 +3429,7 @@ def test_missing_backtest_snapshot_names_the_command():
 
 `backend/tests/ml/test_kernel_adapter.py` checks:
 - the adapter calls the kernel with `weather_pattern=None` accidents;
-- it never passes a test-window accident (monkeypatch `calculate_safety_score_vectorized` to record its `accidents` argument and assert every `accident_date < train_end`);
+- it never passes a test-window accident (monkeypatch `calculate_safety_score_vectorized` to record its `accidents` argument and assert every `accident_date < train_end`). Pre-flight F41: the adapter calls the kernel through the module attribute (`kernel_mod.calculate_safety_score_vectorized(...)` with `import app.services.safety_algorithm_vectorized as kernel_mod`), never `from … import`, so the monkeypatch takes; Task 23's `git mv` updates that import;
 - the calibration map is fit only on training cells.
 
 `fixtures.synthetic_raw(seed, drop_cutoffs=())` builds:
@@ -3348,7 +3468,7 @@ The true rate is the Task 15 generator's.
 
 **Files:**
 - Create: `backend/app/ml/tuning.py`, `backend/tests/ml/test_tuning.py`
-- Modify: `backend/app/ml/model.py` (`fit_model(..., reuse_stage1: Fitted | None = None)` skips the GLM when only stage-2 parameters change)
+- Uses (added in Task 17, pre-flight F68): `fit_model(..., reuse_stage1: Fitted | None = None)` skips the GLM when only stage-2 parameters change
 
 **Interfaces:**
 - Produces:
@@ -3591,7 +3711,6 @@ With `conf` None, the confidence thresholds are `inf` (every sufficient cell rea
   - `DiffReport(band_shift: float, coverage_shift_points: float, new_family: bool, large_shift: bool, matrix: dict, per_group: dict, per_state: dict, metric_deltas: dict, movers: list[dict])`;
   - `diff_report(challenger_rows, active_rows, *, reference_month, new_family) -> DiffReport`. Rows are `(route_id, type_group, state, percentile|None)`, so `movers` stays in the DB;
   - `issue_markdown(version, gate, diff, *, public=True) -> str`. With `public=True` it **never** includes `movers`, route ids, coordinates or names `[default pending: DP16]`;
-  - `rollback_guard(actor: str, owner: str, labels: list[str]) -> str | None` (a refusal reason or None).
 
 Gate components (P3 M9 plus A:154–173). All must pass:
 
@@ -3609,12 +3728,14 @@ Gate components (P3 M9 plus A:154–173). All must pass:
 | `capacity` | wall < 5.5 h, peak RSS < 16 GB (hard limits, P3:216) |
 | `prospective_top10` | only when the prospective part exists: challenger ≥ kernel (DP14) |
 
-With `active_family == "kernel"`, the comparisons use the stored kernel metrics, and components the kernel lacks are evaluated on the challenger alone. Marginal flags never fail the gate (M9: "reported, not held").
+With `active_family == "kernel"`, the comparisons use the kernel's metrics on the current folds (`kernel_report`, see below). A comparison component needs both sides: if the kernel lacks a metric that component fails closed (pre-flight F45; the code is right, the earlier "challenger alone" wording was not). Marginal flags never fail the gate (M9: "reported, not held").
+
+**Comparable active metrics (pre-flight F44).** `active` is never the active version's stored metrics from an earlier run (different data, folds and cells). `train.run` refits the active version's frozen `params`/`thresholds` (from its bundle manifest) on the **current** folds and passes those metrics as `active`; for the kernel row it runs `kernel_report` on the current folds. The same refit produces `vs_active.*.log_score_ci` (fold-bootstrap of challenger − active on identical folds). Task 20 states this in `train.run`.
 
 - [ ] **Step 1: Write the failing tests.**
 
 ```python
-from app.ml.promote import diff_report, evaluate_gate, issue_markdown, rollback_guard
+from app.ml.promote import diff_report, evaluate_gate, issue_markdown
 from app.ml.fixtures import challenger_metrics, rows_for_diff
 
 
@@ -3647,13 +3768,13 @@ def test_public_issue_never_carries_route_ids():
     assert "9000" not in md
 
 
-def test_rollback_refuses_kernel_and_non_owner():
-    assert rollback_guard("mallory", "owner", ["model-promotion"]) == "only the repository owner may roll back"
-    assert rollback_guard("owner", "owner", ["bug"]) == "not a model-promotion issue"
-    assert rollback_guard("owner", "owner", ["model-promotion"]) is None
+def test_issue_points_rollback_at_the_runbook():
+    md = issue_markdown("v", evaluate_gate(challenger_metrics(), None, active_family="kernel"),
+                        diff_report([], [], reference_month=7, new_family=True))
+    assert "/rollback" not in md and "TRAIN rollback" in md
 ```
 
-The "previous is the kernel" refusal is the registry's (`RollbackRefused`, Task 2); the workflow surfaces its message.
+There is no comment-triggered rollback (pre-flight F48): rollback runs only from the owner's Mac, so `rollback_guard` is dropped. The "previous is the kernel" refusal is the registry's (`RollbackRefused`, Task 2), pinned by Task 2's `test_rollback_refuses_without_servable_previous` (the kernel is never restored). Only the owner can roll back because the trainer credential lives only in the owner's `.env.trainer`.
 
 - [ ] **Step 2: Run** → FAIL.
 
@@ -3808,38 +3929,34 @@ def issue_markdown(version: str, gate: GateResult, diff: DiffReport, *, public: 
             "### Gate", "| component | passed | marginal | value | threshold |", "|---|---|---|---|---|",
             *(f"| {k} | {v['passed']} | {v['marginal']} | {json.dumps(v['value'], default=str)[:80]} | "
               f"{json.dumps(v['threshold'], default=str)[:80]} |" for k, v in gate.components.items()),
-            "", "Comment `/rollback` (owner only) to restore the previous version."]
+            "", "Rollback: the owner runs `TRAIN rollback` from the Mac (runbook, Task 21)."]
     if not public:
         out += ["", "### Biggest movers", *(f"- {m['route_id']} {m['type_group']}: {m['old']:.1f} → {m['new']:.1f}"
                                             for m in diff.movers)]
     return "\n".join(out)
 
 
-def rollback_guard(actor: str, owner: str, labels: list[str]) -> str | None:
-    if actor != owner:
-        return "only the repository owner may roll back"
-    if "model-promotion" not in labels:
-        return "not a model-promotion issue"
-    return None
 ```
 
-The issue body's order follows P3:315–321 minus the PNG map `[default pending: DP16]`; the per-state table stands in for it. `metric_deltas` is filled by `train.py` with `dataclasses.replace` (challenger minus active for every numeric gate metric).
+The issue body's order follows P3:315–321 minus the PNG map `[default pending: DP16]`; the per-state table (route counts and mean percentile deltas, aggregate only) stands in for it. Pre-flight F52: DP16 accepted as-is, controller ruling 2026-10-22; owner may override. `metric_deltas` is filled by `train.py` with `dataclasses.replace` (challenger minus active for every numeric gate metric).
 
 - [ ] **Step 4: Run** → PASS. **Step 5: Commit** `feat(ml): gate, diff report, aggregate-only promotion issue`.
 
 
 ---
 
-### Task 20: Materialize scores, train CLI, workflows, CI fixture backtest
+### Task 20: Materialize scores, train CLI, `TRAIN` runbook helper, CI fixture backtest
 
 **Files:**
-- Create: `backend/app/ml/materialize.py`, `backend/app/ml/train.py`, `backend/app/ml/fixtures.py` (consolidate the synthetic builders from Tasks 8–19), `.github/workflows/model-train.yml`, `.github/workflows/model-rollback.yml`, `backend/Dockerfile.train`, `backend/tests/ml/test_materialize.py`, `backend/tests/ml/test_train_cli.py`, `backend/tests/test_workflows_model.py`
-- Modify: `.github/workflows/ci.yml` (fixture backtest step; `uv sync --frozen --group pipelines --group train`), `backend/app/pipelines/ingest_log.py` (unchanged; training logs to the registry, not the ingest log), `CLAUDE.md`
+- Create: `backend/app/ml/materialize.py`, `backend/app/ml/train.py`, `backend/app/ml/fixtures.py` (consolidate the synthetic builders from Tasks 8–19), `backend/Dockerfile.train`, `backend/tests/ml/test_materialize.py`, `backend/tests/ml/test_train_cli.py`, `backend/tests/test_workflows_model.py`
+- Modify: `.github/workflows/ci.yml` (fixture backtest step; `--group train` on the install and audit-export lines), `backend/scripts/runbook_helpers.sh` (`TRAIN` helper), `backend/app/pipelines/ingest_log.py` (unchanged; training logs to the registry, not the ingest log), `CLAUDE.md`
+
+**No training or rollback workflow (pre-flight F48, controller ruling 2026-10-22; owner may override).** `model-train.yml` and `model-rollback.yml` are not created, and no GitHub secret holds `TRAINER_DATABASE_URL`. Training, promotion and rollback run from the owner's Mac through the runbook (`TRAIN`), like the data jobs. Each training run is preceded by `INGMOD app.pipelines.exposure build` (pre-flight F21) so the 35-day `StaleExposure` gate holds. CI keeps only credential-free work: unit tests and the `--fixture small` backtest.
 
 **Interfaces:**
-- `materialize.write_scores(conn, version, cells, summary, routes_by_cell) -> int`. It inserts one row per scorable route × month with `INSERT INTO model.route_scores (...) SELECT * FROM unnest(CAST(:route_id AS bigint[]), CAST(:month AS smallint[]), …)` in batches of 20,000 routes. `NaN` becomes `NULL` explicitly (`None` in the arrays), never 0. `routes_by_cell` comes from `SELECT route_id, area_id, type_group FROM scorable_routes WHERE type_group <> 'unknown'`.
+- `materialize.write_scores(conn, version, cells, summary, routes_by_cell) -> int`. It inserts one row per scorable route × month with `INSERT INTO model.route_scores (...) SELECT * FROM unnest(CAST(:route_id AS bigint[]), CAST(:month AS smallint[]), …)` (rr/pct/per10k as `CAST(:x AS double precision[])`, pre-flight F31) in batches of 20,000 routes. `NaN` becomes `NULL` explicitly (`None` in the arrays), never 0. `routes_by_cell` comes from `SELECT route_id, area_id, type_group FROM scorable_routes WHERE type_group <> 'unknown'`.
 - `train.py` CLI (`uv run --group train python -m app.ml.train …`), as `trainer`:
-  - `run [--today YYYY-MM-DD] [--benchmark]`. It loads raw (production exposure snapshot plus all `BACKTEST_CUTOFFS`), tunes, runs the suite, fits the final model on all data (cutoff = today), builds the bundle and summaries, and runs stability and capacity (`resource.getrusage`, wall clock). Then:
+  - `run [--today YYYY-MM-DD] [--benchmark]`. It loads raw (production exposure snapshot plus all `BACKTEST_CUTOFFS`), tunes, runs the suite, refits the active version's frozen `params`/`thresholds` on the current folds (or `kernel_report` for the kernel row) to produce comparable `active` metrics and `vs_active` (pre-flight F44), fits the final model on all data (cutoff = today), builds the bundle and summaries, and runs stability and capacity (`resource.getrusage`, wall clock). Then:
     1. `insert_candidate`;
     2. `write_scores`;
     3. reads the active version's rows for `diff_report`;
@@ -3848,9 +3965,18 @@ The issue body's order follows P3:315–321 minus the PNG map `[default pending:
     6. `promote` or `reject`;
     7. `prune`.
 
-    It writes `out/issue.md` (public, aggregate-only), `out/status.json` (`{"version","promoted","large_shift","rejected_reason"}`) and the model card into `model_card`. It pings `HEALTHCHECKS_TRAIN_URL` on success and `/fail` on error. `--benchmark` additionally fits 1×/2×/4× synthetic cell counts and stores the power-law curve in `metrics.capacity` (P3:223).
+    It writes `out/issue.md` (public, aggregate-only), `out/status.json` (`{"version","promoted","large_shift","rejected_reason"}`) and the model card into `model_card`. It pings `HEALTHCHECKS_TRAIN_URL` on success and `/fail` on error. Stdout carries one fixed outcome line (`promoted <version>` / `rejected <version>: <component names>` / `failed: <exception class>`); exceptions are logged without connection details (pre-flight F49). `--benchmark` additionally fits 1×/2×/4× synthetic cell counts and stores the power-law curve in `metrics.capacity` (P3:223).
   - `kernel-baseline [--today]`: computes `kernel_report` over the same folds and inserts the `kernel` row as `active` only when the registry is empty (MVP-0 accept, P3:505). It refuses otherwise.
-  - `rollback [--version V]`: with no version, `registry.rollback`. With a version, it promotes that version with `by="owner"`, and only if it has a bundle and scores. The registry refuses the kernel.
+  - `rollback [--version V]`: with no version, `registry.rollback`. With a version, it promotes that version with `by="owner"`, and only if it has a bundle and scores. The registry refuses the kernel. It prints one fixed line (`rolled back <retired> -> <active>` or `refused: <RollbackRefused message>`), never a traceback (pre-flight F49).
+- `runbook_helpers.sh` gains (pre-flight F50), mirroring `MIG`:
+
+  ```bash
+  TRAIN() { ( _need_target && _load ./.env.trainer || exit 1
+    url="$(_retarget "${TRAINER_DATABASE_URL:-}")" || exit 1
+    TRAINER_DATABASE_URL="$url" DATABASE_URL="$url" uv run --group train python -m app.ml.train "$@" ); }
+  ```
+
+  If a `test_runbook_helpers`-style test exists, add `TRAIN` to it.
 - `app.ml.backtest` CLI `--fixture small`: runs `run_suite` on `fixtures.synthetic_raw(seed=0)` and checks the floors: main log score > geo-only, `calibration.passed`, coverage in [0.80, 0.97], and permuted < main. It exits 1 on any failure. No DB, no network.
 
 - [ ] **Step 1: Write the failing tests.**
@@ -3863,150 +3989,67 @@ The issue body's order follows P3:315–321 minus the PNG map `[default pending:
     - the first run inserts a candidate and, against a seeded kernel row, promotes it;
     - `out/issue.md` exists and carries no `9000`-prefixed id;
     - a second run with corrupted data (all incidents moved to one area) is `rejected` and `promoted` is false in `status.json`;
-    - `rollback` with no `previous` exits non-zero with the registry's message.
-  - `test_workflows_model.py` parses both YAML files and asserts:
-    - `model-train.yml` has `schedule` + `workflow_dispatch`, `timeout-minutes: 330`, `permissions: {contents: read, issues: write}`, no `pull_request` trigger, and `TRAINER_DATABASE_URL` only from `secrets`;
-    - `model-rollback.yml` triggers on `issue_comment` and `workflow_dispatch`, its job `if:` checks `github.event.comment.user.login == github.repository_owner`, `contains(github.event.issue.labels.*.name, 'model-promotion')` and `github.event.issue.pull_request == null`, and no `run:` step interpolates `github.event.comment.body` (it is passed through `env:` only);
-    - both pin actions by SHA, as `ci.yml` does.
+    - `rollback` with no `previous` exits non-zero with the registry's message, as one line;
+    - a forced connection failure prints `failed: <class>` and neither the DB host nor any SQL text (pre-flight F49).
+  - `test_workflows_model.py` (pre-flight F48, F47) parses every file in `.github/workflows/` and asserts:
+    - no workflow references `TRAINER_DATABASE_URL`, `app.ml.train` or an `issue_comment` trigger;
+    - `ci.yml` runs `app.ml.backtest --fixture small` and its install and audit-export lines carry `--group train`;
+    - every action is pinned by the same SHA `ci.yml` uses for it (equality with `ci.yml`, not "looks like a SHA").
 
 - [ ] **Step 2: Run** → FAIL.
 
-- [ ] **Step 3: Implement.** `model-train.yml`:
+- [ ] **Step 3: Implement.** `materialize.py`, `train.py` and the `TRAIN` helper as specified above. No `model-train.yml` or `model-rollback.yml` (pre-flight F48).
 
-```yaml
-name: model-train
-on:
-  schedule:
-    - cron: "0 7 3 * *"        # monthly baseline retrain (P3:420)
-  workflow_dispatch:
-    inputs:
-      benchmark: { type: boolean, default: false }
-      kernel_baseline: { type: boolean, default: false }
-permissions:
-  contents: read
-  issues: write
-concurrency: { group: model-train, cancel-in-progress: false }
-jobs:
-  train:
-    runs-on: ubuntu-latest
-    timeout-minutes: 330
-    defaults: { run: { working-directory: backend } }
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with: { version: "0.11.3", python-version: "3.12" }
-      - run: uv sync --frozen --no-group pipelines --group train
-      - name: Kernel baseline (once, MVP-0)
-        if: ${{ inputs.kernel_baseline }}
-        env: { TRAINER_DATABASE_URL: "${{ secrets.TRAINER_DATABASE_URL }}" }
-        run: uv run python -m app.ml.train kernel-baseline
-      - name: Train, gate, promote
-        if: ${{ !inputs.kernel_baseline }}
-        env:
-          TRAINER_DATABASE_URL: ${{ secrets.TRAINER_DATABASE_URL }}
-          HEALTHCHECKS_TRAIN_URL: ${{ secrets.HEALTHCHECKS_TRAIN_URL }}
-          BENCHMARK: ${{ inputs.benchmark && '--benchmark' || '' }}
-        run: uv run python -m app.ml.train run $BENCHMARK
-      - name: Open the promotion or rejection issue
-        if: ${{ !inputs.kernel_baseline && always() && hashFiles('backend/out/status.json') != '' }}
-        env: { GH_TOKEN: "${{ github.token }}", OWNER: "${{ github.repository_owner }}" }
-        run: |
-          label=$(python3 -c 'import json;s=json.load(open("out/status.json"));print("model-promotion" if s["promoted"] else "model-rejected")')
-          { echo "@$OWNER"; echo; cat out/issue.md; } > out/body.md
-          gh issue create --title "Model $(python3 -c 'import json;print(json.load(open("out/status.json"))["version"])')" \
-            --label "$label" --body-file out/body.md --assignee "$OWNER"
-```
-
-`model-rollback.yml`:
-
-```yaml
-name: model-rollback
-on:
-  issue_comment: { types: [created] }
-  workflow_dispatch:
-    inputs:
-      version: { type: string, required: false }
-permissions:
-  contents: read
-  issues: write
-jobs:
-  rollback:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.issue.pull_request == null &&
-       contains(github.event.issue.labels.*.name, 'model-promotion') &&
-       github.event.comment.user.login == github.repository_owner &&
-       startsWith(github.event.comment.body, '/rollback'))
-    runs-on: ubuntu-latest
-    defaults: { run: { working-directory: backend } }
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0  (default branch: never PR code)
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with: { version: "0.11.3", python-version: "3.12" }
-      - run: uv sync --frozen --no-group pipelines --group train
-      - name: Roll back
-        id: rb
-        env:
-          TRAINER_DATABASE_URL: ${{ secrets.TRAINER_DATABASE_URL }}
-          VERSION: ${{ inputs.version }}
-        run: |
-          set +e
-          uv run python -m app.ml.train rollback ${VERSION:+--version "$VERSION"} > out.txt 2>&1
-          echo "rc=$?" >> "$GITHUB_OUTPUT"
-      - name: Report
-        if: ${{ github.event_name == 'issue_comment' }}
-        env: { GH_TOKEN: "${{ github.token }}", ISSUE: "${{ github.event.issue.number }}" }
-        run: gh issue comment "$ISSUE" --body-file out.txt
-      - if: ${{ steps.rb.outputs.rc != '0' }}
-        run: exit 1
-```
+Opening the promotion or rejection issue is the owner's `gh` call after a run (mutating `gh` is the owner's), with the aggregate body only (pre-flight F49): `gh issue create --title "Model <version>" --label <model-promotion|model-rejected> --body-file out/issue.md`. Raw CLI output is never posted.
 
 `backend/Dockerfile.train` is the Railway one-off fallback (P3:226). It copies the `Dockerfile.jobs` pattern, syncs `--group train --no-group pipelines`, and has `CMD ["uv", "run", "python", "-m", "app.ml.train", "run"]`; nothing deploys it until the fallback trigger fires. Add it to `scripts/check_compose_matches_railway.py`'s exemptions only if a `railway-train.toml` is ever added, which this plan does not do.
 
 `ci.yml` backend job:
 - after `Test`: `- name: Fixture backtest` / `run: uv run python -m app.ml.backtest --fixture small`;
-- the install line gains `--group train`;
-- the dependency audit's export gains `--group train`.
+- the install line (`uv sync --frozen --group pipelines`) gains `--group train` (pre-flight F47);
+- the dependency audit's export (`uv export … --group pipelines --group llm`) gains `--group train`.
 
 `CLAUDE.md` Commands:
-- `uv run --group train python -m app.ml.train run|kernel-baseline|rollback [--version V]` (as `trainer` via `TRAINER_DATABASE_URL`; GitHub Actions `model-train.yml`/`model-rollback.yml`);
+- `uv run --group train python -m app.ml.train run|kernel-baseline|rollback [--version V]` (as `trainer` via `TRAINER_DATABASE_URL`, from the owner's Mac only; runbooks call it as `TRAIN …`; run `INGMOD app.pipelines.exposure build` first; never on GitHub Actions, pre-flight F48);
 - `uv run --group train python -m app.ml.backtest --fixture small`.
 
 - [ ] **Step 4: Run.** `cd backend && uv run --group train pytest tests/ml tests/test_workflows_model.py -q && uv run python -m app.ml.backtest --fixture small && uv run mypy && uv run ruff check . ../scripts/` → PASS.
-- [ ] **Step 5: Commit** `feat(ml): score materialization, train CLI, training and rollback workflows, CI fixture backtest`.
+- [ ] **Step 5: Commit** `feat(ml): score materialization, train CLI, TRAIN runbook helper, CI fixture backtest`.
 
 ---
 
 ### Task 21: OWNER/AGENT RUNBOOK: backtest snapshots, kernel row, first candidate (branch, then prod)
 
-No code. Prerequisite: PR 3-3 merged; prod at `0012`; trainer secret set.
+No code. Prerequisite: PR 3-3 merged; prod at `0012`; `backend/.env.trainer` on the owner's Mac (no GitHub secret, pre-flight F48). Helpers only from `runbook_helpers.sh`: `ANALYST_PSQL`, `VERIFY`, `INGMOD`, `TRAIN` (pre-flight F50; there is no `$ANALYST_URL`, and agents never read `.env.*`).
 
-- [ ] **Step 1 (agent, Mac, as `ingest`): backtest exposure snapshots.** Follow the exposure plan's Task 10 Step 5 gated block once per cutoff in `BACKTEST_CUTOFFS` (2004-01-01, 2008-01-01, 2012-01-01, 2016-01-01, 2026-02-05). Each is `INGMOD app.pipelines.exposure build --cutoff <d>` inside that block's `gate_pass`/`gate_require` structure, with the branch rehearsal first. Then `save_once ../data/review/p3-3/snapshots.txt psql "$ANALYST_URL" -c "SELECT data_cutoff, as_of, count(*) FROM internal.exposure_index GROUP BY 1, 2 ORDER BY 1"`. Expect one row per cutoff plus the production snapshot.
+- [ ] **Step 1 (agent, Mac, as `ingest`): backtest exposure snapshots.** Follow the exposure plan's Task 10 Step 5 gated block once per cutoff in `BACKTEST_CUTOFFS` (2004-01-01, 2008-01-01, 2012-01-01, 2016-01-01, 2026-02-05). Each is `INGMOD app.pipelines.exposure build --cutoff <d>` inside that block's `gate_pass`/`gate_require` structure, with the branch rehearsal first. Then `save_once ../data/review/p3-3/snapshots.txt ANALYST_PSQL -c "SELECT data_cutoff, as_of, count(*) FROM internal.exposure_index GROUP BY 1, 2 ORDER BY 1"`. Expect one row per cutoff plus the production snapshot.
 
 - [ ] **Step 2 (agent, branch rehearsal):**
   1. Create the Neon branch `p3-3-rehearsal` from `production` (`TARGET_HOST` set).
-  2. `export TRAINER_DATABASE_URL=<trainer URL for the branch host>`.
+  2. `TRAIN` retargets `.env.trainer`'s URL to `TARGET_HOST` (`_retarget`); nothing is exported by hand.
   3. Run, in order:
-     - `save_once ../data/review/p3-3/kernel.txt uv run --group train python -m app.ml.train kernel-baseline`;
-     - `save_once ../data/review/p3-3/run1.json sh -c 'uv run --group train python -m app.ml.train run --benchmark && cat out/status.json'`.
+     - `save_once ../data/review/p3-3/exposure.txt INGMOD app.pipelines.exposure build` (pre-flight F21: a fresh production snapshot before every training run; the 35-day gate stays);
+     - `save_once ../data/review/p3-3/kernel.txt TRAIN kernel-baseline`;
+     - `save_once ../data/review/p3-3/run1.txt TRAIN run --benchmark` then `save_once ../data/review/p3-3/run1.json cat out/status.json`.
   4. Check:
      - the registry holds `kernel` active→retired, plus `eb-…` active (if the gate passed) or rejected;
      - `out/issue.md` carries no `9000`/real-id pattern (`grep -E '[0-9]{9}' out/issue.md` prints nothing);
-     - capacity is within budget (`metrics.capacity`);
+     - capacity is within budget (`metrics.capacity`); if not, cut sensitivities to spatial folds before any prod run (pre-flight F42);
      - `scores_rows` = 12 × scorable non-unknown routes.
   5. `gate_pass p3_3_branch` only when all hold.
 
   If the gate rejects on the branch, STOP. The owner reads the rejection issue text (`out/issue.md`), and nothing goes to prod.
 
 - [ ] **Step 3 (owner, then agent, prod):**
-  1. STOP for the owner. The owner snapshots `pre-p3-3` from `production`, and creates the labels the workflows use: `gh label create model-promotion`, `gh label create model-rejected`, `gh label create model-capacity` (mutating `gh` calls are the owner's).
-  2. Agent: `gate_require p3_3_branch`.
-  3. The owner runs `workflow_dispatch` `model-train` with `kernel_baseline: true`, then with `benchmark: true`.
-  4. Agent saves the registry state: `save_once ../data/review/p3-3/prod-registry.txt psql "$ANALYST_URL" -c "SELECT version, family, status, scores_rows FROM model.registry ORDER BY created_at"`.
-  5. The promotion issue is opened by the workflow.
+  1. STOP for the owner. The owner snapshots `pre-p3-3` from `production`, and creates the issue labels: `gh label create model-promotion`, `gh label create model-rejected`, `gh label create model-capacity` (mutating `gh` calls are the owner's).
+  2. Agent: `export TARGET_HOST=production`, `gate_require p3_3_branch`.
+  3. On the owner's Mac (pre-flight F48: never GitHub Actions): `INGMOD app.pipelines.exposure build` (F21), then `TRAIN kernel-baseline`, then `TRAIN run --benchmark`, each wrapped in `save_once` under `../data/review/p3-3/prod-*`.
+  4. Agent saves the registry state: `save_once ../data/review/p3-3/prod-registry.txt ANALYST_PSQL -c "SELECT version, family, status, scores_rows FROM model.registry ORDER BY created_at"`.
+  5. The owner opens the promotion or rejection issue with `gh issue create … --body-file out/issue.md` (aggregate only; never raw stdout/stderr, pre-flight F49).
   6. The API still serves the kernel until PR 3-4, so a promotion here changes nothing user-visible.
+  7. Monthly thereafter: the same Step 3.3 sequence (exposure build, then `TRAIN run`) from the owner's Mac; the `train` healthchecks.io check (35 days) flags a missed month.
 
-- [ ] **Step 4 (owner): `/rollback` drill in staging (P3:520).** On the branch, run a second candidate (any passing retrain), then comment `/rollback` on its issue in a test repo fork (or `workflow_dispatch` with no version against the branch secret). Confirm active/previous flip back and the comment posts. Record the run URL in `../data/review/p3-3/rollback-drill.txt`.
+- [ ] **Step 4 (owner): rollback drill in staging (P3:520).** On the branch (`TARGET_HOST` = branch host), run a second candidate (any passing retrain), then `save_once ../data/review/p3-3/rollback-drill.txt TRAIN rollback` (pre-flight F51: no fork, no comment trigger). Confirm active/previous flip back with `ANALYST_PSQL -c "SELECT version, status FROM model.registry ORDER BY created_at"` and that the CLI printed one outcome line only.
 
 ---
 
@@ -4016,7 +4059,13 @@ No code. Prerequisite: PR 3-3 merged; prod at `0012`; trainer secret set.
 
 **Files:**
 - Create: `backend/app/services/model_scores.py`, `backend/tests/test_model_scores_api.py`
-- Modify: `backend/app/schemas/mp_route.py`, `backend/app/api/v1/mp_routes.py` (`/safety`, `/map-with-safety`, `/risk-breakdown`, `/forecast`, `/time-of-day`, `/historical-trends`), `backend/app/api/v1/predict.py`, `backend/app/utils/cache.py`
+- Modify: `backend/app/schemas/mp_route.py`, `backend/app/api/v1/mp_routes.py` (`/safety`, `/map-with-safety`, `/risk-breakdown`, `/forecast`, `/time-of-day`, `/historical-trends`, `/seasonal-patterns`), `backend/app/api/v1/predict.py`, `backend/app/utils/cache.py`
+- Modify (frontend callers, pre-flight F54): `frontend/src/App.jsx` (remove the arbitrary-point predict flow, `App.jsx:27,48`), `frontend/src/services/api.ts` (`predictRouteSafety` removed), `frontend/src/components/RouteAnalyticsModal.jsx` (trends and hourly views, `:534,592,606`, plus the seasonal-patterns view) and their tests
+
+**Additive for the live frontend (pre-flight F54, controller ruling 2026-10-22).** Railway auto-deploys `main`, and the deployed frontend calls `POST /predict`, `/historical-trends` and `/time-of-day`. So PR 3-4 itself updates those callers:
+- the frontend caller changes are the **first commit** of this task, and they tolerate both the old and the new response shapes (trends view reads the 12-month profile when present, else the old series; an hourly `risk: null` renders the em-dash with `risk_note`, never 0);
+- `POST /predict` keeps working until its callers have changed: the 410 ships in this PR only because its one caller (`App.jsx`) is removed in this PR, and Task 26 deploys the frontend service before the api service, so no live bundle still calls `/predict` when it starts returning 410;
+- `npm run test:run` and `npm run typecheck` join this task's Step 4.
 
 **Interfaces:**
 - `model_scores`:
@@ -4050,56 +4099,59 @@ Endpoint decisions:
 | `GET /mp-routes/{id}/forecast` | Each day carries the stored score of its month (CM = 1 in MVP-1) and the forecast weather as today. No kernel call. |
 | `GET /mp-routes/{id}/time-of-day` | Weather by hour unchanged; `risk` per hour is `null` with `risk_note: "Hour-by-hour risk arrives with the conditions rules (v2.1)."` `[default pending: DP24]`. Never a kernel number. |
 | `GET /mp-routes/{id}/historical-trends` | Returns the active version's 12-month profile (percentile, range, confidence) instead of kernel history `[default pending: DP24]`. |
-| `POST /predict` | 410 Gone, `{"detail": "Arbitrary-point prediction was retired with the kernel model; select a route on the map."}` `[default pending: DP23]`. |
+| `POST /predict` | 410 Gone, `{"detail": "Arbitrary-point prediction was retired with the kernel model; select a route on the map."}` `[default pending: DP23]`. Only after its frontend caller is gone (F54, above). |
+| `GET /mp-routes/{id}/seasonal-patterns` | (pre-flight F55, controller ruling 2026-10-22) No second risk number: `avg_risk_score` is removed. Returns incident **counts** per month from `accidents_clean`, placed through the route's catalog point (its location's, never `mp_routes` lat/lon). AAC year-precision rows are intervals: `date_precision IN ('day','month')` rows count in their month; `year` rows are spread over `year_lo..year_hi` with the Task 6 `window_fraction` rule (or reported separately as "year known only"), never read at their synthetic date. `test_kernel_not_served`-style guard: no `avg_risk_score` and no `EXTRACT(MONTH FROM a.date)` over year-precision rows in `mp_routes.py`. `[default pending: DP24]` |
 
 - [ ] **Step 1: Write the failing tests.** `backend/tests/test_model_scores_api.py` uses the existing API test client fixtures with a DB seeded at head: one active `eb_v1` version and rows for 3 routes (ok/high, ok/low, insufficient).
 
 ```python
-def test_safety_reads_the_stored_row_with_range_and_confidence(client, seeded_scores):
-    r = client.post("/api/v1/mp-routes/900000001/safety", params={"target_date": "2026-07-04", "bypass_cache": True})
+def test_safety_reads_the_stored_row_with_range_and_confidence(test_client, seeded_scores):
+    r = test_client.post("/api/v1/mp-routes/900000001/safety", params={"target_date": "2026-07-04", "bypass_cache": True})
     body = r.json()
     assert r.status_code == 200 and body["risk_score"] == 40.0 and body["color_code"] == "yellow"
     assert body["confidence"] == "high" and body["score_range"] == [20.0, 60.0]
     assert body["model_version"] == seeded_scores.version
 
 
-def test_low_confidence_keeps_number_and_range(client, seeded_scores):
-    body = client.post("/api/v1/mp-routes/900000002/safety", params={"target_date": "2026-07-04"}).json()
+def test_low_confidence_keeps_number_and_range(test_client, seeded_scores):
+    body = test_client.post("/api/v1/mp-routes/900000002/safety", params={"target_date": "2026-07-04"}).json()
     assert body["data_status"] == "ok" and body["confidence"] == "low" and body["risk_score"] is not None
 
 
-def test_insufficient_is_gray_with_reason_and_no_number(client, seeded_scores):
-    body = client.post("/api/v1/mp-routes/900000003/safety", params={"target_date": "2026-07-04"}).json()
+def test_insufficient_is_gray_with_reason_and_no_number(test_client, seeded_scores):
+    body = test_client.post("/api/v1/mp-routes/900000003/safety", params={"target_date": "2026-07-04"}).json()
     assert (body["risk_score"], body["color_code"], body["data_status"], body["insufficient_reason"]) == \
         (None, "gray", "insufficient_data", "no_evidence")
 
 
-def test_missing_row_is_unavailable_not_insufficient(client, seeded_scores):
-    assert client.post("/api/v1/mp-routes/900000099/safety", params={"target_date": "2026-07-04"}).status_code == 404
+def test_missing_row_is_unavailable_not_insufficient(test_client, seeded_scores):
+    assert test_client.post("/api/v1/mp-routes/900000099/safety", params={"target_date": "2026-07-04"}).status_code == 404
 
 
-def test_no_active_version_is_unavailable(client, seeded_scores_no_active):
-    assert client.post("/api/v1/mp-routes/900000001/safety", params={"target_date": "2026-07-04"}).status_code == 404
+def test_no_active_version_is_unavailable(test_client, seeded_scores_no_active):
+    assert test_client.post("/api/v1/mp-routes/900000001/safety", params={"target_date": "2026-07-04"}).status_code == 404
 
 
-def test_map_and_popup_agree(client, seeded_scores):
-    bulk = {r["mp_route_id"]: r["safety"] for r in client.get(
+def test_map_and_popup_agree(test_client, seeded_scores):
+    bulk = {r["mp_route_id"]: r["safety"] for r in test_client.get(
         "/api/v1/mp-routes/map-with-safety", params={"target_date": "2026-07-04"}).json()["routes"]}
-    single = client.post("/api/v1/mp-routes/900000002/safety", params={"target_date": "2026-07-04"}).json()
+    single = test_client.post("/api/v1/mp-routes/900000002/safety", params={"target_date": "2026-07-04"}).json()
     assert bulk[900000002]["risk_score"] == single["risk_score"]
     assert bulk[900000002]["confidence"] == single["confidence"]
 
 
-def test_predict_is_gone(client):
-    assert client.post("/api/v1/predict", json={"latitude": 40.0, "longitude": -105.0,
+def test_predict_is_gone(test_client):
+    assert test_client.post("/api/v1/predict", json={"latitude": 40.0, "longitude": -105.0,
                                                 "route_type": "trad", "planned_date": "2026-07-04"}).status_code == 410
 ```
 
-`seeded_scores` is a new fixture in `tests/conftest.py`. It uses `migrated_db()` plus Task 1's SEED and inserts the registry and rows directly (synthetic).
+`seeded_scores` is a new fixture in `tests/conftest.py`. It uses `migrated_db()` plus Task 1's SEED and inserts the registry and rows directly (synthetic). The API's `get_db` points at `DATABASE_URL`, so the fixture overrides the `app.db.session.get_db` dependency to the migrated DB (`app.dependency_overrides`). Tests use the real conftest client fixture `test_client` (`tests/conftest.py:79`), not `client` (pre-flight F53).
+
+Add `test_seasonal_patterns_has_no_risk_and_reads_years_as_intervals` (pre-flight F55): a seeded year-precision row with `year_lo = 2003`, `year_hi = 2005` contributes no count at July, and the response has no `avg_risk_score` key.
 
 - [ ] **Step 2: Run** → FAIL.
 - [ ] **Step 3: Implement** per the table. Every SQL statement is parameterised. `get_scores` batches the map bbox's route ids.
-- [ ] **Step 4: Run.** `cd backend && uv run pytest tests/test_model_scores_api.py tests/test_no_fabricated_risk.py tests/test_risk_bands.py tests/test_insufficient_data.py -q`. Update the existing kernel-era assertions in those three files to the stored-score contract in this step, keeping their intent: no fabricated number, one band definition, insufficient is gray with no number.
+- [ ] **Step 4: Run.** `cd backend && uv run pytest tests/test_model_scores_api.py tests/test_no_fabricated_risk.py tests/test_risk_bands.py tests/test_insufficient_data.py -q` and `cd frontend && npm run test:run && npm run typecheck && npm run lint` (F54). Update the existing kernel-era assertions in those three files to the stored-score contract in this step, keeping their intent: no fabricated number, one band definition, insufficient is gray with no number.
 - [ ] **Step 5: Commit** `feat(api): serve the active model's stored scores with confidence and range`.
 
 ---
@@ -4121,7 +4173,7 @@ def test_predict_is_gone(client):
 - Modify:
   - `backend/app/celery_app.py`: the beat entry `scores-heartbeat` at 02:00 UTC replaces the kernel nightly;
   - `backend/app/utils/time_utils.py`, `backend/app/utils/geo_utils.py`: constants they imported from `algorithm_config` are inlined with a pointer comment;
-  - `utc_today`: moves from `app.services.temporal_weighting` to `app.utils.time_utils`, and the four pipeline imports (`mp_ticks_quarantine`, `mp_tick_aggregates`, `era5_window`, `accident_facts`) update;
+  - `utc_today`: moves from `app.services.temporal_weighting` to `app.utils.time_utils`, and all six importers update (pre-flight F56): `mp_ticks_quarantine`, `mp_tick_aggregates`, `era5_window`, `accident_facts`, `exposure`, `celery_signals` (plus the deleted kernel modules);
   - `backend/app/tasks/cache_warming.py`: warms `safety:{version}:{route}:{month}` from `model.route_scores`.
 
 **Interfaces:**
@@ -4180,12 +4232,13 @@ It uses `fakeredis` and the `healthchecks.ping` monkeypatch pattern from `test_h
 - Modify:
   - `backend/db/roles/grants_phase2.sql`: delete `GRANT SELECT ON public.weather TO ingest;` and its comment, and add `REVOKE ALL ON public.weather FROM ingest;` guarded by `to_regclass` (no-op once dropped);
   - `backend/db/roles/verify_roles_phase2.sql`: delete the `('public.weather', 'SELECT')` row;
-  - `backend/tests/test_roles_phase2.py`: delete the R6 `weather` block (lines 435–439) and the stray line `REVOKE SELECT ON public.weather FROM ingest;`;
+  - `backend/tests/test_roles_phase2.py`: delete the R6 `weather` block, found by content (pre-flight F57: it sits near lines 477–481 today, not 435–439; there is no stray `REVOKE SELECT ON public.weather FROM ingest;` line in that file). `predict.py:17` and `safety_computation_optimized.py:52,463+` also import/query `Weather`; both are gone or rewritten by Tasks 22–23;
   - `backend/tests/test_roles_phase3.py`: drop `public.weather` from the denied list;
   - `backend/pyproject.toml`: remove `app.pipelines.r6_verify` from mypy;
   - `CLAUDE.md`, `DEPLOYMENT.md`, `data/DATABASE_STRUCTURE.md`.
 
 **Interfaces:**
+- **Contract migration (pre-flight F58).** `0013` drops a table the currently deployed nightly (`safety_computation_optimized.py:463`) and `/predict` still read, so "migrate before deploy" does not apply: it runs on prod only **after** PR 3-4 is deployed and the nightly has switched to the heartbeat, behind its own runbook gate (Task 26). Since `app.models.weather` is deleted in the same PR, the deployed code maps no `weather` table while `0013` is pending.
 - `upgrade()` refuses unless an `ok` R6 run exists: `SELECT count(*) FROM source_ingest_log WHERE source = 'r6_verify' AND status = 'ok'` must be > 0, the evidence plan 3 required before the table could go. It then runs `DROP TABLE public.weather` (its owned sequence goes with it).
 - `downgrade()` raises `NotImplementedError("0013 is one-way: restore weather from the pre-p3-4 snapshot branch")`, following the 0002 convention.
 - No dump is committed. The rollback path is the `pre-p3-4` Neon snapshot branch, kept 30 days `[default pending: DP21]`.
@@ -4251,26 +4304,34 @@ The other migration tests that pin `head` still pass. Any test that inserted int
 
 ---
 
-### Task 26: OWNER/AGENT RUNBOOK: migrate `0013`, deploy MVP-1 (branch, then prod); Phase 4 renumbering
+### Task 26: OWNER/AGENT RUNBOOK: deploy MVP-1, then migrate `0013` (branch, then prod); Phase 4 renumbering
 
-- [ ] **Step 1 (agent, branch):**
+Order (pre-flight F58, controller ruling 2026-10-22): deploy PR 3-4 first, confirm the nightly has switched, and only then run `0013`, behind its own gate. Helpers only from `runbook_helpers.sh` (`ANALYST_PSQL`, `VERIFY`, `MIG`, `OWNER_PSQL`; pre-flight F50).
+
+- [ ] **Step 1 (agent, branch rehearsal of the order):**
   1. On a fresh branch `p3-4-rehearsal` of `production` (with `TARGET_HOST` set), save the evidence:
-     - `save_once ../data/review/p3-4/r6.txt psql "$ANALYST_URL" -c "SELECT count(*) FROM source_ingest_log WHERE source='r6_verify' AND status='ok'"` (expect ≥ 1);
-     - `save_once ../data/review/p3-4/active.txt psql "$ANALYST_URL" -c "SELECT version, scores_rows FROM model.registry WHERE status='active'"` (expect an `eb_v1` version).
-  2. Run `MIG upgrade 0013_drop_legacy_weather`, `grants_phase2.sql`, `verify_roles_phase2.sql`, `grants_phase3.sql` and `verify_roles_phase3.sql`.
-  3. Run `VERIFY_DATABASE_URL="$ANALYST_URL" uv run pytest -m db tests/verify/test_model_scores.py`.
-  4. Point a local API at the branch and run the parity spot check `curl` for 3 routes (popup = map).
+     - `save_once ../data/review/p3-4/r6.txt ANALYST_PSQL -c "SELECT count(*) FROM source_ingest_log WHERE source='r6_verify' AND status='ok'"` (expect ≥ 1);
+     - `save_once ../data/review/p3-4/active.txt ANALYST_PSQL -c "SELECT version, scores_rows FROM model.registry WHERE status='active'"` (expect an `eb_v1` version).
+  2. With the branch still at `0012`, point a local API and worker built from PR 3-4 at the branch: run the parity spot check `curl` for 3 routes (popup = map), and one `scores_heartbeat.run()`; both must succeed with `weather` still present (the new code does not read it).
+  3. Then `MIG upgrade 0013_drop_legacy_weather`, `OWNER_PSQL -f db/roles/grants_phase2.sql`, `OWNER_PSQL -f db/roles/verify_roles_phase2.sql`, `OWNER_PSQL -f db/roles/grants_phase3.sql`, `OWNER_PSQL -f db/roles/verify_roles_phase3.sql`.
+  4. `save_once ../data/review/p3-4/verify-branch.txt VERIFY tests/verify/test_model_scores.py`, and repeat the 3-route spot check and the heartbeat after the drop.
   5. `gate_pass p3_4_branch`.
-- [ ] **Step 2 (owner, then agent, prod).**
+- [ ] **Step 2 (owner, then agent, prod deploy; `0013` NOT yet run).**
   1. STOP for the owner's go. The owner snapshots `pre-p3-4` (kept 30 days, DP21).
-  2. Agent: `gate_require p3_4_branch`, then the same block with `TARGET_HOST=production`, then `gate_pass p3_4_prod`.
-  3. Migrate before deploy (`DEPLOYMENT.md`): only after `0013` is on prod does the owner merge PR 3-4 and let Railway deploy. Never merge first: the deleted `Weather` model would not matter, but the heartbeat and API need `model.*` grants, which are already in place since PR 3-0.
+  2. Agent: `export TARGET_HOST=production`, `gate_require p3_4_branch`; `grants_phase2.sql` (its `weather` REVOKE is `to_regclass`-guarded) then `grants_phase3.sql` and both verifies through `OWNER_PSQL`.
+  3. The owner merges PR 3-4 with auto-deploy held, deploys the **frontend service first** (no live bundle calls `/predict` or reads the old trends/hourly shapes, pre-flight F54), then the api, worker and beat services.
+  4. Confirm the nightly has switched: beat's schedule holds `scores-heartbeat` and no `compute_daily_safety_scores_optimized`; the first heartbeat pings success (healthchecks `scores`); `save_once ../data/review/p3-4/prod-spot.txt` the 3-route `curl` parity check against the live API.
+  5. `gate_pass p3_4_deployed`.
+- [ ] **Step 2b (owner, then agent, prod `0013`; its own gate, pre-flight F58).**
+  1. STOP for the owner's go, only after `p3_4_deployed` and at least one successful heartbeat.
+  2. Agent: `gate_require p3_4_deployed`, `MIG upgrade 0013_drop_legacy_weather`, `OWNER_PSQL -f db/roles/verify_roles_phase2.sql`, `OWNER_PSQL -f db/roles/verify_roles_phase3.sql`, `save_once ../data/review/p3-4/verify-prod.txt VERIFY tests/verify/test_model_scores.py`, `gate_pass p3_4_0013_prod`.
+  3. `DEPLOYMENT.md` records this as the contract-migration exception to "migrate before deploy": a migration that drops what deployed code reads runs after the deploy that stops reading it.
 - [ ] **Step 3 (owner):**
   - add the healthchecks check `scores` (period 1 day, grace 2 h) as `HEALTHCHECKS_SCORES_URL` on the worker service;
   - remove the kernel nightly's Redis keys with the admin purge (`/mp-routes/admin/purge-queue` is unrelated; use `redis-cli --scan --pattern 'safety:*' | xargs redis-cli del` from the owner's machine against the Railway Redis).
 - [ ] **Step 4 (agent): relaunch notes.** `CHANGELOG.md` states that the map, popup and breakdown now show one stored number. The A:44 relaunch caveat (two scorers disagree) is retired.
-- [ ] **Step 5 (agent): Phase 4 renumbering.** Edit `docs/superpowers/plans/2026-10-12-phase4-users-incident-reporting.md`:
-  - `0012_accounts` → `0014_accounts` (`down_revision = "0013_drop_legacy_weather"`), `0013_reports` → `0015_reports`, `0014_report_promotions` → `0016_report_promotions`;
+- [ ] **Step 5 (agent): Phase 4 renumbering (pre-flight F60: target PR #15's Phase 4 numbering, `0014`–`0016`).** First `git show main:docs/superpowers/plans/2026-10-12-phase4-users-incident-reporting.md | grep -nE '00[0-9]{2}_(accounts|reports|report_promotions)'` to see which numbers the plan on `main` holds at that time (this worktree's copy says `0008_accounts`/`0009_reports`/`0010_report_promotions`; the exposure plan expected `0012`/`0013`/`0014`). Rewrite whatever is there:
+  - accounts → `0014_accounts` (`down_revision = "0013_drop_legacy_weather"`), reports → `0015_reports`, report promotions → `0016_report_promotions`;
   - the test files, `migrated_db` pins, downgrade targets and `MIG current` lines.
 
   Commit `docs(plan): Phase 4 migrations follow Phase 3 (0014-0016)`.
@@ -4301,6 +4362,8 @@ export type InsufficientRisk = {
 };
 ```
 
+Pre-flight F62: `api.ts` already exports `ScoredRisk`/`InsufficientRisk`/`RiskResult`/`DataStatus`; **extend** those types with the fields above rather than redeclaring them. `parseSafety` and `markerStyle` are new; create `parseSafety` next to the existing `isSafetyResponse`. `fetchRouteSafety` sends `bypass_cache: true` today (`api.ts:150`).
+
 `fetchRouteSafety` drops `bypass_cache` (A:137). `parseSafety` rejects:
 - a `ScoredRisk` missing `confidence` or `score_range`;
 - a range not bracketing the score;
@@ -4325,6 +4388,7 @@ A rejection throws, so the caller shows "Unavailable". A 404 also renders "Unava
 
 **Rules:**
 - **Bands stay 25/50/75** (`RISK_BAND_THRESHOLDS` unchanged; `test_risk_bands.py` still pins the mirror).
+- **One meaning for "confidence"** (pre-flight F63): retire the old numeric helpers `riskUtils.getConfidenceInfo(confidence: number)` and `formatConfidence(number)` (or rename them to `…SampleShare` if a caller still needs the number), so `confidence` only ever means the string `Confidence = 'high' | 'medium' | 'low'`. Update their tests and callers in this task.
 - **Lowest band** `[default pending: DP12]`: rendered in a neutral slate, labelled "Lower than typical for this type", never "Low Risk" or "safe" (P3:445, A:179 Q3). The wire value `color_code: "green"` stays, so the backend contract and the drift test are untouched; only the palette and copy change. `RISK_DESCRIPTIONS.low` loses "Favorable conditions".
 - **Low confidence** shows:
   - the number and its range ("40 (likely 20–60)");
@@ -4365,7 +4429,7 @@ A rejection throws, so the caller shows "Unavailable". A 404 also renders "Unava
 - [ ] **Step 1: Failing tests:**
   - the headline renders from `relative_rate`;
   - the per-10K line appears only with data, and each reason renders its sentence;
-  - no division occurs in `ascentCounts.ts` (a grep test: no `/` operator applied to accident and tick counts).
+  - no rate is computed from counts (pre-flight F65): a behavioural test asserts the rendered Ascents output contains no accident-per-tick rate for any fixture; the grep is kept only as a narrow regex over identifiers (`/(accident|tick)\w*\s*\/\s*\w*(accident|tick)/i`), not every `/`.
 - [ ] **Step 2:** → FAIL. **Step 3: Implement.** **Step 4:** `npm run test:run && npm run typecheck && npm run lint` → PASS. **Step 5: Commit** `feat(frontend): Ascents tab relative-rate headline and per-10K line`.
 - [ ] **Step 6:** CHANGELOG entry for PR 3-5.
 
@@ -4389,7 +4453,7 @@ A rejection throws, so the caller shows "Unavailable". A 404 also renders "Unava
 | DP12 | Lowest band colour (A:179 Q3) | Neutral slate, "Lower than typical for this type". The wire value stays `green`, so the contract and drift test are unchanged. | Keep green through MVP-1. |
 | DP13 | Ascents headline (A:177 Q1) | Option C relative rate as the headline. The per-10K line only at full tick coverage, otherwise a reason sentence. | Per-10K as the headline wherever ticks exist. |
 | DP14 | Prospective kernel backtest | Keep the window out of the 1-year purge now. Gate on top-10% capture. Kernel log score uses an in-window calibration map (kernel-favouring), reported, not gated. | Gate on log score too; or freeze a copy of the window in `model`. |
-| DP15 | Rollback target | Never the kernel. The kernel row retires at the first promotion; `/rollback` with no servable previous refuses. | Keep kernel code servable as a fallback. |
+| DP15 | Rollback target | Never the kernel. The kernel row retires at the first promotion; `TRAIN rollback` with no servable previous refuses (no comment-triggered rollback, pre-flight F48). | Keep kernel code servable as a fallback. |
 | DP16 | Public promotion artifacts | Aggregate-only issue (band matrix, per-state/type tables, metric deltas). No PNG map in MVP-1, no route ids. Per-route movers stay in the DB. | The P3:319 PNG + GeoJSON artifacts (route-level data in a public repo's artifacts). |
 | DP17 | Trainer grants | LOGIN via owner script, connection limit 4. SELECT on an explicit allowlist of views/tables plus `internal.exposure_index`; writes only on `model.*`. | Broader "SELECT on data tables" (P3:230). |
 | DP18 | Plan scope | MVP-0 + MVP-1 only. v2.1 rules/hazard banner, v2.2, v2.3 and objective-level scoring are later plans. | Fold v2.1 rules into this plan. |
@@ -4422,7 +4486,7 @@ A rejection throws, so the caller shows "Unavailable". A 404 also renders "Unava
   - P3 MVP-1:
     - `exposure.py` (folded into `features.py`), `baseline_eb.py` (`glm.py` + `eb.py`), `scoring.py` (`posterior.py` + `materialize.py`), `bundle.py`, `thresholds.py` (`tuning.py`), `promote.py`;
     - stored scores (DP2), serving and the detail endpoint on stored scores plus `explain()`;
-    - the insufficient UX, the disclaimer, `model-train.yml`/`model-rollback.yml` and the capacity benchmark (Tasks 8–29);
+    - the insufficient UX, the disclaimer, owner-run training/rollback via the `TRAIN` runbook helper (replacing `model-train.yml`/`model-rollback.yml`, pre-flight F48) and the capacity benchmark (Tasks 8–29);
     - the three kernel implementations removed from serving (Task 23).
   - Amendment:
     - D1 (Tasks 11–12, 15);
