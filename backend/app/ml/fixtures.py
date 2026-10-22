@@ -4,7 +4,9 @@ synthetic_cells signature is fixed (pre-flight pair 8 <-> 20)."""
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
+from datetime import date, timedelta
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -166,8 +168,6 @@ def toy_bundle_and_row() -> tuple[Any, dict[str, Any]]:
     static variation, so the target's z values are overridden and center/scale chosen to reproduce them
     from _TOY_RAW; coef gets nonzero covariate and season effects. log_rref per (g, m) is read back
     from summarize (log of theta * hazard / rr), not recomputed."""
-    import dataclasses
-
     from app.ml.bundle import ModelBundle
     from app.ml.features import transform_static
     from app.ml.posterior import Thresholds, summarize
@@ -249,18 +249,23 @@ _PROTOTYPES = ((600.0, 90.0, 0.0, 1.0), (1700.0, 45.0, 8.0, 6.0), (2900.0, 25.0,
                (3900.0, 15.0, 90.0, 22.0))
 
 
-def synthetic_problem(seed: int, return_truth: bool = False, n_areas: int = 96,
-                      state_mass: dict[str, float] | None = None) -> Any:
-    """Cells, Poisson counts and (with return_truth) the true per-cell rates, from a log-linear model:
-    route density, season share, a type-group effect, a prototype x group effect shared across
-    states, and per-area noise. Every month and both families carry incidents, so the GLM converges.
-    state_mass maps a state code to state-only incident mass, spread over the groups present there."""
-    from app.ml.dataset import Counts
+@dataclass(frozen=True)
+class _World:
+    exposure: list[ExposureRow]
+    static: list[StaticRow]
+    areas: list[AreaInfo]
+    paths: dict[int, str]
+    log_rate: dict[tuple[int, int, int], float]
 
-    rng = np.random.default_rng(seed)
+
+def _world(rng: np.random.Generator, n_areas: int, states: dict[str, tuple[float, float]],
+           id_base: int) -> _World:
+    """The synthetic_problem generator (Task 15): route density, season share, a type-group effect, a
+    prototype x group effect shared across states, and per-area noise. log_rate is the expected count
+    over 20 years. The rng call order is part of the contract: synthetic_problem's seeds depend on it."""
     effect = rng.normal(0.0, 0.9, size=(len(_PROTOTYPES), len(TYPE_GROUPS)))
     type_effect = rng.normal(0.0, 0.3, size=len(TYPE_GROUPS))
-    state_codes = tuple(STATES)
+    state_codes = tuple(states)
     exposure: list[ExposureRow] = []
     static: list[StaticRow] = []
     areas: list[AreaInfo] = []
@@ -268,10 +273,10 @@ def synthetic_problem(seed: int, return_truth: bool = False, n_areas: int = 96,
     log_rate: dict[tuple[int, int, int], float] = {}
     for k in range(n_areas):
         st = state_codes[k % len(state_codes)]
-        area_id = SYNTHETIC_ID_FLOOR + 1000 + k
+        area_id = id_base + k
         root = SYNTHETIC_ID_FLOOR + 100 * (1 + state_codes.index(st))
         paths[area_id] = f"{root}.{root + 1 + (k // len(state_codes)) % 3}.{area_id}"
-        lat0, lon0 = STATES[st]
+        lat0, lon0 = states[st]
         lat = lat0 + float(rng.normal(0, 0.5))
         p = int(rng.integers(len(_PROTOTYPES)))
         elev0, precip0, snow0, ft0 = _PROTOTYPES[p]
@@ -296,10 +301,23 @@ def synthetic_problem(seed: int, return_truth: bool = False, n_areas: int = 96,
                 elevation, lat, tmax, tmax - 12.0, precip0 * float(rng.uniform(0.8, 1.2)),
                 snow0 * float(rng.uniform(0.8, 1.2)), ft0 + float(rng.integers(0, 3)),
             )))
-    cells = assemble_cells(exposure, static, areas, paths)
+    return _World(exposure, static, areas, paths, log_rate)
+
+
+def synthetic_problem(seed: int, return_truth: bool = False, n_areas: int = 96,
+                      state_mass: dict[str, float] | None = None) -> Any:
+    """Cells, Poisson counts and (with return_truth) the true per-cell rates, from a log-linear model:
+    route density, season share, a type-group effect, a prototype x group effect shared across
+    states, and per-area noise. Every month and both families carry incidents, so the GLM converges.
+    state_mass maps a state code to state-only incident mass, spread over the groups present there."""
+    from app.ml.dataset import Counts
+
+    rng = np.random.default_rng(seed)
+    w = _world(rng, n_areas, STATES, SYNTHETIC_ID_FLOOR + 1000)
+    cells = assemble_cells(w.exposure, w.static, w.areas, w.paths)
     truth = np.empty(cells.n)
     for key, i in cells.index.items():
-        truth[i] = np.exp(log_rate[key])
+        truth[i] = np.exp(w.log_rate[key])
     y = rng.poisson(truth).astype(np.float64)
     sm = np.zeros((len(cells.states), len(TYPE_GROUPS)))
     for code, mass in (state_mass or {}).items():
@@ -313,9 +331,78 @@ def synthetic_problem(seed: int, return_truth: bool = False, n_areas: int = 96,
 
 def permute_problem(cells: CellData, counts: Any, perm: NDArray[np.int64]) -> tuple[CellData, Any]:
     """Cells and counts with every per-cell array (and cells.index) reordered by perm."""
-    import dataclasses
-
     perm = np.asarray(perm, dtype=np.int64)
     if np.sort(perm).tolist() != list(range(cells.n)):
         raise ValueError("perm must be a permutation of the cells")
     return cells.take(perm), dataclasses.replace(counts, y=counts.y[perm])
+
+
+# Two states per state group (Colorado's group holds only CO), so every spatial fold holds out real areas.
+RAW_STATES = {"WA": (47.5, -121.0), "OR": (44.0, -121.5), "CA": (37.5, -119.0), "NV": (39.0, -116.5),
+              "AZ": (34.5, -111.5), "UT": (38.5, -111.0), "MT": (46.5, -110.0), "WY": (43.0, -107.5),
+              "CO": (39.0, -105.5), "TX": (31.0, -99.0), "MN": (46.0, -94.0), "KY": (37.5, -85.0),
+              "NC": (35.5, -80.0), "NH": (44.0, -71.5), "NY": (43.0, -75.0)}
+RAW_START = date(1990, 1, 1)
+RAW_END = date(2026, 10, 1)
+
+
+def synthetic_raw(seed: int, drop_cutoffs: tuple[date, ...] = (), n_areas: int = 120) -> Any:
+    """RawData for backtests: the synthetic_problem world over RAW_STATES, with incidents drawn as
+    placements over [1990-01-01, 2026-10-01) at the world's true rate (log_rate is a 20-year count).
+    Precision mix: day (most), month, and 1-3 year intervals with no month; about 5% carry ski_approach
+    and 8% llm_link; a few state-only and dropped rows. Every rock-and-mountain cell has full tick
+    coverage. Exposure is the same snapshot at every BACKTEST_CUTOFFS value and at the production
+    cutoff RAW_END, except drop_cutoffs."""
+    from app.ml.backtest import RawData
+    from app.ml.folds import BACKTEST_CUTOFFS
+    from app.ml.incidents import Placement
+
+    rng = np.random.default_rng(seed)
+    w = _world(rng, n_areas, RAW_STATES, SYNTHETIC_ID_FLOOR + 10_000)
+    state_of = {a.area_id: a.state_code for a in w.areas}
+    tick_rng = np.random.default_rng([seed, 1])
+    per_route = {(a.area_id, g): float(tick_rng.lognormal(1.0, 0.5)) for a in w.areas for g in a.routes_by_group}
+    exposure = [dataclasses.replace(e, ticks_per_route=per_route[(e.area_id, e.type_group)] * e.season_share,
+                                    ticks_value=per_route[(e.area_id, e.type_group)] * e.season_share * e.n_routes,
+                                    tick_coverage=1.0)
+                for e in w.exposure if e.season_share is not None]
+    placements: list[Placement] = []
+    next_id = SYNTHETIC_ID_FLOOR + 1_000_000
+
+    def flags() -> frozenset[str]:
+        u = rng.random()
+        return frozenset({"ski_approach"} if u < 0.05 else {"llm_link"} if u < 0.13 else set())
+
+    for (area_id, gi, m), lr in sorted(w.log_rate.items()):
+        years = [y for y in range(RAW_START.year, RAW_END.year + 1) if date(y, m, 1) < RAW_END]
+        n = int(rng.poisson(np.exp(lr) / 20.0 * len(years)))
+        for _ in range(n):
+            y = years[int(rng.integers(len(years)))]
+            kind = rng.random()
+            month: int | None = m
+            if kind < 0.75:
+                lo = date(y, m, int(rng.integers(1, 29)))
+                hi = lo + timedelta(days=1)
+            elif kind < 0.85:
+                lo = date(y, m, 1)
+                hi = date(y + (m == 12), m % 12 + 1, 1)
+            else:
+                span = int(rng.integers(1, 4))
+                lo, hi, month = date(y, 1, 1), date(min(y + span, RAW_END.year), 1, 1), None
+                if hi <= lo:
+                    lo, hi = date(y - 1, 1, 1), date(y, 1, 1)
+            placements.append(Placement(next_id, "cell", "route_link", area_id, state_of[area_id],
+                                        ((TYPE_GROUPS[gi], 1.0),), month, lo, hi, 1.0, flags()))
+            next_id += 1
+    for st in RAW_STATES:
+        for _ in range(int(rng.poisson(3.0))):
+            lo = date(int(rng.integers(RAW_START.year, RAW_END.year)), int(rng.integers(1, 13)), 10)
+            placements.append(Placement(next_id, "state", "beyond_3km", None, st, (), lo.month, lo,
+                                        lo + timedelta(days=1), 1.0, frozenset()))
+            next_id += 1
+    for _ in range(5):
+        placements.append(Placement(next_id, "dropped", "no_date", None, None, (), None, None, None, 1.0, frozenset()))
+        next_id += 1
+    cutoffs = [c for c in (*BACKTEST_CUTOFFS, RAW_END) if c not in drop_cutoffs]
+    return RawData(placements=placements, areas=list(w.areas), paths=dict(w.paths), static=list(w.static),
+                   exposure_by_cutoff={c: list(exposure) for c in cutoffs}, production_cutoff=RAW_END)

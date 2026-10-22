@@ -137,6 +137,7 @@ class Fitted:
     arch_centers: F64
     area_ids: I64
     y_train: F64  # y * mask in the caller's cell order: the default y_own for to_bundle
+    train_mask: BoolArr
     state_evidence: NDArray[np.bool_]  # (states, groups): state-only mass > GEO_TOL, training states only
     state_idx: I64
     region_idx: I64
@@ -299,8 +300,22 @@ def check_parity(bundle: ModelBundle, cells: CellData, s: CellSummary, mean: F64
     return out
 
 
+def _check_reuse(reuse: Fitted, cells: CellData, params: ModelParams, mask: BoolArr, y_train: F64,
+                 design: Design) -> None:
+    reuse._check_cells(cells)
+    same = (reuse.params.lambdas == params.lambdas and reuse.params.tick_policy == params.tick_policy
+            and np.array_equal(reuse.train_mask, mask) and np.array_equal(reuse.y_train, y_train)
+            and reuse.design.names == design.names and np.array_equal(reuse.design.X, design.X)
+            and np.array_equal(reuse.design.penalty, design.penalty))
+    if not same:
+        raise ValueError("reuse_stage1 was fit on different stage-1 inputs (cells, training counts, mask, "
+                         "lambdas or tick policy); refit stage 1")
+
+
 def fit_model(cells: CellData, counts: Counts, params: ModelParams, *,
-              train_mask: BoolArr | None = None) -> Fitted:
+              train_mask: BoolArr | None = None, reuse_stage1: Fitted | None = None) -> Fitted:
+    """reuse_stage1 (F68) takes the GLM of an earlier fit whose stage-1 inputs are identical, so a sweep
+    over stage-2 parameters (k_arch, arch_weights, blend, seed) skips the GLM; anything else is refused."""
     n = cells.n
     mask = np.ones(n, dtype=np.bool_) if train_mask is None else np.asarray(train_mask)
     if mask.dtype != np.bool_ or mask.shape != (n,):
@@ -316,7 +331,13 @@ def fit_model(cells: CellData, counts: Counts, params: ModelParams, *,
 
     train_design = build_design(cc.subset(m), policy=params.tick_policy, lambdas=params.lambdas)
     design = build_design(cc, policy=params.tick_policy, lambdas=params.lambdas, fit_stats=train_design)
-    glm = fit_poisson(design.X[m], y[m], design.penalty, nonneg=design.nonneg)
+    out_design = build_design(cells, policy=params.tick_policy, lambdas=params.lambdas, fit_stats=train_design)
+    y_train = np.where(mask, y_in, 0.0)
+    if reuse_stage1 is not None:
+        _check_reuse(reuse_stage1, cells, params, mask, y_train, out_design)
+        glm = reuse_stage1.glm
+    else:
+        glm = fit_poisson(design.X[m], y[m], design.penalty, nonneg=design.nonneg)
     if not glm.converged:
         # Separation (an unpenalized month/family indicator with no events) leaves no finite optimum;
         # any coefs here would be a stall, not a fit (Task 10 ruling).
@@ -369,11 +390,10 @@ def fit_model(cells: CellData, counts: Counts, params: ModelParams, *,
                                  if state_mass[si].sum() + cell_y_by_state[si] > 0 else None)
             for si in train_states},
     }
-    return Fitted(design=build_design(cells, policy=params.tick_policy, lambdas=params.lambdas,
-                                      fit_stats=train_design),
+    return Fitted(design=out_design,
                   glm=glm, eb=eb, arch_of_area=arch_of_area, std=std, ev_points=tuple(ev_points), params=params,
                   years=float(counts.years), arch_centers=np.asarray(centers, dtype=np.float64),
-                  area_ids=np.asarray(cells.area_id, dtype=np.int64), y_train=np.where(mask, y_in, 0.0),
+                  area_ids=np.asarray(cells.area_id, dtype=np.int64), y_train=y_train, train_mask=mask.copy(),
                   state_evidence=state_evidence, state_idx=cells.state_idx.copy(),
                   region_idx=cells.region_idx.copy(), states=cells.states, regions=cells.regions,
                   diagnostics=diagnostics)

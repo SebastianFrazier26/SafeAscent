@@ -355,3 +355,49 @@ def test_to_bundle_checks_the_shipped_bytes(monkeypatch):
     monkeypatch.setattr(ModelBundle, "from_bytes", classmethod(lossy))
     with pytest.raises(BundleParityError):
         fit.to_bundle("v", TH, cells)
+
+
+def _assert_same_fit(a, b):
+    np.testing.assert_array_equal(a.glm.coef, b.glm.coef)
+    np.testing.assert_array_equal(a.design.X, b.design.X)
+    np.testing.assert_array_equal(a.arch_of_area, b.arch_of_area)
+    np.testing.assert_array_equal(a.arch_centers, b.arch_centers)
+    for k in ("kappa_cell", "kappa_area", "kappa_region", "kappa_state", "kappa_arch"):
+        assert getattr(a.eb, k) == getattr(b.eb, k)
+    for x, y in zip(a.ev_points, b.ev_points):
+        np.testing.assert_array_equal(x, y)
+    np.testing.assert_array_equal(a.state_evidence, b.state_evidence)
+    assert a.diagnostics == b.diagnostics
+
+
+def test_reuse_stage1_reproduces_a_full_fit_exactly():
+    # F68: reusing the stage-1 GLM changes nothing when only stage-2 parameters differ.
+    cells, counts = synthetic_problem(seed=18)
+    mask = cells.state_idx[cells.area_idx] != 1
+    first = fit_model(cells, counts, ModelParams(k_arch=8), train_mask=mask)
+    for params in (ModelParams(k_arch=8), ModelParams(k_arch=4, blend=False, seed=3)):
+        full = fit_model(cells, counts, params, train_mask=mask)
+        reused = fit_model(cells, counts, params, train_mask=mask, reuse_stage1=first)
+        _assert_same_fit(full, reused)
+        z = np.zeros(cells.n)
+        np.testing.assert_array_equal(full.predict(cells, z)[1].post.mean, reused.predict(cells, z)[1].post.mean)
+
+
+def test_reuse_stage1_refuses_changed_stage1_inputs():
+    from app.ml.features import Lambdas
+
+    cells, counts = synthetic_problem(seed=19)
+    mask = cells.state_idx[cells.area_idx] != 1
+    first = fit_model(cells, counts, ModelParams(), train_mask=mask)
+    with pytest.raises(ValueError, match="stage-1"):
+        fit_model(cells, counts, ModelParams(lambdas=Lambdas(covariate=1.0)), train_mask=mask, reuse_stage1=first)
+    with pytest.raises(ValueError, match="stage-1"):
+        fit_model(cells, counts, ModelParams(), train_mask=~mask, reuse_stage1=first)
+    y = counts.y.copy()
+    y[np.flatnonzero(mask)[0]] += 1.0
+    with pytest.raises(ValueError, match="stage-1"):
+        fit_model(cells, dataclasses.replace(counts, y=y), ModelParams(), train_mask=mask, reuse_stage1=first)
+    # A held-out cell's count is not a stage-1 input, so changing it keeps the reuse valid.
+    y2 = counts.y.copy()
+    y2[np.flatnonzero(~mask)[0]] += 1.0
+    fit_model(cells, dataclasses.replace(counts, y=y2), ModelParams(), train_mask=mask, reuse_stage1=first)

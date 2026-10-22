@@ -73,6 +73,7 @@ markers = [
     "performance: marks tests as performance benchmarks (deselect with '-m \"not performance\"')",
     "needs_data: needs a populated database or live services; run with -m needs_data",
     "db: read-only acceptance checks against a Neon branch as analyst; needs VERIFY_DATABASE_URL; run with -m db",
+    "slow: full backtest suites (seconds on fixtures, not milliseconds); deselect with -m 'not slow'",
 ]
 
 [tool.ruff]
@@ -161,6 +162,8 @@ module = [
     "app.ml.explain",
     "app.ml.model",
     "app.ml.metrics",
+    "app.ml.backtest",
+    "app.ml.kernel_adapter",
     "app.pipelines.accident_facts",
     "app.pipelines.dem",
     "app.pipelines.epqs",
