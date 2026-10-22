@@ -6,7 +6,10 @@ import { useRouteSafety } from '../hooks/useRouteSafety';
 import { fetchRouteSafety } from '../services/api';
 import { INSUFFICIENT_DATA_MESSAGE, NO_RISK_HEX, RISK_COLOR_HEX } from '../utils/riskUtils';
 
-vi.mock('../services/api', () => ({ fetchRouteSafety: vi.fn() }));
+vi.mock('../services/api', async (importOriginal) => ({
+  ...(await importOriginal()),
+  fetchRouteSafety: vi.fn(),
+}));
 
 function Harness() {
   const { state, retry } = useRouteSafety(42, '2026-09-27');

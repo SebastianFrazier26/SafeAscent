@@ -1,6 +1,15 @@
 import { AxiosError, AxiosHeaders } from 'axios';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import api, { fetchNearbyAccidents, fetchRouteSafety, isSafetyResponse } from './api';
+import api, {
+  fetchNearbyAccidents,
+  fetchRouteSafety,
+  isInsufficient,
+  isSafetyResponse,
+  isScored,
+  isStoredScore,
+  parseSafety,
+  SCORE_UNAVAILABLE_MESSAGE,
+} from './api';
 
 const OK = {
   route_id: 42,
@@ -14,7 +23,98 @@ const OK = {
 // Owner decision 2026-09-28: too little evidence -> null score, gray, explicit status.
 const INSUFFICIENT = { ...OK, risk_score: null, color_code: 'gray', data_status: 'insufficient_data' };
 
+const STORED = {
+  ...OK,
+  confidence: 'low',
+  score_range: [30, 55],
+  model_version: 'eb_v1-2026-10-20',
+  evidence: { geo: 0.4, similar: 2 },
+  relative_rate: { mean: 1.3, lo: 0.8, hi: 2.1 },
+  per_10k_logged_ascents: null,
+  per_10k_reason: 'ticks_incomplete',
+};
+
+const STORED_INSUFFICIENT = {
+  ...INSUFFICIENT,
+  model_version: 'eb_v1-2026-10-20',
+  insufficient_reason: 'no_evidence',
+};
+
 afterEach(() => vi.restoreAllMocks());
+
+const notFound = () =>
+  new AxiosError('Not Found', 'ERR_BAD_REQUEST', { headers: new AxiosHeaders() }, null, {
+    status: 404, statusText: 'Not Found', data: { detail: 'score unavailable' }, headers: {}, config: { headers: new AxiosHeaders() },
+  });
+
+describe('parseSafety', () => {
+  it('parses a low-confidence payload and keeps the number and its range', () => {
+    const parsed = parseSafety(STORED);
+    expect(parsed.risk_score).toBe(42.3);
+    expect(isStoredScore(parsed) && parsed.score_range).toEqual([30, 55]);
+  });
+
+  it('keeps a null relative_rate on an ok score', () => {
+    expect(parseSafety({ ...STORED, relative_rate: null }).data_status).toBe('ok');
+  });
+
+  it('parses a stored insufficient payload with a null score', () => {
+    const parsed = parseSafety(STORED_INSUFFICIENT);
+    expect(parsed.risk_score).toBeNull();
+    expect(parsed.color_code).toBe('gray');
+  });
+
+  it('still accepts the old shape with no stored-score fields', () => {
+    expect(parseSafety(OK).risk_score).toBe(42.3);
+    expect(parseSafety(INSUFFICIENT).risk_score).toBeNull();
+  });
+
+  it.each([
+    ['range above the score', { ...STORED, score_range: [50, 60] }],
+    ['range below the score', { ...STORED, score_range: [10, 40] }],
+    ['range outside 0-100', { ...STORED, score_range: [30, 101] }],
+    ['inverted range', { ...STORED, score_range: [55, 30] }],
+    ['missing confidence', { ...STORED, confidence: undefined }],
+    ['missing score_range', { ...STORED, score_range: undefined }],
+    ['missing evidence', { ...STORED, evidence: undefined }],
+    ['missing model_version', { ...STORED, model_version: undefined }],
+    ['unknown confidence', { ...STORED, confidence: 'certain' }],
+    ['non-finite range bound', { ...STORED, score_range: [30, null] }],
+    ['non-finite evidence', { ...STORED, evidence: { geo: null, similar: 2 } }],
+    ['negative evidence', { ...STORED, evidence: { geo: -1, similar: 2 } }],
+    ['unordered rate interval', { ...STORED, relative_rate: { mean: 3, lo: 0.8, hi: 2.1 } }],
+    ['non-numeric rate', { ...STORED, relative_rate: { mean: 'x', lo: 0.8, hi: 2.1 } }],
+    ['insufficient without a reason', { ...STORED_INSUFFICIENT, insufficient_reason: undefined }],
+    ['insufficient with an unknown reason', { ...STORED_INSUFFICIENT, insufficient_reason: 'because' }],
+    ['insufficient carrying a confidence', { ...STORED_INSUFFICIENT, confidence: 'low' }],
+    ['insufficient carrying a range', { ...STORED_INSUFFICIENT, score_range: [0, 10] }],
+    ['ok carrying an insufficient_reason', { ...STORED, insufficient_reason: 'no_evidence' }],
+  ])('throws on %s', (_label, body) => {
+    expect(() => parseSafety(body)).toThrow('Malformed safety response');
+  });
+});
+
+describe('score guards discriminate on data_status', () => {
+  it('treats an insufficient result as insufficient and never as scored', () => {
+    const parsed = parseSafety(STORED_INSUFFICIENT);
+    expect(isInsufficient(parsed)).toBe(true);
+    expect(isScored(parsed)).toBe(false);
+    expect(isStoredScore(parsed)).toBe(false);
+  });
+
+  it('treats an ok result as scored', () => {
+    const parsed = parseSafety(STORED);
+    expect(isScored(parsed)).toBe(true);
+    expect(isInsufficient(parsed)).toBe(false);
+    expect(isStoredScore(parsed)).toBe(true);
+  });
+
+  it('does not call a legacy ok result a stored score', () => {
+    const parsed = parseSafety(OK);
+    expect(isScored(parsed)).toBe(true);
+    expect(isStoredScore(parsed)).toBe(false);
+  });
+});
 
 describe('isSafetyResponse', () => {
   it('accepts a well-formed payload', () => {
@@ -58,7 +158,7 @@ describe('fetchRouteSafety', () => {
     const post = vi.spyOn(api, 'post').mockResolvedValue({ data: OK } as never);
     await expect(fetchRouteSafety(42, '2026-09-27')).resolves.toEqual(OK);
     expect(post).toHaveBeenCalledWith('/mp-routes/42/safety', null, {
-      params: { target_date: '2026-09-27', bypass_cache: true },
+      params: { target_date: '2026-09-27' },
     });
   });
 
@@ -77,12 +177,24 @@ describe('fetchRouteSafety', () => {
     await expect(fetchRouteSafety(42, '2026-09-27')).rejects.toThrow('Malformed safety response');
   });
 
-  it('reads a 404 as score unavailable, not as insufficient data', async () => {
-    const error = new AxiosError('Not Found', 'ERR_BAD_REQUEST', { headers: new AxiosHeaders() }, null, {
-      status: 404, statusText: 'Not Found', data: { detail: 'score unavailable' }, headers: {}, config: { headers: new AxiosHeaders() },
-    });
-    vi.spyOn(api, 'post').mockRejectedValue(error);
-    await expect(fetchRouteSafety(42, '2026-09-27')).rejects.toThrow('Score unavailable for this route.');
+  it('reads a 404 as score unavailable, never as a resolved score', async () => {
+    vi.spyOn(api, 'post').mockRejectedValue(notFound());
+    const result = await fetchRouteSafety(42, '2026-09-27').then(
+      (value) => ({ resolved: value }),
+      (error: unknown) => ({ rejected: error }),
+    );
+    expect(result).not.toHaveProperty('resolved');
+    expect((result as { rejected: Error }).rejected.message).toBe(SCORE_UNAVAILABLE_MESSAGE);
+  });
+
+  it('rejects a null body rather than reading it as a score', async () => {
+    vi.spyOn(api, 'post').mockResolvedValue({ data: null } as never);
+    await expect(fetchRouteSafety(42, '2026-09-27')).rejects.toThrow('Malformed safety response');
+  });
+
+  it('rejects a stored payload whose range does not bracket the score', async () => {
+    vi.spyOn(api, 'post').mockResolvedValue({ data: { ...STORED, score_range: [50, 60] } } as never);
+    await expect(fetchRouteSafety(42, '2026-09-27')).rejects.toThrow('Malformed safety response');
   });
 
   it('tolerates the additive stored-score fields', async () => {
