@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from app.ml.cells import TYPE_GROUPS
-from scipy.special import gammaln
+from scipy.special import gammaln, polygamma
 from scipy.stats import gamma as gamma_dist
 from scipy.stats import nbinom
 
@@ -263,16 +263,18 @@ def _reference_prior(fit: EbFit, cells, arch_of_area):
         s_sh, s_rt = theta(fit.state, int(cells.state_idx[a]), *nat, fit.kappa_state)
         r_sh, r_rt = theta(fit.region, int(cells.region_idx[a]), s_sh, s_rt, fit.kappa_region)
         a_sh, a_rt = theta(fit.area, a, r_sh, r_rt, fit.kappa_area)
-        wg = a_rt * a_rt / a_sh
+        pg = 1.0 / polygamma(1, a_sh)
         k = int(arch_of_area[a])
         if fit.blend and k >= 0:
             k_sh, k_rt = theta(fit.arch, k * len(TYPE_GROUPS) + int(cells.g[i]), *nat, fit.kappa_arch)
-            wa = k_rt * k_rt / k_sh
+            pa = 1.0 / polygamma(1, k_sh)
         else:
-            k_sh, k_rt, wa = 1.0, 1.0, 0.0
-        prior[i] = (wg * a_sh / a_rt + wa * k_sh / k_rt) / (wg + wa)
-        var[i] = 1.0 / (wg + wa)
-        bgeo[i] = wg / (wg + wa)
+            k_sh, k_rt, pa = 1.0, 1.0, 0.0
+        wg, wa = pg / (pg + pa), pa / (pg + pa)
+        mg, ma = a_sh / a_rt, k_sh / k_rt
+        prior[i] = wg * mg + wa * ma
+        var[i] = wg * (mg / a_rt + mg ** 2) + wa * (ma / k_rt + ma ** 2) - prior[i] ** 2
+        bgeo[i] = wg
     return prior, var, bgeo
 
 
@@ -369,3 +371,50 @@ def test_zero_incident_interval_narrows_as_parent_exposure_grows():
         widths.append(hi / lo)
     assert all(a > b for a, b in zip(widths, widths[1:]))
     assert widths[0] > 1.5                                   # sparse parents: a genuinely wide range
+
+
+def test_ml_kappa_with_no_events_at_a_level_pools_fully():
+    assert ml_kappa(np.zeros(4), np.array([0.1, 2.0, 0.5, 9.0]), np.full(4, 0.7)) == KAPPA_MAX
+
+
+def test_ml_kappa_falls_back_to_a_grid_when_the_optimiser_fails(monkeypatch, caplog):
+    import types
+
+    import app.ml.eb as eb
+
+    obs, E, p = np.array([0.0, 9.0, 0.0, 6.0, 1.0]), np.full(5, 2.0), np.full(5, 1.6)
+    good = ml_kappa(obs, E, p)
+    monkeypatch.setattr(eb, "minimize_scalar",
+                        lambda *a, **k: types.SimpleNamespace(success=False, x=np.nan, message="forced"))
+    with caplog.at_level("WARNING", logger="app.ml.eb"):
+        k = ml_kappa(obs, E, p)
+    assert "grid argmax" in caplog.text
+    assert np.isfinite(k) and k == pytest.approx(good, rel=0.1)       # grid step on log kappa is ~0.1
+
+
+def test_blend_is_a_moment_matched_mixture_not_pulled_to_the_low_mean():
+    from app.ml.eb import blend_moments
+
+    sh_g, rt_g, sh_a, rt_a = np.array([1.0]), np.array([6.0]), np.array([31.0]), np.array([31.0])
+    mean, var, wg = blend_moments(sh_g, rt_g, sh_a, rt_a, np.array([True]))
+    m_g, m_a, v_g, v_a = 1 / 6, 1.0, 1 / 36, 31 / 31 ** 2
+    assert m_g < mean[0] < m_a
+    # The old inverse-variance blend weighted the low mean by 1/v = 36 vs 31: mean ~0.55.
+    old = (36 * m_g + 31 * m_a) / 67
+    assert mean[0] > old + 0.3
+    assert var[0] >= max(v_g, v_a) and 0 < wg[0] < 0.1
+    alone, alone_var, w1 = blend_moments(sh_g, rt_g, sh_a, rt_a, np.array([False]))
+    assert alone[0] == pytest.approx(m_g) and alone_var[0] == pytest.approx(v_g) and w1[0] == 1.0
+
+
+def test_kappa_area_is_finite_with_several_areas_per_region():
+    base = synthetic_cells(seed=14, n_areas=120)
+    n_areas = len(base.area_id)
+    region = (np.arange(n_areas) // 6).astype(np.int64)          # 6 areas per region, 20 regions
+    cells = dataclasses.replace(base, region_idx=region, state_idx=region // 5)
+    rng = np.random.default_rng(2)
+    mu0 = rng.lognormal(-1.5, 1.0, cells.n)
+    theta = rng.gamma(1.0, 1.0, n_areas)[cells.area_idx]           # real between-area spread
+    y = rng.poisson(mu0 * theta).astype(float)
+    fit = fit_eb(cells, y, mu0, np.zeros(n_areas, dtype=np.int64))
+    assert fit.kappa_area < KAPPA_MAX

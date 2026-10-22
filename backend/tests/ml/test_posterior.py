@@ -10,6 +10,7 @@ from app.ml.fixtures import fitted_toy
 from app.ml.posterior import (
     N_GEO,
     N_HIGH,
+    N_OWN,
     PHI_GRID,
     Thresholds,
     confidence_level,
@@ -313,3 +314,31 @@ def test_summarize_output_is_ordered_on_every_sufficient_cell(local, arch, densi
     assert np.all(0 <= s.pct_q05[ok]) and np.all(s.pct_q05[ok] <= s.percentile[ok])
     assert np.all(s.percentile[ok] <= s.pct_q95[ok]) and np.all(s.pct_q95[ok] <= 100)
     assert set(s.conf_level[ok]) <= {"high", "medium", "low"}
+
+
+def test_fractional_own_incident_does_not_open_the_high_arm():
+    th = Thresholds(d_star=1.0, conf_high=3.0, conf_medium=8.0, phi=1.0)
+    assert th.n_own == N_OWN == 1.0
+    assert _levels(th, [1.5], [4.9], [50.0], [0.02]) == ["medium"]
+    assert _levels(th, [1.5], [4.9], [50.0], [1.0]) == ["high"]
+
+
+def test_failed_gate_with_medium_disabled_is_low():
+    th = Thresholds(d_star=1.0, conf_high=3.0, conf_medium=None, phi=1.0)
+    assert _levels(th, [1.5], [0.0], [50.0], [0.0]) == ["low"]
+
+
+def test_medium_needs_some_evidence():
+    th = Thresholds(d_star=np.inf, conf_high=3.0, conf_medium=8.0, phi=1.0)
+    assert _levels(th, [1.5, 5.0, 5.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1e-6], [0.0, 0.0, 0.0]) == [
+        "low", "low", "medium"]
+
+
+def test_geo_evidence_must_agree_with_n_eff_geo():
+    toy = fitted_toy(local_incidents=0, archetype_incidents=3)
+    kw = toy.inputs(thresholds=TH)
+    geo = kw["geo_evidence"].copy()
+    geo[toy.target_cell] = True                       # caller claims geo evidence the chain does not have
+    kw["geo_evidence"] = geo
+    with pytest.raises(ValueError, match="disagrees"):
+        summarize(**kw)

@@ -10,13 +10,14 @@ kappa_eff = 1/(1/kappa + v/m), so a borrowed number is only as tight as the evid
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 import numpy as np
 from numpy.typing import NDArray
 
 from scipy.optimize import minimize_scalar
-from scipy.special import gammaln
+from scipy.special import gammaln, polygamma
 
 from app.ml.cells import TYPE_GROUPS
 from app.ml.dataset import CellData
@@ -27,6 +28,8 @@ MIN_PRIOR_SHAPE = 0.05
 # moment-matched kappa_eff and the posterior rate stay finite.
 KAPPA_MAX = 1e4
 KAPPA_MIN = 1e-6
+KAPPA_GRID_POINTS = 241  # fallback search over log kappa when the bounded optimiser reports failure
+log = logging.getLogger(__name__)
 Level = dict[int, tuple[float, float, float, float]]
 F64 = NDArray[np.float64]
 I64 = NDArray[np.int64]
@@ -70,15 +73,43 @@ def ml_kappa(O: F64, E: F64, parent: F64) -> float:  # noqa: E741 (O is the inte
     obs, E, parent = O[ok], E[ok], parent[ok]
     if not np.all(parent > 0):
         raise ValueError("EB parent rates must be positive")
+    if obs.sum() == 0:
+        return KAPPA_MAX  # no events at this level: no heterogeneity signal to fit
     lo, hi = np.log(KAPPA_MIN), np.log(KAPPA_MAX)
     res = minimize_scalar(lambda t: -nb_loglik(float(np.exp(t)), obs, E, parent), bounds=(lo, hi),
                           method="bounded", options={"xatol": 1e-6})
-    best = float(np.exp(res.x))
+    if res.success and np.isfinite(res.x):
+        best = float(np.exp(res.x))
+    else:
+        grid = np.exp(np.linspace(lo, hi, KAPPA_GRID_POINTS))
+        best = float(grid[int(np.argmax([nb_loglik(float(k), obs, E, parent) for k in grid]))])
+        log.warning("ml_kappa: bounded optimiser failed (%s); grid argmax kappa=%.4g", res.message, best)
     # Bounded Brent never evaluates the endpoints; compare them so a boundary maximum is reported as one.
     for edge in (KAPPA_MAX, KAPPA_MIN):
         if nb_loglik(edge, obs, E, parent) >= nb_loglik(best, obs, E, parent):
             return edge
     return best
+
+
+def blend_moments(sh_g: F64, rt_g: F64, sh_a: F64, rt_a: F64,
+                  use_arch: NDArray[np.bool_]) -> tuple[F64, F64, F64]:
+    """Cell parent as a moment-matched mixture of the geo and archetype Gammas: (mean, var, geo weight).
+    Weights are 1/trigamma(shape), the precision of log theta, so they do not depend on the rate's
+    scale; the inverse Gamma variance (rate^2/shape) used before gave a low mean weight ~ 1/m^2 and
+    pulled the blend toward the safer-looking source. The mixture variance includes the spread
+    between the two means, so disagreeing sources widen the prior instead of narrowing it."""
+    pg = 1.0 / polygamma(1, sh_g)
+    pa = np.where(use_arch, 1.0 / polygamma(1, np.where(use_arch, sh_a, 1.0)), 0.0)
+    wg = pg / (pg + pa)
+    wa = 1.0 - wg
+    m_g, m_a = sh_g / rt_g, sh_a / rt_a
+    v_g, v_a = m_g / rt_g, m_a / rt_a
+    mean = wg * m_g + np.where(use_arch, wa * m_a, 0.0)
+    second = wg * (v_g + m_g ** 2) + np.where(use_arch, wa * (v_a + m_a ** 2), 0.0)
+    within = wg * v_g + np.where(use_arch, wa * v_a, 0.0)
+    var = np.maximum(second - mean ** 2, within)  # guards cancellation; the mixture var is >= within
+    return (np.asarray(mean, dtype=np.float64), np.asarray(var, dtype=np.float64),
+            np.asarray(wg, dtype=np.float64))
 
 
 def _floored_kappa(kappa: float, parent: F64, parent_var: F64) -> F64:
@@ -180,7 +211,7 @@ class EbFit:
     blend: bool
 
     def prior(self, cells: CellData, arch_of_area: I64) -> tuple[F64, F64, F64, dict[str, F64]]:
-        """Cell prior mean, its variance 1/(wg + wa), the geo blend weight and the per-level chain,
+        """Cell prior mean and variance (blend_moments), the geo blend weight and the per-level chain,
         all vectorized."""
         a = cells.area_idx.astype(np.int64)
         st, rg = cells.state_idx[a], cells.region_idx[a]
@@ -192,17 +223,15 @@ class EbFit:
                                       _ratio(_ratio(r_sh, r_rt), r_rt), self.kappa_area)
         ak = _arch_keys(cells, arch_of_area)
         k_sh, k_rt, k_O, k_E = _theta(_Table.of(self.arch), ak, nat, nat_v, self.kappa_arch)
-        wg = a_rt * a_rt / a_sh
         use_arch = (ak >= 0) & self.blend
-        wa = np.where(use_arch, k_rt * k_rt / k_sh, 0.0)
-        prior = (wg * a_sh / a_rt + wa * k_sh / k_rt) / (wg + wa)
+        prior, prior_var, bgeo = blend_moments(a_sh, a_rt, k_sh, k_rt, use_arch)
         chain = {
             "omega_area": a_E / a_rt, "O_area": a_O,
             "omega_region": r_E / r_rt, "O_region": r_O,
             "omega_state": s_E / s_rt, "O_state": s_O,
             "omega_arch": np.where(use_arch, k_E / k_rt, 0.0), "O_arch": np.where(use_arch, k_O, 0.0),
         }
-        return prior, 1.0 / (wg + wa), wg / (wg + wa), chain
+        return prior, prior_var, bgeo, chain
 
     def cell_posterior(self, cells: CellData, y_own: F64, mu0: F64, arch_of_area: I64) -> CellPost:
         _check_counts("y_own", y_own, cells.n)

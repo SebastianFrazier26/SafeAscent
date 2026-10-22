@@ -27,6 +27,10 @@ PHI_GRID = (1.0, 1.25, 1.5, 2.0, 3.0, 4.0)
 # evidence alone is prior strength, not knowledge of the route.
 N_HIGH = 10.0
 N_GEO = 5.0
+# The own-incident arm of the gate needs one whole incident of effective mass: fractional y_own
+# (placement weights) of 0.02 is not an incident at this route.
+N_OWN = 1.0
+GEO_TOL = 1e-9
 TICKS_COMPLETE = 1.0 - 1e-9
 
 
@@ -47,6 +51,7 @@ class Thresholds:
     phi: float
     n_high: float = N_HIGH
     n_geo: float = N_GEO
+    n_own: float = N_OWN
 
     def __post_init__(self) -> None:
         if np.isnan(self.d_star) or self.d_star < 0:
@@ -57,8 +62,8 @@ class Thresholds:
             raise ValueError("need conf_high <= conf_medium")
         if not (1.0 <= self.phi <= max(PHI_GRID)):
             raise ValueError(f"phi must lie in [1, {max(PHI_GRID)}] (max of PHI_GRID)")
-        if not (np.isfinite(self.n_high) and np.isfinite(self.n_geo) and self.n_high >= 0 and self.n_geo >= 0):
-            raise ValueError("n_high and n_geo must be finite and >= 0")
+        if not all(np.isfinite(v) and v >= 0 for v in (self.n_high, self.n_geo, self.n_own)):
+            raise ValueError("n_high, n_geo and n_own must be finite and >= 0")
 
 
 @dataclass(frozen=True)
@@ -112,13 +117,17 @@ def insufficient_mask(geo_evidence: NDArray[np.bool_], n_eff_feature: F64, evide
 
 def confidence_level(ratio: F64, insufficient: NDArray[np.bool_], th: Thresholds, n_eff_geo: F64,
                      n_eff_feature: F64, y_own: F64) -> NDArray[np.object_]:
-    """Width sets the level; "high" also needs evidence (n_eff_geo + n_eff_feature >= n_high and an own
-    incident or n_eff_geo >= n_geo), else it is capped at "medium". A disabled (None) level is skipped."""
+    """Width sets the level, evidence caps it. "high" needs n_eff_geo + n_eff_feature >= n_high and
+    either y_own >= n_own or n_eff_geo >= n_geo; failing that it falls to whatever conf_medium gives
+    (so "low" when medium is disabled). Neither "high" nor "medium" without some evidence (> 0).
+    A disabled (None) level is skipped."""
     by_ratio_high = np.zeros(ratio.shape, dtype=np.bool_) if th.conf_high is None else ratio <= th.conf_high
     by_ratio_med = np.zeros(ratio.shape, dtype=np.bool_) if th.conf_medium is None else ratio <= th.conf_medium
-    evidence = ((n_eff_geo + n_eff_feature >= th.n_high) & ((y_own > 0) | (n_eff_geo >= th.n_geo)))
+    total = n_eff_geo + n_eff_feature
+    some = total > 0
+    evidence = some & (total >= th.n_high) & ((y_own >= th.n_own) | (n_eff_geo >= th.n_geo))
     high = by_ratio_high & evidence
-    medium = (by_ratio_high & ~evidence) | by_ratio_med
+    medium = by_ratio_med & some
     return np.asarray(np.where(insufficient, "insufficient",
                                np.where(high, "high", np.where(medium, "medium", "low"))), dtype=object)
 
@@ -159,6 +168,9 @@ def summarize(cells: CellData, design: Design, coef: F64, cp: CellPost, *,
     n_geo = wc * np.maximum(cp.y_own, 0.0) + (1 - wc) * b * geo_inner
     n_feat = np.asarray((1 - wc) * (1 - b) * ch["omega_arch"] * ch["O_arch"], dtype=np.float64)
 
+    # geo_evidence stays an input (the interface); it must agree with the chain's own geo mass.
+    if np.any(geo_evidence != (n_geo > GEO_TOL)):
+        raise ValueError("geo_evidence disagrees with n_eff_geo > 0 on some cell")
     insufficient = insufficient_mask(geo_evidence, n_feat, evidence_dist, thresholds.d_star)
     suff = ~insufficient
     if np.any(cells.n_routes[suff] <= 0):
