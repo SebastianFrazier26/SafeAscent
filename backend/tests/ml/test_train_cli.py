@@ -100,13 +100,15 @@ def test_run_promotes_then_rejects_corrupted_data_and_rollback_refuses(db, tmp_p
 def test_a_connection_failure_prints_the_class_only(url, tmp_path, capsys, caplog, monkeypatch):
     monkeypatch.setattr(settings, "TRAINER_DATABASE_URL", url)
     monkeypatch.setattr(settings, "HEALTHCHECKS_TRAIN_URL", None)
+    for name in ("issue.md", "status.json"):
+        (tmp_path / name).write_text("from an earlier successful run\n")
     with caplog.at_level(logging.DEBUG):
         rc, out, err = _cli(capsys, "run", "--today", TODAY, "--out-dir", str(tmp_path))
     assert rc == 1 and re.fullmatch(r"failed: \w+\n", out), out
     seen = out + err + caplog.text
     for leak in ("127.0.0.1", "localhost", "t20db", "sekret", "trainer:", "SELECT", "FROM"):
         assert leak not in seen
-    assert not (tmp_path / "status.json").exists()
+    assert not (tmp_path / "status.json").exists() and not (tmp_path / "issue.md").exists()
 
 
 def test_kernel_baseline_seeds_an_empty_registry_once(tmp_path, capsys, monkeypatch):

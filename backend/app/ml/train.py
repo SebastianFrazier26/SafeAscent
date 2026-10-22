@@ -335,6 +335,15 @@ def failed_components(gate: GateResult) -> list[str]:
     return [k for k, v in gate.components.items() if not v["passed"]]
 
 
+OUTPUTS = ("issue.md", "status.json")
+
+
+def clear_outputs(out_dir: Path) -> None:
+    """A failed run must not leave an earlier run's issue.md or status.json for the runbook to read."""
+    for name in OUTPUTS:
+        (out_dir / name).unlink(missing_ok=True)
+
+
 def write_outputs(out_dir: Path, outcome: Outcome) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "issue.md").write_text(issue_markdown(outcome.version, outcome.gate, outcome.diff, public=True) + "\n",
@@ -422,6 +431,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     today = getattr(args, "today", None) or date.today()
     try:
         if args.cmd == "run":
+            clear_outputs(args.out_dir)
             outcome = asyncio.run(_with_engine(run, today=today, benchmark=args.benchmark, out_dir=args.out_dir))
             if outcome.gate.passed:
                 print(f"promoted {outcome.version}")
