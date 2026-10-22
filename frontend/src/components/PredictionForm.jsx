@@ -15,39 +15,18 @@ import {
   InputAdornment,
   Autocomplete,
 } from '@mui/material';
-import {
-  Search as SearchIcon,
-  CalendarToday as CalendarIcon,
-} from '@mui/icons-material';
+import { Search as SearchIcon } from '@mui/icons-material';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
 
 /**
- * Get today's date in YYYY-MM-DD format
- */
-const getTodayDate = () => {
-  return new Date().toISOString().split('T')[0];
-};
-
-/**
- * Get max date (3 days from now) in YYYY-MM-DD format
- */
-const getMaxDate = () => {
-  const date = new Date();
-  date.setDate(date.getDate() + 2); // 3-day window including today
-  return date.toISOString().split('T')[0];
-};
-
-/**
- * PredictionForm - Route search and date selection
+ * PredictionForm - Route search. Selecting a result zooms the map to it; the risk score
+ * comes from the route's marker (the arbitrary-point /predict flow was retired with the kernel).
  *
- * @param {Function} onSubmit - Callback when form is submitted
- * @param {boolean} isLoading - Whether prediction is loading
  * @param {Function} onRouteSelect - Callback when route is selected from search
  */
-export default function PredictionForm({ onSubmit, isLoading, onRouteSelect }) {
+export default function PredictionForm({ onRouteSelect }) {
   const [routeSearch, setRouteSearch] = useState('');
-  const [plannedDate, setPlannedDate] = useState(getTodayDate());
   const [routeOptions, setRouteOptions] = useState([]);
   const [loadingRoutes, setLoadingRoutes] = useState(false);
   const [selectedRoute, setSelectedRoute] = useState(null);
@@ -112,23 +91,7 @@ export default function PredictionForm({ onSubmit, isLoading, onRouteSelect }) {
 
   const handleSubmit = (e) => {
     e.preventDefault();
-
-    if (!selectedRoute) {
-      alert('Please select a route or mountain from the search results');
-      return;
-    }
-
-    // If location is selected, don't submit prediction - just zoom to it
-    if (selectedRoute.resultType === 'location') {
-      alert('Location selected. Click on a route marker to get its safety prediction.');
-      return;
-    }
-
-    onSubmit({
-      route_id: selectedRoute.route_id,
-      route_name: selectedRoute.name,
-      planned_date: plannedDate,
-    });
+    if (selectedRoute && onRouteSelect) onRouteSelect(selectedRoute);
   };
 
   return (
@@ -139,7 +102,7 @@ export default function PredictionForm({ onSubmit, isLoading, onRouteSelect }) {
         </Typography>
 
         <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-          Search for a route or click on a route marker on the map to get safety predictions.
+          Search for a route or area to find it on the map, then click its marker for the risk score.
         </Typography>
 
         <Box component="form" onSubmit={handleSubmit}>
@@ -156,7 +119,6 @@ export default function PredictionForm({ onSubmit, isLoading, onRouteSelect }) {
               options={routeOptions}
               getOptionLabel={(option) => option.name || ''}
               loading={loadingRoutes}
-              disabled={isLoading}
               groupBy={(option) => option.resultType === 'location' ? 'Locations' : 'Routes'}
               renderInput={(params) => (
                 <TextField
@@ -218,35 +180,6 @@ export default function PredictionForm({ onSubmit, isLoading, onRouteSelect }) {
             </Typography>
           </Box>
 
-          {/* Planned Date */}
-          <Box sx={{ mb: 3 }}>
-            <Typography variant="subtitle1" fontWeight={500} gutterBottom>
-              Planned Date
-            </Typography>
-            <TextField
-              type="date"
-              value={plannedDate}
-              onChange={(e) => setPlannedDate(e.target.value)}
-              fullWidth
-              required
-              disabled={isLoading}
-              InputProps={{
-                startAdornment: (
-                  <InputAdornment position="start">
-                    <CalendarIcon color="action" />
-                  </InputAdornment>
-                ),
-              }}
-              inputProps={{
-                min: getTodayDate(),
-                max: getMaxDate(),
-              }}
-            />
-            <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
-              Weather forecasts available for the next 3 days
-            </Typography>
-          </Box>
-
           {/* Submit Button */}
           <Button
             type="submit"
@@ -254,15 +187,15 @@ export default function PredictionForm({ onSubmit, isLoading, onRouteSelect }) {
             color="primary"
             size="large"
             fullWidth
-            disabled={isLoading}
-            startIcon={isLoading ? <CircularProgress size={20} color="inherit" /> : <SearchIcon />}
+            disabled={!selectedRoute}
+            startIcon={<SearchIcon />}
             sx={{
               py: 1.5,
               fontWeight: 600,
               fontSize: '1rem',
             }}
           >
-            {isLoading ? 'Analyzing Route...' : 'Search'}
+            Show on map
           </Button>
         </Box>
 

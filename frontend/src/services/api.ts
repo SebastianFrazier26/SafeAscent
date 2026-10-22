@@ -58,36 +58,6 @@ export type SafetyResponse = {
   target_date: string;
 } & RiskResult;
 
-export interface PredictionParams {
-  latitude: number;
-  longitude: number;
-  route_type: string;
-  planned_date: string;
-  elevation_meters?: number;
-  search_radius_km?: number;
-  route_grade?: string;
-}
-
-export interface ContributingAccident {
-  accident_id: number;
-  total_influence: number;
-  distance_km: number;
-  days_ago: number;
-  spatial_weight: number;
-  temporal_weight: number;
-  elevation_weight: number;
-  weather_weight: number;
-  route_type_weight: number;
-  severity_weight: number;
-  grade_weight?: number;
-}
-
-export type PredictionResponse = {
-  num_contributing_accidents: number;
-  top_contributing_accidents: ContributingAccident[];
-  metadata: Record<string, unknown>;
-} & RiskResult;
-
 const COLOR_CODES: readonly string[] = ['green', 'yellow', 'orange', 'red'];
 
 // Exactly the two legal shapes: a gray colour with a number, or a number with an
@@ -118,18 +88,6 @@ export const isSafetyResponse = (value: unknown): value is SafetyResponse => {
   );
 };
 
-export const isPredictionResponse = (value: unknown): value is PredictionResponse => {
-  if (typeof value !== 'object' || value === null) return false;
-  const body = value as Record<string, unknown>;
-  return (
-    typeof body.num_contributing_accidents === 'number' &&
-    Array.isArray(body.top_contributing_accidents) &&
-    typeof body.metadata === 'object' &&
-    body.metadata !== null &&
-    isRiskResult(body)
-  );
-};
-
 const toReadableError = (error: unknown): Error => {
   if (axios.isAxiosError(error)) {
     if (error.code === 'ECONNABORTED') {
@@ -143,6 +101,8 @@ const toReadableError = (error: unknown): Error => {
   return error instanceof Error ? error : new Error('Unexpected error.');
 };
 
+export const SCORE_UNAVAILABLE_MESSAGE = 'Score unavailable for this route.';
+
 export const fetchRouteSafety = async (routeId: number, targetDate: string): Promise<SafetyResponse> => {
   let data: unknown;
   try {
@@ -151,27 +111,15 @@ export const fetchRouteSafety = async (routeId: number, targetDate: string): Pro
     });
     data = response.data;
   } catch (error) {
+    // The stored-score API answers 404 when the active model has no row for the route:
+    // the score is unavailable, which is not the same as "no evidence" (gray).
+    if (axios.isAxiosError(error) && error.response?.status === 404) {
+      throw new Error(SCORE_UNAVAILABLE_MESSAGE);
+    }
     throw toReadableError(error);
   }
   if (!isSafetyResponse(data)) {
     throw new Error('Malformed safety response from the API.');
-  }
-  return data;
-};
-
-export const predictRouteSafety = async (params: PredictionParams): Promise<PredictionResponse> => {
-  let data: unknown;
-  try {
-    const response = await api.post('/predict', params);
-    data = response.data;
-  } catch (error) {
-    if (axios.isAxiosError(error) && error.response?.status === 422) {
-      throw new Error('Invalid prediction parameters. Please check your input.');
-    }
-    throw toReadableError(error);
-  }
-  if (!isPredictionResponse(data)) {
-    throw new Error('Malformed prediction response from the API.');
   }
   return data;
 };

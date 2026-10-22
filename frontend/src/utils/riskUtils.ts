@@ -100,7 +100,7 @@ export const formatConfidence = (confidence: number): string => `${Math.round(co
 
 /**
  * The only band -> hex palette (controller ruling 2026-09-28: the map marker colours).
- * Map markers, clusters, legend, modal chips and PredictionResult all read it, so one
+ * Map markers, clusters, legend and modal chips all read it, so one
  * score is one colour everywhere.
  */
 export const RISK_COLOR_HEX: Record<RiskColorCode, string> = {

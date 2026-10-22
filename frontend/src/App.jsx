@@ -23,50 +23,9 @@ import {
 } from '@mui/icons-material';
 import MapView from './components/MapView';
 import PredictionForm from './components/PredictionForm';
-import PredictionResult from './components/PredictionResult';
-import { predictRouteSafety } from './services/api';
 
 function App() {
-  // State
-  const [prediction, setPrediction] = useState(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const [lastParams, setLastParams] = useState(null);
   const [selectedRouteForZoom, setSelectedRouteForZoom] = useState(null);
-
-  /**
-   * Handle prediction form submission
-   */
-  const handlePredictionSubmit = async (params) => {
-    setIsLoading(true);
-    setError(null);
-    setPrediction(null);
-    setLastParams(params);
-
-    try {
-      console.log('Submitting prediction request:', params);
-      const result = await predictRouteSafety(params);
-      console.log('Prediction result:', result);
-      setPrediction(result);
-    } catch (err) {
-      console.error('Prediction error:', err);
-      setError(err.message || 'Failed to fetch prediction. Please try again.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  /**
-   * Reset and start new prediction
-   */
-  const handleReset = () => {
-    setPrediction(null);
-    setError(null);
-  };
-
-  const handleRetry = () => {
-    if (lastParams) handlePredictionSubmit(lastParams);
-  };
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
@@ -136,69 +95,42 @@ function App() {
           }}
         >
           <Box sx={{ overflow: 'auto', p: 3 }}>
-            {/* Show form if no prediction */}
-            {!prediction && (
-              <PredictionForm
-                onSubmit={handlePredictionSubmit}
-                isLoading={isLoading}
-                onRouteSelect={setSelectedRouteForZoom}
-              />
-            )}
+            <PredictionForm onRouteSelect={setSelectedRouteForZoom} />
 
-            {/* Show results if prediction available */}
-            {prediction && (
-              <PredictionResult
-                prediction={prediction}
-                onReset={handleReset}
-              />
-            )}
-
-            {error && (
-              <PredictionResult
-                prediction={null}
-                error={error}
-                onRetry={lastParams ? handleRetry : undefined}
-                onReset={handleReset}
-              />
-            )}
-
-            {/* Help Section */}
-            {!prediction && !error && (
-              <Paper
-                elevation={0}
-                sx={{
-                  mt: 3,
-                  p: 2.5,
-                  bgcolor: 'primary.50',
-                  border: 1,
-                  borderColor: 'primary.200',
-                }}
-              >
-                <Typography variant="subtitle1" fontWeight={600} color="primary.main" gutterBottom>
-                  How It Works
-                </Typography>
-                <List dense sx={{ pt: 1 }}>
-                  <ListItem sx={{ px: 0 }}>
-                    <ListItemText
-                      primary="1. Search for a route by name or ID, or click a route marker on the map"
-                      primaryTypographyProps={{
-                        variant: 'body2',
-                        color: 'text.primary',
-                      }}
-                    />
-                  </ListItem>
-                  <ListItem sx={{ px: 0 }}>
-                    <ListItemText
-                      primary="2. Select your planned date (next 3 days)"
-                      primaryTypographyProps={{
-                        variant: 'body2',
-                        color: 'text.primary',
-                      }}
-                    />
-                  </ListItem>
-                </List>
-              </Paper>
-            )}
+            <Paper
+              elevation={0}
+              sx={{
+                mt: 3,
+                p: 2.5,
+                bgcolor: 'primary.50',
+                border: 1,
+                borderColor: 'primary.200',
+              }}
+            >
+              <Typography variant="subtitle1" fontWeight={600} color="primary.main" gutterBottom>
+                How It Works
+              </Typography>
+              <List dense sx={{ pt: 1 }}>
+                <ListItem sx={{ px: 0 }}>
+                  <ListItemText
+                    primary="1. Search for a route by name or ID, or click a route marker on the map"
+                    primaryTypographyProps={{
+                      variant: 'body2',
+                      color: 'text.primary',
+                    }}
+                  />
+                </ListItem>
+                <ListItem sx={{ px: 0 }}>
+                  <ListItemText
+                    primary="2. Click the route marker to see its risk score and analytics"
+                    primaryTypographyProps={{
+                      variant: 'body2',
+                      color: 'text.primary',
+                    }}
+                  />
+                </ListItem>
+              </List>
+            </Paper>
           </Box>
         </Drawer>
       </Box>

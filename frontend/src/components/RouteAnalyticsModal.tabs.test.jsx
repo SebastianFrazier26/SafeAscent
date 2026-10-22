@@ -608,3 +608,110 @@ describe('RouteAnalyticsModal breakdown, trends and 1-decimal chips (fix round 1
     expect(within(dialog).queryByText(/past 30 days/)).toBeNull();
   });
 });
+
+describe('RouteAnalyticsModal stored-score responses (additive API, Task 22)', () => {
+  const RISK_NOTE = 'Hour-by-hour risk arrives with the conditions rules (v2.1).';
+  const storedHour = (hour) => ({
+    hour,
+    risk_score: null,
+    risk: null,
+    risk_note: RISK_NOTE,
+    is_climbable: null,
+    conditions_summary: 'Clear',
+    temperature: 2,
+    wind_speed: 3,
+    precipitation: 0,
+  });
+  const timeOfDay = {
+    base_daily_risk: null,
+    risk_note: RISK_NOTE,
+    hourly_data: [storedHour(9), storedHour(10)],
+    climbing_windows: [],
+    best_window: null,
+  };
+  const profileCell = (month, label, extra) => ({ month, month_label: label, ...extra });
+  const historical = {
+    reference_date: '2026-09-27',
+    historical_predictions: [],
+    summary: null,
+    trend: null,
+    model_version: 'eb_v1-test',
+    monthly_profile: [
+      profileCell(1, 'Jan', { risk_score: 40, color_code: 'yellow', data_status: 'ok', confidence: 'high', score_range: [20, 60] }),
+      profileCell(2, 'Feb', { risk_score: null, color_code: 'gray', data_status: 'insufficient_data', insufficient_reason: 'no_evidence' }),
+      profileCell(3, 'Mar', { risk_score: null, color_code: null, data_status: null }),
+    ],
+    weather_volatility: { available: false, message: 'Historical weather data unavailable right now.' },
+  };
+  const breakdown = {
+    route_id: 1,
+    risk_score: 40,
+    color_code: 'yellow',
+    data_status: 'ok',
+    confidence: 'low',
+    score_range: [20, 60],
+    model_version: 'eb_v1-test',
+    evidence: { geo: 0.4, similar: 2.1 },
+    terms: [
+      { name: 'z_elevation_m', label: 'Elevation', log_effect: 0.3, multiplier: 1.35 },
+      { name: 'evidence', label: 'Reported incidents here and on similar routes', log_effect: -0.1, multiplier: 0.9 },
+    ],
+  };
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn((url) => {
+      if (url.includes('/time-of-day')) return Promise.resolve(jsonResponse(timeOfDay));
+      if (url.includes('/historical-trends')) return Promise.resolve(jsonResponse(historical));
+      if (url.includes('/risk-breakdown')) return Promise.resolve(jsonResponse(breakdown));
+      return Promise.resolve(jsonResponse(route(1, 'Route A')));
+    }));
+  });
+
+  const neutral = { backgroundColor: NO_RISK_HEX, color: readableTextOn(NO_RISK_HEX) };
+
+  it('an hourly risk of null renders an em-dash with the risk note, never 0', async () => {
+    const user = userEvent.setup();
+    render(<Modal routeData={route(1, 'Route A')} />);
+    await user.click(screen.getByRole('tab', { name: 'Time of Day' }));
+    await screen.findByText(/Hourly Conditions Detail/);
+
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText(RISK_NOTE)).toBeInTheDocument();
+    const chips = within(dialog).getAllByText('—', { selector: '.MuiChip-label' });
+    expect(chips).toHaveLength(2);
+    for (const chip of chips) expect(chip.closest('.MuiChip-root')).toHaveStyle(neutral);
+    expect(within(dialog).queryByText(/^0(\.0)?$/)).toBeNull();
+    expect(within(dialog).queryByText(/Hourly Risk Score Trend/)).toBeNull();
+    expect(within(dialog).queryByText(/Best Climbing Window/)).toBeNull();
+  });
+
+  it('the trends view reads the 12-month profile when present', async () => {
+    const user = userEvent.setup();
+    render(<Modal routeData={route(1, 'Route A')} />);
+    await user.click(screen.getByRole('tab', { name: 'Risk Trends' }));
+    const dialog = screen.getByRole('dialog');
+    await within(dialog).findByText(/Risk by Month/);
+
+    const jan = within(dialog).getByTestId('profile-month-1');
+    expect(jan).toHaveTextContent('40.0');
+    expect(jan).toHaveTextContent('20.0–60.0');
+    expect(jan).toHaveTextContent('high confidence');
+    const feb = within(dialog).getByTestId('profile-month-2');
+    expect(within(feb).getByText('Insufficient data').closest('.MuiChip-root')).toHaveStyle(neutral);
+    const mar = within(dialog).getByTestId('profile-month-3');
+    expect(within(mar).getByText('—').closest('.MuiChip-root')).toHaveStyle(neutral);
+    expect(mar).not.toHaveTextContent(/\b0\.0\b/);
+    expect(within(dialog).queryByText(/Risk Scores Coming Soon/)).toBeNull();
+  });
+
+  it('the breakdown lists the stored-score terms with range and confidence', async () => {
+    const user = userEvent.setup();
+    render(<Modal routeData={route(1, 'Route A')} />);
+    await user.click(screen.getByRole('tab', { name: 'Risk Breakdown' }));
+    const dialog = screen.getByRole('dialog');
+    expect(await within(dialog).findByText('Elevation')).toBeInTheDocument();
+    expect(within(dialog).getByText('×1.35')).toBeInTheDocument();
+    expect(within(dialog).getByText(/Likely range 20\.0–60\.0 • low confidence/)).toBeInTheDocument();
+    expect(within(dialog).queryByText(/Factor Contributions|pts/)).toBeNull();
+  });
+});

@@ -1,6 +1,6 @@
 import { AxiosError, AxiosHeaders } from 'axios';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import api, { fetchNearbyAccidents, fetchRouteSafety, isPredictionResponse, isSafetyResponse, predictRouteSafety } from './api';
+import api, { fetchNearbyAccidents, fetchRouteSafety, isSafetyResponse } from './api';
 
 const OK = {
   route_id: 42,
@@ -53,53 +53,6 @@ describe('isSafetyResponse', () => {
   });
 });
 
-const PREDICTION_OK = {
-  risk_score: 35.5,
-  color_code: 'yellow',
-  data_status: 'ok',
-  num_contributing_accidents: 12,
-  top_contributing_accidents: [],
-  metadata: {},
-};
-const PREDICTION_INSUFFICIENT = {
-  ...PREDICTION_OK,
-  risk_score: null,
-  color_code: 'gray',
-  data_status: 'insufficient_data',
-  num_contributing_accidents: 0,
-};
-
-describe('isPredictionResponse', () => {
-  it('accepts ok and insufficient shapes', () => {
-    expect(isPredictionResponse(PREDICTION_OK)).toBe(true);
-    expect(isPredictionResponse(PREDICTION_INSUFFICIENT)).toBe(true);
-  });
-
-  it.each([
-    ['gray with a number', { ...PREDICTION_INSUFFICIENT, risk_score: 3 }],
-    ['ok with null', { ...PREDICTION_OK, risk_score: null }],
-    ['out of range', { ...PREDICTION_OK, risk_score: 101 }],
-    ['missing status', { ...PREDICTION_OK, data_status: undefined }],
-    ['missing accidents list', { ...PREDICTION_OK, top_contributing_accidents: undefined }],
-  ])('rejects %s', (_label, body) => {
-    expect(isPredictionResponse(body)).toBe(false);
-  });
-});
-
-describe('predictRouteSafety', () => {
-  const params = { latitude: 40, longitude: -105, route_type: 'trad', planned_date: '2026-09-28' };
-
-  it('returns a validated insufficient-data body', async () => {
-    vi.spyOn(api, 'post').mockResolvedValue({ data: PREDICTION_INSUFFICIENT } as never);
-    await expect(predictRouteSafety(params)).resolves.toEqual(PREDICTION_INSUFFICIENT);
-  });
-
-  it('rejects a malformed body instead of returning it', async () => {
-    vi.spyOn(api, 'post').mockResolvedValue({ data: { ...PREDICTION_INSUFFICIENT, risk_score: 0 } } as never);
-    await expect(predictRouteSafety(params)).rejects.toThrow('Malformed prediction response');
-  });
-});
-
 describe('fetchRouteSafety', () => {
   it('posts to the safety endpoint and returns the validated body', async () => {
     const post = vi.spyOn(api, 'post').mockResolvedValue({ data: OK } as never);
@@ -122,6 +75,20 @@ describe('fetchRouteSafety', () => {
   it.each([-1, 100.01, 150])('rejects out-of-range risk_score %s', async (risk_score) => {
     vi.spyOn(api, 'post').mockResolvedValue({ data: { ...OK, risk_score } } as never);
     await expect(fetchRouteSafety(42, '2026-09-27')).rejects.toThrow('Malformed safety response');
+  });
+
+  it('reads a 404 as score unavailable, not as insufficient data', async () => {
+    const error = new AxiosError('Not Found', 'ERR_BAD_REQUEST', { headers: new AxiosHeaders() }, null, {
+      status: 404, statusText: 'Not Found', data: { detail: 'score unavailable' }, headers: {}, config: { headers: new AxiosHeaders() },
+    });
+    vi.spyOn(api, 'post').mockRejectedValue(error);
+    await expect(fetchRouteSafety(42, '2026-09-27')).rejects.toThrow('Score unavailable for this route.');
+  });
+
+  it('tolerates the additive stored-score fields', async () => {
+    const stored = { ...OK, confidence: 'low', score_range: [30, 55], model_version: 'eb_v1-x', evidence: { geo: 0.4, similar: 2 } };
+    vi.spyOn(api, 'post').mockResolvedValue({ data: stored } as never);
+    await expect(fetchRouteSafety(42, '2026-09-27')).resolves.toEqual(stored);
   });
 
   it('turns a network failure into a readable error', async () => {

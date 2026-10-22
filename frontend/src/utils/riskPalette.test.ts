@@ -43,7 +43,7 @@ describe('components use the shared palette, not their own', () => {
   // A band-keyed colour table (`green: '#...'`, mapbox `'green', '#...'`) is a second palette.
   const bandKeyedPalette = /['"]?\b(green|yellow|orange|red)\b['"]?\s*[:,]\s*['"](#|[a-z]+\.(main|dark|light))/i;
 
-  it.each(['MapView.jsx', 'RouteAnalyticsModal.jsx', 'PredictionResult.jsx'])(
+  it.each(['MapView.jsx', 'RouteAnalyticsModal.jsx'])(
     '%s imports RISK_COLOR_HEX and defines no band-keyed palette of its own',
     (name) => {
       const text = source(name);
@@ -74,7 +74,6 @@ describe('no fabricated risk score', () => {
   const files: Record<string, string> = {
     'MapView.jsx': source('MapView.jsx'),
     'RouteAnalyticsModal.jsx': source('RouteAnalyticsModal.jsx'),
-    'PredictionResult.jsx': source('PredictionResult.jsx'),
     'App.jsx': appSources['../App.jsx'] ?? '',
   };
 
