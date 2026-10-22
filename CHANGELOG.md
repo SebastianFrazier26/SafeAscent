@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Rock routes that are uncatalogued, ice/mixed or still scraping are out of scope: reported as `routes_waiting_*`, kept off the quarantine share and out of `internal.ingest_quarantine`, and given no seam row.
 - `existing_counts` binds one array parameter, so a ~163K-route export stays under asyncpg's parameter limit.
 - Read-only seam cells in `tests/verify/test_tick_seam.py`.
+- Review fixes (2026-10-21): a rock reload whose only new routes are still waiting writes no log row (`noop`); the `routes_waiting_*` counts are stored in `source_ingest_log.validation_report`; the loader reads each export through one read-only connection and transaction, so its schema check, totals and months come from one snapshot. Exports come from a private script (outside this repo) that snapshots the scraper SQLite into an aggregate-only file.
 
 ### MP catalog final-review fixes — 2026-10-15
 

@@ -108,10 +108,14 @@ def _ro_connection(path: Path) -> Iterator[sqlite3.Connection]:
     export in WAL mode. A mode=ro open can still need to (re)create the -wal file (e.g. right after
     a checkpoint clears it) even for a read, which fails here if this process can't write to the
     export's directory — a live writer alone is fine (SQLite's WAL readers don't need it). A
-    `.backup` copy is a consistent snapshot that opens read-only anywhere."""
+    `.backup` copy is a consistent snapshot that opens read-only anywhere.
+
+    Review fix 3 (2026-10-21): one explicit read transaction, so every read through this connection
+    (schema check, totals, months) sees the same moment even while the scraper writes."""
     try:
         db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         try:
+            db.execute("BEGIN")
             yield db
         finally:
             db.close()
@@ -123,39 +127,47 @@ def _ro_connection(path: Path) -> Iterator[sqlite3.Connection]:
 
 
 def check_aggregate_only(path: Path) -> None:
+    with _ro_connection(path) as db:
+        _check_aggregate_only(db, path)
+
+
+def _check_aggregate_only(db: sqlite3.Connection, path: Path) -> None:
     """A raw scrape database (climber rows, page HTML, notes) must never be read by a committed
     loader, so anything beyond the two aggregate tables and their known columns is refused."""
-    with _ro_connection(path) as db:
-        objects = {str(n) for (n,) in db.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'view')")
-                   if not str(n).startswith("sqlite_")}
-        extra = sorted(objects - set(EXPORT_COLUMNS))
-        if extra:
-            raise SystemExit(f"refusing {path}: not an aggregate-only export (unexpected {', '.join(extra)})")
-        for table, allowed in EXPORT_COLUMNS.items():
-            # table comes from the fixed EXPORT_COLUMNS keys, never from the file.
-            cols = {str(r[1]) for r in db.execute(f"PRAGMA table_info({table})")}
-            if not cols:
-                raise SystemExit(f"refusing {path}: {table} is missing")
-            if unknown := sorted(cols - allowed):
-                raise SystemExit(f"refusing {path}: unexpected column(s) {', '.join(f'{table}.{c}' for c in unknown)}")
-            if lacking := sorted(REQUIRED_COLUMNS[table] - cols):
-                raise SystemExit(f"refusing {path}: {table} lacks {', '.join(lacking)}")
+    objects = {str(n) for (n,) in db.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'view')")
+               if not str(n).startswith("sqlite_")}
+    extra = sorted(objects - set(EXPORT_COLUMNS))
+    if extra:
+        raise SystemExit(f"refusing {path}: not an aggregate-only export (unexpected {', '.join(extra)})")
+    for table, allowed in EXPORT_COLUMNS.items():
+        # table comes from the fixed EXPORT_COLUMNS keys, never from the file.
+        cols = {str(r[1]) for r in db.execute(f"PRAGMA table_info({table})")}
+        if not cols:
+            raise SystemExit(f"refusing {path}: {table} is missing")
+        if unknown := sorted(cols - allowed):
+            raise SystemExit(f"refusing {path}: unexpected column(s) {', '.join(f'{table}.{c}' for c in unknown)}")
+        if lacking := sorted(REQUIRED_COLUMNS[table] - cols):
+            raise SystemExit(f"refusing {path}: {table} lacks {', '.join(lacking)}")
 
 
 def read_export(path: Path, routes: set[int] | None = None) -> tuple[list[RouteTotal], list[MonthlyRow]]:
     with _ro_connection(path) as db:
-        totals = [
-            RouteTotal(int(r), int(t), bool(c), datetime.fromisoformat(s))
-            for r, t, c, s in db.execute(
-                "SELECT mp_route_id, total_ticks, complete, scraped_at FROM route_tick_totals"
-            )
-        ]
-        monthly = [
-            MonthlyRow(int(r), str(ym), str(st), int(n))
-            for r, ym, st, n in db.execute("SELECT mp_route_id, year_month, style, n FROM route_tick_monthly")
-            if routes is None or int(r) in routes
-        ]
-    return totals, monthly
+        return _read_totals(db), _read_monthly(db, routes)
+
+
+def _read_totals(db: sqlite3.Connection) -> list[RouteTotal]:
+    return [
+        RouteTotal(int(r), int(t), bool(c), datetime.fromisoformat(s))
+        for r, t, c, s in db.execute("SELECT mp_route_id, total_ticks, complete, scraped_at FROM route_tick_totals")
+    ]
+
+
+def _read_monthly(db: sqlite3.Connection, routes: set[int] | None) -> list[MonthlyRow]:
+    return [
+        MonthlyRow(int(r), str(ym), str(st), int(n))
+        for r, ym, st, n in db.execute("SELECT mp_route_id, year_month, style, n FROM route_tick_monthly")
+        if routes is None or int(r) in routes
+    ]
 
 
 def _route_problem(
@@ -442,11 +454,20 @@ async def load(conn: AsyncConnection, rows: list[AggregateRow], *, run_id: uuid.
 async def main(
     path: Path, *, today: date, max_quarantine_share: float, dry_run: bool, scope: Scope = "ice_mixed"
 ) -> dict[str, object]:
-    source = SOURCE_BY_SCOPE[scope]
     # Controller ruling 2026-10-15: both refusals run on every load, ice included, before any row is read.
     check_export_location(path)
-    check_aggregate_only(path)
-    totals, monthly = read_export(path, routes=set() if scope == "rock" else None)
+    with _ro_connection(path) as export:
+        _check_aggregate_only(export, path)
+        return await _load_export(export, scope=scope, today=today, max_quarantine_share=max_quarantine_share,
+                                  dry_run=dry_run)
+
+
+async def _load_export(
+    export: sqlite3.Connection, *, scope: Scope, today: date, max_quarantine_share: float, dry_run: bool
+) -> dict[str, object]:
+    source = SOURCE_BY_SCOPE[scope]
+    totals = _read_totals(export)
+    monthly = _read_monthly(export, set() if scope == "rock" else None)
     engine = ingest_engine()
     try:
         async with engine.begin() as conn:
@@ -457,7 +478,7 @@ async def main(
                 if not todo:
                     return {"status": "noop", "rows_upserted": 0, "routes_unchanged": unchanged}
                 totals = [t for t in totals if t.mp_route_id in todo]
-                monthly = read_export(path, routes=todo)[1]
+                monthly = _read_monthly(export, todo)
             sha = sha256_rows(
                 [(t.mp_route_id, t.total_ticks, t.complete, t.scraped_at.isoformat()) for t in totals]
                 + [(m.mp_route_id, m.year_month, m.style, m.n) for m in monthly]
@@ -479,18 +500,25 @@ async def main(
                 report, previous_rows_in=None, count_tolerance=1.0, max_quarantine_share=max_quarantine_share
             )
             scrapes = seam_rows(totals, monthly, report)
+            # Review fix 1 (2026-10-21): routes still waiting (uncatalogued, ice/mixed, incomplete)
+            # never get a seam row, so they stay in todo on every reload; a run that would write
+            # nothing but them is a no-op, not a new log row each time.
+            if not rows and not scrapes and not report.quarantined:
+                return {"status": "noop", "rows_upserted": 0, "routes_unchanged": unchanged}
             stats["seam_complete"] = sum(1 for sc in scrapes if sc.complete)
             stats["seam_scraped"] = len(scrapes) - stats["seam_complete"]
             if dry_run:
                 return {"status": "dry_run", "report": report.summary(), "stats": stats, "problems": problems}
+            waiting = {k: v for k, v in stats.items() if k.startswith("routes_waiting_")} or None
             run_id = await start_run(conn, source=source, window_start=None, window_end=None, content_sha256=sha)
             await write_quarantine(conn, run_id, quarantinable(report, scope))
             if problems:
-                await finish_run(conn, run_id, status="rejected", report=report, rows_upserted=0, problems=problems)
+                await finish_run(conn, run_id, status="rejected", report=report, rows_upserted=0, problems=problems,
+                                 metrics=waiting)
                 return {"status": "rejected", "rows_upserted": 0, "problems": problems, "report": report.summary()}
             inserted = await load(conn, rows, run_id=run_id, scrape_run_id=f"sqlite:{sha[:12]}")
             await write_seam(conn, scrapes, run_id=run_id)
-            await finish_run(conn, run_id, status="ok", report=report, rows_upserted=inserted)
+            await finish_run(conn, run_id, status="ok", report=report, rows_upserted=inserted, metrics=waiting)
             return {"status": "ok", "rows_upserted": inserted, "report": report.summary(), "stats": stats}
     finally:
         await engine.dispose()

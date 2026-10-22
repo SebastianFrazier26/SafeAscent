@@ -801,8 +801,7 @@ EXPORT="${EXPORT:?set EXPORT to the owner-supplied export path}"
 
 - [ ] **Step 0 (owner, then agent): The export, checkout, tools**
   - **Owner.**
-    - Runs the private export outside this repository. That code lives only in `~/Developer/safeascent-private/` and is never committed.
-    - Writes a fresh single-file SQLite (no `-wal` sidecar; use `sqlite3 <live db> ".backup <out>"` when the source is in WAL mode) at `~/Developer/safeascent-private/exports/rock_ticks_<YYYYMMDD>.sqlite`.
+    - Before every load (review fix 2026-10-21), runs the private export script, which lives only in `~/Developer/safeascent-private/` and is never committed: `python3 ~/Developer/safeascent-private/export_tick_aggregates.py --scope rock` (`--scope ice_mixed` for the ice scraper). It opens the scraper SQLite read-only, snapshots it with the sqlite backup API (safe while the scraper writes in WAL mode), and writes a new single-file SQLite holding only the two aggregate tables at `~/Developer/safeascent-private/exports/<scope>_<YYYYMMDD>.sqlite`. It refuses an output inside any SafeAscent checkout and never overwrites. The scraper database itself is never passed to the loader, which refuses it (extra tables).
     - The file holds exactly the two aggregate tables of decision D-9:
       - `route_tick_totals(mp_route_id, total_ticks, complete 0/1, scraped_at ISO-8601 with a UTC offset[, last_page, pages_fetched])`, where `scraped_at` is the time of the route's last page and `complete = 1` only when every page was fetched;
       - `route_tick_monthly(mp_route_id, year_month 'YYYY-MM', style in lead/follow/tr/solo/unknown, n > 0)`.
@@ -811,7 +810,7 @@ EXPORT="${EXPORT:?set EXPORT to the owner-supplied export path}"
   - **Agent.** As MP catalog Task 6 Step 0: the main checkout is clean and on the branch carrying X-1; `uv sync --frozen`; `psql --version`; `command -v neonctl`; helpers loaded. Then, read-only and counts only:
 
 ```bash
-[ ! -e "${EXPORT}-wal" ] || { echo "WAL sidecar present: ask the owner for a .backup copy" >&2; exit 1; }
+[ ! -e "${EXPORT}-wal" ] || { echo "WAL sidecar present: ask the owner to rerun export_tick_aggregates.py (Step 0)" >&2; exit 1; }
 case "$(cd "$(dirname "$EXPORT")" && pwd -P)" in /Users/sebastianfrazier/Developer/SafeAscent*) echo "export is inside the repo: STOP" >&2; exit 1 ;; esac
 sqlite3 -readonly "$EXPORT" "SELECT count(*), sum(complete) FROM route_tick_totals; SELECT count(*) FROM route_tick_monthly"
 ```
@@ -933,7 +932,7 @@ Record the counts and the snapshot id in the PR.
 
 - [ ] **Step 5 (owner, then agent): Each later load** `[decided: DP10]`
 
-The owner writes a new dated export (Step 0 contract) and gives its path. The agent then runs the blocks below. `D` is the export date and `GATE_DIR=../data/review/gates_xp1_load_$D`. The branch rehearsal is repeated only if `mp_tick_aggregates.py` changed since the last rehearsal.
+The owner runs `export_tick_aggregates.py --scope rock` again (Step 0) and gives the new dated export's path. The agent then runs the blocks below. `D` is the export date and `GATE_DIR=../data/review/gates_xp1_load_$D`. The branch rehearsal is repeated only if `mp_tick_aggregates.py` changed since the last rehearsal.
 
 ```bash
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production || exit 1
