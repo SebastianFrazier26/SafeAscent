@@ -26,6 +26,10 @@ Note: OpenBeta's CC0 dedication covers climbing content; photos are explicitly e
 
 Accident records (AAC, Avalanche.org/CAIC, NPS) and weather data (Open-Meteo) live in the production database. They are not committed to this repository. Each source's own terms govern reuse; nothing here grants rights to them.
 
+## USGS GNIS (reference data)
+
+SafeAscent loads US summit names and coordinates from the USGS Geographic Names Information System (GNIS) national file into `gnis_summits`, to check accident locations. GNIS is a US Government work, which we understand to be in the public domain. Not re-verified against the USGS site in this change (2026-10-01); to be confirmed in the owner's legal review.
+
 ## User-submitted incident facts (future, Phase 4)
 
 Facts submitted by users about incidents are planned to be released under **CC0**. This section is forward-looking; the feature does not exist yet.

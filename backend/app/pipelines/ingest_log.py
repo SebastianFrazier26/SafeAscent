@@ -23,9 +23,10 @@ RunStatus = Literal["ok", "rejected", "failed"]
 # (M7, Task 2 review). Enforced here rather than trusted to callers, so a future change to
 # ValidationReport.summary() that starts including raw issues fails loudly instead of leaking.
 _ALLOWED_SUMMARY_KEYS = frozenset({"source", "rows_in", "accepted", "quarantined", "problems", "rule_version"})
-# Run-level numbers a job may add (hand-check agreement, rows left for owner review). A new
-# metric joins this set in a reviewed change rather than riding a raw jsonb UPDATE (G13).
-_ALLOWED_METRICS = frozenset({"agreement", "review_pending"})
+# Run-level numbers a job may add (hand-check agreement, rows left for owner review, R6's
+# sample size/correlation/gust percentile). A new metric joins this set in a reviewed change
+# rather than riding a raw jsonb UPDATE (G13).
+_ALLOWED_METRICS = frozenset({"agreement", "review_pending", "n", "r_tmax", "p99_gust"})
 
 
 def sha256_rows(rows: Iterable[Sequence[object]]) -> str:
@@ -172,6 +173,20 @@ async def last_ok_rows_in(conn: AsyncConnection, source: str) -> int | None:
     )
     rows_in: int | None = result.scalar_one_or_none()
     return rows_in
+
+
+async def last_ok_sha(conn: AsyncConnection, source: str) -> str | None:
+    """content_sha256 of the source's latest ok run. A whole-table snapshot source compares
+    against this, not find_completed: reloading an older file after a newer one must apply it."""
+    result = await conn.execute(
+        text(
+            "SELECT content_sha256 FROM source_ingest_log WHERE source = :source AND status = 'ok' "
+            "ORDER BY finished_at DESC LIMIT 1"
+        ),
+        {"source": source},
+    )
+    sha: str | None = result.scalar_one_or_none()
+    return sha
 
 
 async def write_quarantine(conn: AsyncConnection, run_id: uuid.UUID, report: ValidationReport) -> int:

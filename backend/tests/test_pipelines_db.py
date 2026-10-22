@@ -59,3 +59,12 @@ def test_ingest_engine_builds_an_engine_with_verified_connect_args(monkeypatch):
 
     assert captured["url"] == "postgresql+asyncpg://test_user:pw@localhost:5432/postgres"
     assert captured["connect_args"] == {}
+
+
+@pytest.mark.parametrize("host", ["ep-fixture-123-pooler.us-east-2.aws.neon.tech", "EP-Fixture-123-Pooler.US-EAST-2.aws.neon.tech"])
+def test_ingest_engine_refuses_the_pooler_host_for_every_job(monkeypatch, host):
+    """S2: the pooler check runs at engine creation, so no ingest job can skip it."""
+    monkeypatch.setattr(pipelines_db, "create_async_engine", lambda *a, **k: pytest.fail("built a pooler engine"))
+    monkeypatch.setattr(pipelines_db.settings, "INGEST_DATABASE_URL", f"postgresql+asyncpg://ingest:x@{host}/db")
+    with pytest.raises(SystemExit, match="pooler"):
+        ingest_engine()

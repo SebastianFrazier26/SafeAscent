@@ -29,7 +29,7 @@ import re
 import sqlite3
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import bindparam, text
@@ -217,6 +217,73 @@ async def existing_counts(conn: AsyncConnection, route_ids: set[int]) -> dict[tu
     return {(int(r), str(p), str(s)): int(n) for r, p, s, n in result.all()}
 
 
+SEAM_UPSERT = text(
+    "INSERT INTO internal.route_tick_scrapes (mp_route_id, source, scraped_at, complete, complete_through, total_ticks, "
+    "loaded_run_id) VALUES (:r, 'mp_scrape', :at, :complete, :through, "
+    # Final review A4 (2026-10-14): the total is the stored months' sum over the counted range, not
+    # the export's total. Stored months keep their first-scrape counts, so the export's total drifts
+    # from them once MP backdates or deletes ticks; tick_total and route_tick_months must agree.
+    "CASE WHEN :complete THEN (SELECT coalesce(sum(m.tick_count), 0) FROM internal.mp_tick_aggregates m "
+    "WHERE m.mp_route_id = :r AND m.period <> 'total' "
+    "AND to_date(m.period || '-01', 'YYYY-MM-DD') <= CAST(:through AS date)) END, :run) "
+    "ON CONFLICT (mp_route_id) DO UPDATE SET scraped_at = EXCLUDED.scraped_at, complete = EXCLUDED.complete, "
+    "complete_through = EXCLUDED.complete_through, total_ticks = EXCLUDED.total_ticks, "
+    "loaded_run_id = EXCLUDED.loaded_run_id, updated_at = now() "
+    "WHERE internal.route_tick_scrapes.scraped_at < EXCLUDED.scraped_at"
+)
+# Months after the cut-off are expected to be quarantined and lie outside the counted range.
+OUTSIDE_COUNTED_RANGE = frozenset({"partial_month", "future_month"})
+
+
+@dataclass(frozen=True)
+class RouteScrape:
+    mp_route_id: int
+    scraped_at: datetime
+    complete: bool
+    total_ticks: int | None
+
+
+def complete_through(scraped_at: datetime) -> date:
+    """Last day of the last fully observed month: the month before the scrape's UTC month (D3)."""
+    first = scraped_at.astimezone(UTC).date().replace(day=1)
+    return first - timedelta(days=1)
+
+
+def seam_rows(totals: list[RouteTotal], monthly: list[MonthlyRow], report: ValidationReport) -> list[RouteScrape]:
+    """One seam row per route whose total validate accepted, already-loaded totals included, so a
+    newer scrape advances complete_through and reveals its newly closed months. Older months stay
+    at their first-scrape counts (owner decision 2026-10-02, only new keys load); advancing is
+    still true for them. A route is complete only if every month inside its counted range was
+    accepted and its months sum to its total: otherwise an absent month would read as a real
+    zero, so it is written as scraped (never complete), with no total. A complete route's stored
+    total is the sum of its stored months over the counted range (write_seam, final review A4), not
+    the export's total_ticks carried here."""
+    rejected_totals = {i.row_ref for i in report.issues if i.row_ref.endswith(":total")}
+    gappy = {
+        int(i.row_ref.split(":", 1)[0])
+        for i in report.issues
+        if not i.row_ref.endswith(":total") and i.reason not in OUTSIDE_COUNTED_RANGE
+    }
+    sums: dict[int, int] = {}
+    for m in monthly:
+        sums[m.mp_route_id] = sums.get(m.mp_route_id, 0) + m.n
+    out = []
+    for t in totals:
+        if f"{t.mp_route_id}:total" in rejected_totals:
+            continue
+        complete = t.mp_route_id not in gappy and sums.get(t.mp_route_id, 0) == t.total_ticks
+        out.append(RouteScrape(t.mp_route_id, t.scraped_at, complete, t.total_ticks if complete else None))
+    return out
+
+
+async def write_seam(conn: AsyncConnection, scrapes: list[RouteScrape], *, run_id: uuid.UUID) -> None:
+    if scrapes:
+        await conn.execute(SEAM_UPSERT, [
+            {"r": s.mp_route_id, "at": s.scraped_at, "complete": s.complete,
+             "through": complete_through(s.scraped_at) if s.complete else None, "run": run_id}
+            for s in scrapes])
+
+
 # One multi-row VALUES statement per chunk of this many rows (M3 follow-up, Task 6 review): each
 # row costs 5 bind params (plus 2 shared), and a real export runs to ~35k rows, so an unchunked
 # statement blew past asyncpg's ~32767-argument limit at 6,554 rows. 1000 keeps every statement
@@ -282,6 +349,9 @@ async def main(path: Path, *, today: date, max_quarantine_share: float, dry_run:
             problems = batch_gate(
                 report, previous_rows_in=None, count_tolerance=1.0, max_quarantine_share=max_quarantine_share
             )
+            scrapes = seam_rows(totals, monthly, report)
+            stats["seam_complete"] = sum(1 for sc in scrapes if sc.complete)
+            stats["seam_scraped"] = len(scrapes) - stats["seam_complete"]
             if dry_run:
                 return {"status": "dry_run", "report": report.summary(), "stats": stats, "problems": problems}
             run_id = await start_run(conn, source=SOURCE, window_start=None, window_end=None, content_sha256=sha)
@@ -290,6 +360,7 @@ async def main(path: Path, *, today: date, max_quarantine_share: float, dry_run:
                 await finish_run(conn, run_id, status="rejected", report=report, rows_upserted=0, problems=problems)
                 return {"status": "rejected", "rows_upserted": 0, "problems": problems, "report": report.summary()}
             inserted = await load(conn, rows, run_id=run_id, scrape_run_id=f"sqlite:{sha[:12]}")
+            await write_seam(conn, scrapes, run_id=run_id)
             await finish_run(conn, run_id, status="ok", report=report, rows_upserted=inserted)
             return {"status": "ok", "rows_upserted": inserted, "report": report.summary(), "stats": stats}
     finally:

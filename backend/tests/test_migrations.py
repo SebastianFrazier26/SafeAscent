@@ -266,7 +266,9 @@ def _owner_db(dbname: str) -> str:
         f"CREATE ROLE {OWNER_ROLE} LOGIN NOSUPERUSER CREATEROLE PASSWORD '{PASSWORDS['owner']}';"
         f'ALTER DATABASE "{dbname}" OWNER TO {OWNER_ROLE};'
         # PostGIS is not a trusted extension; on Neon it predates the owner's objects too.
-        "CREATE EXTENSION postgis;",
+        "CREATE EXTENSION postgis;"
+        # Prod order: the owner runs db/owner/extensions_mp_catalog.sql before 0008 (migrator cannot).
+        "CREATE EXTENSION ltree;",
     )
     return _role_url(dbname, OWNER_ROLE, PASSWORDS["owner"])
 
