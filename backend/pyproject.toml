@@ -143,6 +143,7 @@ module = [
     "app.pipelines.epqs",
     "app.pipelines.static_features",
     "app.pipelines.catalog_cycle",
+    "app.pipelines.exposure_math",
     "app.models.types",
 ]
 ignore_errors = false
