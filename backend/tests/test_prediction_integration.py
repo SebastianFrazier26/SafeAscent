@@ -265,55 +265,6 @@ class TestComponentIntegration:
         print(f"   Risk Score: {data['risk_score']}/100")
 
 
-class TestValidationAndErrorHandling:
-    """Test input validation and error handling."""
-
-    def test_invalid_coordinates_rejected(self, test_client):
-        """Test that invalid coordinates return 422."""
-        # Invalid latitude (> 90)
-        response = test_client.post("/api/v1/predict", json={
-            "latitude": 95.0,
-            "longitude": -105.3,
-            "route_type": "alpine",
-            "planned_date": "2024-07-15"
-        })
-
-        assert response.status_code == 422  # Validation error
-
-    def test_invalid_route_type_rejected(self, test_client):
-        """Test that invalid route type returns 422."""
-        response = test_client.post("/api/v1/predict", json={
-            "latitude": 40.0,
-            "longitude": -105.3,
-            "route_type": "invalid_type",
-            "planned_date": "2024-07-15"
-        })
-
-        assert response.status_code == 422
-
-    def test_invalid_date_format_rejected(self, test_client):
-        """Test that invalid date format returns 422."""
-        response = test_client.post("/api/v1/predict", json={
-            "latitude": 40.0,
-            "longitude": -105.3,
-            "route_type": "alpine",
-            "planned_date": "not-a-date"
-        })
-
-        assert response.status_code == 422
-
-    def test_missing_required_fields_rejected(self, test_client):
-        """Test that missing fields return 422."""
-        # Missing latitude
-        response = test_client.post("/api/v1/predict", json={
-            "longitude": -105.3,
-            "route_type": "alpine",
-            "planned_date": "2024-07-15"
-        })
-
-        assert response.status_code == 422
-
-
 if __name__ == "__main__":
     # Run tests with pytest
     pytest.main([__file__, "-v", "-s"])

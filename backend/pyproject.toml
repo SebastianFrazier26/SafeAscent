@@ -107,6 +107,7 @@ ignore_errors = true
 module = [
     "app.config",
     "app.services.risk_bands",
+    "app.services.model_scores",
     "app.healthchecks",
     "app.pipelines",
     "app.pipelines.validate",

@@ -289,6 +289,12 @@ def build_safety_score_key(route_id: int, target_date: str) -> str:
     return f"safety:route:{route_id}:date:{target_date}"
 
 
+def build_stored_score_key(model_version: str, route_id: int, month: int) -> str:
+    """Key for a stored model score (P3 A:138). The version is part of the key, so a promotion or
+    rollback reads different keys and can never serve the previous model's entry."""
+    return f"safety:{model_version}:{route_id}:{month}"
+
+
 # ============================================================================
 # BULK SAFETY SCORE OPERATIONS
 # ============================================================================

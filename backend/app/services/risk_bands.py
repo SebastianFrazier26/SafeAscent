@@ -15,7 +15,8 @@ DataStatus = Literal["ok", "insufficient_data"]
 # Owner decisions 2026-09-28: with too little evidence the radius-based algorithm has nothing
 # to say, so the route is "insufficient_data" (null score, gray), never 0.0 green. "Too little"
 # is no contributing accident, or a raw score below 0.05, i.e. one that would display as 0.0.
-# Interim until the Phase 3 model borrows evidence from similar routes anywhere.
+# Kernel-only (A:144, retired for serving 2026-10-22): stored Phase 3 scores are percentiles, where
+# 0.0 is a real rank, and are gray only when the row has no evidence (model_scores.to_risk).
 INSUFFICIENT_DATA_COLOR: Literal["gray"] = "gray"
 INSUFFICIENT_DATA_MESSAGE = "Too little evidence to estimate risk yet"
 BAND_COLOR_CODES: frozenset[str] = frozenset({"green", "yellow", "orange", "red"})

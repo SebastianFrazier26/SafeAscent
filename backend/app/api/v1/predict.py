@@ -1,17 +1,17 @@
 """
 Safety Prediction API Endpoint
 
-POST /api/v1/predict - Calculate safety prediction for a planned climbing route
+POST /api/v1/predict - 410 Gone since the stored-score model (P3 Task 22, DP23)
 """
 import logging
 from datetime import timedelta
 from typing import List, Optional, Dict
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, func
 from geoalchemy2.functions import ST_DWithin, ST_MakePoint
 
-from app.db.session import get_db
 from app.config import settings
 from app.models.accident import Accident
 from app.models.weather import Weather
@@ -49,15 +49,17 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-@router.post("/predict", response_model=PredictionResponse)
-async def predict_route_safety_endpoint(
-    request: PredictionRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    API endpoint for safety prediction. Calls the internal function.
-    """
-    return await predict_route_safety(request, db)
+PREDICT_GONE_DETAIL = (
+    "Arbitrary-point prediction was retired with the kernel model; select a route on the map."
+)
+
+
+# DP23: 410, not 404, so a stale client learns the endpoint is gone for good. It answers before
+# body validation, so any old request shape gets the same message. predict_route_safety below
+# stays only for the kernel batch jobs until Task 23 removes them.
+@router.post("/predict", status_code=410, responses={410: {"description": "Gone"}})
+async def predict_route_safety_endpoint() -> JSONResponse:
+    return JSONResponse(status_code=410, content={"detail": PREDICT_GONE_DETAIL})
 
 
 async def predict_route_safety(

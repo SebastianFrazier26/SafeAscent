@@ -379,40 +379,6 @@ class TestAlgorithmPerformance:
 
 
 @pytest.mark.asyncio
-class TestValidationPerformance:
-    """Benchmark input validation performance."""
-
-    async def test_validation_error_response_time(self, async_client: AsyncClient):
-        """
-        Validation errors should be very fast (no DB/algorithm execution).
-
-        Target: < 50ms for validation failures.
-        """
-        invalid_payloads = [
-            {"longitude": -105.2705, "route_type": "alpine", "planned_date": "2024-07-15"},
-            {"latitude": 40.0150, "route_type": "alpine", "planned_date": "2024-07-15"},
-            {"latitude": 40.0150, "longitude": -105.2705, "planned_date": "2024-07-15"},
-            {"latitude": 91.0, "longitude": -105.2705, "route_type": "alpine", "planned_date": "2024-07-15"},
-        ]
-
-        times = []
-        for payload in invalid_payloads:
-            start = time.perf_counter()
-            response = await async_client.post("/api/v1/predict", json=payload)
-            end = time.perf_counter()
-
-            assert response.status_code == 422  # Validation error
-            times.append((end - start) * 1000)
-
-        avg_time = mean(times)
-        print("\n📊 Validation Error Performance:")
-        print(f"   Average: {avg_time:.1f}ms")
-
-        # Validation should be very fast
-        assert avg_time < 50, f"Validation errors taking {avg_time:.1f}ms - should be < 50ms"
-
-
-@pytest.mark.asyncio
 @pytest.mark.needs_data
 class TestMemoryPerformance:
     """Benchmark memory usage patterns."""

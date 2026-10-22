@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Phase 3 PR 3-4: stored-score reads, additive API - 2026-10-22
+
+- The API serves the active `model.registry` version's `model.route_scores` row for the route and month (CM = 1 in MVP-1), through `app.services.model_scores`; Redis keys are `safety:{model_version}:{route_id}:{month}`, so a promotion or rollback misses the cache. No live kernel call on any served path.
+- Additive fields on `/safety` and the map's `safety`: `confidence`, `score_range`, `model_version`, `evidence`, `insufficient_reason`, `relative_rate`, `per_10k_logged_ascents`, `per_10k_reason`. A validator binds confidence, range and evidence to `data_status == "ok"`, and the range must bracket the score. Low confidence still shows the number.
+- Missing is never 0: no active version or no row is 404 `score unavailable` on `/safety` and `/risk-breakdown`, `safety: null` on the map, and a null month in the forecast and the 12-month profile. Gray is only a stored row with no evidence. The kernel's 0.05 display floor does not apply to stored percentiles.
+- `/risk-breakdown` returns the top terms of the stored row's decomposition plus the evidence term; `/historical-trends` returns the 12-month profile (`monthly_profile`); `/time-of-day` keeps hourly weather with `risk: null` and a `risk_note`; `/seasonal-patterns` returns incident counts only, placed through the route's catalog point, with year-precision rows counted apart (`year_known_only`); `/accidents` carries "context, not cause". `POST /predict` answers 410 Gone.
+- Frontend (first commit, F54): reads the new and the old shapes; the arbitrary-point predict flow is removed.
+
 ### Phase 3: fit/predict orchestration and bundle export - 2026-10-22
 
 - `app.ml.model`: `fit_model(cells, counts, params, *, train_mask)` runs the stage-1 GLM, archetypes and stage-2 EB with held-out cells kept out of both stages, of the covariate statistics, of the archetype centres and of the evidence points. A GLM that did not converge (separation) is refused with `ModelFitError`, never used. EB keys regions as `state|region` so a border-split MP region nests in its state. `fold_train_mask(cells, fold)` drops a spatial fold's held-out states from training.

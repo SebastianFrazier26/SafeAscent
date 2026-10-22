@@ -101,3 +101,111 @@ def test_client():
 def anyio_backend():
     """Configure anyio backend for pytest-asyncio."""
     return "asyncio"
+
+
+# --- stored scores (P3 Task 22) --------------------------------------------------------
+
+SCORES_VERSION = "eb_v1-t22-fixture"
+SCORE_ROUTES = """
+INSERT INTO mp_routes (mp_route_id, name, location_id, type) VALUES
+  (900000002, 'Fixture Route Two', 900000110, 'Trad'), (900000003, 'Fixture Route Three', 900000110, 'Trad');
+INSERT INTO canonical_routes (route_id, area_id, type_group, is_boulder, disciplines, type_rule_version, scorable,
+  unscorable_reason, facts_sha256, catalog_version) VALUES
+  (900000002, 900000110, 'trad', false, '{trad}', 'rt-mp-v3', true, NULL, 'x', 'v'),
+  (900000003, 900000110, 'trad', false, '{trad}', 'rt-mp-v3', true, NULL, 'x', 'v');
+"""
+_SCORE_COLS = ("model_version, route_id, month, type_group, area_id, insufficient, insufficient_reason, rr_mean, rr_q05, "
+               "rr_q95, percentile, pct_q05, pct_q95, conf_level, n_eff_geo, n_eff_feature, per10k_mean, per10k_q05, "
+               "per10k_q95, per10k_reason")
+# (route, month): ok/high, ok/low, insufficient in July; route 1 also has January for the profile.
+SCORE_ROWS = [
+    (900000001, 7, "false, NULL, 1.4, 0.9, 2.2, 40.0, 20.0, 60.0, 'high', 3.5, 6.0, 2.5, 1.0, 4.0, NULL"),
+    (900000001, 1, "false, NULL, 0.6, 0.3, 1.1, 12.04, 3.0, 30.0, 'medium', 1.0, 2.0, NULL, NULL, NULL, 'ticks_incomplete'"),
+    (900000002, 7, "false, NULL, 2.0, 0.5, 6.0, 62.34, 10.0, 90.0, 'low', 0.2, 0.5, NULL, NULL, NULL, 'ticks_missing'"),
+    (900000003, 7, "true, 'no_evidence', NULL, NULL, NULL, NULL, NULL, NULL, 'insufficient', 0, 0, NULL, NULL, NULL, NULL"),
+]
+
+
+def scores_bundle(version: str) -> bytes:
+    """A hand-built bundle for trad in July and January (the shape test_explain uses)."""
+    import math
+
+    import numpy as np
+
+    from app.ml.bundle import ModelBundle
+
+    names = ["intercept", "fam_mountain", "a_trad", "m_7", "d_trad_7", "z_elevation_m", "ind_elevation_missing"]
+    coef = np.array([math.log(0.05), 0.0, 0.2, 0.1, 0.0, 0.3, 0.4])
+    const = {"trad": {"7": -(coef[0] + coef[2] + coef[3]), "1": -(coef[0] + coef[2])}}
+    return ModelBundle(version, "rock_family", {"coef": coef, "center": np.zeros(7), "scale": np.ones(7)},
+                       {"names": names, "const": {g: {m: float(v) for m, v in c.items()} for g, c in const.items()}}
+                       ).to_bytes()
+
+
+def scores_seed_sql(status: str) -> str:
+    from app.ml.bundle import sha256
+
+    raw = scores_bundle(SCORES_VERSION)
+    promoted = "now()" if status in ("active", "previous", "retired") else "NULL"
+    rows = ",\n  ".join(f"('{SCORES_VERSION}', {r}, {m}, 'trad', 900000110, {rest})" for r, m, rest in SCORE_ROWS)
+    return (
+        SCORE_ROUTES
+        + "INSERT INTO model.registry (version, family, data_hash, train_start, data_cutoff, status, promoted_at, "
+          "bundle, bundle_sha256, bundle_bytes, scores_rows) VALUES "
+          f"('{SCORES_VERSION}', 'eb_v1', 'h', '1990-01-01', '2026-10-01', '{status}', {promoted}, "
+          f"'\\x{raw.hex()}'::bytea, '{sha256(raw)}', {len(raw)}, {len(SCORE_ROWS)});\n"
+        + f"INSERT INTO model.route_scores ({_SCORE_COLS}) VALUES\n  {rows};\n"
+    )
+
+
+@pytest.fixture
+def scores_redis(monkeypatch):
+    """A fake Redis behind app.utils.cache, so tests never touch a local server."""
+    import fakeredis
+
+    from app.utils import cache as cache_module
+
+    fake = fakeredis.FakeRedis(decode_responses=True)
+    monkeypatch.setattr(cache_module, "get_redis_client", lambda: fake)
+    return fake
+
+
+def _seeded(status: str):
+    from types import SimpleNamespace
+
+    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from app.db.session import get_db
+    from tests.pgtest import migrated_db, sa_url
+    from tests.test_migration_0012 import SEED
+    from tests.test_migrations import ADMIN_URL
+
+    if not ADMIN_URL:
+        pytest.skip("MIGRATIONS_TEST_ADMIN_URL not set")
+    with migrated_db(seed_sql=SEED + scores_seed_sql(status)) as name:
+        url = sa_url(name)
+
+        async def override():
+            engine = create_async_engine(url, poolclass=NullPool)
+            try:
+                async with AsyncSession(engine) as session:
+                    yield session
+            finally:
+                await engine.dispose()
+
+        app.dependency_overrides[get_db] = override
+        try:
+            yield SimpleNamespace(version=SCORES_VERSION, db=name)
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+
+
+@pytest.fixture
+def seeded_scores(scores_redis):
+    yield from _seeded("active")
+
+
+@pytest.fixture
+def seeded_scores_no_active(scores_redis):
+    yield from _seeded("candidate")

@@ -101,24 +101,17 @@ def test_frontend_bands_match_backend():
     assert frontend == RISK_BAND_THRESHOLDS
 
 
-async def test_historical_trends_rederives_stored_colour(monkeypatch):
-    # A row written under the old 30/50/70 live bands stored "green" for 27.0.
-    from datetime import date
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock, MagicMock
+ROUNDED_PERCENTILE_CASES = [(24.94, 24.9, "green"), (24.96, 25.0, "yellow"), (49.96, 50.0, "orange"),
+                            (74.96, 75.0, "red"), (100.0, 100.0, "red")]
 
-    from app.api.v1 import mp_routes
 
-    monkeypatch.setattr(
-        mp_routes,
-        "get_route_with_location_coords",
-        AsyncMock(return_value=SimpleNamespace(name="R", latitude=None, longitude=None)),
-    )
-    result = MagicMock()
-    result.fetchall.return_value = [(date(2026, 9, 1), 27.0, "green")]
-    db = MagicMock()
-    db.execute = AsyncMock(return_value=result)
+@pytest.mark.parametrize("percentile,shown,expected", ROUNDED_PERCENTILE_CASES)
+def test_stored_score_path_uses_shared_bands_on_the_shown_value(percentile, shown, expected):
+    # The stored percentile is shown at 1 decimal; its colour is the band of that shown value.
+    from app.services.model_scores import StoredScore, to_risk
 
-    body = await mp_routes.get_historical_trends(1, days=30, target_date=date(2026, 9, 2), db=db)
-
-    assert body["historical_predictions"][0]["color_code"] == "yellow"
+    row = StoredScore(route_id=900000001, month=7, model_version="v", type_group="trad", insufficient=False,
+                      insufficient_reason=None, rr_mean=1.0, rr_q05=0.5, rr_q95=2.0, percentile=percentile,
+                      pct_q05=0.0, pct_q95=100.0, conf_level="medium", n_eff_geo=1.0, n_eff_feature=1.0,
+                      per10k_mean=None, per10k_q05=None, per10k_q95=None, per10k_reason="ticks_missing")
+    assert to_risk(row) == (shown, expected, "ok")
