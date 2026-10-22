@@ -136,6 +136,11 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON internal.r10_unresolved TO ingest;
 -- LLM pass (Task 15): the audit and the gates are append-only; a paid call is never rewritten.
 GRANT SELECT, INSERT ON internal.r10_llm_calls, internal.r10_llm_gates TO ingest;
 
+-- Exposure plan (0011). The exposure job rebuilds snapshots and prunes old production ones (DELETE);
+-- analyst reads it through the schema-wide SELECT above; app holds nothing in internal; trainer
+-- gets it in Phase 3 (D13), together with USAGE on internal.
+GRANT SELECT, INSERT, UPDATE, DELETE ON internal.exposure_index TO ingest;
+
 RESET ROLE;
 COMMIT;
 \echo 'phase 2 grants applied'

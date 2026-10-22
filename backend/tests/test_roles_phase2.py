@@ -551,6 +551,14 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
     _denied(app, "UPDATE accident_legacy_links SET method = method WHERE false")
     _denied(analyst, "BEGIN READ WRITE; DELETE FROM accident_legacy_links WHERE false; COMMIT")
 
+    # Exposure (0011): ingest rebuilds and prunes snapshots; analyst reads; app holds nothing in internal.
+    _as(ingest, "SELECT count(*) FROM internal.exposure_index; "
+        "UPDATE internal.exposure_index SET run_id = NULL WHERE false; DELETE FROM internal.exposure_index WHERE false")
+    _denied(ingest, "TRUNCATE internal.exposure_index")
+    _as(analyst, "SELECT count(*) FROM internal.exposure_index")
+    _denied(app, "SELECT count(*) FROM internal.exposure_index")
+    _denied(analyst, "BEGIN READ WRITE; DELETE FROM internal.exposure_index WHERE false; COMMIT")
+
     _denied(app, "SELECT count(*) FROM internal.mp_tick_aggregates")
     _denied(app, "SELECT count(*) FROM internal.accidents_raw")
     _as(app, "SELECT count(*) FROM source_ingest_log")
@@ -675,6 +683,7 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "GRANT DELETE ON internal.r10_llm_gates TO ingest;"
         "GRANT INSERT ON public.accident_legacy_links TO app;"
         "GRANT SELECT ON public.accident_route_links TO trainer;"
+        "GRANT TRUNCATE ON internal.exposure_index TO ingest;"
         "ALTER TABLE internal.r10_unresolved DISABLE TRIGGER r10_unresolved_keep_decisions;",
     )
     _as(owner_url, "GRANT ingest TO analyst")
@@ -726,5 +735,6 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "ingest DELETE on internal.r10_llm_gates matches the expected set",
         "app can SELECT public.accident_legacy_links and nothing else",
         "trainer holds no privilege on public.accident_route_links",
+        "ingest TRUNCATE on internal.exposure_index matches the expected set",
     ):
         assert check in stray.stderr, check
