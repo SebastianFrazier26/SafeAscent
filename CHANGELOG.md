@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Phase 3 PR 3-0: backtest window guard and model docs - 2026-10-22
 
 - The nightly `historical_predictions` purge now keeps 2026-02-05 to 2026-07-02, the prospective kernel backtest window (DP14); without this it would start deleting it on 2027-02-05. Guarded by `tests/test_backtest_window_kept.py`.
+- The purge is now `purge_old_history(db, today)` in `safety_computation_optimized.py` with `today` passed in, and a database test (`test_purge_deletes_only_stale_rows_outside_the_window`) runs the real DELETE against seeded rows with a pinned date.
 - Docs: `0012_model_registry` (schema `model`) and the `trainer` role (now LOGIN, allowlist grants) in `CLAUDE.md`, `data/DATABASE_STRUCTURE.md`; "Phase 3 roles" and the PR 3-0 branch-then-prod runbook in `DEPLOYMENT.md`. Training runs only from the owner's Mac, with no GitHub secret (F48). The runbook is not yet executed.
 
 ### Exposure index (PR X-2) — 2026-10-22

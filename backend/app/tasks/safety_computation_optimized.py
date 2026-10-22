@@ -843,6 +843,24 @@ async def _process_location_batch(
     return all_scores
 
 
+async def purge_old_history(db: AsyncSession, today: date) -> None:
+    """Delete history older than a year before `today`, except the Phase 3 backtest window."""
+    try:
+        result = await db.execute(text("""
+            DELETE FROM historical_predictions
+            WHERE prediction_date < CAST(:today AS date) - INTERVAL '1 year'
+              -- 2026-10-22 (Phase 3 DP14): the prospective kernel backtest window (P3:381).
+              -- Remove once Phase 3 backtest evidence is recorded (Task 26).
+              AND NOT (prediction_date BETWEEN DATE '2026-02-05' AND DATE '2026-07-02')
+        """), {"today": today})
+        await db.commit()
+        if result.rowcount > 0:
+            logger.info(f"✓ Purged {result.rowcount:,} historical records older than 1 year")
+    except Exception as e:
+        logger.error(f"Failed to purge old historical data: {e}")
+        await db.rollback()
+
+
 async def _save_to_historical(
     db: AsyncSession,
     scores: Dict[int, Dict],
@@ -901,20 +919,7 @@ async def _save_to_historical(
 
     logger.info(f"✓ Saved {total_saved:,} to historical_predictions for {target_date}")
 
-    # Purge data older than 1 year (run occasionally)
-    try:
-        result = await db.execute(text("""
-            DELETE FROM historical_predictions
-            WHERE prediction_date < CURRENT_DATE - INTERVAL '1 year'
-              -- 2026-10-15 (Phase 3 DP14): the prospective kernel backtest window (P3:381); keep until Phase 3 records it.
-              AND NOT (prediction_date BETWEEN DATE '2026-02-05' AND DATE '2026-07-02')
-        """))
-        await db.commit()
-        if result.rowcount > 0:
-            logger.info(f"✓ Purged {result.rowcount:,} historical records older than 1 year")
-    except Exception as e:
-        logger.error(f"Failed to purge old historical data: {e}")
-        await db.rollback()
+    await purge_old_history(db, date.today())
 
     # Raised after the purge so one bad batch doesn't skip it; the task then fails loudly
     # (healthchecks /fail) like the cache-count check, instead of logging and moving on.
