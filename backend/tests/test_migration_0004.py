@@ -7,7 +7,7 @@ from alembic import command
 
 from app.pipelines.grid import grid_bucket, grid_bucket_sql
 from tests.pgtest import migrated_db, pg_url, requires_pg, run_sql
-from tests.test_migrations import _alembic_cfg
+from tests.test_migrations import PRE_WEATHER_DROP, _alembic_cfg, _upgrade_head
 
 pytestmark = requires_pg
 
@@ -32,7 +32,7 @@ def _val(name: str, sql: str) -> object:
 def test_0004_snapshots_accidents_before_adding_columns_and_checks_clean():
     with migrated_db("0003_hist_insufficient_data", SEED) as name:
         cfg = _alembic_cfg(name)
-        command.upgrade(cfg, "head")
+        _upgrade_head(name, cfg)
         command.check(cfg)
         assert _val(name, "SELECT count(*) FROM internal.accidents_raw") == 2
         assert _val(
@@ -139,7 +139,7 @@ def test_0004_tick_period_check():
 
 
 def test_0004_downgrade_refuses_while_revisions_exist():
-    with migrated_db("head", SEED) as name:
+    with migrated_db(PRE_WEATHER_DROP, SEED) as name:
         run_sql(
             name,
             "INSERT INTO internal.accident_revisions (accident_id, field, old_value, new_value, method, rule_version, run_id) "
@@ -150,14 +150,14 @@ def test_0004_downgrade_refuses_while_revisions_exist():
 
 
 def test_0004_downgrade_refuses_while_accidents_repair_columns_are_set():
-    with migrated_db("head", SEED) as name:
+    with migrated_db(PRE_WEATHER_DROP, SEED) as name:
         run_sql(name, "UPDATE accidents SET country = 'US' WHERE accident_id = 1")
         with pytest.raises(RuntimeError, match="refusing to downgrade 0004"):
             command.downgrade(_alembic_cfg(name), "0003_hist_insufficient_data")
 
 
 def test_0004_downgrade_refuses_while_ticks_are_quarantined():
-    with migrated_db("head") as name:
+    with migrated_db(PRE_WEATHER_DROP) as name:
         run_sql(
             name,
             "INSERT INTO mp_ticks (tick_id, route_id, climber_name, quarantine_reason) "
@@ -168,7 +168,7 @@ def test_0004_downgrade_refuses_while_ticks_are_quarantined():
 
 
 def test_0004_downgrade_refuses_while_quarantine_rows_exist():
-    with migrated_db("head") as name:
+    with migrated_db(PRE_WEATHER_DROP) as name:
         run_sql(
             name,
             "INSERT INTO source_ingest_log (run_id, source, status) VALUES (gen_random_uuid(), 'AAC', 'ok')",
@@ -183,7 +183,7 @@ def test_0004_downgrade_refuses_while_quarantine_rows_exist():
 
 
 def test_0004_downgrade_is_clean_when_empty():
-    with migrated_db("head", SEED) as name:
+    with migrated_db(PRE_WEATHER_DROP, SEED) as name:
         command.downgrade(_alembic_cfg(name), "0003_hist_insufficient_data")
         assert _val(name, "SELECT to_regclass('internal.accidents_raw')") is None
         assert _val(name, "SELECT to_regclass('public.source_ingest_log')") is None

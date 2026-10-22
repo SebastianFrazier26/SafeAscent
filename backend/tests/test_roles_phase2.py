@@ -38,6 +38,7 @@ from tests.test_migrations import (
     _fetch_row,
     _owner_db,
     _owner_schema_model,
+    _upgrade_head,
     _psql,
     _require_psql,
     _role_url,
@@ -367,7 +368,7 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
 
     _owner_schema_model(owner_url)
     migrator_url = _role_url(fresh_db, "migrator", PASSWORDS["migrator"])
-    command.upgrade(_alembic_cfg_as(fresh_db, migrator_url), "head")
+    _upgrade_head(fresh_db, _alembic_cfg_as(fresh_db, migrator_url))
 
     granted = _psql(owner_url, GRANTS_PHASE2, {})
     assert granted.returncode == 0, granted.stderr
@@ -476,12 +477,6 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
     _denied(ingest, "TRUNCATE cell_daily_conditions")
     _as(app, "SELECT count(*) FROM cell_daily_conditions; SELECT count(*) FROM accident_conditions")
     _denied(app, "DELETE FROM cell_daily_conditions WHERE false")
-
-    # Plan 3 (R6 verify): ingest reads the legacy weather table, never writes it.
-    _as(ingest, "SELECT count(*) FROM weather")
-    _denied(ingest, "UPDATE weather SET temperature_max = 0 WHERE false")
-    _denied(ingest, "DELETE FROM weather WHERE false")
-    _denied(ingest, "INSERT INTO weather (date, latitude, longitude) VALUES ('2020-01-01', 0, 0)")
 
     # Plan 3 (R7): ingest reads area_weekly_weather and can flip longitude only.
     _as(ingest, "SELECT count(*) FROM area_weekly_weather")
@@ -640,7 +635,7 @@ def test_after_relaunch_revoke_owner_regrants_set_and_migrator_runs_grants(role_
 
     _owner_schema_model(owner_url)
     migrator_url = _role_url(fresh_db, "migrator", PASSWORDS["migrator"])
-    command.upgrade(_alembic_cfg_as(fresh_db, migrator_url), "head")
+    _upgrade_head(fresh_db, _alembic_cfg_as(fresh_db, migrator_url))
     granted = _psql(migrator_url, GRANTS_PHASE2, {})
     assert granted.returncode == 0, granted.stderr
     for script in ("verify_roles.sql", "verify_roles_phase2.sql"):
@@ -662,7 +657,7 @@ def test_grants_phase2_narrows_a_preexisting_table_level_grant(role_cleanup, fre
     assert _psql(owner_url, CREATE_PHASE2, PHASE2_PASSWORD_ENV).returncode == 0
     _owner_schema_model(owner_url)
     migrator_url = _role_url(fresh_db, "migrator", PASSWORDS["migrator"])
-    command.upgrade(_alembic_cfg_as(fresh_db, migrator_url), "head")
+    _upgrade_head(fresh_db, _alembic_cfg_as(fresh_db, migrator_url))
 
     # Simulates an older grants script, or a by-hand grant, that gave ingest the whole table
     # (climber_name included) before this script's REVOKE-then-column-GRANT existed.
@@ -690,7 +685,7 @@ def run_phase2_roles(dbname: str) -> str:
     assert _psql(owner_url, CREATE_PHASE2, PHASE2_PASSWORD_ENV).returncode == 0
     _owner_schema_model(owner_url)
     migrator_url = _role_url(dbname, "migrator", PASSWORDS["migrator"])
-    command.upgrade(_alembic_cfg_as(dbname, migrator_url), "head")
+    _upgrade_head(dbname, _alembic_cfg_as(dbname, migrator_url))
     granted = _psql(owner_url, GRANTS_PHASE2, {})
     assert granted.returncode == 0, granted.stderr
     return owner_url
@@ -705,7 +700,7 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
     assert _psql(owner_url, CREATE_PHASE2, PHASE2_PASSWORD_ENV).returncode == 0
     _owner_schema_model(owner_url)
     migrator_url = _role_url(fresh_db, "migrator", PASSWORDS["migrator"])
-    command.upgrade(_alembic_cfg_as(fresh_db, migrator_url), "head")
+    _upgrade_head(fresh_db, _alembic_cfg_as(fresh_db, migrator_url))
     assert _psql(owner_url, GRANTS_PHASE2, {}).returncode == 0
 
     _as(
@@ -730,7 +725,6 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "GRANT CREATE ON SCHEMA internal TO app;"
         "REVOKE SELECT ON internal.accident_revisions FROM analyst;"
         "REVOKE UPDATE (tz) ON public.accidents FROM ingest;"
-        "REVOKE SELECT ON public.weather FROM ingest;"
         "GRANT INSERT (location) ON public.accidents TO ingest;"
         "REVOKE INSERT (description) ON public.accidents FROM ingest;"
         "GRANT SELECT ON SEQUENCE public.accidents_accident_id_seq TO ingest;"
@@ -779,7 +773,6 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "analyst can SELECT internal.accident_revisions",
         "nobody can SET or INHERIT ingest",
         "nobody but CURRENT_USER holds ADMIN on ingest",
-        "ingest SELECT on public.weather matches the expected set",
         "ingest accidents column privileges match the expected set: location",
         "ingest accidents column privileges match the expected set: description",
         "ingest has nothing on sequence public.accidents_accident_id_seq",

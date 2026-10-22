@@ -131,8 +131,8 @@ WHERE ST_DWithin(
 
 ---
 
-### 4. weather (legacy)
-**Purpose:** 7-day weather windows for accident dates. Superseded by `cell_daily_conditions` (table 10) as of `0007`/plan 3; read-only from here on, kept only as the comparison input to `r6_verify`'s one-time ERA5-vs-legacy agreement check (`app/pipelines/r6_verify.py`). Nothing in `app/` writes it. It stays until the Phase 3 MVP-1 PR, which **must** drop it (hard gate: MVP-1 does not merge while `weather` exists); see `DEPLOYMENT.md`.
+### 4. weather (dropped by `0013_drop_legacy_weather`)
+**Purpose:** 7-day weather windows for accident dates. Superseded by `cell_daily_conditions` (table 10) as of `0007`/plan 3. `0013` drops it once an `ok` `r6_verify` run is logged; the columns below describe the table as it was. Rollback is the `pre-p3-4` snapshot branch (`DEPLOYMENT.md`).
 **Records:** ~25,000
 
 | Column | Type | Description |
@@ -500,8 +500,6 @@ mp_locations (45K)
             └── historical_predictions (growing daily)
 
 accidents (6.9K)
-    │
-    └── weather (25K)
 ```
 
 `canonical_areas` and `canonical_routes` (`0008`) hang one-to-one off `mp_locations` and `mp_routes` by the same ids, with `ON DELETE RESTRICT` FKs; `internal.route_tick_scrapes` hangs off `mp_routes` the same way.
@@ -577,14 +575,6 @@ FROM mp_routes r
 JOIN mp_locations l ON r.location_id = l.mp_id
 WHERE l.latitude IS NOT NULL
   AND l.longitude IS NOT NULL;
-```
-
-### Weather Pattern Matching
-```sql
--- Get 7-day weather window for an accident
-SELECT * FROM weather
-WHERE accident_id = :id
-ORDER BY date ASC;
 ```
 
 ---

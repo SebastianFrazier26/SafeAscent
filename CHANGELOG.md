@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Phase 3 Task 24: `0013_drop_legacy_weather` (MVP-1 hard gate) - 2026-10-22
+
+- `0013` drops `public.weather`; `upgrade()` refuses unless `source_ingest_log` holds an `ok` `r6_verify` row, `downgrade()` raises (rollback is the `pre-p3-4` snapshot branch; no dump is committed). It is a contract migration and runs on prod only behind the Task 26 runbook gate.
+- Deleted: `app.models.weather`, `app.pipelines.r6_verify`, its tests and verify cell. `grants_phase2.sql` no longer grants `ingest` SELECT on `weather` and revokes it where the table still exists; `verify_roles_phase2.sql` drops the row.
+- Test helper `_upgrade_head` seeds the `r6_verify` evidence at `0012` so fresh test databases can reach head.
+
 ### Phase 3 Task 23: the kernel leaves serving; scores heartbeat - 2026-10-22
 
 - The kernel math moved (`git mv`) to `app.ml.kernel_ref`, frozen for the backtest; `tests/test_kernel_not_served.py` fails if anything served imports it or `kernel_adapter`. `weather_service` has its own plain `WeatherPattern`; `utc_today` moved to `app.utils.time_utils`; `time_utils` and `geo_utils` inline the constants they took from `algorithm_config`.

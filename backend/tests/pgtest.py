@@ -14,7 +14,7 @@ import pytest
 from alembic import command
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
-from tests.test_migrations import ADMIN_URL, _alembic_cfg, _db_url, _execute
+from tests.test_migrations import ADMIN_URL, _alembic_cfg, _db_url, _execute, _upgrade_head
 
 requires_pg = pytest.mark.skipif(not ADMIN_URL, reason="MIGRATIONS_TEST_ADMIN_URL not set")
 
@@ -37,7 +37,10 @@ def migrated_db(revision: str = "head", seed_sql: str | None = None) -> Iterator
     name = f"p2_{uuid.uuid4().hex[:12]}"
     asyncio.run(_execute(ADMIN_URL, f'CREATE DATABASE "{name}"'))
     try:
-        command.upgrade(_alembic_cfg(name), revision)
+        if revision == "head":
+            _upgrade_head(name)
+        else:
+            command.upgrade(_alembic_cfg(name), revision)
         if seed_sql:
             run_sql(name, seed_sql)
         yield name

@@ -14,11 +14,9 @@ from app.models import reference  # noqa: F401  (Phase 2a reference and review t
 from app.models.accident import Accident
 from app.models.mp_location import MpLocation
 from app.models.mp_route import MpRoute
-from app.models.weather import Weather
 
 __all__ = [
     "Accident",
-    "Weather",
     "MpLocation",
     "MpRoute",
 ]

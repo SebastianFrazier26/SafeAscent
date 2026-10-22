@@ -54,7 +54,7 @@ def test_trainer_reads_allowlist_and_writes_only_model(role_cleanup, fresh_db): 
     for rel in ALLOW_SELECT:
         _as(trainer, f"SELECT count(*) FROM {rel}")
     for rel in ("public.accidents", "public.accidents_clean_daily", "public.accident_conditions",
-                "internal.mp_tick_aggregates", "internal.route_tick_scrapes", "public.mp_ticks", "public.weather"):
+                "internal.mp_tick_aggregates", "internal.route_tick_scrapes", "public.mp_ticks"):
         _denied(trainer, f"SELECT count(*) FROM {rel}")
     _as(trainer, "UPDATE model.registry SET metrics = metrics WHERE false")
     _as(trainer, "DELETE FROM model.route_scores WHERE false")

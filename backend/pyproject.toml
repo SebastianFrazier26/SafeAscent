@@ -145,7 +145,6 @@ module = [
     "app.pipelines.era5_fill",
     "app.pipelines.normals",
     "app.pipelines.era5_window",
-    "app.pipelines.r6_verify",
     "app.ml",
     "app.ml.bundle",
     "app.ml.registry",

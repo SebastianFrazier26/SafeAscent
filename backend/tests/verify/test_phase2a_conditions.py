@@ -4,7 +4,6 @@ url> uv run pytest -m db tests/verify."""
 import pytest
 
 from app.pipelines.localday import INCIDENT_FROM_WHERE_SQL, INCIDENT_START
-from app.pipelines.r6_verify import R6_SQL
 from tests.verify._db import fetch
 
 pytestmark = pytest.mark.db
@@ -39,18 +38,6 @@ def test_every_clean_day_incident_has_a_seven_day_window():
     )
     print(dict(row), dict(info))
     assert row["missing"] == 0
-
-
-def test_r6_new_temperatures_agree_with_correctly_linked_legacy_rows():
-    [row] = fetch(R6_SQL)
-    print(dict(row))
-    assert row["n"] > 100
-    # Missing is never 0: a NULL correlation/percentile (too few or no era5 rows) must fail
-    # loudly here rather than compare false against the thresholds below.
-    assert row["r_tmax"] is not None
-    assert row["p99_gust"] is not None
-    assert row["r_tmax"] > 0.95
-    assert row["p99_gust"] < 60
 
 
 def test_r7_no_positive_longitudes():

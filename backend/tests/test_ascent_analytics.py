@@ -17,7 +17,7 @@ from httpx import ASGITransport, AsyncClient
 from app.api.v1.mp_routes import get_ascent_analytics
 from app.db.session import get_db
 from app.main import app
-from tests.test_migrations import ADMIN_URL, _alembic_cfg, _db_url, _execute
+from tests.test_migrations import ADMIN_URL, _db_url, _execute, _upgrade_head
 
 pytestmark = pytest.mark.skipif(not ADMIN_URL, reason="MIGRATIONS_TEST_ADMIN_URL not set")
 
@@ -60,13 +60,12 @@ INSERT INTO accidents (accident_id, date, route, mp_route_id, latitude, longitud
 
 @pytest.fixture
 def seeded_db() -> Iterator[str]:
-    from alembic import command
 
     assert ADMIN_URL is not None
     name = f"asc_{uuid.uuid4().hex[:12]}"
     asyncio.run(_execute(ADMIN_URL, f'CREATE DATABASE "{name}"'))
     try:
-        command.upgrade(_alembic_cfg(name), "head")
+        _upgrade_head(name)
         asyncio.run(_execute(_db_url(name), SEED_SQL))
         yield name
     finally:

@@ -83,8 +83,6 @@ INSERT INTO ingest_privs VALUES
   ('public.cell_climatology', 'UPDATE'),
   ('public.accidents_clean', 'SELECT'), ('public.accidents_clean_daily', 'SELECT'),
   ('public.accident_conditions', 'SELECT'),
-  -- Plan 3 (R6 verify): the legacy weather table is read-only input to r6_verify.
-  ('public.weather', 'SELECT'),
   -- Plan 3 (R7): area_weekly_weather SELECT is table-level; UPDATE is column-level (longitude
   -- only), checked below.
   ('public.area_weekly_weather', 'SELECT'),

@@ -76,9 +76,14 @@ GRANT SELECT ON public.accidents_clean, public.accidents_clean_daily, public.acc
 -- no SELECT is widened here.
 GRANT UPDATE (tz) ON public.accidents TO ingest;
 
--- Plan 3 (R6 verify): r6_verify's CLI logs the ERA5-vs-legacy agreement as ingest, reading the
--- legacy weather table; never written.
-GRANT SELECT ON public.weather TO ingest;
+-- 0013 drops the legacy weather table; this revoke clears a database that still has it (a fresh
+-- one drops it at head, so the grant and the table are both gone).
+DO $$
+BEGIN
+  IF to_regclass('public.weather') IS NOT NULL THEN
+    REVOKE ALL ON public.weather FROM ingest;
+  END IF;
+END $$;
 
 -- Plan 3 (R7): the one-time longitude sign fix reads and flips area_weekly_weather.longitude
 -- only; never any other column.
