@@ -26,7 +26,11 @@ _ALLOWED_SUMMARY_KEYS = frozenset({"source", "rows_in", "accepted", "quarantined
 # Run-level numbers a job may add (hand-check agreement, rows left for owner review, R6's
 # sample size/correlation/gust percentile). A new metric joins this set in a reviewed change
 # rather than riding a raw jsonb UPDATE (G13).
-_ALLOWED_METRICS = frozenset({"agreement", "review_pending", "n", "r_tmax", "p99_gust"})
+_ALLOWED_METRICS = frozenset({
+    "agreement", "review_pending", "n", "r_tmax", "p99_gust",
+    # mp_tick_aggregates --scope rock: routes kept off the quarantine (exposure plan X-1, 2026-10-21).
+    "routes_waiting_unknown_route", "routes_waiting_ice_mixed_route", "routes_waiting_route_incomplete",
+})
 
 
 def sha256_rows(rows: Iterable[Sequence[object]]) -> str:

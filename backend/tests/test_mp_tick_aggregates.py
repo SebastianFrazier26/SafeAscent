@@ -11,8 +11,11 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 import app.pipelines.mp_tick_aggregates as loader
-from app.pipelines.mp_tick_aggregates import AggregateRow, is_ice_mixed, load, main, read_export, validate
-from tests.pgtest import migrated_db, requires_pg, sa_url
+from app.pipelines.mp_tick_aggregates import (
+    AggregateRow, RouteTotal, check_aggregate_only, check_export_location, existing_counts, is_ice_mixed, load,
+    main, read_export, routes_to_load, validate,
+)
+from tests.pgtest import fetch, migrated_db, requires_pg, run_on_engine, sa_url
 
 TODAY = date(2026, 9, 28)
 R1, R2, R3, R4 = 900000001, 900000002, 900000003, 900000004
@@ -430,3 +433,370 @@ def test_gappy_routes_load_as_scraped_and_hide_their_months(tmp_path, monkeypatc
         scrapes, months = asyncio.run(_seam_state(url))
     assert [(r[0], r[2], r[3], r[4]) for r in scrapes] == [(R1, False, None, None), (R2, False, None, None)]
     assert months == []
+
+
+ROCK = {R1: "Ice", R4: "Trad"}
+
+
+def test_rock_scope_quarantines_ice_routes_and_accepts_rock(tmp_path):
+    path = _export(tmp_path, [(R1, "2025-01", "lead", 3), (R4, "2025-01", "lead", 2)], [(R1, 3, 1), (R4, 2, 1)])
+    totals, monthly = read_export(path)
+    rows, report, stats = validate(totals, monthly, route_types=ROCK, existing={}, today=TODAY, scope="rock")
+    # F3 (controller ruling 2026-10-15): ice_mixed_route is out-of-scope for the rock gate, so it
+    # never reaches report.quarantined — it is counted separately, per route.
+    assert report.quarantined == {}
+    assert report.source == "mp_tick_aggregates_rock"  # F2: source matches the scope, not the ice default
+    assert stats["routes_waiting_ice_mixed_route"] == 1
+    assert _keys(rows) == {(R4, "2025-01", "lead", 2), (R4, "total", "all", 2)}
+
+
+def test_ice_scope_is_unchanged_by_the_scope_parameter(tmp_path):
+    path = _export(tmp_path, [(R1, "2025-01", "lead", 3), (R4, "2025-01", "lead", 2)], [(R1, 3, 1), (R4, 2, 1)])
+    totals, monthly = read_export(path)
+    rows, report, _ = validate(totals, monthly, route_types=ROCK, existing={}, today=TODAY)
+    assert report.quarantined == {"not_ice_mixed": 2}
+    assert _keys(rows) == {(R1, "2025-01", "lead", 3), (R1, "total", "all", 3)}
+
+
+def test_read_export_filters_monthly_rows_to_the_requested_routes(tmp_path):
+    path = _export(tmp_path, [(R1, "2025-01", "lead", 3), (R4, "2025-02", "tr", 1)], [(R1, 3, 1), (R4, 1, 1)])
+    totals, monthly = read_export(path, routes={R4})
+    assert {t.mp_route_id for t in totals} == {R1, R4}
+    assert [(m.mp_route_id, m.year_month) for m in monthly] == [(R4, "2025-02")]
+    assert read_export(path, routes=set())[1] == []
+
+
+def test_an_export_inside_the_repository_is_refused(tmp_path):
+    inside = tmp_path / "repo" / "data" / "ticks.sqlite"
+    inside.parent.mkdir(parents=True)
+    with pytest.raises(SystemExit, match="inside the repository"):
+        check_export_location(inside, repo_root=tmp_path / "repo")
+    check_export_location(tmp_path / "private" / "ticks.sqlite", repo_root=tmp_path / "repo")
+
+
+def test_the_real_repo_root_is_the_checkout_root():
+    assert (loader.REPO_ROOT / "backend" / "app" / "pipelines" / "mp_tick_aggregates.py").is_file()
+
+
+def test_a_raw_table_or_extra_column_is_refused_before_any_row_is_read(tmp_path):
+    raw = _export(tmp_path, [(R4, "2025-01", "lead", 2)], [(R4, 2, 1)], name="raw.sqlite")
+    db = sqlite3.connect(raw)
+    db.execute("CREATE TABLE tick_rows (mp_route_id INTEGER, climber TEXT)")
+    db.commit()
+    db.close()
+    with pytest.raises(SystemExit, match="tick_rows"):
+        check_aggregate_only(raw)
+    wide = _export(tmp_path, [(R4, "2025-01", "lead", 2)], [(R4, 2, 1)], name="wide.sqlite")
+    db = sqlite3.connect(wide)
+    db.execute("ALTER TABLE route_tick_monthly ADD COLUMN note TEXT")
+    db.commit()
+    db.close()
+    with pytest.raises(SystemExit, match="route_tick_monthly.note"):
+        check_aggregate_only(wide)
+    check_aggregate_only(_export(tmp_path, [(R4, "2025-01", "lead", 2)], [(R4, 2, 1)], name="ok.sqlite"))
+
+
+def test_a_missing_required_column_is_refused(tmp_path):
+    path = tmp_path / "thin.sqlite"
+    db = sqlite3.connect(path)
+    db.executescript(
+        "CREATE TABLE route_tick_totals (mp_route_id INTEGER PRIMARY KEY, total_ticks INTEGER NOT NULL);"
+        "CREATE TABLE route_tick_monthly (mp_route_id INTEGER, year_month TEXT, style TEXT, n INTEGER);")
+    db.close()
+    with pytest.raises(SystemExit, match="route_tick_totals lacks"):
+        check_aggregate_only(path)
+
+
+def test_rock_out_of_scope_routes_stay_off_the_gate_and_out_of_the_seam(tmp_path):
+    from app.pipelines.mp_tick_aggregates import seam_rows
+
+    r5, r6 = 900000005, 900000006
+    path = _export(
+        tmp_path,
+        [(R1, "2025-01", "lead", 3), (R4, "2025-01", "lead", 2), (r5, "2025-01", "tr", 1), (r6, "2025-01", "lead", 4)],
+        [(R1, 3, 1), (R4, 2, 1), (r5, 1, 0), (r6, 4, 1)],
+    )
+    totals, monthly = read_export(path)
+    types = {**ROCK, r5: "Sport"}
+    _, report, stats = validate(totals, monthly, route_types=types, existing={}, today=TODAY, scope="rock")
+    assert (report.rows_in, report.accepted, report.quarantined) == (2, 2, {})
+    assert {k: v for k, v in stats.items() if k.startswith("routes_waiting_")} == {
+        "routes_waiting_ice_mixed_route": 1, "routes_waiting_route_incomplete": 1, "routes_waiting_unknown_route": 1,
+    }
+    # Missing is never 0: an ice, still-scraping or uncatalogued route gets no seam row at all.
+    assert {(s.mp_route_id, s.complete) for s in seam_rows(totals, monthly, report)} == {(R4, True)}
+
+
+def _seed_rock_and_ice() -> str:
+    return (
+        "INSERT INTO mp_locations (mp_id, name) VALUES (900000100, 'Fixture Area');"
+        f"INSERT INTO mp_routes (mp_route_id, name, location_id, type) VALUES ({R1}, 'Fixture Ice', 900000100, 'Ice'),"
+        f" ({R4}, 'Fixture Rock', 900000100, 'Trad');"
+    )
+
+
+def test_routes_to_load_skips_routes_whose_seam_is_as_new():
+    at = datetime.fromisoformat(SCRAPED)
+    newer = datetime.fromisoformat("2026-09-25T00:00:00+00:00")
+    totals = [RouteTotal(R1, 1, True, at), RouteTotal(R4, 1, True, newer), RouteTotal(R2, 1, True, at)]
+    assert routes_to_load(totals, {R1: at, R4: at}) == {R4, R2}
+
+
+@requires_pg
+def test_rock_scope_loads_rock_and_writes_the_seam(tmp_path, monkeypatch):
+    path = _export(tmp_path, [(R1, "2025-01", "lead", 3), (R4, "2025-01", "lead", 2), (R4, "2025-03", "tr", 1)],
+                   [(R1, 3, 1), (R4, 3, 1)])
+    with migrated_db(seed_sql=_seed_rock_and_ice()) as name:
+        url = sa_url(name)
+        monkeypatch.setattr(loader, "ingest_engine", lambda: create_async_engine(url))
+        out = asyncio.run(main(path, today=TODAY, max_quarantine_share=1.0, dry_run=False, scope="rock"))
+        # F3: ice_mixed_route is out-of-scope for the rock gate, so R1 never reaches report.quarantined;
+        # it shows up only as stats.routes_waiting_ice_mixed_route.
+        assert out["status"] == "ok" and out["report"]["quarantined"] == {}
+        assert out["stats"]["routes_waiting_ice_mixed_route"] == 1
+        scrapes, months = asyncio.run(_seam_state(url))
+        assert [(r, c, t) for r, _, c, _, t in scrapes] == [(R4, True, 3)]
+        assert months == [(R4, "2025-01", 2), (R4, "2025-03", 1)]
+        log = fetch(name, "SELECT source, status FROM source_ingest_log ORDER BY started_at")
+        assert log == [("mp_tick_aggregates_rock", "ok")]
+        # Controller ruling 2026-10-15 (replaces the brief's F2 assertion here): the rejected ice
+        # route is out of scope, not a data problem, so it writes no quarantine row at all.
+        assert fetch(name, "SELECT count(*) FROM internal.ingest_quarantine") == [(0,)]
+
+
+@requires_pg
+def test_rock_run_quarantines_only_real_data_problems_under_the_rock_source(tmp_path, monkeypatch):
+    unknown, incomplete = 900000901, 900000005
+    path = _export(
+        tmp_path,
+        [(R1, "2025-01", "lead", 3), (R4, "2025-01", "lead", 2), (R4, "2025-02", "bogus", 1),
+         (unknown, "2025-01", "lead", 1), (incomplete, "2025-01", "lead", 1)],
+        [(R1, 3, 1), (R4, 3, 1), (unknown, 1, 1), (incomplete, 1, 0)],
+    )
+    seed = _seed_rock_and_ice() + (
+        f"INSERT INTO mp_routes (mp_route_id, name, location_id, type) VALUES ({incomplete}, 'Fixture Sport', "
+        "900000100, 'Sport');")
+    with migrated_db(seed_sql=seed) as name:
+        url = sa_url(name)
+        monkeypatch.setattr(loader, "ingest_engine", lambda: create_async_engine(url))
+        out = asyncio.run(main(path, today=TODAY, max_quarantine_share=1.0, dry_run=False, scope="rock"))
+        assert out["status"] == "ok" and out["report"]["quarantined"] == {"bad_style": 1}
+        assert {k: v for k, v in out["stats"].items() if k.startswith("routes_waiting_")} == {
+            "routes_waiting_ice_mixed_route": 1, "routes_waiting_route_incomplete": 1,
+            "routes_waiting_unknown_route": 1,
+        }
+        # F2: a real data problem is logged under the rock source; the out-of-scope routes never are.
+        rows = fetch(name, "SELECT source, row_ref, reason FROM internal.ingest_quarantine")
+        assert rows == [("mp_tick_aggregates_rock", f"{R4}:2025-02:bogus", "bad_style")]
+        assert fetch(name, "SELECT rows_quarantined FROM source_ingest_log") == [(1,)]
+        # Review fix 2: the waiting counts persist in the run log, not only in the printed stats.
+        assert fetch(name, "SELECT validation_report->>'routes_waiting_unknown_route', "
+                           "validation_report->>'routes_waiting_ice_mixed_route', "
+                           "validation_report->>'routes_waiting_route_incomplete' FROM source_ingest_log") == [
+            ("1", "1", "1")]
+
+
+@requires_pg
+def test_rock_reload_is_a_noop_and_older_never_rolls_back(tmp_path, monkeypatch):
+    first = _export(tmp_path, [(R4, "2025-01", "lead", 2)], [(R4, 2, 1)], name="first.sqlite")
+    older = _export(tmp_path, [(R4, "2025-01", "lead", 2)], [(R4, 2, 1)],
+                    scraped_at="2026-08-01T00:00:00+00:00", name="older.sqlite")
+    with migrated_db(seed_sql=_seed_rock_and_ice()) as name:
+        url = sa_url(name)
+        monkeypatch.setattr(loader, "ingest_engine", lambda: create_async_engine(url))
+        assert asyncio.run(main(first, today=TODAY, max_quarantine_share=1.0, dry_run=False, scope="rock"))["status"] == "ok"
+        again = asyncio.run(main(first, today=TODAY, max_quarantine_share=1.0, dry_run=False, scope="rock"))
+        assert again == {"status": "noop", "rows_upserted": 0, "routes_unchanged": 1}
+        assert asyncio.run(main(older, today=TODAY, max_quarantine_share=1.0, dry_run=False, scope="rock"))["status"] == "noop"
+        assert asyncio.run(_seam_state(url))[0][0][3] == date(2026, 8, 31)
+        assert fetch(name, "SELECT count(*) FROM source_ingest_log") == [(1,)]
+
+
+@requires_pg
+def test_persistent_out_of_scope_routes_never_trip_the_rock_quarantine_gate(tmp_path, monkeypatch):
+    # F3 (controller ruling 2026-10-15): a rock export's cumulative route list always carries some
+    # routes the catalog hasn't ingested yet. They recur every reload — the seam never gets an
+    # entry for them — so under the old, unadjusted share this reload (5 of 6 routes rejected, a
+    # 0.833 share) would be rejected at max_quarantine_share=0.10 even though the one real route
+    # is fine.
+    unknown = [900000901, 900000902, 900000903, 900000904, 900000905]
+    monthly = [(R4, "2025-01", "lead", 2)] + [(u, "2025-01", "lead", 1) for u in unknown]
+    totals = [(R4, 2, 1)] + [(u, 1, 1) for u in unknown]
+    path = _export(tmp_path, monthly, totals)
+    with migrated_db(seed_sql=_seed_rock_and_ice()) as name:
+        url = sa_url(name)
+        monkeypatch.setattr(loader, "ingest_engine", lambda: create_async_engine(url))
+        out = asyncio.run(main(path, today=TODAY, max_quarantine_share=0.10, dry_run=False, scope="rock"))
+        assert out["status"] == "ok"
+        assert out["report"]["quarantined"] == {}
+        assert out["stats"]["routes_waiting_unknown_route"] == 5
+        scrapes, _ = asyncio.run(_seam_state(url))
+        assert [(r, c) for r, _, c, _, _ in scrapes] == [(R4, True)]  # no seam row for the 5 unknowns
+
+
+# F13: no @requires_pg — ingest_engine is monkeypatched to raise, so this never needs a real DB.
+def test_rock_scope_refuses_a_raw_export_before_touching_the_database(tmp_path, monkeypatch):
+    raw = _export(tmp_path, [(R4, "2025-01", "lead", 2)], [(R4, 2, 1)])
+    db = sqlite3.connect(raw)
+    db.execute("CREATE TABLE tick_rows (mp_route_id INTEGER)")
+    db.commit()
+    db.close()
+
+    def boom():
+        raise AssertionError("the database must not be opened")
+
+    monkeypatch.setattr(loader, "ingest_engine", boom)
+    with pytest.raises(SystemExit, match="aggregate-only"):
+        asyncio.run(main(raw, today=TODAY, max_quarantine_share=1.0, dry_run=False, scope="rock"))
+
+
+def _no_db(monkeypatch):
+    def boom():
+        raise AssertionError("the database must not be opened")
+
+    monkeypatch.setattr(loader, "ingest_engine", boom)
+
+
+@pytest.mark.parametrize("scope", [None, "ice_mixed", "rock"])
+def test_the_cli_refuses_a_raw_export_in_every_scope(tmp_path, monkeypatch, scope):
+    raw = _export(tmp_path, [(R1, "2025-01", "lead", 2)], [(R1, 2, 1)])
+    db = sqlite3.connect(raw)
+    db.execute("CREATE TABLE tick_rows (mp_route_id INTEGER, climber TEXT)")
+    db.commit()
+    db.close()
+    _no_db(monkeypatch)
+    argv = ["mp_tick_aggregates", "--sqlite", str(raw)] + (["--scope", scope] if scope else [])
+    monkeypatch.setattr("sys.argv", argv)
+    with pytest.raises(SystemExit, match="aggregate-only"):
+        loader.cli()
+
+
+@pytest.mark.parametrize("scope", [None, "ice_mixed", "rock"])
+def test_the_cli_refuses_an_export_inside_the_repository_in_every_scope(monkeypatch, scope):
+    # Never created: the location check must refuse before the file is even opened.
+    inside = loader.REPO_ROOT / "data" / "never-created-ticks.sqlite"
+    _no_db(monkeypatch)
+    argv = ["mp_tick_aggregates", "--sqlite", str(inside)] + (["--scope", scope] if scope else [])
+    monkeypatch.setattr("sys.argv", argv)
+    with pytest.raises(SystemExit, match="inside the repository"):
+        loader.cli()
+    assert not inside.exists()
+
+
+def test_the_cli_rejects_an_unknown_scope(tmp_path, monkeypatch):
+    _no_db(monkeypatch)
+    monkeypatch.setattr("sys.argv", ["mp_tick_aggregates", "--sqlite", str(tmp_path / "x.sqlite"), "--scope", "sport"])
+    with pytest.raises(SystemExit):
+        loader.cli()
+
+
+@requires_pg
+def test_existing_counts_handles_more_ids_than_the_parameter_limit():
+    with migrated_db() as name:
+        async def go(engine):
+            async with engine.connect() as conn:
+                return await existing_counts(conn, set(range(900000000, 900040000)))
+
+        assert run_on_engine(name, go) == {}
+
+
+@requires_pg
+def test_rock_reload_with_a_waiting_route_is_a_noop(tmp_path, monkeypatch):
+    # Review fix 1: the unknown route never gets a seam row, so it is "new" on every reload; the
+    # reload must still write no second log row.
+    unknown = 900000901
+    path = _export(tmp_path, [(R4, "2025-01", "lead", 2), (unknown, "2025-01", "lead", 1)], [(R4, 2, 1), (unknown, 1, 1)])
+    with migrated_db(seed_sql=_seed_rock_and_ice()) as name:
+        url = sa_url(name)
+        monkeypatch.setattr(loader, "ingest_engine", lambda: create_async_engine(url))
+        first = asyncio.run(main(path, today=TODAY, max_quarantine_share=1.0, dry_run=False, scope="rock"))
+        assert first["status"] == "ok" and first["stats"]["routes_waiting_unknown_route"] == 1
+        for _ in range(2):
+            again = asyncio.run(main(path, today=TODAY, max_quarantine_share=1.0, dry_run=False, scope="rock"))
+            assert again == {"status": "noop", "rows_upserted": 0, "routes_unchanged": 1}
+        assert fetch(name, "SELECT count(*) FROM source_ingest_log") == [(1,)]
+        assert fetch(name, "SELECT count(*) FROM internal.ingest_quarantine") == [(0,)]
+
+
+@requires_pg
+def test_a_newer_rock_scrape_advances_the_seam(tmp_path, monkeypatch):
+    from datetime import UTC
+
+    first = _export(tmp_path, [(R4, "2026-06", "lead", 3)], [(R4, 3, 1)],
+                    scraped_at="2026-08-20T00:00:00+00:00", name="first.sqlite")
+    second = _export(tmp_path, [(R4, "2026-06", "lead", 3), (R4, "2026-08", "tr", 2)], [(R4, 5, 1)],
+                     scraped_at="2026-09-20T00:00:00+00:00", name="second.sqlite")
+    with migrated_db(seed_sql=_seed_rock_and_ice()) as name:
+        url = sa_url(name)
+        monkeypatch.setattr(loader, "ingest_engine", lambda: create_async_engine(url))
+        assert asyncio.run(main(first, today=TODAY, max_quarantine_share=1.0, dry_run=False, scope="rock"))["status"] == "ok"
+        again = asyncio.run(main(second, today=TODAY, max_quarantine_share=1.0, dry_run=False, scope="rock"))
+        assert (again["status"], again["rows_upserted"]) == ("ok", 1)  # the new 2026-08 month
+        assert (again["stats"]["routes_unchanged"], again["stats"]["already_loaded_changed"]) == (0, 1)  # total 3 -> 5
+        assert asyncio.run(_seam_state(url)) == (
+            [(R4, datetime(2026, 9, 20, tzinfo=UTC), True, date(2026, 8, 31), 5)],
+            [(R4, "2026-06", 3), (R4, "2026-08", 2)])
+        assert fetch(name, "SELECT count(*) FROM source_ingest_log WHERE status = 'ok'") == [(2,)]
+
+
+@requires_pg
+def test_main_reads_the_export_through_one_connection(tmp_path, monkeypatch):
+    # Review fix 3: schema check, totals and months all come from one read snapshot.
+    path = _export(tmp_path, [(R1, "2025-01", "lead", 3), (R4, "2025-01", "lead", 2)], [(R1, 3, 1), (R4, 2, 1)])
+    real_connect = sqlite3.connect
+    opened: list[str] = []
+
+    def counting_connect(target, *args, **kwargs):
+        opened.append(str(target))
+        return real_connect(target, *args, **kwargs)
+
+    with migrated_db(seed_sql=_seed_rock_and_ice()) as name:
+        url = sa_url(name)
+        monkeypatch.setattr(loader, "ingest_engine", lambda: create_async_engine(url))
+        monkeypatch.setattr(loader.sqlite3, "connect", counting_connect)
+        out = asyncio.run(main(path, today=TODAY, max_quarantine_share=1.0, dry_run=False, scope="rock"))
+    assert out["status"] == "ok"
+    assert opened == [f"file:{path}?mode=ro"]
+
+
+@requires_pg
+@pytest.mark.parametrize("dry", [False, True])
+def test_the_cli_loads_or_dry_runs_a_rock_export(tmp_path, monkeypatch, capsys, dry):
+    import json
+
+    from app.services import temporal_weighting
+
+    path = _export(tmp_path, [(R4, "2025-01", "lead", 2)], [(R4, 2, 1)])
+    with migrated_db(seed_sql=_seed_rock_and_ice()) as name:
+        url = sa_url(name)
+        monkeypatch.setattr(loader, "ingest_engine", lambda: create_async_engine(url))
+        monkeypatch.setattr(temporal_weighting, "utc_today", lambda: TODAY)
+        argv = ["mp_tick_aggregates", "--sqlite", str(path), "--scope", "rock"] + (["--dry-run"] if dry else [])
+        monkeypatch.setattr("sys.argv", argv)
+        loader.cli()
+        out = json.loads(capsys.readouterr().out)
+        log = fetch(name, "SELECT source, status, rows_upserted FROM source_ingest_log")
+        scrapes, months = asyncio.run(_seam_state(url))
+    if dry:
+        assert out["status"] == "dry_run" and out["problems"] == [] and out["stats"]["seam_complete"] == 1
+        assert (log, scrapes, months) == ([], [], [])
+    else:
+        assert out["status"] == "ok" and out["rows_upserted"] == 2
+        assert log == [("mp_tick_aggregates_rock", "ok", 2)]
+        assert months == [(R4, "2025-01", 2)]
+
+
+def test_one_export_connection_is_one_snapshot_while_the_scraper_writes(tmp_path):
+    path = _export(tmp_path, [(R4, "2025-01", "lead", 2)], [(R4, 2, 1)])
+    writer = sqlite3.connect(path)
+    writer.execute("PRAGMA journal_mode=WAL")
+    try:
+        with loader._ro_connection(path) as db:
+            before = loader._read_totals(db)
+            writer.execute("INSERT INTO route_tick_totals VALUES (?, 1, 1, 1, 1, ?)", (R2, SCRAPED))
+            writer.execute("INSERT INTO route_tick_monthly VALUES (?, '2025-01', 'lead', 1)", (R2,))
+            writer.commit()
+            assert loader._read_totals(db) == before
+            assert {m.mp_route_id for m in loader._read_monthly(db, None)} == {R4}
+    finally:
+        writer.close()
