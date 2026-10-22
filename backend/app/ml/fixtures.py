@@ -181,7 +181,8 @@ def toy_bundle_and_row() -> tuple[Any, dict[str, Any]]:
     for name, z in _TOY_Z.items():
         k = d.names.index(name)
         X[toy.target_cell, k] = z
-        center[k], scale[k] = tr[name] - z, 1.0
+        scale[k] = 2.5 + 0.5 * (k % 3)
+        center[k] = tr[name] - z * scale[k]
     for name, c in _TOY_COEF.items():
         coef[d.names.index(name)] = c
     design = dataclasses.replace(d, X=X, center=center, scale=scale)

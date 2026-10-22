@@ -18,22 +18,29 @@ from app.ml.dataset import STATIC_FEATURES, CellData
 LOG1P_FEATURES = frozenset({"precip_mm", "snowfall_cm"})
 
 
-def transform_static(raw: Mapping[str, float | None]) -> dict[str, float]:
-    """One route's static features as build_design transforms them, before standardizing: z_<name> (NaN
-    where missing) plus the two missing indicators. Absent keys read as missing."""
-    out: dict[str, float] = {}
-    for f in STATIC_FEATURES:
-        v = raw.get(f)
-        if v is not None and math.isinf(v):
-            raise ValueError(f"{f} is infinite")
-        missing = v is None or math.isnan(v)
-        out[f"z_{f}"] = math.nan if missing or v is None else (math.log1p(v) if f in LOG1P_FEATURES else float(v))
-    elev_missing = math.isnan(out["z_elevation_m"])
-    if math.isnan(out["z_lat"]) and not elev_missing:
+def transform_static_columns(static: NDArray[np.float64]) -> dict[str, NDArray[np.float64]]:
+    """The single implementation of the static-feature transform, before standardizing: z_<name> (NaN
+    where missing) plus the two missing indicators, for an (n, len(STATIC_FEATURES)) array."""
+    if np.isinf(static).any():
+        raise ValueError("static features must not be infinite")
+    # z_lat has no indicator of its own: a missing lat is only safe to impute when
+    # ind_elevation_missing already flags the row (a route without a feature row loses both).
+    if (np.isnan(static[:, 1]) & ~np.isnan(static[:, 0])).any():
         raise ValueError("lat missing where elevation is present: no indicator would mark the imputed lat")
-    out["ind_elevation_missing"] = float(elev_missing)
-    out["ind_normals_missing"] = float(any(math.isnan(out[f"z_{f}"]) for f in STATIC_FEATURES[2:]))
+    out: dict[str, NDArray[np.float64]] = {}
+    for j, f in enumerate(STATIC_FEATURES):
+        v = static[:, j]
+        out[f"z_{f}"] = np.log1p(v) if f in LOG1P_FEATURES else v
+    out["ind_elevation_missing"] = np.isnan(static[:, 0]).astype(np.float64)
+    out["ind_normals_missing"] = np.asarray(np.isnan(static[:, 2:]).any(axis=1), dtype=np.float64)
     return out
+
+
+def transform_static(raw: Mapping[str, float | None]) -> dict[str, float]:
+    """One route's static features through transform_static_columns. Absent keys read as missing."""
+    vals = [raw.get(f) for f in STATIC_FEATURES]
+    row = np.array([[math.nan if v is None else float(v) for v in vals]])
+    return {k: float(v[0]) for k, v in transform_static_columns(row).items()}
 
 
 @dataclass(frozen=True)
@@ -108,15 +115,7 @@ def build_design(cells: CellData, *, policy: TickPolicy, lambdas: Lambdas = Lamb
         "x_ticks": np.where(tick_on, np.log1p(np.nan_to_num(cells.ticks_per_route, nan=0.0) / tick_ref), np.nan),
         "ind_ticks_off": (~tick_on).astype(np.float64),
     }
-    # z_lat has no indicator of its own: a missing lat is only safe to impute when
-    # ind_elevation_missing already flags the row (a route without a feature row loses both).
-    if (np.isnan(cells.static[:, 1]) & ~np.isnan(cells.static[:, 0])).any():
-        raise ValueError("lat missing where elevation is present: no indicator would mark the imputed lat")
-    for j, f in enumerate(STATIC_FEATURES):
-        v = cells.static[:, j]
-        raw[f"z_{f}"] = np.log1p(v) if f in LOG1P_FEATURES else v
-    raw["ind_elevation_missing"] = np.isnan(cells.static[:, 0]).astype(np.float64)
-    raw["ind_normals_missing"] = np.asarray(np.isnan(cells.static[:, 2:]).any(axis=1), dtype=np.float64)
+    raw.update(transform_static_columns(cells.static))
     order = ["x_density", "x_season", "ind_season_missing", "x_ticks", "ind_ticks_off", "z_elevation_m",
              "ind_elevation_missing", "z_lat", "z_tmax_mean", "z_tmin_mean", "z_precip_mm", "z_snowfall_cm",
              "z_freeze_thaw_days", "ind_normals_missing"]

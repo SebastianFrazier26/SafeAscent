@@ -87,16 +87,21 @@ def test_lat_missing_without_elevation_flag_fails_closed():
         build_design(cells, policy=TickPolicy())
 
 
-def test_transform_static_matches_the_design_row():
-    cells = synthetic_cells(5, 6)
-    d = build_design(cells, policy=TickPolicy())
-    i = 7
-    raw = {f: (None if np.isnan(cells.static[i, j]) else float(cells.static[i, j])) for j, f in enumerate(STATIC_FEATURES)}
-    t = transform_static(raw)
-    for name, v in t.items():
-        k = d.names.index(name)
-        got = v if name.startswith("ind_") else (0.0 if np.isnan(v) else (v - d.center[k]) / d.scale[k])
-        assert got == pytest.approx(d.X[i, k])
+def test_transform_static_matches_the_design_rows_including_nan_and_log1p():
+    cells = synthetic_cells(5, 12)
+    st = cells.static.copy()
+    st[3, 2:] = np.nan
+    st[5] = np.nan
+    st[8, 4] = np.nan
+    d = build_design(dataclasses.replace(cells, static=st), policy=TickPolicy())
+    for i in (0, 3, 5, 8, 11, 20, 40):
+        raw = {f: (None if np.isnan(st[i, j]) else float(st[i, j])) for j, f in enumerate(STATIC_FEATURES)}
+        for name, v in transform_static(raw).items():
+            k = d.names.index(name)
+            got = v if name.startswith("ind_") else (0.0 if np.isnan(v) else (v - d.center[k]) / d.scale[k])
+            assert got == pytest.approx(d.X[i, k]), (i, name)
+    assert {"z_precip_mm", "z_snowfall_cm"} <= set(transform_static({"precip_mm": 3.0, "snowfall_cm": 9.0}))
+    assert transform_static({"precip_mm": 3.0})["z_precip_mm"] == pytest.approx(np.log1p(3.0))
 
 
 def test_transform_static_missing_and_inconsistent_lat():

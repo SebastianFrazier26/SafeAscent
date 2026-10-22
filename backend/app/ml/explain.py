@@ -1,8 +1,11 @@
-"""Term decomposition of a stored RR (P3 Task 14). log(rr_mean) = const(g, m) + sum(hazard terms) +
-evidence, exactly: the hazard terms are coef * design value for every non-exposure column, and the
-evidence term is the residual, so it absorbs the posterior shrinkage. Exposure columns (density,
-season, ticks) cancel out of the RR and are never named. A missing raw feature is explained through
-its missing indicator; its z term is the training mean, a zero effect."""
+"""Term decomposition of a stored RR (P3 Task 14). The terms sum to log(rr_mean) exactly, with no
+outside constant: the hazard terms are coef * design value for every non-exposure column, the type and
+season columns plus const(g, m) = -log r_ref(g, m) form one term relative to the national typical route
+of that type and month, and the evidence term is the residual, so it absorbs the posterior shrinkage.
+With top=N the hidden hazard terms are summed into an "Other factors" term, so the list still adds up.
+Exposure columns (density, season, ticks) cancel out of the RR and are never named. A missing raw
+feature is explained through its missing indicator; its z term is the training mean, a zero effect.
+An insufficient cell has no stored number, so a non-finite n_eff_geo or n_eff_feature raises ValueError."""
 
 from __future__ import annotations
 
@@ -18,6 +21,7 @@ from app.ml.features import transform_static
 EXPOSURE_NAMES = frozenset({"x_density", "x_season", "ind_season_missing", "x_ticks", "ind_ticks_off"})
 TYPE_SEASON = "type_season"
 EVIDENCE = "evidence"
+OTHER = "other"
 
 LABELS: dict[str, str] = {
     TYPE_SEASON: "Season for this route type",
@@ -30,6 +34,7 @@ LABELS: dict[str, str] = {
     "z_freeze_thaw_days": "Freeze-thaw days this month",
     "ind_elevation_missing": "Elevation not on file",
     "ind_normals_missing": "Monthly weather not on file",
+    OTHER: "Other factors",
     EVIDENCE: "Reported incidents here and on similar routes",
 }
 
@@ -84,17 +89,22 @@ def explain(bundle: ModelBundle, *, type_group: str, month: int, raw_features: M
                 x = float(name == f"d_{type_group}_{month}")
             key = TYPE_SEASON
         elif name.startswith("ind_"):
+            if name not in tr:
+                raise ValueError(f"unknown design column {name!r}")
             x, key = tr[name], name
         else:
+            if name not in tr:
+                raise ValueError(f"unknown design column {name!r}")
             v = tr[name]
             x, key = (0.0 if math.isnan(v) else (v - float(center[k])) / float(scale[k])), name
         effects[key] = effects.get(key, 0.0) + float(coef[k]) * x
 
+    effects[TYPE_SEASON] = effects.get(TYPE_SEASON, 0.0) + const
     hazard = sorted(effects.items(), key=lambda kv: (-abs(kv[1]), kv[0]))
-    if top is not None:
-        hazard = hazard[:top]
-    all_hazard = sum(effects.values())
-    terms = [Term(n, LABELS[n], v) for n, v in hazard]
-    # The residual spans every hazard term, shown or not: a truncated list stays exact only with top=None.
-    terms.append(Term(EVIDENCE, LABELS[EVIDENCE], math.log(rr_mean) - all_hazard - const))
+    evidence = math.log(rr_mean) - sum(effects.values())
+    shown, hidden = (hazard, []) if top is None else (hazard[:top], hazard[top:])
+    terms = [Term(n, LABELS[n], v) for n, v in shown]
+    if hidden:
+        terms.append(Term(OTHER, LABELS[OTHER], sum(v for _, v in hidden)))
+    terms.append(Term(EVIDENCE, LABELS[EVIDENCE], evidence))
     return terms
