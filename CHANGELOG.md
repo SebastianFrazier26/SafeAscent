@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Exposure index (PR X-2) — 2026-10-22
+
+- `internal.exposure_index` (migration `0011_exposure_index`): one row per area x scorable type group x month per snapshot `(as_of, data_cutoff)`, with the raw `proxy` components (`route_density`, `season_share`, `mp_ticks`), `tick_coverage`, and an unfitted `exposure_point` (route density x season share, no floor) with x/÷3 bounds. CHECKs enforce bounds order, values >= 0 and no NaN/inf. The downgrade refuses while the table holds rows. Grants: `ingest` SELECT/INSERT/UPDATE/DELETE, `analyst` SELECT, `app` and `trainer` none.
+- `python -m app.pipelines.exposure build [--cutoff YYYY-MM-DD] [--dry-run] | drop --as-of D --cutoff D`, as `ingest`. A build runs in one REPEATABLE READ snapshot (rechecked after the SET) and validates in SQL, including Spearman of point vs ticks. `drop` exits non-zero when no such snapshot exists and is logged either way. The newest `KEEP_SNAPSHOTS = 3` production snapshots are kept; backtest snapshots stay until dropped.
+- Ticks: the last 60 complete months ending at the earlier of the route's `complete_through` and the cutoff. A partly scraped cell stores the raw sum over its complete routes plus `tick_coverage`, never scaled up; with no complete route the value is missing (`no_complete_routes`). Counts are frozen at scrape time, so ticks logged after a backtest cutoff against older months are counted (documented limitation). `EXPOSURE_ENABLE_MP_TICKS=false` switches the `mp_ticks` component off (`disabled`), the removal drill.
+- Season share: the 3 complete calendar years ending at the last Dec 31 on or before each series' `last_era5_date`, per series. Missing as `no_era5` or `insufficient_history`. A build run in January before that year's ERA5 window has a blackout; the CLI warns. Build after the January ERA5 window.
+- Rock tick coverage is biased (accident areas were scraped first): Phase 3 must use `tick_coverage` and never read a partial sum as low traffic.
+- Read-only acceptance cells in `tests/verify/test_exposure.py`.
+- Phase 4 renumbering (0012-0016) already landed in PR #15, so it is not repeated here.
+
 ### Rock tick loader (PR X-1) — 2026-10-15
 
 - `mp_tick_aggregates --scope rock` loads the private rock tick export, logged as `mp_tick_aggregates_rock`. It reads only routes the tick seam has not already seen at that scrape time or later, so reloading the same cumulative export is a no-op (`routes_unchanged`), and an older export never rolls the seam back.
