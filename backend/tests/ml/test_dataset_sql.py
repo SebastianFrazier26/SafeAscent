@@ -124,3 +124,5 @@ def test_read_exposure_missing_is_none_and_zero_is_zero(db):
         None, None, None, None)
     [back] = run_on_conn(db, lambda c: read_exposure(c, as_of=date(2026, 10, 1), data_cutoff=date(2004, 1, 1)))
     assert (back.ticks_value, back.tick_coverage) == (None, 0.0)
+    with pytest.raises(StaleExposure, match="no exposure rows"):
+        run_on_conn(db, lambda c: read_exposure(c, as_of=date(2026, 9, 1), data_cutoff=date(2026, 9, 1)))

@@ -87,3 +87,35 @@ def test_seasonal_profile_smooths_and_sums_to_one():
     prof = seasonal_profile([day], start=date(1990, 1, 1), end=date(2027, 1, 1))
     assert prof.shape == (6, 12) and np.allclose(prof.sum(axis=1), 1.0)
     assert prof[1, 6] > prof[1, 0] > 0.0                     # trad July above an empty month, never zero
+
+
+def test_placement_into_a_missing_cell_is_dropped_mass_not_placed():
+    cells = assemble_cells(_exposure(), _static(), AREAS, PATHS)
+    sport = _p(5, 900000110, (("sport", 0.25), ("trad", 0.75)), 7, date(2010, 7, 14), date(2010, 7, 15))
+    c = count_incidents([sport], cells, start=date(2004, 1, 1), end=date(2027, 1, 1))
+    assert c.y.sum() == pytest.approx(0.75) and c.placed == {"cell": pytest.approx(0.75)}
+    assert c.dropped == {"cell_without_exposure": pytest.approx(0.25)}
+
+
+def test_cell_placement_without_area_is_refused():
+    cells = assemble_cells(_exposure(), _static(), AREAS, PATHS)
+    bad = _p(6, None, (("trad", 1.0),), 7, date(2010, 7, 14), date(2010, 7, 15))
+    with pytest.raises(ValueError, match="carries no area"):
+        count_incidents([bad], cells, start=date(2004, 1, 1), end=date(2027, 1, 1))
+
+
+def test_year_row_keeps_no_mass_after_a_mid_year_cutoff():
+    cells = assemble_cells(_exposure(), _static(), AREAS, PATHS)
+    year = _p(2, 900000110, (("trad", 1.0),), None, date(2003, 1, 1), date(2004, 1, 1))
+    profile = np.full((6, 12), 1 / 12)
+    c = count_incidents([year], cells, start=date(1990, 1, 1), end=date(2003, 7, 16), profile=profile)
+    assert [c.y[cells.index[(900000110, 1, m)]] for m in (6, 8, 12)] == [pytest.approx(1 / 12), 0.0, 0.0]
+    assert c.y[cells.index[(900000110, 1, 7)]] == pytest.approx(15 / 31 / 12)
+    assert c.y.sum() == pytest.approx(6 / 12 + 15 / 31 / 12) == c.placed["cell"]
+
+
+def test_seasonal_profile_honours_exclude_flags():
+    ski = _p(3, 900000210, (("ice", 1.0),), 1, date(2012, 1, 5), date(2012, 1, 6), flags=frozenset({"ski_approach"}))
+    kept = seasonal_profile([ski], start=date(1990, 1, 1), end=date(2027, 1, 1))
+    clean = seasonal_profile([ski], start=date(1990, 1, 1), end=date(2027, 1, 1), exclude_flags=frozenset({"ski_approach"}))
+    assert kept[4, 0] > kept[4, 1] and np.allclose(clean, 1 / 12)

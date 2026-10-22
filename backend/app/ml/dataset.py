@@ -12,10 +12,11 @@ A component with missing = true, or a null value, reads None; a measured 0.0 sta
 from __future__ import annotations
 
 import json
-from collections import Counter, defaultdict
+from calendar import monthrange
+from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 import numpy as np
@@ -121,7 +122,9 @@ class Counts:
     y: NDArray[np.float64]
     state_mass: NDArray[np.float64]
     years: float
-    dropped: Mapping[str, int]
+    # Row counts per drop reason, except cell_without_exposure, which is weight mass whose cell
+    # the snapshot does not hold. placed holds only mass that landed in y or state_mass.
+    dropped: Mapping[str, float]
     placed: Mapping[str, float]
 
 
@@ -198,6 +201,8 @@ async def read_exposure(conn: AsyncConnection, *, as_of: date, data_cutoff: date
             None if ticks is None else _num(ticks.get("per_route_mean")),
             _num(cov),
         ))
+    if not out:  # pruned between pick_snapshot and this read, or never built
+        raise StaleExposure(f"no exposure rows for as_of {as_of}, data_cutoff {data_cutoff}")
     return out
 
 
@@ -243,12 +248,13 @@ def assemble_cells(exposure: Sequence[ExposureRow], static: Sequence[StaticRow],
     )
 
 
-def seasonal_profile(placements: Sequence[Placement], *, start: date, end: date) -> NDArray[np.float64]:
+def seasonal_profile(placements: Sequence[Placement], *, start: date, end: date,
+                     exclude_flags: frozenset[str] = frozenset()) -> NDArray[np.float64]:
     """National month profile per type group from month-known incidents in the window, with a
     0.5 pseudocount per month so a month with no reports is small, never impossible."""
     counts = np.full((len(TYPE_GROUPS), 12), PROFILE_PSEUDOCOUNT)
     for p in placements:
-        if p.month is None or p.level != "cell":
+        if p.month is None or p.level != "cell" or p.flags & exclude_flags:
             continue
         w = window_fraction(p, start, end) * p.weight
         for g, share in p.group_weights:
@@ -260,13 +266,14 @@ def seasonal_profile(placements: Sequence[Placement], *, start: date, end: date)
 def count_incidents(placements: Sequence[Placement], cells: CellData, *, start: date, end: date,
                     exclude_flags: frozenset[str] = frozenset(),
                     profile: NDArray[np.float64] | None = None) -> Counts:
-    prof = seasonal_profile(placements, start=start, end=end) if profile is None else profile
+    prof = (seasonal_profile(placements, start=start, end=end, exclude_flags=exclude_flags)
+            if profile is None else profile)
     # pre-flight F23: the January-only state split relies on every (area, g) carrying all 12 months
     if len(cells.index) != 12 * len({(a, g) for a, g, _ in cells.index}):
         raise ValueError("partial exposure snapshot: some (area, type group) lacks one of the 12 months")
     y = np.zeros(cells.n)
     state_mass = np.zeros((len(cells.states), len(TYPE_GROUPS)))
-    dropped: Counter[str] = Counter()
+    dropped: defaultdict[str, float] = defaultdict(float)
     placed: defaultdict[str, float] = defaultdict(float)
     state_share = _state_group_share(cells)
     for p in placements:
@@ -285,16 +292,44 @@ def count_incidents(placements: Sequence[Placement], cells: CellData, *, start: 
             else:
                 dropped["state_without_cells"] += 1
             continue
+        if p.area_id is None:
+            raise ValueError(f"cell placement {p.accident_id} carries no area")
         for g, share in p.group_weights:
             gi = G_INDEX[g]
-            months = [(p.month, 1.0)] if p.month is not None else [(m, float(prof[gi, m - 1])) for m in range(1, 13)]
+            months = [(p.month, w)] if p.month is not None else _month_mass(p, prof[gi], start, end)
             for m, mw in months:
-                key = (int(p.area_id), gi, m)  # type: ignore[arg-type]  # level "cell" always carries an area
+                key = (p.area_id, gi, m)
                 if key in cells.index:
-                    y[cells.index[key]] += w * share * mw
-            placed["cell"] += w * share
+                    y[cells.index[key]] += share * mw
+                    placed["cell"] += share * mw
+                else:
+                    dropped["cell_without_exposure"] += share * mw
     return Counts(y=y, state_mass=state_mass, years=(end - start).days / 365.25, dropped=dict(dropped),
                   placed=dict(placed))
+
+
+def _month_mass(p: Placement, prof: NDArray[np.float64], start: date, end: date) -> list[tuple[int, float]]:
+    """Window mass per calendar month of a month-unknown placement. Each year in [lo, hi) takes its
+    day share of the interval and spreads it by the profile over that year's months inside the
+    interval; each (year, month) then counts only its in-window day fraction, so a cutoff mid-year
+    keeps no mass from months after it."""
+    assert p.lo is not None and p.hi is not None
+    total = (p.hi - p.lo).days
+    out = [0.0] * 12
+    for year in range(p.lo.year, (p.hi - timedelta(days=1)).year + 1):
+        segs = []
+        for m in range(1, 13):
+            first = date(year, m, 1)
+            last = first + timedelta(days=monthrange(year, m)[1])
+            lo, hi = max(first, p.lo), min(last, p.hi)
+            if hi > lo:
+                win = max((min(hi, end) - max(lo, start)).days, 0)
+                segs.append((m, (hi - lo).days, win))
+        days = sum(d for _, d, _ in segs)
+        norm = sum(float(prof[m - 1]) for m, _, _ in segs)
+        for m, d, win in segs:
+            out[m - 1] += p.weight * days / total * float(prof[m - 1]) / norm * win / d
+    return [(m, out[m - 1]) for m in range(1, 13) if out[m - 1] > 0.0]
 
 
 def _state_group_share(cells: CellData) -> NDArray[np.float64]:
