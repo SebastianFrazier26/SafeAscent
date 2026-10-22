@@ -8,7 +8,7 @@ import pytest
 from app.ml import posterior
 from app.ml import tuning as tuning_mod
 from app.ml.cells import STATE_GROUPS
-from app.ml.fixtures import fold_results_toy, synthetic_fold_data, synthetic_raw
+from app.ml.fixtures import fold_results_toy, synthetic_fold_data, synthetic_raw, toy_fold_result
 from app.ml.metrics import interval_coverage, pit_coverage
 from app.ml.model import Fitted, ModelParams
 from app.ml.tuning import NEUTRAL, PHI_GRID, RATIO_GRID, select_conf, select_d_star, select_phi, stability, tune
@@ -36,6 +36,58 @@ def test_conf_selection_respects_coverage_and_monotone_error():
     good = fold_results_toy(calibrated=True)[0]
     assert select_conf(good, phi=1.0) is not None
     assert select_conf(fold_results_toy(calibrated=False)[0], phi=1.0) is None
+
+
+def _tiers(spec, seed=0):
+    """One FoldResult from (shape, cells, true-rate bias, tilt, deterministic) tiers. tilt bends the true
+    rate with predicted risk (scale), so O/E runs low in low-risk bins and high in high-risk ones;
+    deterministic counts are round(expected), far tighter than any posterior predicts."""
+    rng = np.random.default_rng(seed)
+    parts = []
+    for a, n, bias, tilt, det in spec:
+        shape = np.full(n, float(a))
+        scale = rng.uniform(0.5, 2.0, n)
+        theta = rng.gamma(shape, 1.0 / shape)
+        obs = np.round(scale * bias) if det else rng.poisson(theta * scale * bias * (scale / 1.25) ** tilt)
+        parts.append((shape, scale, np.asarray(obs, dtype=np.float64)))
+    shape, scale, obs = (np.concatenate([p[i] for p in parts]) for i in range(3))
+    return [toy_fold_result(shape, shape.copy(), scale, obs, np.zeros(shape.size))]
+
+
+TIERS = [(40, 6000, 1.0, 0.0, False), (8, 2000, 1.0, 0.0, False), (2, 600, 1.0, 0.0, False)]
+
+
+def test_select_conf_rejects_error_that_falls_as_confidence_drops():
+    # The narrow tier (always "high") runs 12% hot: coverage still passes everywhere, but High's |log O/E|
+    # beats the less confident levels' by far more than ERROR_ORDER_TOL, so every pair fails.
+    hot = _tiers([(40, 6000, 1.12, 0.0, False), *TIERS[1:]])
+    assert select_conf(hot, phi=1.0) is None
+
+
+def test_error_order_allows_noise_within_tolerance():
+    assert tuning_mod.errors_ordered([0.066, 0.065, 0.2])
+    assert tuning_mod.errors_ordered([0.0, 0.0 - tuning_mod.ERROR_ORDER_TOL + 1e-9])
+    assert not tuning_mod.errors_ordered([0.1, 0.05])
+
+
+def test_select_conf_rejects_a_pair_whose_low_stratum_is_miscalibrated():
+    # A very wide tier (ratio above 15) is "low" under every pair, and its O/E tilts with predicted risk,
+    # so Low's decile calibration fails. Without that check (2, 15) wins: everything else is High/Medium.
+    tilted = _tiers([*TIERS, (0.5, 3000, 1.2, 1.5, False)])
+    assert select_conf(tilted, phi=1.0) is None
+
+
+def test_select_conf_rejects_on_coverage_alone():
+    # Deterministic counts: every level covers about 100% (> LEVEL_COVERAGE[1]) while O/E is the same in
+    # every level and (2, 15) leaves Low empty, so only the coverage rule can reject.
+    tight = _tiers([(a, n, b, t, True) for a, n, b, t, _ in TIERS])
+    assert select_conf(tight, phi=1.0) is None
+
+
+def test_level_coverage_admits_conservative_ranges():
+    # Controller ruling: shown ranges run ~94-95% by design, so 0.96 must still pass.
+    lo, hi = tuning_mod.LEVEL_COVERAGE
+    assert lo == 0.85 and hi == 0.97
 
 
 def _pooled(results):
@@ -126,12 +178,19 @@ def test_tune_report_is_json_and_phi_on_grid(tuned31):
 
 
 def test_stability_passes_on_stable_synthetic_problem():
-    # rate_scale 5: enough incidents per cell that rankings rest on data, not on the draw.
-    params, th = tune(synthetic_fold_data(seed=32, n_areas=SMALL))[:2]
-    s = stability(synthetic_raw(seed=32, rate_scale=5.0), params, th, cutoff=None, n_boot=5)
+    # Tuned and tested on one world; rate_scale 5 gives enough incidents per cell that rankings rest
+    # on data, not on which groups were drawn.
+    params, th = tune(synthetic_fold_data(seed=32, rate_scale=5.0))[:2]
+    s = stability(synthetic_raw(seed=32, rate_scale=5.0), params, th, cutoff=None, n_subsamples=5)
     assert s["passed"] and s["median_spearman"] >= 0.8
-    assert s["n_boot"] == 5 and s["n_failed"] == 0
+    assert s["n_subsamples"] == 5 and s["n_failed"] == 0 and s["method"] == "state_group_subsample"
     json.dumps(s, allow_nan=False)
+
+
+def test_stability_fails_on_an_unstable_problem():
+    # A fifth of the incidents: rankings within (group, month) now move with the draw.
+    s = stability(synthetic_raw(seed=32, rate_scale=0.2), ModelParams(), NEUTRAL, cutoff=None, n_subsamples=5)
+    assert not s["passed"] and s["n_failed"] == 0
 
 
 def test_stability_holds_undrawn_groups_out_of_training(monkeypatch):
@@ -145,7 +204,7 @@ def test_stability_holds_undrawn_groups_out_of_training(monkeypatch):
         return out
 
     monkeypatch.setattr(tuning_mod, "fit_full", spy)
-    s = stability(synthetic_raw(seed=33, n_areas=60), ModelParams(), NEUTRAL, cutoff=None, n_boot=2)
+    s = stability(synthetic_raw(seed=33, n_areas=60), ModelParams(), NEUTRAL, cutoff=None, n_subsamples=2)
     assert seen[0][0] is None and len(seen) == 3
     for states, (fit, cells, _) in seen[1:]:
         assert all(set(g) <= states or not set(g) & states for g in STATE_GROUPS.values())
@@ -166,5 +225,5 @@ def test_stability_scores_with_training_counts_only(monkeypatch):
         return real(self, cells, y_own, thresholds)
 
     monkeypatch.setattr(Fitted, "summarize", strict)
-    stability(synthetic_raw(seed=33, n_areas=60), ModelParams(), NEUTRAL, cutoff=None, n_boot=2)
+    stability(synthetic_raw(seed=33, n_areas=60), ModelParams(), NEUTRAL, cutoff=None, n_subsamples=2)
     assert checked == [False, True, True]

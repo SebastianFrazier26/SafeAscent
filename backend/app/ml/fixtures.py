@@ -408,16 +408,16 @@ def synthetic_raw(seed: int, drop_cutoffs: tuple[date, ...] = (), n_areas: int =
                    exposure_by_cutoff={c: list(exposure) for c in cutoffs}, production_cutoff=RAW_END)
 
 
-def synthetic_fold_data(seed: int, n_areas: int = 120) -> Any:
+def synthetic_fold_data(seed: int, n_areas: int = 120, rate_scale: float = 1.0) -> Any:
     """prepare() over synthetic_raw's spatial folds (production cutoff) and rolling folds."""
     from app.ml.backtest import prepare
     from app.ml.folds import rolling_folds, spatial_folds
 
-    raw = synthetic_raw(seed, n_areas=n_areas)
+    raw = synthetic_raw(seed, n_areas=n_areas, rate_scale=rate_scale)
     return [prepare(raw, f) for f in spatial_folds(raw.production_cutoff) + rolling_folds()]
 
 
-def _toy_result(shape: Any, rate: Any, scale: Any, obs: Any, dist: Any) -> Any:
+def toy_fold_result(shape: Any, rate: Any, scale: Any, obs: Any, dist: Any) -> Any:
     from app.ml.backtest import FoldResult
     from app.ml.folds import Fold
 
@@ -479,8 +479,8 @@ def fold_results_toy(*, gain_by_band: tuple[float, ...] | None = None, calibrate
             m = brentq(gap, float(k.mean()), geo_mean) if target > 0 else brentq(gap, geo_mean, 100.0)
             pooled_rate[sel] = a[sel] / m
         one = np.ones(n)
-        pooled = _toy_result(a, pooled_rate, one, obs, dist)
-        geo = _toy_result(a, a / geo_mean, one, obs, dist)
+        pooled = toy_fold_result(a, pooled_rate, one, obs, dist)
+        geo = toy_fold_result(a, a / geo_mean, one, obs, dist)
         return [pooled], [geo], dist
     shape = np.concatenate([np.full(n, a) for a, n in tiers])
     rate = shape.copy()
@@ -488,5 +488,5 @@ def fold_results_toy(*, gain_by_band: tuple[float, ...] | None = None, calibrate
     theta = rng.gamma(shape / true_phi, true_phi / rate)
     obs = rng.poisson(theta * scale * (1.0 if calibrated else 3.0)).astype(np.float64)
     dist = np.zeros(shape.size)
-    res = _toy_result(shape, rate, scale, obs, dist)
+    res = toy_fold_result(shape, rate, scale, obs, dist)
     return [res], [res], dist
