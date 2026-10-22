@@ -12,6 +12,13 @@ branch_labels = None
 depends_on = None
 
 TYPE_GROUPS = "('sport', 'trad', 'rock', 'alpine', 'ice', 'mixed')"
+# NaN sorts above every number in Postgres, so "< 'Infinity'" refuses NaN as well as +inf.
+FINITE = " AND ".join(
+    f"({c} IS NULL OR ({c} > '-Infinity'::float8 AND {c} < 'Infinity'::float8))"
+    for c in ("rr_mean", "rr_q05", "rr_q95", "percentile", "pct_q05", "pct_q95", "per10k_mean", "per10k_q05",
+              "per10k_q95"))
+N_EFF = ("(n_eff_geo IS NULL OR (n_eff_geo >= 0 AND n_eff_geo < 'Infinity'::float4)) AND "
+         "(n_eff_feature IS NULL OR (n_eff_feature >= 0 AND n_eff_feature < 'Infinity'::float4))")
 STATUSES = "('candidate', 'active', 'previous', 'rejected', 'retired')"
 
 
@@ -53,11 +60,14 @@ def upgrade() -> None:
         sa.CheckConstraint("promoted_by IS NULL OR promoted_by IN ('auto', 'owner')", name="registry_promoted_by_check"),
         sa.CheckConstraint("num_nulls(bundle, bundle_sha256, bundle_bytes) IN (0, 3)", name="registry_bundle_check"),
         sa.CheckConstraint(
-            "family = 'kernel' OR status NOT IN ('active', 'previous') OR (bundle IS NOT NULL AND scores_rows > 0)",
+            "family = 'kernel' OR status NOT IN ('active', 'previous') "
+            "OR (bundle IS NOT NULL AND scores_rows IS NOT NULL AND scores_rows > 0)",
             name="registry_servable_check"),
         sa.CheckConstraint(
             "family = 'kernel' OR (status IN ('active', 'previous', 'retired')) = (promoted_at IS NOT NULL)",
             name="registry_promoted_at_check"),
+        sa.CheckConstraint("scores_rows IS NULL OR scores_rows >= 0", name="registry_scores_rows_check"),
+        sa.CheckConstraint("bundle_bytes IS NULL OR bundle_bytes >= 0", name="registry_bundle_bytes_check"),
         schema="model",
     )
     op.create_index("ux_registry_one_active", "registry", [sa.text("(true)")], unique=True, schema="model",
@@ -104,6 +114,8 @@ def upgrade() -> None:
         sa.CheckConstraint("num_nulls(per10k_mean, per10k_q05, per10k_q95) IN (0, 3)", name="route_scores_per10k_check"),
         sa.CheckConstraint("(per10k_mean IS NULL) = (per10k_reason IS NOT NULL OR insufficient)",
                            name="route_scores_per10k_reason_check"),
+        sa.CheckConstraint(FINITE, name="route_scores_finite_check"),
+        sa.CheckConstraint(N_EFF, name="route_scores_n_eff_check"),
         schema="model",
     )
 
