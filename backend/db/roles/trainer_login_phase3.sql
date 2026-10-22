@@ -1,12 +1,14 @@
 -- Phase 3 (D13/DP17): trainer gains LOGIN for the training job, run from the owner's Mac (.env.trainer; never a
 -- GitHub secret). Run once as the owner that ran create_roles_phase2.sql, then grants_phase3.sql. The password
 -- reaches psql only via \getenv, never argv, and the server as plaintext over verify-full TLS (stored SCRAM).
+-- Run with psql -X; never with -L (the session log records statements with the password in them).
 \set ON_ERROR_STOP on
 \set VERBOSITY terse
 \set SHOW_CONTEXT never
 
--- Every secret-free guard runs before the password is sent, so a refused run never puts an
--- ALTER ROLE ... PASSWORD into the server log via log_min_error_statement.
+-- Only the guards before the password-shape check are secret-free, so a refused rerun or a missing
+-- role never sends the password, and no failing ALTER ROLE ... PASSWORD lands in the server log
+-- via log_min_error_statement.
 SELECT to_regrole('trainer') IS NOT NULL AS trainer_exists \gset
 \if :trainer_exists
 \else
@@ -22,6 +24,9 @@ SELECT pg_has_role(current_user, 'trainer', 'USAGE WITH ADMIN OPTION') AS can_al
   DO $$ BEGIN RAISE EXCEPTION 'run as the owner that created trainer (it holds ADMIN on trainer)'; END $$;
 \endif
 
+-- -e/-a/-b would echo every statement after this point with the password interpolated.
+\set ECHO none
+\set ECHO_HIDDEN off
 \getenv trainer_password TRAINER_PASSWORD
 \if :{?trainer_password}
 \else

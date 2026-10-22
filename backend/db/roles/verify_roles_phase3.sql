@@ -6,7 +6,8 @@
 
 CREATE TEMP TABLE role_checks (check_name text PRIMARY KEY, ok boolean NOT NULL);
 
--- Mirrors grants_phase3.sql exactly. Table-level only: trainer holds no column grant anywhere.
+-- Mirrors grants_phase3.sql exactly. Table-level only: trainer holds no column grant anywhere,
+-- and no PUBLIC grant may widen it.
 CREATE TEMP TABLE trainer_privs (tbl text, priv text);
 INSERT INTO trainer_privs
 SELECT t, 'SELECT' FROM unnest(ARRAY[
@@ -68,20 +69,23 @@ UNION ALL
 SELECT 'model relation exists: ' || t, EXISTS (SELECT 1 FROM rels WHERE tbl = t)
 FROM unnest(ARRAY['model.registry', 'model.route_scores']) AS t;
 
--- trainer, per relation across public, internal and model: table-level privileges exactly the
--- allowlist, and no column-level grant (has_table_privilege does not see one).
+-- trainer, per relation across public, internal and model: privileges exactly the allowlist.
+-- has_table_privilege misses column grants, so the column-capable privileges are also checked with
+-- has_any_column_privilege, which counts trainer's own, PUBLIC's and table-level grants alike.
 WITH privs AS (
-  SELECT r.oid, r.tbl, p.priv, has_table_privilege('trainer', r.oid, p.priv) AS held
+  SELECT r.tbl, p.priv, has_table_privilege('trainer', r.oid, p.priv) AS held
   FROM rels r
   CROSS JOIN unnest(ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER']) AS p(priv)
+  WHERE r.relkind <> 'S'
+  UNION ALL
+  SELECT r.tbl, p.priv, has_any_column_privilege('trainer', r.oid, p.priv)
+  FROM rels r CROSS JOIN unnest(ARRAY['SELECT', 'INSERT', 'UPDATE', 'REFERENCES']) AS p(priv)
   WHERE r.relkind <> 'S'
 )
 INSERT INTO role_checks
 SELECT 'trainer privileges match the allowlist on ' || tbl,
        bool_and(held = EXISTS (SELECT 1 FROM trainer_privs e WHERE e.tbl = privs.tbl AND e.priv = privs.priv))
-       AND NOT EXISTS (SELECT 1 FROM pg_attribute a CROSS JOIN LATERAL aclexplode(a.attacl) x
-                       WHERE a.attrelid = privs.oid AND x.grantee = to_regrole('trainer'))
-FROM privs GROUP BY oid, tbl;
+FROM privs GROUP BY tbl;
 
 INSERT INTO role_checks
 SELECT 'trainer has nothing on sequence ' || tbl,

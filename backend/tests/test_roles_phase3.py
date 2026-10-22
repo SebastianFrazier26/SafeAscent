@@ -6,14 +6,12 @@ import os
 import subprocess
 
 import pytest
-from alembic import command
 
 from tests.pgtest import requires_pg
 from tests.test_migrations import (
     PASSWORDS,
     PHASE2_PASSWORDS,
     ROLES_DIR,
-    _alembic_cfg_as,
     _as,
     _denied,
     _fetch_row,
@@ -39,7 +37,6 @@ ALLOW_SELECT = ("public.accidents_clean", "public.accident_route_links", "public
 def _phase3(fresh_db: str) -> tuple[str, str]:  # noqa: F811
     owner = _owner_db(fresh_db)
     run_phase2_roles(fresh_db)
-    command.upgrade(_alembic_cfg_as(fresh_db, owner), "head")
     login = _psql(owner, TRAINER_LOGIN, {"TRAINER_PASSWORD": TRAINER_PASSWORD})
     assert login.returncode == 0, login.stderr
     assert TRAINER_PASSWORD not in login.stdout + login.stderr
@@ -104,6 +101,27 @@ def test_trainer_login_refuses_rerun(role_cleanup, fresh_db):  # noqa: F811
     assert TRAINER_PASSWORD not in again.stdout + again.stderr
 
 
+# psql keeps only the last of -e/-a/-b (each sets ECHO), so each runs on its own: -e echoes every
+# statement sent, -a every input line, -b every failed statement.
+@pytest.mark.parametrize("flag", ["-e", "-a", "-b"])
+def test_trainer_login_never_echoes_the_password(role_cleanup, fresh_db, flag):  # noqa: F811
+    _require_psql()
+    owner = _owner_db(fresh_db)
+    run_phase2_roles(fresh_db)
+    out = subprocess.run(
+        [_require_psql(), owner, "-X", flag, "-f", str(TRAINER_LOGIN)],
+        env={**os.environ, "TRAINER_PASSWORD": TRAINER_PASSWORD},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert out.returncode == 0, out.stderr
+    assert "trainer can log in" in out.stdout
+    if flag != "-b":
+        assert "to_regrole('trainer')" in out.stdout  # echo was live for the secret-free guards
+    assert TRAINER_PASSWORD not in out.stdout + out.stderr
+
+
 @pytest.mark.parametrize("bad", ["short", "SCRAM-SHA-256$4096:" + "a" * 40, "md5" + "0" * 32])
 def test_trainer_login_refuses_bad_passwords(role_cleanup, fresh_db, bad):  # noqa: F811
     _require_psql()
@@ -137,10 +155,15 @@ def test_grants_phase3_narrows_stray_model_grants_on_rerun(role_cleanup, fresh_d
     _require_psql()
     owner, trainer = _phase3(fresh_db)
     _as(owner, "SET ROLE migrator; GRANT UPDATE, TRUNCATE ON model.route_scores TO trainer; "
-               "GRANT SELECT ON model.registry TO ingest; GRANT INSERT ON model.route_scores TO app; RESET ROLE;")
+               "GRANT SELECT ON model.registry TO ingest; GRANT INSERT ON model.route_scores TO app; "
+               "GRANT SELECT ON public.accidents, internal.mp_tick_aggregates TO trainer; "
+               "GRANT CREATE ON SCHEMA model, internal TO app, trainer; RESET ROLE;")
     assert _psql(owner, VERIFY_PHASE3, {}).returncode != 0
-    assert _psql(owner, GRANTS_PHASE3, {}).returncode == 0
+    regrant = _psql(owner, GRANTS_PHASE3, {})
+    assert regrant.returncode == 0, regrant.stderr
     _denied(trainer, "TRUNCATE model.route_scores")
+    _denied(trainer, "SELECT count(*) FROM public.accidents")
+    _denied(trainer, "CREATE TABLE model.nope (x int)")
     verify = _psql(owner, VERIFY_PHASE3, {})
     assert verify.returncode == 0, verify.stdout + verify.stderr
 
@@ -154,6 +177,8 @@ def test_verify_phase3_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
                "GRANT SELECT ON internal.mp_tick_aggregates TO trainer; "
                "GRANT UPDATE (metrics) ON model.registry TO analyst; "
                "GRANT SELECT ON model.registry TO PUBLIC; "
+               "GRANT SELECT (source) ON public.accidents TO PUBLIC; "
+               "GRANT SELECT (tick_id) ON public.mp_ticks TO PUBLIC; "
                "GRANT USAGE ON SCHEMA model TO ingest; "
                "ALTER DEFAULT PRIVILEGES IN SCHEMA model GRANT SELECT ON TABLES TO ingest; "
                "RESET ROLE; "
@@ -170,5 +195,6 @@ def test_verify_phase3_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
                   "ingest has no USAGE on schema model",
                   "PUBLIC holds nothing on schema model or its relations",
                   "no default privileges apply to new model relations",
-                  "trainer connection limit is 4"):
+                  "trainer connection limit is 4",
+                  "trainer privileges match the allowlist on public.mp_ticks"):
         assert check in out.stderr, check

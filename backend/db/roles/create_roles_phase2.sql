@@ -2,6 +2,7 @@
 -- create_roles.sql (PR #6): INGEST_PASSWORD comes via \getenv, never argv, and reaches the
 -- server as plaintext over verify-full TLS; the server stores SCRAM-SHA-256.
 -- Create roles only through this file: neonctl / Console / API roles join neon_superuser.
+-- Run with psql -X; never with -L (the session log records statements with the password in them).
 \set ON_ERROR_STOP on
 \set VERBOSITY terse
 \set SHOW_CONTEXT never
@@ -30,6 +31,9 @@ SELECT pg_has_role(current_user, 'migrator', 'SET') AS owner_can_set_migrator \g
   DO $$ BEGIN RAISE EXCEPTION 'owner needs SET on migrator: GRANT migrator TO CURRENT_USER WITH SET TRUE, INHERIT FALSE'; END $$;
 \endif
 
+-- -e/-a/-b would echo every statement after this point with the password interpolated.
+\set ECHO none
+\set ECHO_HIDDEN off
 \getenv ingest_password INGEST_PASSWORD
 \if :{?ingest_password}
 \else
