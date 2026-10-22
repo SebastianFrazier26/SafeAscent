@@ -63,6 +63,13 @@ class Settings(BaseSettings):
     # P2-9: false makes mp_ticks missing ("disabled") in every new exposure snapshot (the removal drill).
     EXPOSURE_ENABLE_MP_TICKS: bool = True
 
+    # P3 trainer role: the owner's Mac only (backend/.env.trainer), never a service and never a GitHub secret (F48).
+    TRAINER_DATABASE_URL: str | None = None
+    # P3: 35-day dead-man check for the monthly training run.
+    HEALTHCHECKS_TRAIN_URL: str | None = None
+    # P3: daily heartbeat of the stored-score job.
+    HEALTHCHECKS_SCORES_URL: str | None = None
+
     model_config = SettingsConfigDict(
         env_file=".env",
         case_sensitive=True,
