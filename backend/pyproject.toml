@@ -142,6 +142,7 @@ module = [
     "app.ml.bundle",
     "app.ml.registry",
     "app.ml.db",
+    "app.ml.cells",
     "app.pipelines.accident_facts",
     "app.pipelines.dem",
     "app.pipelines.epqs",
