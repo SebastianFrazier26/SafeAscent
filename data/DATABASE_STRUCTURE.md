@@ -132,7 +132,7 @@ WHERE ST_DWithin(
 ---
 
 ### 4. weather (dropped by `0013_drop_legacy_weather`)
-**Purpose:** 7-day weather windows for accident dates. Superseded by `cell_daily_conditions` (table 10) as of `0007`/plan 3. `0013` drops it once an `ok` `r6_verify` run is logged; the columns below describe the table as it was. Rollback is the `pre-p3-4` snapshot branch (`DEPLOYMENT.md`).
+**Purpose:** 7-day weather windows for accident dates. Superseded by `cell_daily_conditions` (table 10) as of `0007`/plan 3. `0013` drops a non-empty table only once an `ok` `r6_verify` run meeting n > 100, r_tmax > 0.95, p99_gust < 60 is logged (the R6 evidence and how to re-run R6 are in `DEPLOYMENT.md`); the columns below describe the table as it was. Rollback is the `pre-p3-4` snapshot branch (`DEPLOYMENT.md`).
 **Records:** ~25,000
 
 | Column | Type | Description |

@@ -290,8 +290,10 @@ export default function MapView({ selectedRouteForZoom }) {
                 type: normalizeRouteTypeForDisplay(route.type),
                 mp_route_id: route.mp_route_id,
                 location_id: route.location_id,
-                // Insufficient-data and unscored routes are gray with no score: the cluster
-                // average leaves them out, and clusterColorExpression grays a mostly-unscored cluster.
+                // Neither an insufficient nor an unavailable route carries a score, so the cluster
+                // average leaves both out. Only insufficient is gray; unavailable is the empty ring,
+                // and a mostly-unscored cluster is gray only when insufficient routes outnumber or tie
+                // unavailable ones (clusterColorExpression).
                 ...safetyProps,
               },
             });
