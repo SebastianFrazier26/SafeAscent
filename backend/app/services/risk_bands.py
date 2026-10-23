@@ -57,32 +57,3 @@ def check_score_status(risk_score: float | None, color_code: str, data_status: s
             raise ValueError("ok requires a 0-100 risk_score and a band color_code (never gray)")
     else:
         raise ValueError(f"unknown data_status: {data_status!r}")
-
-
-CachedSafety = tuple[float | None, SafetyColorCode, DataStatus]
-
-
-def displayed_risk(score: float | None) -> CachedSafety:
-    """(1-decimal score, its colour, "ok") for a real score, else the insufficient_data triple."""
-    if score is None:
-        return (None, INSUFFICIENT_DATA_COLOR, "insufficient_data")
-    shown = round(score, 1)
-    return (shown, color_code_for(shown), "ok")
-
-
-def cached_safety(entry: object) -> CachedSafety | None:
-    """Parse a cached/stored safety entry; None means a miss (recompute or show nothing)."""
-    if not isinstance(entry, dict):
-        return None
-    status = entry.get("data_status", "ok")
-    if status == "insufficient_data":
-        if entry.get("risk_score") is None:
-            return (None, INSUFFICIENT_DATA_COLOR, "insufficient_data")
-        return None
-    if status != "ok":
-        return None
-    score = valid_risk_score(entry.get("risk_score"))
-    if score is None:
-        return None
-    # Colour is re-derived so entries written under older band sets can't disagree.
-    return displayed_risk(score)

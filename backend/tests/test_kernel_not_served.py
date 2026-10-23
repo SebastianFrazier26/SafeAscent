@@ -52,3 +52,13 @@ def test_kernel_modules_left_services():
 
 def test_the_kernel_nightly_is_gone():
     assert not (APP / "tasks" / "safety_computation_optimized.py").exists()
+
+
+def test_constants_inlined_from_the_kernel_have_not_drifted():
+    # time_utils and geo_utils copy these by hand so nothing served imports kernel_ref; a test may.
+    from app.ml.kernel_ref import algorithm_config as kernel_cfg
+    from app.utils import geo_utils, time_utils
+
+    assert time_utils.SEASONS == kernel_cfg.SEASONS
+    assert time_utils.WITHIN_WINDOW_TEMPORAL_DECAY == kernel_cfg.WITHIN_WINDOW_TEMPORAL_DECAY
+    assert geo_utils.EARTH_RADIUS_KM == kernel_cfg.EARTH_RADIUS_KM

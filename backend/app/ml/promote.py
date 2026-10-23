@@ -277,7 +277,9 @@ def issue_markdown(version: str, gate: GateResult, diff: DiffReport, *, public: 
     shift = "unknown" if diff.band_shift is None else f"{100 * diff.band_shift:.1f}%"
     cov = "unknown" if diff.coverage_shift_points is None else f"{diff.coverage_shift_points:+.1f} points"
     out += [f"## Model {version}: {'promoted' if gate.passed else 'rejected'}", "",
-            f"Compared against the active {gate.active_family or 'version'}, refit on the current folds. "
+            # The kernel has no fit: it is evaluated on the folds as it is, so "refit" would misreport it.
+            f"Compared against the active {gate.active_family or 'version'}, "
+            f"{'evaluated' if gate.active_family == 'kernel' else 'refit'} on the current folds. "
             f"Band shift: {shift}. Coverage shift: {cov}.", "",
             "### Band from → to (all routes)", "| from → to | routes |", "|---|---|",
             *(f"| {k} | {v} |" for k, v in sorted(diff.matrix.items())), "",

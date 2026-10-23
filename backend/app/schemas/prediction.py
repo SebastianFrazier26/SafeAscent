@@ -116,7 +116,7 @@ class ContributingAccident(BaseModel):
     class Config:
         json_schema_extra = {
             "example": {
-                "accident_id": 1234,
+                "accident_id": 900000901,
                 "total_influence": 0.847,
                 "distance_km": 23.4,
                 "days_ago": 547,
@@ -177,7 +177,7 @@ class PredictionResponse(BaseModel):
                 "num_contributing_accidents": 47,
                 "top_contributing_accidents": [
                     {
-                        "accident_id": 1234,
+                        "accident_id": 900000901,
                         "total_influence": 0.847,
                         "distance_km": 23.4,
                         "days_ago": 547,

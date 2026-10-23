@@ -80,8 +80,9 @@ class RateInterval(BaseModel):
 
 
 class StoredScoreFields(BaseModel):
-    """Additive Phase 3 fields (P3 Task 22). None on every field means the response predates the
-    stored-score contract; the validator below binds them to data_status."""
+    """Additive Phase 3 fields (P3 Task 22). Every field is optional so the response stays additive
+    for older clients; which ones are set is bound to data_status by check_stored_fields: an ok score
+    carries confidence, score_range and evidence, an insufficient one only insufficient_reason."""
     confidence: Optional[Literal["high", "medium", "low"]] = None
     score_range: Optional[tuple[float, float]] = None
     model_version: Optional[str] = None
@@ -205,13 +206,13 @@ class MpRouteMapWithSafetyResponse(BaseModel):
             "example": {
                 "routes": [
                     {
-                        "mp_route_id": 105748391,
-                        "name": "The Nose",
-                        "latitude": 37.73,
-                        "longitude": -119.64,
+                        "mp_route_id": 900000001,
+                        "name": "Fixture Route",
+                        "latitude": 40.2,
+                        "longitude": -105.3,
                         "grade": "5.9",
                         "type": "Trad",
-                        "location_id": 12345,
+                        "location_id": 900000110,
                         "safety": {
                             "risk_score": 45.2,
                             "color_code": "yellow",

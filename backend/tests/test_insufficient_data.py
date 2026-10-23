@@ -16,8 +16,7 @@ from app.schemas.prediction import PredictionResponse
 from app.services import model_scores
 from app.services.model_scores import StoredScore, to_risk
 from app.services import risk_bands
-from app.services.risk_bands import INSUFFICIENT_DATA_MESSAGE, cached_safety, displayed_risk
-from app.utils import cache as cache_module
+from app.services.risk_bands import INSUFFICIENT_DATA_MESSAGE
 
 INSUFFICIENT = {"risk_score": None, "color_code": "gray", "data_status": "insufficient_data"}
 
@@ -28,42 +27,6 @@ def test_the_kernel_floor_is_retired():
     # Phase 3 MVP-1: insufficient is a stored model state, not a raw-score threshold.
     assert INSUFFICIENT_DATA_MESSAGE == "Too little evidence to estimate risk yet"
     assert not hasattr(risk_bands, "MIN_ESTIMABLE_SCORE") and not hasattr(risk_bands, "estimable_score")
-
-
-@pytest.mark.parametrize("raw,expected", [
-    (None, (None, "gray", "insufficient_data")),
-    (0.0, (0.0, "green", "ok")),
-    (0.04, (0.0, "green", "ok")),
-    (24.96, (25.0, "yellow", "ok")),
-    (68.44, (68.4, "orange", "ok")),
-])
-def test_displayed_risk_has_no_floor(raw, expected):
-    assert displayed_risk(raw) == expected
-
-
-@pytest.mark.parametrize(
-    "entry,expected",
-    [
-        (INSUFFICIENT, (None, "gray", "insufficient_data")),
-        ({"risk_score": 27.0, "color_code": "green"}, (27.0, "yellow", "ok")),
-        ({"risk_score": 27.0, "color_code": "yellow", "data_status": "ok"}, (27.0, "yellow", "ok")),
-        # A 0.0 is a real rank now; only an explicit insufficient entry is gray.
-        ({"risk_score": 0.0, "color_code": "green"}, (0.0, "green", "ok")),
-        ({"risk_score": 0.0, "color_code": "green", "data_status": "ok"}, (0.0, "green", "ok")),
-        ({"risk_score": 0.04, "color_code": "green"}, (0.0, "green", "ok")),
-        ({"risk_score": 0.1, "color_code": "green"}, (0.1, "green", "ok")),
-        # No explicit status: a null score is a miss, never insufficient and never 0.
-        ({"risk_score": None, "color_code": "gray"}, None),
-        # Contradictions are misses.
-        ({"risk_score": 12.0, "color_code": "gray", "data_status": "insufficient_data"}, None),
-        ({"risk_score": None, "color_code": "gray", "data_status": "ok"}, None),
-        ({"risk_score": None, "data_status": "bogus"}, None),
-        (None, None),
-        ("junk", None),
-    ],
-)
-def test_cached_safety_parses_entries(entry, expected):
-    assert cached_safety(entry) == expected
 
 
 # --- schema contract -------------------------------------------------------------------
@@ -168,42 +131,6 @@ def test_stored_insufficient_rejects_any_number(build, over):
 def test_range_may_touch_the_score(build):
     body = build(**{**STORED_OK, "score_range": (42.0, 42.0)})
     assert body.score_range == (42.0, 42.0)
-
-
-def _fake_redis(monkeypatch) -> MagicMock:
-    pipe = MagicMock()
-    client = MagicMock()
-    client.pipeline.return_value = pipe
-    monkeypatch.setattr(cache_module, "get_redis_client", lambda: client)
-    return pipe
-
-
-def test_bulk_cache_writer_stores_insufficient_explicitly(monkeypatch):
-    import json
-
-    pipe = _fake_redis(monkeypatch)
-    written = cache_module.set_bulk_cached_safety_scores(
-        {1: dict(INSUFFICIENT), 2: {"risk_score": 40.0, "color_code": "yellow", "data_status": "ok"}},
-        "2026-09-28",
-    )
-    assert written == 2
-    stored = {call.args[0]: json.loads(call.args[2]) for call in pipe.setex.call_args_list}
-    insufficient = stored[cache_module.build_safety_score_key(1, "2026-09-28")]
-    assert insufficient["risk_score"] is None
-    assert insufficient["color_code"] == "gray"
-    assert insufficient["data_status"] == "insufficient_data"
-    ok = stored[cache_module.build_safety_score_key(2, "2026-09-28")]
-    assert ok["risk_score"] == 40.0 and ok["data_status"] == "ok"
-
-
-def test_bulk_cache_writer_still_skips_null_score_without_status(monkeypatch):
-    pipe = _fake_redis(monkeypatch)
-    written = cache_module.set_bulk_cached_safety_scores(
-        {1: {"risk_score": None, "color_code": "gray"}, 2: {"risk_score": 12.0, "data_status": "insufficient_data"}},
-        "2026-09-28",
-    )
-    assert written == 0
-    pipe.setex.assert_not_called()
 
 
 # --- live endpoints (stored scores, P3 Task 22) -----------------------------------------

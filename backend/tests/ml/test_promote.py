@@ -267,3 +267,14 @@ def test_issue_labels_kernel_log_score_comparison():
     label = "not like-for-like"
     assert label in issue_markdown("v", evaluate_gate(ch, kernel, active_family="kernel"), d)
     assert label not in issue_markdown("v", evaluate_gate(*_pair(), active_family="eb_v1"), d)
+
+
+def test_issue_says_the_kernel_is_evaluated_and_a_model_refit():
+    d = diff_report(*rows_for_diff(changed_share=0.0), reference_month=10, new_family=False)
+    ch = challenger_metrics()
+    kernel = {"by_kind": {k: {"log_score": -0.7, "top10": 0.2} for k in ("spatial", "rolling")}}
+    md_kernel = issue_markdown("v", evaluate_gate(ch, kernel, active_family="kernel"), d)
+    assert "active kernel, evaluated on the current folds" in md_kernel and "refit" not in md_kernel
+    ch2, ac = _pair()
+    md_model = issue_markdown("v", evaluate_gate(ch2, ac, active_family="eb_v1"), d)
+    assert "active eb_v1, refit on the current folds" in md_model

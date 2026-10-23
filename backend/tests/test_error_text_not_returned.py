@@ -28,10 +28,3 @@ def test_cache_stats_error_returns_type_not_text(raising_redis, caplog):
         stats = cache_module.get_cache_stats()
     assert stats == {"status": "error", "error": "Redis error (ConnectionError)"}
     assert SECRET in caplog.text
-
-
-def test_safety_cache_stats_error_returns_type_not_text(raising_redis, caplog):
-    with caplog.at_level(logging.ERROR, logger=cache_module.logger.name):
-        stats = cache_module.get_safety_cache_stats("2026-09-28")
-    assert stats == {"status": "error", "error": "Redis error (ConnectionError)", "cached_count": 0}
-    assert SECRET in caplog.text

@@ -15,7 +15,6 @@ from app.api.v1 import mp_routes
 from app.schemas.mp_route import MpRouteSafetyResponse, SafetyScore
 from app.services import model_scores
 from app.services.model_scores import StoredScore
-from app.utils import cache as cache_module
 
 BAD_ENTRIES = [
     {"color_code": "gray", "status": "cached"},
@@ -161,22 +160,6 @@ async def test_seasonal_patterns_are_counts_without_a_score(monkeypatch):
     assert by_month[1]["accident_count"] == 0
     assert body["year_known_only"] == 2
     assert all(set(m) == {"month", "month_num", "accident_count"} for m in body["monthly_patterns"])
-
-
-def test_bulk_cache_writer_skips_entries_without_valid_score(monkeypatch):
-    pipe = MagicMock()
-    client = MagicMock()
-    client.pipeline.return_value = pipe
-    monkeypatch.setattr(cache_module, "get_redis_client", lambda: client)
-
-    written = cache_module.set_bulk_cached_safety_scores(
-        {1: {"color_code": "gray"}, 2: {"risk_score": None}, 3: {"risk_score": 40.0, "color_code": "yellow"}},
-        "2026-09-28",
-    )
-
-    assert written == 1
-    assert pipe.setex.call_count == 1
-    assert pipe.setex.call_args.args[0] == cache_module.build_safety_score_key(3, "2026-09-28")
 
 
 @pytest.mark.parametrize("bad", [-0.1, 100.1])

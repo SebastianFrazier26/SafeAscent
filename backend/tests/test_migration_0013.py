@@ -24,6 +24,9 @@ def _refuses(seed: str) -> None:
         with pytest.raises(RuntimeError, match="no ok r6_verify run"):
             command.upgrade(_alembic_cfg(name), TARGET)
         assert fetch(name, "SELECT count(*) FROM weather") == [(1,)]
+        # The refusal rolls the whole upgrade back: the database is still at 0012, not half-way.
+        assert PRE_WEATHER_DROP == "0012_model_registry"
+        assert fetch(name, "SELECT version_num FROM alembic_version") == [("0012_model_registry",)]
 
 
 def test_0013_refuses_non_empty_weather_without_r6_evidence():
