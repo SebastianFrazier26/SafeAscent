@@ -75,12 +75,17 @@ def _build_app_with_admin_flag(monkeypatch: pytest.MonkeyPatch, enabled: bool):
 
 @pytest.fixture
 def _restore_app_modules():
-    """Reload config/main back to baseline after the test's monkeypatch env is undone."""
-    yield
+    """Put app.config and app.main back exactly as they were. Reloading them again would leave a
+    third FastAPI instance in app.main: conftest's test_client keeps the original, so a later fixture
+    that imports app.main.app sets its get_db override on an app no request reaches, and those
+    requests fall through to the default DATABASE_URL (the full-suite parity failure, 2026-10-22)."""
     import app.config as config
     import app.main as main
-    importlib.reload(config)
-    importlib.reload(main)
+    saved = {m: dict(vars(m)) for m in (config, main)}
+    yield
+    for module, namespace in saved.items():
+        vars(module).clear()
+        vars(module).update(namespace)
 
 
 def test_admin_routes_absent_by_default(monkeypatch, _restore_app_modules):

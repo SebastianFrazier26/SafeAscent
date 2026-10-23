@@ -54,6 +54,16 @@ async def reset_db_engine():
     await db_session.engine.dispose()
 
 
+@pytest.fixture(autouse=True)
+def _app_main_is_not_replaced():
+    """Every fixture that sets app.dependency_overrides must reach the app test_client serves. A
+    test that leaves a different app in app.main (an unrestored reload) fails here, at its own
+    teardown, instead of a later DB test failing on the default DATABASE_URL."""
+    yield
+    import app.main as main
+    assert main.app is app, "a test replaced app.main.app without restoring it"
+
+
 @pytest_asyncio.fixture(scope="function")
 async def async_client() -> AsyncGenerator[AsyncClient, None]:
     """
