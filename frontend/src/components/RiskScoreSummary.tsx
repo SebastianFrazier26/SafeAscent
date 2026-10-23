@@ -21,7 +21,7 @@ import RiskSwatch from './RiskSwatch';
 
 type Cell = Parameters<typeof markerStyle>[0];
 
-function SummaryChip({ label, cell }: { label: string; cell: Cell }) {
+export function SummaryChip({ label, cell }: { label: string; cell: Cell }) {
   const { fill, hatch } = markerStyle(cell);
   const style = riskChipStyle(cell);
   return (

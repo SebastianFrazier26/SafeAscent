@@ -277,7 +277,7 @@ describe('RouteAnalyticsModal accident and ascent figures', () => {
 
     const dialog = screen.getByRole('dialog');
     expect(within(dialog).getByText('2 accidents · 40 logged ascents')).toBeInTheDocument();
-    expect(within(dialog).getByText(/logged ascents, which undercount real ascents/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/a partial sample that undercounts real ascents/)).toBeInTheDocument();
     expect(within(dialog).getByText('Accidents: all recorded years (1998–2021). Logged ascents: 2024–2026.'))
       .toBeInTheDocument();
     expect(within(dialog).queryByText(/undefined|NaN/)).toBeNull();

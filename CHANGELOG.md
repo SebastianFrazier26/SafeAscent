@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Phase 3 Task 29: Ascents tab headline - 2026-10-22
+
+- The Ascents tab leads with the stored relative rate: "1.5× (0.82–2.4×) the reported-incident rate of ice routes nationally in January", with the confidence label (hatched dot at Low confidence), then "About 12.3 per 10,000 logged ascents (likely 6.1–30.2) · High confidence" only when the score carries `per_10k_logged_ascents`; otherwise one sentence for `per_10k_reason` (still being collected / none logged for this type / unavailable).
+- A null `relative_rate` on an ok score shows only "National comparison unavailable"; insufficient shows the gray chip and message with no number; unavailable shows the empty-ring state. Multipliers use one decimal from 1 up and two significant figures below 1 ("<0.001" at the floor), so a small value never reads as 0.
+- The accident and logged-ascent counts stay as context, now noted as "a partial sample"; no rate is computed from them in the frontend.
+
 ### Phase 3 Task 28: honest score display - 2026-10-22
 
 - Low confidence still shows the number and its likely range ("40.0 (likely 20.0–60.0)") with a "Low confidence" label; map markers get a diagonal hatch overlay, and chips a hatched leading dot (never stripes behind text, so chip text keeps >= 4.5:1).

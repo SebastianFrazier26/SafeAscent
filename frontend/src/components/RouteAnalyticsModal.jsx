@@ -286,6 +286,7 @@ import {
 } from '../utils/riskUtils';
 import { SCORE_UNAVAILABLE_MESSAGE } from '../services/api';
 import RiskScoreSummary from './RiskScoreSummary';
+import AscentsHeadline from './AscentsHeadline';
 import RiskSwatch from './RiskSwatch';
 import { readableTextOn } from '../utils/color';
 import {
@@ -923,6 +924,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
 
         {/* Tab 6: Ascent Analytics */}
         <TabPanel value={currentTab} index={6}>
+          <AscentsHeadline safety={safety} routeType={routeData?.type} selectedDate={selectedDate} />
           <AscentsTab
             data={data.ascents}
             loading={loading.ascents}
