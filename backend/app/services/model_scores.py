@@ -15,7 +15,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
 from app.ml.bundle import ModelBundle
-from app.ml.registry import BundleCorrupt, BundleMissing, load_bundle
+from app.ml.registry import load_bundle
 from app.services.risk_bands import INSUFFICIENT_DATA_COLOR, DataStatus, SafetyColorCode, color_code_for
 from app.utils.cache import SAFETY_SCORE_TTL, build_stored_score_key, cache_get, cache_set
 
@@ -170,12 +170,11 @@ async def get_profile(db: AsyncSession | AsyncConnection, route_id: int) -> tupl
 
 
 _bundle_cache: dict[str, ModelBundle] = {}
-_rref_cache: dict[str, dict[tuple[str, int], float]] = {}
 
 
 async def get_bundle(db: AsyncSession | AsyncConnection, version: str) -> ModelBundle:
-    """The version's bundle, loaded (and sha-checked) once per process: a version's bundle never
-    changes, so a promotion is the only thing that loads a new one."""
+    """The version's bundle (for /risk-breakdown's explain), loaded and sha-checked once per
+    process: a version's bundle never changes, so a promotion is the only thing that loads a new one."""
     bundle = _bundle_cache.get(version)
     if bundle is None:
         # load_bundle only calls execute(), which an AsyncSession has with the same signature.
@@ -183,31 +182,6 @@ async def get_bundle(db: AsyncSession | AsyncConnection, version: str) -> ModelB
         _bundle_cache.clear()
         _bundle_cache[version] = bundle
     return bundle
-
-
-async def reference_rates(db: AsyncSession | AsyncConnection, version: str) -> dict[tuple[str, int], float]:
-    """r_ref(g, m), the national reported-incident rate of the typical route of type group g in
-    month m, as the bundle stores it (const = -log r_ref, posterior.summarize). Empty when the
-    bundle cannot be read: relative_rate is then withheld, never shown as the bare RR."""
-    rates = _rref_cache.get(version)
-    if rates is None:
-        try:
-            bundle = await get_bundle(db, version)
-        except (BundleMissing, BundleCorrupt, ValueError) as e:
-            logger.error("reference rates unavailable for %s: %s", version, type(e).__name__)
-            return {}
-        rates = {}
-        for g, months in dict(bundle.manifest.get("const", {})).items():
-            for m, c in dict(months).items():
-                if _finite(c):
-                    rates[(str(g), int(m))] = math.exp(-float(c))
-        _rref_cache.clear()
-        _rref_cache[version] = rates
-    return rates
-
-
-async def reference_rate(db: AsyncSession | AsyncConnection, s: StoredScore) -> float | None:
-    return (await reference_rates(db, s.model_version)).get((s.type_group, s.month))
 
 
 def to_risk(s: StoredScore) -> tuple[float | None, SafetyColorCode, DataStatus]:
@@ -231,16 +205,17 @@ def _sig(x: float, digits: int = 4) -> float:
     return float(f"{x:.{digits}g}")
 
 
-def _relative_rate(s: StoredScore, r_ref: float | None) -> dict[str, float] | None:
-    if r_ref is None or not _finite(r_ref) or s.rr_mean is None or s.rr_q05 is None or s.rr_q95 is None:
+def _sig_interval(mean: float | None, lo: float | None, hi: float | None) -> dict[str, float] | None:
+    if mean is None or lo is None or hi is None:
         return None
-    return {"mean": _sig(s.rr_mean * r_ref), "lo": _sig(s.rr_q05 * r_ref), "hi": _sig(s.rr_q95 * r_ref)}
+    return {"mean": _sig(mean), "lo": _sig(lo), "hi": _sig(hi)}
 
 
-def score_fields(s: StoredScore, r_ref: float | None) -> dict[str, Any]:
+def score_fields(s: StoredScore) -> dict[str, Any]:
     """Every field the safety schemas take from a stored row (the existing three plus the additive
     stored-score fields). Rounding is monotonic, so the range still brackets the shown score.
-    r_ref is reference_rate(s); relative_rate is RR x r_ref (DP13), or None without it."""
+    relative_rate is the stored RR as it is: posterior.summarize already divides by the national
+    reference rate r_ref(g, m), so it is the "x the national rate" multiplier (DP13)."""
     risk_score, color_code, data_status = to_risk(s)
     ok = data_status == "ok"
     out: dict[str, Any] = {
@@ -254,7 +229,7 @@ def score_fields(s: StoredScore, r_ref: float | None) -> dict[str, Any]:
         "evidence": {"geo": round(s.n_eff_geo, 2), "similar": round(s.n_eff_feature, 2)}
         if ok and s.n_eff_geo is not None and s.n_eff_feature is not None else None,
         "insufficient_reason": None if ok else s.insufficient_reason,
-        "relative_rate": _relative_rate(s, r_ref) if ok else None,
+        "relative_rate": _sig_interval(s.rr_mean, s.rr_q05, s.rr_q95) if ok else None,
         "per_10k_logged_ascents": _interval(s.per10k_mean, s.per10k_q05, s.per10k_q95, 3) if ok else None,
         "per_10k_reason": s.per10k_reason if ok else None,
     }

@@ -11,8 +11,6 @@ from app.utils.cache import build_stored_score_key
 from tests.pgtest import run_sql
 
 SAFETY = "/api/v1/mp-routes/{}/safety"
-# exp(-const) for the conftest scores_bundle: const = -(intercept + a_trad [+ m_7]).
-R_REF_TRAD = {7: math.exp(math.log(0.05) + 0.2 + 0.1), 1: math.exp(math.log(0.05) + 0.2)}
 JULY = {"target_date": "2026-07-04"}
 
 
@@ -23,11 +21,9 @@ def test_safety_reads_the_stored_row_with_range_and_confidence(test_client, seed
     assert body["confidence"] == "high" and body["score_range"] == [20.0, 60.0]
     assert body["model_version"] == seeded_scores.version
     assert body["evidence"] == {"geo": 3.5, "similar": 6.0}
-    # DP13: RR x r_ref(trad, July); the fixture bundle stores const = -log r_ref.
-    r_ref = R_REF_TRAD[7]
-    assert body["relative_rate"] == {k: pytest.approx(v * r_ref, rel=1e-3)
-                                     for k, v in {"mean": 1.4, "lo": 0.9, "hi": 2.2}.items()}
-    assert body["relative_rate"]["mean"] != 1.4
+    # DP13: the stored RR is already relative to the national rate, so it is served as it is
+    # (the fixture bundle's r_ref for trad in July is ~0.07, which a re-multiplication would show).
+    assert body["relative_rate"] == {"mean": 1.4, "lo": 0.9, "hi": 2.2}
     assert body["per_10k_logged_ascents"] == {"mean": 2.5, "lo": 1.0, "hi": 4.0}
     # The legacy fields are still there, unchanged in name and meaning.
     assert (body["route_id"], body["route_name"], body["target_date"], body["data_status"]) == (
@@ -71,7 +67,7 @@ def test_map_and_popup_agree(test_client, seeded_scores):
     assert bulk[900000002]["confidence"] == single["confidence"]
     assert bulk[900000002]["score_range"] == single["score_range"]
     assert bulk[900000002]["relative_rate"] == single["relative_rate"]
-    assert bulk[900000002]["relative_rate"]["mean"] == pytest.approx(2.0 * R_REF_TRAD[7], rel=1e-3)
+    assert bulk[900000002]["relative_rate"] == {"mean": 2.0, "lo": 0.5, "hi": 6.0}
     assert bulk[900000003]["data_status"] == "insufficient_data" and bulk[900000003]["risk_score"] is None
     assert resp["meta"]["computed_routes"] == 0 and resp["meta"]["model_version"] == seeded_scores.version
     assert resp["meta"]["insufficient_routes"] == 1
@@ -140,8 +136,7 @@ def test_historical_trends_is_the_twelve_month_profile(test_client, seeded_score
     assert len(profile) == 12 and body["model_version"] == seeded_scores.version
     assert (profile[7]["risk_score"], profile[7]["score_range"], profile[7]["confidence"]) == (40.0, [20.0, 60.0], "high")
     assert profile[1]["risk_score"] == 12.0
-    assert profile[1]["relative_rate"] == {k: pytest.approx(v * R_REF_TRAD[1], rel=1e-3)
-                                           for k, v in {"mean": 0.6, "lo": 0.3, "hi": 1.1}.items()}
+    assert profile[1]["relative_rate"] == {"mean": 0.6, "lo": 0.3, "hi": 1.1}
     # A month with no row is unavailable: no number, no colour, never 0 or gray.
     assert (profile[3]["risk_score"], profile[3]["color_code"], profile[3]["data_status"]) == (None, None, None)
     assert body["historical_predictions"] == [] and body["reference_date"] == "2026-07-04"
@@ -224,17 +219,23 @@ def test_mp_routes_serves_no_kernel_seasonal_risk():
     assert "predict_route_safety" not in source
 
 
-def test_relative_rate_is_rr_times_the_reference_rate():
-    from app.services.model_scores import StoredScore, score_fields
+def _ok_row(**over):
+    from app.services.model_scores import StoredScore
 
-    row = StoredScore(route_id=900000001, month=7, model_version="v", type_group="trad", insufficient=False,
-                      insufficient_reason=None, rr_mean=1.4, rr_q05=0.9, rr_q95=2.2, percentile=40.0,
-                      pct_q05=20.0, pct_q95=60.0, conf_level="high", n_eff_geo=1.0, n_eff_feature=1.0,
-                      per10k_mean=None, per10k_q05=None, per10k_q95=None, per10k_reason="ticks_missing")
-    rr = score_fields(row, 2.5e-4)["relative_rate"]
-    # Significant digits, so a small national rate never rounds to 0.
-    assert rr == {"mean": pytest.approx(3.5e-4), "lo": pytest.approx(2.25e-4), "hi": pytest.approx(5.5e-4)}
-    assert score_fields(row, None)["relative_rate"] is None
+    base = dict(route_id=900000001, month=7, model_version="v", type_group="trad", insufficient=False,
+                insufficient_reason=None, rr_mean=1.4, rr_q05=0.9, rr_q95=2.2, percentile=40.0,
+                pct_q05=20.0, pct_q95=60.0, conf_level="high", n_eff_geo=1.0, n_eff_feature=1.0,
+                per10k_mean=None, per10k_q05=None, per10k_q95=None, per10k_reason="ticks_missing")
+    return StoredScore(**{**base, **over})
+
+
+def test_relative_rate_is_the_stored_rr():
+    from app.services.model_scores import score_fields
+
+    assert score_fields(_ok_row())["relative_rate"] == {"mean": 1.4, "lo": 0.9, "hi": 2.2}
+    # Significant digits, so a small multiplier never rounds to 0.
+    small = score_fields(_ok_row(rr_mean=1.23456e-4, rr_q05=4.4e-5, rr_q95=9.87654e-4))["relative_rate"]
+    assert small == {"mean": 1.235e-4, "lo": 4.4e-5, "hi": 9.877e-4}
 
 
 def _insufficient_row(**over):
@@ -250,7 +251,7 @@ def _insufficient_row(**over):
 def test_insufficient_score_fields_carry_no_per_10k():
     from app.services.model_scores import score_fields
 
-    out = score_fields(_insufficient_row(), 2.5e-4)
+    out = score_fields(_insufficient_row())
     assert out["per_10k_logged_ascents"] is None and out["per_10k_reason"] is None
 
 

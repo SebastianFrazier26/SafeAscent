@@ -4081,7 +4081,7 @@ No code. Prerequisite: PR 3-3 merged; prod at `0012`; `backend/.env.trainer` on 
   - `model_version: str | None`;
   - `evidence: {"geo": float, "similar": float} | None`;
   - `insufficient_reason: Literal["no_evidence"] | None`;
-  - `relative_rate: {"mean","lo","hi"} | None` (RR × national for the type and month, the Ascents headline, DP13);
+  - `relative_rate: {"mean","lo","hi"} | None` (the stored RR as it is, already relative to the national rate for the type and month, the Ascents headline, DP13; never multiplied by r_ref — corrected 2026-10-22);
   - `per_10k_logged_ascents: {"mean","lo","hi"} | None` and `per_10k_reason: str | None`.
 
   A validator enforces:

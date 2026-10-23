@@ -1,5 +1,5 @@
 """P3 Task 25 (G6, A:140): one stored row, one answer. /safety, map-with-safety and /risk-breakdown
-return the same risk_score, color, confidence, range and relative_rate for every route, and the
+return the same risk_score, color, confidence, range and relative_rate (the stored RR) for every route, and the
 breakdown's terms rebuild the stored rr_mean.
 
 Stored rows are per cell (area x type group x month), so the breakdown reads the CELL's static
@@ -148,11 +148,12 @@ def test_every_endpoint_serves_the_same_score(test_client, parity_db, toy):
 
     a = surfaces[A_ROUTES[0]]["safety"]
     assert (a["risk_score"], a["color_code"], a["confidence"], a["score_range"]) == (55.3, "orange", "high", [40.0, 70.0])
-    # relative_rate is RR x r_ref, r_ref = exp(-const) from the same bundle every endpoint reads.
-    r_ref = math.exp(-bundle.manifest["const"]["trad"]["7"])
-    for key, rr in (("mean", row["rr_mean"]), ("lo", row["rr_mean"] * 0.5), ("hi", row["rr_mean"] * 2)):
-        assert a["relative_rate"][key] == pytest.approx(rr * r_ref, rel=1e-3)
-    assert a["relative_rate"]["mean"] != pytest.approx(row["rr_mean"], rel=1e-3)
+    # relative_rate is the stored RR itself: summarize already divides by r_ref, so multiplying by
+    # it again (exp(-const) of this bundle) would serve an absolute rate as a multiplier.
+    rr = row["rr_mean"]
+    assert a["relative_rate"] == {"mean": float(f"{rr:.4g}"), "lo": float(f"{rr * 0.5:.4g}"),
+                                  "hi": float(f"{rr * 2:.4g}")}
+    assert math.exp(-bundle.manifest["const"]["trad"]["7"]) != pytest.approx(1.0, rel=1e-2)
     b = surfaces[B_ROUTES[0]]["safety"]
     assert (b["risk_score"], b["confidence"], b["score_range"]) == (30.4, "medium", [20.0, 45.0])
     c = surfaces[C_ROUTES[0]]["safety"]

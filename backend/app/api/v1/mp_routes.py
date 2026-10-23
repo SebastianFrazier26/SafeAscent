@@ -219,23 +219,22 @@ async def _explain_terms(db: AsyncSession, stored: model_scores.StoredScore) -> 
              "multiplier": round(math.exp(t.log_effect), 2)} for t in terms]
 
 
-def _validated_score_fields(stored: model_scores.StoredScore, r_ref: Optional[float]) -> dict:
+def _validated_score_fields(stored: model_scores.StoredScore) -> dict:
     """score_fields through the SafetyScore validator, so every surface serves only a shape the
     contract allows (range brackets the score, ok-only fields only when ok)."""
-    return SafetyScore(**model_scores.score_fields(stored, r_ref)).model_dump(exclude={"status"})
+    return SafetyScore(**model_scores.score_fields(stored)).model_dump(exclude={"status"})
 
 
 async def _stored_safety_response(db: AsyncSession, route_id: int, route_name: str, date_str: str,
                                   stored: model_scores.StoredScore) -> MpRouteSafetyResponse:
-    r_ref = await model_scores.reference_rate(db, stored)
     return MpRouteSafetyResponse(route_id=route_id, route_name=route_name, target_date=date_str,
-                                 **model_scores.score_fields(stored, r_ref))
+                                 **model_scores.score_fields(stored))
 
 
-def _day_score_fields(stored: Optional[model_scores.StoredScore], r_ref: Optional[float]) -> dict:
+def _day_score_fields(stored: Optional[model_scores.StoredScore]) -> dict:
     if stored is None:
         return dict(_MISSING_SCORE)
-    f = _validated_score_fields(stored, r_ref)
+    f = _validated_score_fields(stored)
     return {k: f[k] for k in ("risk_score", "color_code", "data_status", "confidence", "score_range")}
 
 
@@ -532,7 +531,6 @@ async def get_mp_routes_with_safety(
     # One stored row per route for the month (CM = 1 in MVP-1). A route without a row is
     # missing (safety=None), never 0 and never gray.
     scores = await model_scores.get_scores(db, route_ids, target_date.month) if version else {}
-    rates = await model_scores.reference_rates(db, version) if scores and version else {}
 
     routes_with_safety = []
     stored_count = 0
@@ -542,8 +540,7 @@ async def get_mp_routes_with_safety(
     for row in rows:
         stored = scores.get(row.mp_route_id)
         if stored is not None:
-            safety = SafetyScore(**model_scores.score_fields(stored, rates.get((stored.type_group, stored.month))),
-                                 status="stored")
+            safety = SafetyScore(**model_scores.score_fields(stored), status="stored")
             stored_count += 1
             if safety.data_status == "insufficient_data":
                 insufficient_count += 1
@@ -705,7 +702,6 @@ async def get_route_forecast(
     # Each day carries its month's stored score (CM = 1 in MVP-1): no per-day model call.
     version = await model_scores.active_version(db)
     month_scores = {m: await model_scores.get_score(db, mp_route_id, m) for m in sorted({d.month for d in days})}
-    month_rates = {m: await model_scores.reference_rate(db, sc) for m, sc in month_scores.items() if sc is not None}
 
     for target_date in days:
         stored = month_scores[target_date.month]
@@ -759,7 +755,7 @@ async def get_route_forecast(
 
             forecast_days.append({
                 "date": target_date.isoformat(),
-                **_day_score_fields(stored, month_rates.get(target_date.month)),
+                **_day_score_fields(stored),
                 "weather_summary": weather_summary,
                 "temp_high": round(temp_max, 1) if temp_max is not None else None,
                 "temp_low": round(temp_min, 1) if temp_min is not None else None,
@@ -1212,10 +1208,9 @@ async def get_historical_trends(
     version, rows = await model_scores.get_profile(db, mp_route_id)
     profile = None
     if version is not None and rows:
-        rates = await model_scores.reference_rates(db, version)
         profile = [
             {"month": m, "month_label": calendar.month_abbr[m],
-             **(_validated_score_fields(rows[m], rates.get((rows[m].type_group, m))) if m in rows
+             **(_validated_score_fields(rows[m]) if m in rows
                 else _MISSING_SCORE)}
             for m in range(1, 13)
         ]

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Phase 3 final fixes - 2026-10-22
+
+- **`relative_rate` is the stored RR, unscaled** (reverses the Task 22 ruling). `posterior.summarize` already divides the route's rate by the national reference rate r_ref(g, m), so the extra `× r_ref` turned the Ascents "N× the national rate" headline into an absolute rate (~0.07× where 1.4× was meant). `/safety`, the map, `/risk-breakdown`, the forecast and the 12-month profile now serve `{mean: rr_mean, lo: rr_q05, hi: rr_q95}` at 4 significant figures; the bundle is read only for `/risk-breakdown`'s terms.
+
 ### Phase 3 Task 29: Ascents tab headline - 2026-10-22
 
 - The Ascents tab leads with the stored relative rate: "1.5× (0.82–2.4×) the reported-incident rate of ice routes nationally in January", with the confidence label (hatched dot at Low confidence), then "About 12.3 per 10,000 logged ascents (likely 6.1–30.2) · High confidence" only when the score carries `per_10k_logged_ascents`; otherwise one sentence for `per_10k_reason` (still being collected / none logged for this type / unavailable).

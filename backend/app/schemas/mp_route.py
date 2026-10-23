@@ -87,9 +87,9 @@ class StoredScoreFields(BaseModel):
     model_version: Optional[str] = None
     evidence: Optional[Evidence] = None
     insufficient_reason: Optional[Literal["no_evidence"]] = None
-    # The stored relative rate RR times r_ref(g, m), the national reported-incident rate of the
-    # typical route of the same type group and month (the bundle's const = -log r_ref): the
-    # Ascents headline (DP13). None when the bundle's reference rate cannot be read.
+    # The stored relative rate RR as it is: posterior.summarize already divides the route's rate by
+    # r_ref(g, m), the national rate of the typical route of the same type group and month, so it
+    # is the Ascents headline's "x the national rate" multiplier (DP13). Never multiplied by r_ref.
     relative_rate: Optional[RateInterval] = None
     per_10k_logged_ascents: Optional[RateInterval] = None
     per_10k_reason: Optional[str] = None

@@ -63,9 +63,10 @@ describe('Ascents headline', () => {
   });
 
   it('never rounds a small positive value to 0', async () => {
-    await openAscents(scored({ relative_rate: { mean: 0.0432, lo: 0.0118, hi: 0.2 }, per_10k_logged_ascents: { mean: 0.0049, lo: 0.0001, hi: 0.4 } }));
+    // relative_rate is a multiplier of the national rate (stored RR), so below-national reads 0.43×, not 0.0043.
+    await openAscents(scored({ relative_rate: { mean: 0.432, lo: 0.118, hi: 0.95 }, per_10k_logged_ascents: { mean: 0.0049, lo: 0.0001, hi: 0.4 } }));
     const text = screen.getByTestId('ascents-headline').textContent;
-    expect(text).toContain('0.043× (0.012–0.2×)');
+    expect(text).toContain('0.43× (0.12–0.95×)');
     expect(text).toContain('About 0.0049 per 10,000 logged ascents (likely <0.001–0.4)');
   });
 
