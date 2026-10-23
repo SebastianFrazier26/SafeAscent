@@ -74,14 +74,28 @@ def _finite(v: Any) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
 
 
+def _rate_triple_ok(mean: float | None, lo: float | None, hi: float | None) -> bool:
+    if mean is None and lo is None and hi is None:
+        return True
+    if not (_finite(mean) and _finite(lo) and _finite(hi)):
+        return False
+    assert mean is not None and lo is not None and hi is not None
+    return 0.0 <= lo <= mean <= hi
+
+
 def servable(s: StoredScore) -> bool:
-    """Whether a row can be shown as it is. The 0012 CHECKs already hold every rule but one:
-    n_eff may be NULL on any row, and an ok row without its evidence split cannot be served."""
+    """Whether a row can be shown as it is. The 0012 CHECKs hold finiteness and all-or-none, but
+    not everything RateInterval demands: n_eff may be NULL on any row, and neither the per-10K
+    nor the RR triple is checked for sign or order there. A row failing either would raise inside
+    a response model (one bad row would 500 the whole map), so it is unservable instead."""
     if s.insufficient:
         return (s.insufficient_reason == "no_evidence" and s.percentile is None and s.pct_q05 is None
                 and s.pct_q95 is None)
     nums = (s.percentile, s.pct_q05, s.pct_q95, s.rr_mean, s.rr_q05, s.rr_q95, s.n_eff_geo, s.n_eff_feature)
     if s.conf_level not in CONFIDENCE_LEVELS or not all(_finite(v) for v in nums):
+        return False
+    if not (_rate_triple_ok(s.rr_mean, s.rr_q05, s.rr_q95)
+            and _rate_triple_ok(s.per10k_mean, s.per10k_q05, s.per10k_q95)):
         return False
     assert s.percentile is not None and s.pct_q05 is not None and s.pct_q95 is not None
     return 0.0 <= s.pct_q05 <= s.percentile <= s.pct_q95 <= 100.0
@@ -193,15 +207,9 @@ def to_risk(s: StoredScore) -> tuple[float | None, SafetyColorCode, DataStatus]:
     return (shown, color_code_for(shown), "ok")
 
 
-def _interval(mean: float | None, lo: float | None, hi: float | None, digits: int) -> dict[str, float] | None:
-    if mean is None or lo is None or hi is None:
-        return None
-    return {"mean": round(mean, digits), "lo": round(lo, digits), "hi": round(hi, digits)}
-
-
 def _sig(x: float, digits: int = 4) -> float:
-    # Significant digits, not decimals: a national rate can be ~1e-4, and fixed decimals would
-    # round a real rate to 0.
+    # Significant digits, not decimals: a per-10K figure or a multiplier can be ~1e-4, and fixed
+    # decimals would round a real value to 0.
     return float(f"{x:.{digits}g}")
 
 
@@ -230,7 +238,7 @@ def score_fields(s: StoredScore) -> dict[str, Any]:
         if ok and s.n_eff_geo is not None and s.n_eff_feature is not None else None,
         "insufficient_reason": None if ok else s.insufficient_reason,
         "relative_rate": _sig_interval(s.rr_mean, s.rr_q05, s.rr_q95) if ok else None,
-        "per_10k_logged_ascents": _interval(s.per10k_mean, s.per10k_q05, s.per10k_q95, 3) if ok else None,
+        "per_10k_logged_ascents": _sig_interval(s.per10k_mean, s.per10k_q05, s.per10k_q95) if ok else None,
         "per_10k_reason": s.per10k_reason if ok else None,
     }
     return out

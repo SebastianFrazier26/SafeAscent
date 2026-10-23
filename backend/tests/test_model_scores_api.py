@@ -266,3 +266,46 @@ def test_schema_rejects_per_10k_on_an_insufficient_body():
     for extra in ({"per_10k_logged_ascents": {"mean": 1.0, "lo": 0.5, "hi": 2.0}}, {"per_10k_reason": "x"}):
         with pytest.raises(ValidationError):
             MpRouteSafetyResponse(**body, **extra)
+
+
+def test_a_tiny_per_10k_never_serializes_as_zero():
+    from app.schemas.mp_route import MpRouteSafetyResponse
+    from app.services.model_scores import score_fields
+
+    row = _ok_row(per10k_mean=3.2e-4, per10k_q05=4e-5, per10k_q95=4.9e-4, per10k_reason=None)
+    body = MpRouteSafetyResponse(route_id=900000001, route_name="r", target_date="2026-07-04",
+                                 **score_fields(row)).model_dump(mode="json")
+    assert body["per_10k_logged_ascents"] == {"mean": 3.2e-4, "lo": 4e-5, "hi": 4.9e-4}
+    assert all(v > 0 for v in body["per_10k_logged_ascents"].values())
+
+
+@pytest.mark.parametrize("triple", [
+    (1.0, 2.0, 3.0),            # lo above mean
+    (2.0, 1.0, 1.5),            # mean above hi
+    (-0.5, -1.0, 1.0),          # negative
+    (1.0, 0.5, float("inf")),
+    (float("nan"), 0.5, 2.0),
+    (1.0, None, 2.0),           # partial
+])
+def test_a_bad_per_10k_triple_is_not_servable(triple):
+    from app.services.model_scores import servable
+
+    mean, lo, hi = triple
+    assert servable(_ok_row(per10k_mean=2.5, per10k_q05=1.0, per10k_q95=4.0, per10k_reason=None))
+    assert not servable(_ok_row(per10k_mean=mean, per10k_q05=lo, per10k_q95=hi, per10k_reason=None))
+
+
+def test_one_bad_per_10k_row_is_skipped_and_the_map_still_answers(test_client, seeded_scores, caplog):
+    # Satisfies every 0012 CHECK (finite, all-or-none, reason NULL) but not RateInterval's order.
+    run_sql(seeded_scores.db, "UPDATE model.route_scores SET per10k_mean = 1.0, per10k_q05 = 2.0, per10k_q95 = 3.0, "
+                              "per10k_reason = NULL WHERE route_id = 900000002 AND month = 7")
+    with caplog.at_level("ERROR", logger="app.services.model_scores"):
+        r = test_client.get("/api/v1/mp-routes/map-with-safety", params=JULY)
+    assert r.status_code == 200
+    bulk = {x["mp_route_id"]: x["safety"] for x in r.json()["routes"]}
+    assert bulk[900000002] is None
+    assert bulk[900000001]["risk_score"] == 40.0 and bulk[900000003]["data_status"] == "insufficient_data"
+    assert r.json()["meta"]["missing_routes"] == 1
+    assert any("not servable" in m and "900000002" in m for m in caplog.messages)
+    # The single-route read refuses the same row as unavailable, never a 500.
+    assert test_client.post(SAFETY.format(900000002), params=JULY).status_code == 404

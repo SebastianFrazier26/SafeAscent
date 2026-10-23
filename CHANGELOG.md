@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Phase 3 final fixes - 2026-10-22
 
 - **`relative_rate` is the stored RR, unscaled** (reverses the Task 22 ruling). `posterior.summarize` already divides the route's rate by the national reference rate r_ref(g, m), so the extra `× r_ref` turned the Ascents "N× the national rate" headline into an absolute rate (~0.07× where 1.4× was meant). `/safety`, the map, `/risk-breakdown`, the forecast and the 12-month profile now serve `{mean: rr_mean, lo: rr_q05, hi: rr_q95}` at 4 significant figures; the bundle is read only for `/risk-breakdown`'s terms.
+- `per_10k_logged_ascents` is rounded to 4 significant figures, not 3 decimals, so a figure below 0.0005 never reaches the client as 0. A stored row whose per-10K (or RR) triple is negative, non-finite, partial or out of order is unservable: logged and shown as unavailable, so one bad row no longer turns `map-with-safety` into a 500.
 
 ### Phase 3 Task 29: Ascents tab headline - 2026-10-22
 
