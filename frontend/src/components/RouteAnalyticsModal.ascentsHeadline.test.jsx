@@ -70,6 +70,24 @@ describe('Ascents headline', () => {
     expect(text).toContain('About 0.0049 per 10,000 logged ascents (likely <0.001–0.4)');
   });
 
+  it('renders the unavailable line, never NaN or ∞, for a non-finite or negative rate', async () => {
+    for (const bad of [{ mean: NaN, lo: 0.5, hi: 2 }, { mean: 1.2, lo: 0.5, hi: Infinity }, { mean: 1.2, lo: -0.1, hi: 2 }]) {
+      await openAscents(scored({ relative_rate: bad }));
+      const headline = screen.getByTestId('ascents-headline');
+      expect(headline.textContent).toBe('National comparison unavailable');
+      expect(document.body.textContent).not.toMatch(/NaN|∞|Infinity/);
+      cleanup();
+    }
+  });
+
+  it('shows the per-10K unavailable sentence, never NaN or ∞, for a non-finite per-10K', async () => {
+    await openAscents(scored({ per_10k_logged_ascents: { mean: Infinity, lo: 1, hi: 2 }, per_10k_reason: null }));
+    expect(screen.queryByTestId('ascents-per10k')).toBeNull();
+    expect(screen.getByTestId('ascents-per10k-reason').textContent).toBe('Logged ascents unavailable');
+    expect(screen.getByTestId('ascents-headline').textContent).toContain('1.5×');
+    expect(document.body.textContent).not.toMatch(/NaN|∞|Infinity/);
+  });
+
   it('renders one honest line, no numbers and no 0, when relative_rate is null on an ok score', async () => {
     await openAscents(scored({ relative_rate: null }));
     const headline = screen.getByTestId('ascents-headline');

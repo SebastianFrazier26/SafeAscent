@@ -147,7 +147,9 @@ describe('score text', () => {
 
   it('rounds evidence to whole numbers and always shows ≈', () => {
     expect(formatEvidence({ geo: 2.4, similar: 11.6 })).toBe('≈ 2 local, 12 from similar routes elsewhere');
-    expect(formatEvidence({ geo: 0, similar: 0.2 })).toBe('≈ 0 local, 0 from similar routes elsewhere');
+    expect(formatEvidence({ geo: 0, similar: 0.2 })).toBe('≈ 0 local, <1 from similar routes elsewhere');
+    expect(formatEvidence({ geo: 0.0001, similar: 0.4999 })).toBe('≈ <1 local, <1 from similar routes elsewhere');
+    expect(formatEvidence({ geo: 0.5, similar: 0 })).toBe('≈ 1 local, 0 from similar routes elsewhere');
   });
 
   it('has the disclaimer', () => {

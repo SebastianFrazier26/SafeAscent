@@ -9,6 +9,7 @@ import type { SafetyState } from '../hooks/useRouteSafety';
 import { CONFIDENCE_LABEL, INSUFFICIENT_DATA_MESSAGE, isConfidence, markerStyle } from '../utils/riskUtils';
 import RiskSwatch from './RiskSwatch';
 import { SummaryChip } from './RiskScoreSummary';
+import { formatSmallSafe } from '../utils/formatSmallSafe';
 
 const NATIONAL_COMPARISON_UNAVAILABLE = 'National comparison unavailable';
 
@@ -28,16 +29,14 @@ const monthName = (isoDate: unknown): string | null => {
   return m ? (MONTHS[Number(m[1]) - 1] ?? null) : null;
 };
 
-/** One decimal from 1 up, two significant figures below 1, so a small positive value never reads as 0. */
-const formatSmallSafe = (value: number): string => {
-  if (value === 0) return '0';
-  if (value >= 100) return Math.round(value).toLocaleString('en-US');
-  if (value >= 1) return value.toFixed(1);
-  if (value < 0.001) return '<0.001';
-  return String(Number(value.toPrecision(2)));
-};
+interface ShownInterval { mean: string; range: string }
 
-const range = (i: Interval) => `${formatSmallSafe(i.lo)}–${formatSmallSafe(i.hi)}`;
+/** All three figures shown, or null when any one is not a finite non-negative number. */
+const shown = (i: Interval | null | undefined): ShownInterval | null => {
+  if (!i) return null;
+  const [mean, lo, hi] = [formatSmallSafe(i.mean), formatSmallSafe(i.lo), formatSmallSafe(i.hi)];
+  return mean !== null && lo !== null && hi !== null ? { mean, range: `${lo}–${hi}` } : null;
+};
 
 interface Props {
   safety: SafetyState | null | undefined;
@@ -66,8 +65,9 @@ export default function AscentsHeadline({ safety, routeType, selectedDate }: Pro
   }
 
   const { data } = safety;
-  const rate = 'relative_rate' in data ? data.relative_rate : null;
-  const per10k = 'per_10k_logged_ascents' in data ? data.per_10k_logged_ascents : null;
+  const rate = shown('relative_rate' in data ? data.relative_rate : null);
+  const per10kRaw = 'per_10k_logged_ascents' in data ? data.per_10k_logged_ascents : null;
+  const per10k = shown(per10kRaw);
   const reason = 'per_10k_reason' in data ? data.per_10k_reason : null;
   const confidence = 'confidence' in data && isConfidence(data.confidence) ? CONFIDENCE_LABEL[data.confidence] : null;
   const { fill, hatch } = markerStyle(data);
@@ -83,9 +83,12 @@ export default function AscentsHeadline({ safety, routeType, selectedDate }: Pro
   const type = routeType?.trim().toLowerCase();
   const month = monthName(selectedDate);
   const headline =
-    `${formatSmallSafe(rate.mean)}× (${range(rate)}×) the reported-incident rate of `
+    `${rate.mean}× (${rate.range}×) the reported-incident rate of `
     + `${type ? `${type} routes` : 'routes of this type'} nationally${month ? ` in ${month}` : ''}`;
-  const reasonLine = reason ? PER_10K_REASON_MESSAGE[reason] : undefined;
+  // A per-10K figure that cannot be shown reads as unavailable, never as a broken number.
+  const reasonLine = per10kRaw && !per10k
+    ? PER_10K_REASON_MESSAGE.ticks_missing
+    : reason ? PER_10K_REASON_MESSAGE[reason] : undefined;
 
   return (
     <Box data-testid="ascents-headline" sx={{ mb: 2, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
@@ -96,7 +99,7 @@ export default function AscentsHeadline({ safety, routeType, selectedDate }: Pro
       {confidence && <Typography variant="body2" fontWeight={600}>{confidence}</Typography>}
       {per10k ? (
         <Typography variant="body2" data-testid="ascents-per10k">
-          {`About ${formatSmallSafe(per10k.mean)} per 10,000 logged ascents (likely ${range(per10k)})`}
+          {`About ${per10k.mean} per 10,000 logged ascents (likely ${per10k.range})`}
           {confidence ? ` · ${confidence}` : ''}
         </Typography>
       ) : (

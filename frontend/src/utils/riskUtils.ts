@@ -83,9 +83,12 @@ export const formatScoreWithRange = (riskScore: number, range: unknown): string 
     ? `${riskScore.toFixed(1)} (likely ${range[0].toFixed(1)}–${range[1].toFixed(1)})`
     : riskScore.toFixed(1);
 
-// Effective counts are fractional (shrinkage weights), so they are rounded and always hedged.
+// Effective counts are fractional (shrinkage weights), so they are rounded and always hedged. A
+// positive count under 0.5 reads "<1": rounding it to 0 beside a score would claim no evidence at all.
+const evidenceCount = (n: number): string => (n > 0 && n < 0.5 ? '<1' : String(Math.round(n)));
+
 export const formatEvidence = (evidence: { geo: number; similar: number }): string =>
-  `≈ ${Math.round(evidence.geo)} local, ${Math.round(evidence.similar)} from similar routes elsewhere`;
+  `≈ ${evidenceCount(evidence.geo)} local, ${evidenceCount(evidence.similar)} from similar routes elsewhere`;
 
 export const RISK_DISCLAIMER =
   'Based on reported incidents and estimated climbing traffic, not on the current condition of this route.';
