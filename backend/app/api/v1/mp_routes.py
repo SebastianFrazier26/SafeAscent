@@ -51,7 +51,7 @@ async def get_location_breadcrumb(db: AsyncSession, location_id: int, exclude_st
     """
     Build a breadcrumb path for a location by traversing the parent_id chain.
 
-    Example output: "Yosemite National Park → Half Dome → Northwest Face"
+    Example output: "Example Park → Example Dome → Example Face"
 
     Args:
         db: Database session
@@ -594,7 +594,7 @@ async def get_mp_route(
     - **mp_route_id**: Mountain Project route ID
 
     Returns route data including full location breadcrumb path for display.
-    Example: "Yosemite National Park → Half Dome → Northwest Face"
+    Example: "Example Park → Example Dome → Example Face"
     """
     # Join with MpLocation to get location name and coordinates
     query = (
@@ -619,7 +619,7 @@ async def get_mp_route(
     # Build response with location name
     route_data = MpRouteDetail.model_validate(route)
 
-    # Get full location breadcrumb path (e.g., "Yosemite → Half Dome → Northwest Face")
+    # Get full location breadcrumb path (e.g., "Example Park → Example Dome → Example Face")
     if location_mp_id:
         breadcrumb = await get_location_breadcrumb(db, location_mp_id, exclude_states=True)
         route_data.location_name = breadcrumb if breadcrumb else location_name
