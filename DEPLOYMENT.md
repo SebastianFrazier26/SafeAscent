@@ -131,6 +131,15 @@ To flip: set the variable on the `frontend` service and redeploy. Locally: `fron
 - `main` branch protection (a PR and a green `ci-ok` required, admins included, force-pushes blocked) is after owner setup — not yet enabled.
 - Scraper code (anything fetching and parsing HTML pages) is never committed (D9). The `guards` job enforces this.
 
+## Project page (GitHub Pages)
+
+`site/` is a static project page (what SafeAscent does, the scoring method, architecture, status), published at https://sebastianfrazier26.github.io/SafeAscent/ and embedded on the owner's portfolio while safeascent.us is offline. It reads no database, calls no API, and holds no route or accident data.
+
+- `.github/workflows/pages.yml` rebuilds and deploys it on every push to `main` (and on manual dispatch), stamping the footer with the commit it was built from. It is independent of `ci.yml` and is not part of `ci-ok`.
+- One-time owner setup, needed before the first run succeeds: repo Settings → Pages → Build and deployment → Source: **GitHub Actions**. The workflow's `github-pages` environment is created on first deploy and only accepts deployments from `main`.
+- The page is framable (Pages sends no `X-Frame-Options`); links open in a new tab. `?theme=light` or `?theme=dark` forces a theme for the embedding page; otherwise it follows the OS setting.
+- Its illustrative scorer copies constants from `backend/app/services/algorithm_config.py`, `risk_bands.py` and `safety_algorithm.py`; `backend/tests/test_site_model_constants.py` fails if they drift. Preview locally with `python3 -m http.server -d site 8765`.
+
 ## Insufficient-data rollout (2026-09-28)
 
 1. Run `alembic upgrade head` (migration `0003_hist_insufficient_data`) before the new backend/worker code runs. Without it the nightly history insert hits `risk_score NOT NULL` for any batch containing an insufficient route, and the task now fails on that.
