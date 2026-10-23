@@ -270,8 +270,9 @@ def build_candidate(loaded: Loaded, *, today: date, t0: float, benchmark: bool) 
     stab = stability(raw, params, th, cutoff=None)
     counts_by_conf = conf_counts(cells, fit.summarize(cells, fit.y_train, th), loaded.routes)
     metrics: dict[str, Any] = suite.to_dict()
-    metrics["prospective_kernel"] = (None if suite.prospective is None
-                                     else ka.prospective_kernel_report(loaded.prospective, loaded.prospective_scores))
+    metrics["prospective_kernel"], metrics["prospective_kernel_reason"] = (
+        (None, suite.prospective_reason) if suite.prospective is None
+        else ka.prospective_kernel_report(loaded.prospective, loaded.prospective_scores))
     metrics["thresholds"] = {**thresholds_json(th), "conf_selected": bool(tuned.report["conf_selected"])}
     metrics["tuning"] = tuned.report
     metrics["stability"] = stab

@@ -162,7 +162,9 @@ def select_conf(results: list[FoldResult], phi: float, *, d_star: float = math.i
             ok &= calibration(R.mu[low], R.obs[low]).passed
         if ok:
             share = float(R.routes[keep & ((conf == "high") | (conf == "medium"))].sum() / total_routes)
-            if best is None or share > best[0]:  # pairs come smallest t_high first, so ties keep it
+            # A pair that makes nothing High or Medium shows every cell as Low: it passes the checks
+            # above vacuously and must not count as a selection, or G4 would pass with no confidence.
+            if share > 0 and (best is None or share > best[0]):  # smallest t_high first, so ties keep it
                 best = (share, th, tm)
     return None if best is None else (best[1], best[2])
 

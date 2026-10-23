@@ -130,6 +130,22 @@ def test_prospective_kernel_report_ranks_only_scored_cells():
     fd = prepare(raw, prospective_fold())
     scores = np.full(fd.cells.n, np.nan)
     scores[: fd.cells.n // 2] = np.linspace(1.0, 50.0, fd.cells.n // 2)
-    r = ka.prospective_kernel_report(fd, scores)
+    r, reason = ka.prospective_kernel_report(fd, scores)
+    assert reason is None and r is not None
     assert r["kernel_coverage"] == pytest.approx((fd.cells.n // 2) / fd.cells.n)
     assert r["n_cells"] == fd.cells.n // 2
+
+
+def test_prospective_kernel_report_without_test_incidents_returns_a_reason():
+    raw = synthetic_raw(seed=46)
+    fd = prepare(raw, prospective_fold())
+    scores = np.linspace(1.0, 50.0, fd.cells.n)
+    empty = dataclasses.replace(fd, test=dataclasses.replace(fd.test, y=np.zeros_like(fd.test.y)))
+    assert ka.prospective_kernel_report(empty, scores) == (None, "no_test_incidents")
+    # Incidents only in cells the kernel never scored: still nothing to calibrate against.
+    y = np.zeros_like(fd.test.y)
+    y[fd.test_mask.nonzero()[0][0]] = 1.0
+    unscored = scores.copy()
+    unscored[fd.test_mask.nonzero()[0][0]] = np.nan
+    only_unscored = dataclasses.replace(fd, test=dataclasses.replace(fd.test, y=y))
+    assert ka.prospective_kernel_report(only_unscored, unscored) == (None, "no_scored_test_incidents")

@@ -11,7 +11,7 @@ from app.ml.cells import STATE_GROUPS
 from app.ml.fixtures import fold_results_toy, synthetic_fold_data, synthetic_raw, toy_fold_result
 from app.ml.metrics import interval_coverage, pit_coverage
 from app.ml.model import Fitted, ModelParams
-from app.ml.tuning import NEUTRAL, PHI_GRID, RATIO_GRID, select_conf, select_d_star, select_phi, stability, tune
+from app.ml.tuning import NEUTRAL, PHI_GRID, select_conf, select_d_star, select_phi, stability, tune
 
 
 SMALL = 60  # areas: tune runs ~19 sweeps of 12 folds, so CI uses the small world
@@ -136,8 +136,9 @@ def test_select_conf_levels_follow_the_evidence_gate(monkeypatch):
     monkeypatch.setattr(tuning_mod, "confidence_level", spy)
     select_conf(bare, phi=1.0)
     assert calls and all((g == 0).all() and (f == 0).all() for g, f, _ in calls)
-    # No evidence: nothing is high or medium under any pair, so no pair can beat the first on share.
-    assert select_conf(bare, phi=1.0) == (RATIO_GRID[0], RATIO_GRID[1])
+    # No evidence: nothing is high or medium under any pair, so no pair is a selection (G4 fails;
+    # until 2026-10-22 this returned the first pair with share 0, a vacuous pass).
+    assert select_conf(bare, phi=1.0) is None
 
 
 def test_phi_grid_is_posteriors_and_no_conf_is_none_never_inf():
@@ -227,3 +228,16 @@ def test_stability_scores_with_training_counts_only(monkeypatch):
     monkeypatch.setattr(Fitted, "summarize", strict)
     stability(synthetic_raw(seed=33, n_areas=60), ModelParams(), NEUTRAL, cutoff=None, n_subsamples=2)
     assert checked == [False, True, True]
+
+
+def test_select_conf_refuses_when_no_cell_is_high_or_medium(monkeypatch):
+    good = fold_results_toy(calibrated=True)[0]
+    assert select_conf(good, phi=1.0) is not None
+
+    def all_low(ratio, insufficient, th, n_geo, n_feat, y_own):
+        return np.where(insufficient, "insufficient", "low")
+
+    monkeypatch.setattr(tuning_mod, "confidence_level", all_low)
+    # Every pair would pass on its Low stratum alone with share 0: none is a selection, so
+    # conf_selected is False and G4 fails rather than passing vacuously.
+    assert select_conf(good, phi=1.0) is None

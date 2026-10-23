@@ -16,6 +16,9 @@ from app.ml.cells import FAMILY_OF, TYPE_GROUPS
 from app.ml.dataset import STATIC_FEATURES, CellData
 
 LOG1P_FEATURES = frozenset({"precip_mm", "snowfall_cm"})
+# A column whose spread is below this is constant up to float noise: dividing by that noise would turn
+# rounding error into a huge standardized covariate, so it is left unscaled (sd = 1).
+SD_FLOOR = 1e-8
 
 
 def transform_static_columns(static: NDArray[np.float64]) -> dict[str, NDArray[np.float64]]:
@@ -30,7 +33,13 @@ def transform_static_columns(static: NDArray[np.float64]) -> dict[str, NDArray[n
     out: dict[str, NDArray[np.float64]] = {}
     for j, f in enumerate(STATIC_FEATURES):
         v = static[:, j]
-        out[f"z_{f}"] = np.log1p(v) if f in LOG1P_FEATURES else v
+        if f in LOG1P_FEATURES:
+            # log1p gives -inf at -1 and NaN below it, and a NaN here would be imputed as "missing"
+            # downstream (training and explain at serve time alike): refuse the row instead.
+            if (v <= -1.0).any():
+                raise ValueError(f"{f} must be > -1 for log1p")
+            v = np.log1p(v)
+        out[f"z_{f}"] = v
     out["ind_elevation_missing"] = np.isnan(static[:, 0]).astype(np.float64)
     out["ind_normals_missing"] = np.asarray(np.isnan(static[:, 2:]).any(axis=1), dtype=np.float64)
     return out
@@ -130,15 +139,19 @@ def build_design(cells: CellData, *, policy: TickPolicy, lambdas: Lambdas = Lamb
             else:
                 ok = ~np.isnan(v)
                 mu = float(v[ok].mean()) if ok.any() else 0.0
-                sd = float(v[ok].std()) if ok.any() and v[ok].std() > 0 else 1.0
+                sd = float(v[ok].std()) if ok.any() and v[ok].std() > SD_FLOOR else 1.0
             center[k], scale[k] = mu, sd
             # A missing value is the training mean (standardized 0); its indicator carries the gap.
             v = np.where(np.isnan(v), 0.0, (v - mu) / sd)
         names.append(name)
         cols.append(v)
         pen.append(lambdas.covariate)
+    X = np.column_stack(cols)
+    if not np.isfinite(X).all():
+        bad = sorted({names[j] for j in np.nonzero(~np.isfinite(X).all(axis=0))[0]})
+        raise ValueError(f"design matrix has non-finite values in {bad}")
     idx = {nm: i for i, nm in enumerate(names)}
-    return Design(X=np.column_stack(cols), names=tuple(names), penalty=np.array(pen), nonneg=(idx["x_density"],),
+    return Design(X=X, names=tuple(names), penalty=np.array(pen), nonneg=(idx["x_density"],),
                   center=center, scale=scale,
                   exposure_cols=tuple(idx[c] for c in ("x_density", "x_season", "ind_season_missing", "x_ticks",
                                                        "ind_ticks_off")),

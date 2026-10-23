@@ -109,3 +109,34 @@ def test_transform_static_missing_and_inconsistent_lat():
     assert t["ind_elevation_missing"] == 1.0 and t["ind_normals_missing"] == 1.0
     with pytest.raises(ValueError):
         transform_static({"elevation_m": 100.0, "lat": None})
+
+
+def test_a_near_constant_column_is_not_blown_up_by_its_float_noise():
+    cells = synthetic_cells(seed=1, n_areas=20)
+    st = cells.static.copy()
+    st[:, 0] = 2500.0 + np.where(np.arange(len(st)) % 2 == 0, 0.0, 1e-12)
+    d = build_design(dataclasses.replace(cells, static=st), policy=TickPolicy())
+    k = d.names.index("z_elevation_m")
+    assert d.scale[k] == 1.0
+    assert np.abs(d.X[:, k]).max() < 1e-6
+
+
+@pytest.mark.parametrize("j,value", [(STATIC_FEATURES.index("precip_mm"), -1.0),
+                                     (STATIC_FEATURES.index("snowfall_cm"), -3.0)])
+def test_log1p_refuses_input_at_or_below_minus_one(j, value):
+    cells = synthetic_cells(seed=1, n_areas=10)
+    cells.static[0, j] = value
+    with pytest.raises(ValueError, match="must be > -1"):
+        build_design(cells, policy=TickPolicy())
+    with pytest.raises(ValueError, match="must be > -1"):
+        transform_static({STATIC_FEATURES[j]: value})
+    # Just above the domain edge is a real (if odd) value, never refused or read as missing.
+    assert np.isfinite(transform_static({STATIC_FEATURES[j]: -0.5})[f"z_{STATIC_FEATURES[j]}"])
+
+
+def test_a_non_finite_design_matrix_is_refused():
+    cells = synthetic_cells(seed=1, n_areas=10)
+    n_routes = cells.n_routes.astype(np.float64)
+    n_routes[0] = np.inf
+    with pytest.raises(ValueError, match="non-finite values in \\['x_density'\\]"):
+        build_design(dataclasses.replace(cells, n_routes=n_routes), policy=TickPolicy())

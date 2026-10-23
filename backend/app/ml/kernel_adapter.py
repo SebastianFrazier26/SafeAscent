@@ -224,10 +224,16 @@ async def prospective_kernel(conn: AsyncConnection, fold: Fold, cells: CellData)
     return out
 
 
-def prospective_kernel_report(fd: FoldData, scores: F64) -> MetricsReport:
+def prospective_kernel_report(fd: FoldData, scores: F64) -> tuple[MetricsReport | None, str | None]:
     """DP14: scored cells only, ranked by raw stored score (the gated top10); the log score uses an
-    in-window calibration map, which favours the kernel and is reported, never gated."""
+    in-window calibration map, which favours the kernel and is reported, never gated. Like
+    backtest.prospective_report, None with a reason while the window (or its scored cells) holds no
+    incident: the calibration map cannot be fitted to all-zero counts."""
     ok = fd.test_mask & np.isfinite(scores)
+    if not float(fd.test.y[fd.test_mask].sum()) > 0:
+        return None, "no_test_incidents"
+    if ok.any() and not float(fd.test.y[ok].sum()) > 0:
+        return None, "no_scored_test_incidents"
     out: MetricsReport
     if not ok.any():
         out = _block([])
@@ -236,4 +242,4 @@ def prospective_kernel_report(fd: FoldData, scores: F64) -> MetricsReport:
         mu = np.exp(a + b * np.log1p(scores[ok]))
         out = _block([KernelFold(fd.fold.kind, scores[ok], mu, np.asarray(fd.test.y[ok], dtype=np.float64))])
     out["kernel_coverage"] = float(ok.sum() / fd.test_mask.sum()) if fd.test_mask.any() else None
-    return out
+    return out, None

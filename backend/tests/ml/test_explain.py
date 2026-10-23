@@ -113,3 +113,11 @@ def test_survives_bundle_round_trip():
     again = ModelBundle.from_bytes(bundle.to_bytes())
     assert explain(again, **row, top=None) == explain(bundle, **row, top=None)
     assert np.isfinite([t.log_effect for t in explain(again, **row)]).all()
+
+
+def test_explain_refuses_a_log1p_feature_outside_its_domain():
+    # Serve time: a NaN from log1p would be imputed as "missing" and still decompose; it must raise
+    # (the breakdown route turns ValueError into "Breakdown unavailable").
+    bundle, row = toy_bundle_and_row()
+    with pytest.raises(ValueError, match="must be > -1"):
+        explain(bundle, **{**row, "raw_features": {**row["raw_features"], "precip_mm": -1.0}})
