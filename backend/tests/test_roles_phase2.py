@@ -5,9 +5,11 @@ import argparse
 import asyncio
 import csv
 import os
+import re
 import subprocess
 import uuid
 from datetime import date
+from pathlib import Path
 
 from alembic import command
 from sqlalchemy import text
@@ -789,3 +791,152 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "ingest UPDATE on internal.exposure_index matches the expected set",
     ):
         assert check in stray.stderr, check
+
+
+# K1 (runbook 2026-11-15): prod runs the role scripts at every stage's revision, not only at head. Each
+# entry: a grant broken by hand, the verify check that must catch it, and how it is put back (None:
+# rerunning grants_phase2.sql restores it; otherwise the SQL that undoes it, as migrator).
+STAGED_MUTATIONS: dict[str, list[tuple[str, str, str | None]]] = {
+    "0004_phase2a_foundation": [
+        ("REVOKE SELECT ON public.source_ingest_log FROM ingest",
+         "ingest SELECT on public.source_ingest_log matches the expected set", None),
+        # 0008's widening, before 0008: an older table, so only the block guard keeps it out.
+        ("GRANT SELECT (parent_id) ON public.mp_locations TO ingest",
+         "ingest mp_locations column privileges match the expected set: parent_id", None),
+    ],
+    "0006_accidents_clean": [
+        ("REVOKE DELETE ON public.gnis_summits FROM ingest",
+         "ingest DELETE on public.gnis_summits matches the expected set", None),
+        ("GRANT SELECT ON public.area_weekly_weather TO ingest",
+         "ingest SELECT on public.area_weekly_weather matches the expected set",
+         "REVOKE SELECT ON public.area_weekly_weather FROM ingest"),
+    ],
+    "0007_cell_daily_conditions": [
+        ("REVOKE UPDATE (tz) ON public.accidents FROM ingest",
+         "ingest accidents column privileges match the expected set: tz", None),
+        # K6: the owner's temporary grant for R6; rerunning the grants revokes it.
+        ("GRANT SELECT ON public.weather TO ingest", "ingest SELECT on public.weather matches the expected set", None),
+        ("GRANT SELECT ON public.routes TO ingest", "ingest SELECT on public.routes matches the expected set", None),
+    ],
+    "0010_accident_route_links": [
+        ("GRANT UPDATE ON internal.r10_llm_calls TO ingest",
+         "ingest UPDATE on internal.r10_llm_calls matches the expected set",
+         "REVOKE UPDATE ON internal.r10_llm_calls FROM ingest"),
+        ("ALTER TABLE internal.r10_unresolved DISABLE TRIGGER r10_unresolved_keep_decisions",
+         "r10_unresolved keep-decisions trigger exists and is enabled",
+         "ALTER TABLE internal.r10_unresolved ENABLE TRIGGER r10_unresolved_keep_decisions"),
+    ],
+    "0011_exposure_index": [
+        ("GRANT UPDATE ON internal.exposure_index TO ingest",
+         "ingest UPDATE on internal.exposure_index matches the expected set", None),
+    ],
+    "0012_model_registry": [
+        ("REVOKE SELECT ON public.canonical_routes FROM ingest",
+         "ingest SELECT on public.canonical_routes matches the expected set", None),
+    ],
+    "head": [
+        ("REVOKE SELECT (mp_id) ON public.mp_locations FROM ingest",
+         "ingest mp_locations column privileges match the expected set: mp_id", None),
+        ("GRANT SELECT (description) ON internal.accidents_raw TO ingest",
+         "ingest accidents_raw column privileges match the expected set: description",
+         "REVOKE SELECT (description) ON internal.accidents_raw FROM ingest"),
+    ],
+}
+PHASE3_FROM = ("0012_model_registry", "head")
+
+
+def _grants_and_verify(owner_url: str, *, phase3: bool) -> None:
+    for grants in [GRANTS_PHASE2] * 2 + ([ROLES_DIR / "grants_phase3.sql"] * 2 if phase3 else []):
+        granted = _psql(owner_url, grants, {})
+        assert granted.returncode == 0, granted.stdout + granted.stderr
+    for script in ("verify_roles.sql", "verify_roles_phase2.sql") + (("verify_roles_phase3.sql",) if phase3 else ()):
+        verified = _psql(owner_url, ROLES_DIR / script, {})
+        assert verified.returncode == 0, script + verified.stdout + verified.stderr
+        assert "PASSED" in verified.stdout
+
+
+def test_role_scripts_at_each_rollout_revision(role_cleanup, fresh_db):  # noqa: F811
+    _require_psql()
+    owner_url = _owner_db(fresh_db)
+    command.upgrade(_alembic_cfg_as(fresh_db, owner_url), "0003_hist_insufficient_data")
+    _as(owner_url, ANALYST_FIXTURE_SQL)
+    assert _psql(owner_url, ROLES_DIR / "create_roles.sql", ROLE_PASSWORD_ENV).returncode == 0
+    assert _psql(owner_url, CREATE_PHASE2, PHASE2_PASSWORD_ENV).returncode == 0
+    _owner_schema_model(owner_url)
+    migrator_url = _role_url(fresh_db, "migrator", PASSWORDS["migrator"])
+    migrator_cfg = _alembic_cfg_as(fresh_db, migrator_url)
+
+    early = _psql(owner_url, GRANTS_PHASE2, {})
+    assert early.returncode != 0
+    assert "0004 incomplete (run at 0004_phase2a_foundation or later)" in early.stderr
+
+    ingest = _role_url(fresh_db, "ingest", PHASE2_PASSWORDS["ingest"])
+    for revision, mutations in STAGED_MUTATIONS.items():
+        command.upgrade(migrator_cfg, revision)
+        phase3 = revision in PHASE3_FROM
+        if revision == PHASE3_FROM[0]:
+            login = _psql(owner_url, ROLES_DIR / "trainer_login_phase3.sql", {"TRAINER_PASSWORD": "t" * 40})
+            assert login.returncode == 0, login.stderr
+        _grants_and_verify(owner_url, phase3=phase3)
+
+        for broken, check, undo in mutations:
+            _as(migrator_url, broken)
+            caught = _psql(owner_url, VERIFY_PHASE2, {})
+            assert caught.returncode != 0, (revision, broken)
+            assert check in caught.stderr, (revision, check, caught.stderr)
+            if undo is not None:
+                _as(migrator_url, undo)
+            _grants_and_verify(owner_url, phase3=phase3)
+
+        if revision == "0004_phase2a_foundation":
+            _as(ingest, "SELECT mp_id, latitude, longitude FROM mp_locations")
+            _denied(ingest, "SELECT parent_id FROM mp_locations")
+            _denied(ingest, "SELECT route_id FROM routes")
+
+        if revision == "0006_accidents_clean":
+            # A partial block (0007's registry without the rest) STOPs the grants with nothing applied.
+            _as(migrator_url, "REVOKE DELETE ON public.gnis_summits FROM ingest; "
+                "CREATE TABLE public.grid_bucket_series (x int)")
+            partial = _psql(owner_url, GRANTS_PHASE2, {})
+            assert partial.returncode != 0
+            assert "0007 partial" in partial.stderr and "no grant applied" in partial.stderr
+            assert _fetch_row(fresh_db, "SELECT has_table_privilege('ingest', 'public.gnis_summits', 'DELETE')") == [
+                False]
+            caught = _psql(owner_url, VERIFY_PHASE2, {})
+            assert caught.returncode != 0
+            assert "migration block 0007 is complete or absent" in caught.stderr
+            _as(migrator_url, "DROP TABLE public.grid_bucket_series")
+            _grants_and_verify(owner_url, phase3=False)
+
+            # A block present after an absent one (one 0008 table, no 0007) STOPs too.
+            _as(migrator_url, "REVOKE DELETE ON public.gnis_summits FROM ingest; "
+                "CREATE TABLE public.canonical_areas (x int)")
+            ahead = _psql(owner_url, GRANTS_PHASE2, {})
+            assert ahead.returncode != 0
+            assert "0008 present after an absent block" in ahead.stderr and "no grant applied" in ahead.stderr
+            assert _fetch_row(fresh_db, "SELECT has_table_privilege('ingest', 'public.gnis_summits', 'DELETE')") == [
+                False]
+            caught = _psql(owner_url, VERIFY_PHASE2, {})
+            assert caught.returncode != 0
+            for check in ("migration block 0008 is absent, or every earlier block is present",
+                          "migration block 0008 presence matches alembic_version"):
+                assert check in caught.stderr, check
+            _as(migrator_url, "DROP TABLE public.canonical_areas")
+            _grants_and_verify(owner_url, phase3=False)
+
+    # A trailing block missing at head (a bad stamp, a hand drop) looks like an earlier revision to the
+    # schema alone; alembic_version says otherwise, so verify fails.
+    _as(migrator_url, "DROP TABLE internal.exposure_index")
+    missing = _psql(owner_url, VERIFY_PHASE2, {})
+    assert missing.returncode != 0
+    assert "migration block 0011 presence matches alembic_version" in missing.stderr
+
+
+def test_grants_and_verify_share_one_block_list():
+    def blocks(script: Path) -> list[tuple[str, str]]:
+        text_ = script.read_text(encoding="utf-8")
+        return re.findall(r"\('(\d{4})', '((?:public|internal)\.\w+)'", text_)
+
+    grants, verify = blocks(GRANTS_PHASE2), blocks(VERIFY_PHASE2)
+    assert grants == verify
+    assert sorted({rev for rev, _ in grants}) == [f"{n:04d}" for n in range(4, 12)]
