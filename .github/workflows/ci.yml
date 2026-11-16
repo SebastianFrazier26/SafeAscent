@@ -56,6 +56,11 @@ jobs:
           enable-cache: true
           cache-dependency-glob: backend/uv.lock
 
+      # test_site_model_constants runs the project page's demo math under node.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+
       - name: Install
         run: uv sync --frozen --group pipelines --group train
 

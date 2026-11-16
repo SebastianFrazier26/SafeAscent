@@ -12,10 +12,13 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from scipy.special import ndtr
 
-from app.ml import eb, posterior, tuning
-from app.services.risk_bands import RISK_BAND_THRESHOLDS, color_code_for
+pytest.importorskip("scipy")  # app.ml imports the train group's scipy
+
+from scipy.special import ndtr  # noqa: E402
+
+from app.ml import eb, posterior, tuning  # noqa: E402
+from app.services.risk_bands import RISK_BAND_THRESHOLDS, color_code_for  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 SITE_PAGE = ROOT / "site" / "index.html"
@@ -83,6 +86,8 @@ def test_display_constants_match_frontend():
     assert labels["insufficient"] == _ts_string("INSUFFICIENT_DATA_LABEL")
     assert labels["insufficient_message"] == _ts_string("INSUFFICIENT_DATA_MESSAGE")
     assert labels["confidence"] == _ts_object("CONFIDENCE_LABEL")
+    legend = re.findall(r"\{ label: `([^`(]+?) \(", RISK_UTILS.read_text(encoding="utf-8"))
+    assert labels["band"] == dict(zip(("green", "yellow", "orange", "red"), legend[:4]))
     assert labels["disclaimer"] == re.search(r"RISK_DISCLAIMER =\s*'([^']*)'", RISK_UTILS.read_text()).group(1)
     page = _page()
     for code, hex_ in site["band_hex"].items():
@@ -115,6 +120,7 @@ CASES = [
     {"y": 0, "mu0": 12.0, "oArea": 1, "eArea": 20.0, "oArch": 10, "eArch": 25.0, "useArch": True},
     {"y": 0, "mu0": 0.6, "oArea": 0, "eArea": 3.0, "oArch": 0, "eArch": 5.0, "useArch": False},
     {"y": 0, "mu0": 0.05, "oArea": 0, "eArea": 0.1, "oArch": 0, "eArch": 0.1, "useArch": True},
+    {"y": 0, "mu0": 0.05, "oArea": 0, "eArea": 0.1, "oArch": 1, "eArch": 0.1, "useArch": True},
     {"y": 3, "mu0": 20.0, "oArea": 2, "eArea": 50.0, "oArch": 0, "eArch": 0.1, "useArch": False},
 ]
 
@@ -133,10 +139,17 @@ def _reference(M: dict, x: dict) -> dict:
     k_c = eb._floored_kappa(ill["kappa_cell"], prior, prior_var)
     shape, rate = x["y"] + k_c * prior, x["mu0"] + k_c
     omega = x["mu0"] / rate
-    n_geo = omega * x["y"] + (1 - omega) * wg * (x["eArea"] / rt_a) * x["oArea"]
-    n_feat = (1 - omega) * (1 - wg) * np.where(use, x["eArch"] / rt_k, 0.0) * np.where(use, x["oArch"], 0.0)
-    geo = np.array([x["y"] > 0 or x["oArea"] > 0])
-    dist = a(0.0 if x["useArch"] else np.inf)
+    chain = {"omega_area": x["eArea"] / rt_a, "O_area": a(x["oArea"]), "omega_region": zero, "O_region": zero,
+             "omega_state": zero, "O_state": zero,
+             "omega_arch": np.where(use, x["eArch"] / rt_k, 0.0), "O_arch": np.where(use, x["oArch"], 0.0)}
+    cp = eb.CellPost(eb.GammaPost(shape, rate), prior, omega, wg, a(x["y"]), chain)
+    n_geo = posterior.n_eff_geo(cp)
+    # posterior.summarize computes n_feat inline (no function to call); this is its expression.
+    n_feat = (1 - omega) * (1 - wg) * chain["omega_arch"] * chain["O_arch"]
+    geo = n_geo > posterior.GEO_TOL
+    # evidence_dist is the feature distance to the nearest area with incidents (model.predict); the
+    # page's proxy: within d* exactly when comparable routes are used and have incidents.
+    dist = a(0.0 if x["useArch"] and x["oArch"] > 0 else np.inf)
     insufficient = posterior.insufficient_mask(geo, n_feat, dist, d_star=1.0)
     out = {"insufficient": bool(insufficient[0]), "shape": float(shape[0]), "rate": float(rate[0]),
            "nGeo": float(n_geo[0]), "nFeat": float(n_feat[0])}
@@ -147,9 +160,9 @@ def _reference(M: dict, x: dict) -> dict:
                               phi=ill["phi"])
     conf = posterior.confidence_level(hi / lo, insufficient, th, n_geo, n_feat, a(x["y"]))
     s = ill["reference_log_sd"]
-    pct = 100 * ndtr((np.log(mean) + s * s / 2) / s)
+    pct = [float(100 * ndtr((np.log(v[0]) + s * s / 2) / s)) for v in (lo, mean, hi)]
     out.update(rr=[float(lo[0]), float(mean[0]), float(hi[0])], conf=str(conf[0]),
-               band=color_code_for(round(float(pct[0]), 1)), pct=float(pct[0]))
+               band=color_code_for(round(pct[1], 1)), pct=pct)
     return out
 
 
@@ -175,6 +188,6 @@ def test_page_js_matches_the_real_model_functions():
         assert [js["rr"]["lo"], js["rr"]["mean"], js["rr"]["hi"]] == pytest.approx(ref["rr"], rel=1e-6), x
         assert js["conf"] == ref["conf"], x
         assert js["band"] == ref["band"], x
-        assert js["pct"]["mean"] == pytest.approx(ref["pct"], abs=1e-4), x
+        assert [js["pct"]["lo"], js["pct"]["mean"], js["pct"]["hi"]] == pytest.approx(ref["pct"], abs=1e-4), x
     assert {r.get("conf") for r in got} >= {"high", "low"}
-    assert any(r["insufficient"] for r in got)
+    assert [r["insufficient"] for r in got] == [False, False, False, True, True, False, False]

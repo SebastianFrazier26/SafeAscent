@@ -184,7 +184,7 @@ footer { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--line);
           <div class="band b-green">Lower<small>0 – 25</small></div>
           <div class="band b-yellow">Moderate<small>25 – 50</small></div>
           <div class="band b-orange">Elevated<small>50 – 75</small></div>
-          <div class="band b-red">High<small>75 – 100</small></div>
+          <div class="band b-red">High Risk<small>75 – 100</small></div>
         </div>
         <p class="note" style="margin:0">The lowest band reads <em>Lower than typical for this type</em>, in neutral slate. It is a rank, not a verdict, and never says the route is safe.</p>
       </div>
@@ -249,7 +249,7 @@ score           = percentile of the relative rate among routes of the same type<
         </fieldset>
         <div>
           <label class="check"><input id="arch" type="checkbox" checked> The route has comparable routes elsewhere</label>
-          <p class="note" style="margin-top:6px">Unchecked, nothing similar is close enough in its features to borrow from, so only this route and its area count.</p>
+          <p class="note" style="margin-top:6px">Unchecked, nothing is close enough in its features to borrow from, so only this route and its area count. Comparable routes count as evidence only once they have reported incidents.</p>
         </div>
       </div>
       <div class="result" aria-live="polite">
@@ -361,6 +361,7 @@ score           = percentile of the relative rate among routes of the same type<
     "lowest_band": "Lower than typical for this type",
     "insufficient": "Not enough evidence",
     "insufficient_message": "Not enough reported incidents or similar routes to estimate",
+    "band": {"green": "Lower", "yellow": "Moderate", "orange": "Elevated", "red": "High Risk"},
     "confidence": {"high": "High confidence", "medium": "Medium confidence", "low": "Low confidence"},
     "disclaimer": "Based on reported incidents and estimated climbing traffic, not on the current condition of this route."
   },
@@ -502,7 +503,10 @@ var SafeAscentDemo = (function () {
     var nGeo = omegaCell * x.y + (1 - omegaCell) * pr.wg * (x.eArea / rtA) * x.oArea;
     var nFeat = x.useArch ? (1 - omegaCell) * (1 - pr.wg) * (x.eArch / rtK) * x.oArch : 0;
     var geoEvidence = x.y > 0 || x.oArea > 0;
-    var insufficient = !geoEvidence && nFeat === 0 && !x.useArch;
+    // insufficient_mask also needs evidence_dist > d*, the feature distance to the nearest area with
+    // incidents; here a neighbour within d* means comparable routes that have reported incidents.
+    var neighbour = x.useArch && x.oArch > 0;
+    var insufficient = !geoEvidence && nFeat === 0 && !neighbour;
     var out = {
       insufficient: insufficient, priorMean: pr.mean, priorVar: pr.variance, wGeo: pr.wg,
       areaMean: pr.mG, archMean: x.useArch ? pr.mA : null, kappaEff: kC, omegaCell: omegaCell,
@@ -526,7 +530,6 @@ var SafeAscentDemo = (function () {
 (function () {
   var M = JSON.parse(document.getElementById("model-constants").textContent);
   var $ = function (id) { return document.getElementById(id); };
-  var BAND_LABEL = { green: "Lower", yellow: "Moderate", orange: "Elevated", red: "High" };
   var PRESETS = {
     busy: { y: 12, mu: 6, oa: 25, ea: 15, ok: 30, ek: 25, arch: true },
     borrow: { y: 0, mu: 0.6, oa: 0, ea: 2, ok: 14, ek: 6, arch: true },
@@ -552,8 +555,23 @@ var SafeAscentDemo = (function () {
   }
   // formatEvidence in the app: a positive count under 0.5 reads "<1", never 0.
   function count(n) { return n > 0 && n < 0.5 ? "<1" : String(Math.round(n)); }
-  // sig and count can return "<0.01" / "<1", which innerHTML would parse as a tag.
-  function esc(s) { return s.replace(/</g, "&lt;"); }
+  function chip(el, value, label) {
+    el.textContent = value;
+    var small = document.createElement("small");
+    small.textContent = label;
+    el.appendChild(small);
+  }
+  function para(parent, parts, cls) {
+    var p = document.createElement("p");
+    if (cls) p.className = cls;
+    parts.forEach(function (part) {
+      if (typeof part === "string") { p.appendChild(document.createTextNode(part)); return; }
+      var b = document.createElement("strong");
+      b.textContent = part.strong;
+      p.appendChild(b);
+    });
+    parent.appendChild(p);
+  }
 
   function compute() {
     var x = {
@@ -566,24 +584,23 @@ var SafeAscentDemo = (function () {
 
     var r = SafeAscentDemo.run(M, x);
     var scoreEl = $("score"), verdict = $("verdict");
+    verdict.textContent = "";
     if (r.insufficient) {
       scoreEl.style.backgroundColor = M.no_risk_hex;
       scoreEl.className = "score hatch";
-      scoreEl.innerHTML = "–<small>" + M.labels.insufficient + "</small>";
-      verdict.innerHTML = "<p>" + M.labels.insufficient_message + ".</p>" +
-        "<p class=\"note\">No incidents on the route, in its area, or on comparable routes: there is nothing to borrow, so no number is shown. This is not a low score.</p>";
+      chip(scoreEl, "–", M.labels.insufficient);
+      para(verdict, [M.labels.insufficient_message + "."]);
+      para(verdict, ["No reported incidents on the route, in its area, or on comparable routes: there is nothing to borrow, so no number is shown. This is not a low score."], "note");
     } else {
       scoreEl.style.backgroundColor = M.band_hex[r.band];
       scoreEl.className = "score" + (r.conf === "low" ? " hatch" : "");
-      scoreEl.innerHTML = r.shown.toFixed(1) + "<small>" + BAND_LABEL[r.band] + "</small>";
-      var lines = [
-        "<p><strong>" + r.shown.toFixed(1) + " (likely " + r.pct.lo.toFixed(1) + "–" + r.pct.hi.toFixed(1) + ")</strong> · " + M.labels.confidence[r.conf] + "</p>",
-        r.band === "green" ? "<p>" + M.labels.lowest_band + ".</p>" : "",
-        "<p>" + esc(sig(r.rr.mean)) + "× the national rate for this type (likely " + esc(sig(r.rr.lo)) + "–" + esc(sig(r.rr.hi)) + "×).</p>",
-        "<p class=\"note\">≈ " + esc(count(r.nGeo)) + " local, " + esc(count(r.nFeat)) + " from similar routes elsewhere.</p>"
-      ];
-      if (x.y === 0) lines.push("<p class=\"note\">No incidents reported on this route: the number is borrowed from its area and similar routes, never read as safe.</p>");
-      verdict.innerHTML = lines.join("");
+      chip(scoreEl, r.shown.toFixed(1), M.labels.band[r.band]);
+      para(verdict, [{ strong: r.shown.toFixed(1) + " (likely " + r.pct.lo.toFixed(1) + "–" + r.pct.hi.toFixed(1) + ")" },
+        " · " + M.labels.confidence[r.conf]]);
+      if (r.band === "green") para(verdict, [M.labels.lowest_band + "."]);
+      para(verdict, [sig(r.rr.mean) + "× the national rate for this type (likely " + sig(r.rr.lo) + "–" + sig(r.rr.hi) + "×)."]);
+      para(verdict, ["≈ " + count(r.nGeo) + " local, " + count(r.nFeat) + " from similar routes elsewhere."], "note");
+      if (x.y === 0) para(verdict, ["No incidents reported on this route: the number is borrowed from its area and similar routes, never read as safe."], "note");
     }
 
     var rows = [
