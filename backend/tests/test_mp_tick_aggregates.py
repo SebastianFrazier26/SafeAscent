@@ -180,6 +180,18 @@ async def _stored(url: str) -> list[tuple[str, str, int]]:
         await engine.dispose()
 
 
+async def _last_run_metrics(url: str, source: str = "mp_tick_aggregates") -> dict[str, object]:
+    engine = create_async_engine(url)
+    try:
+        async with engine.connect() as conn:
+            report = (await conn.execute(text(
+                "SELECT validation_report FROM source_ingest_log WHERE source = :s "
+                "ORDER BY finished_at DESC LIMIT 1"), {"s": source})).scalar_one()
+            return dict(report)
+    finally:
+        await engine.dispose()
+
+
 @requires_pg
 def test_second_identical_load_is_a_noop(tmp_path, monkeypatch):
     path = _export(tmp_path, [(R1, "2025-01", "lead", 3), (R1, "2025-02", "follow", 2)], [(R1, 5, 1)])
@@ -222,6 +234,27 @@ def test_changed_counts_are_skipped_never_overwritten(tmp_path, monkeypatch):
         assert second["report"]["quarantined"] == {}
         assert second["stats"]["already_loaded_changed"] == 2  # 2025-01 lead (3->4) and total (3->5)
         assert asyncio.run(_stored(url)) == [("2025-01", "lead", 3), ("2025-03", "lead", 1), ("total", "all", 3)]
+        metrics = asyncio.run(_last_run_metrics(url))
+        assert (metrics["already_loaded_same"], metrics["already_loaded_changed"]) == (0, 2)
+
+
+@requires_pg
+def test_already_loaded_same_and_changed_counts_persist_as_run_metrics(tmp_path, monkeypatch):
+    first_path = _export(tmp_path, [(R1, "2025-01", "lead", 3)], [(R1, 3, 1)], name="a.sqlite")
+    second_path = _export(
+        tmp_path, [(R1, "2025-01", "lead", 3), (R1, "2025-02", "lead", 2)], [(R1, 5, 1)],
+        scraped_at="2026-09-25T00:00:00+00:00", name="b.sqlite",
+    )
+    with migrated_db(seed_sql=_seed_ice_route()) as name:
+        url = sa_url(name)
+        monkeypatch.setattr(loader, "ingest_engine", lambda: create_async_engine(url))
+        asyncio.run(main(first_path, today=TODAY, max_quarantine_share=0.1, dry_run=False))
+        second = asyncio.run(main(second_path, today=TODAY, max_quarantine_share=0.1, dry_run=False))
+        assert second["status"] == "ok" and second["rows_upserted"] == 1  # only 2025-02 is new
+        assert second["stats"]["already_loaded_same"] == 1  # 2025-01 lead unchanged
+        assert second["stats"]["already_loaded_changed"] == 1  # total 3 -> 5
+        metrics = asyncio.run(_last_run_metrics(url))
+        assert (metrics["already_loaded_same"], metrics["already_loaded_changed"]) == (1, 1)
 
 
 @requires_pg
