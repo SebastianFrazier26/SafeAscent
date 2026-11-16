@@ -173,3 +173,6 @@ frontend/MATERIAL_DESIGN_MIGRATION_COMPLETE.md
 *.progress.json
 *_progress*.json
 *_checkpoint*
+
+# train CLI outputs (app.ml.train run --out-dir out)
+backend/out/

@@ -37,34 +37,6 @@ export * from '@testing-library/react';
 export { customRender as render };
 
 /**
- * Mock prediction response for testing
- */
-export const mockPredictionResponse = {
-  risk_score: 35.5,
-  num_contributing_accidents: 12,
-  top_contributing_accidents: [
-    {
-      accident_id: 1,
-      accident_date: '2023-07-15',
-      severity: 'Minor Injury',
-      distance_km: 5.2,
-      total_influence: 0.85,
-    },
-    {
-      accident_id: 2,
-      accident_date: '2022-08-20',
-      severity: 'Serious Injury',
-      distance_km: 12.1,
-      total_influence: 0.62,
-    },
-  ],
-  metadata: {
-    weather_source: 'openweathermap',
-    algorithm_version: '1.0',
-  },
-};
-
-/**
  * Mock route data for testing
  */
 export const mockRoute = {

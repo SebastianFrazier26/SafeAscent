@@ -8,7 +8,7 @@ from alembic import command
 
 from app.data.repair import geocode
 from tests.pgtest import migrated_db, pg_url, requires_pg, run_sql
-from tests.test_migrations import _alembic_cfg
+from tests.test_migrations import PRE_WEATHER_DROP, _alembic_cfg
 from tests.test_repair_dedupe import CLEAN_CASES, _raw
 
 REV_0005 = "0005_gnis_duplicate_decisions"
@@ -113,7 +113,7 @@ def test_0006_view_keeps_exactly_the_rows_dedupe_counts_as_clean():
 
 @requires_pg
 def test_0006_downgrade_drops_the_views_and_refuses_while_something_depends_on_them():
-    with migrated_db("head", SEED) as name:
+    with migrated_db(PRE_WEATHER_DROP, SEED) as name:
         run_sql(name, "CREATE VIEW later_plan AS SELECT accident_id FROM accidents_clean_daily")
         # No CASCADE: a later object built on the views (plan 3's) is never dropped silently.
         with pytest.raises(Exception, match="depend"):
@@ -123,5 +123,5 @@ def test_0006_downgrade_drops_the_views_and_refuses_while_something_depends_on_t
         with pytest.raises(asyncpg.UndefinedTableError):
             run_sql(name, "SELECT 1 FROM accidents_clean")
         assert _rows(name, "SELECT count(*) FROM accidents") == [7]
-        command.upgrade(_alembic_cfg(name), "head")
+        command.upgrade(_alembic_cfg(name), PRE_WEATHER_DROP)
         assert _rows(name, "SELECT accident_id FROM accidents_clean_daily ORDER BY 1") == [1, 7]

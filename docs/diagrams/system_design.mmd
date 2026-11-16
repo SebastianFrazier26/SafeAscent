@@ -13,12 +13,12 @@ flowchart LR
 
   user -->|safeascent.us| fe
   user -->|api.safeascent.us/api/v1| api
-  beat -->|enqueue: nightly 02:00 UTC,<br/>beat_heartbeat every 15 min| redis
+  beat -->|enqueue: scores heartbeat 02:00 UTC,<br/>beat_heartbeat every 15 min| redis
   redis -->|consume| worker
-  worker -->|scores, 2-day TTL;<br/>worker heartbeat key| redis
-  worker -->|writes historical_predictions| neon
-  worker -->|nightly start / success / fail;<br/>beat check every 15 min| hc
-  api -->|cached scores;<br/>/health/worker reads heartbeat| redis
-  api -->|reads only| neon
+  worker -->|worker heartbeat key| redis
+  worker -->|heartbeat reads model.route_scores<br/>(stored by the monthly training run)| neon
+  worker -->|scores heartbeat success / fail;<br/>beat check every 15 min| hc
+  api -->|version-keyed score cache;<br/>/health/worker reads heartbeat| redis
+  api -->|reads stored scores only| neon
   api --> meteo
   worker --> meteo

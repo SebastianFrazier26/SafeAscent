@@ -24,6 +24,8 @@ import {
   RISK_BAND_THRESHOLDS,
   RISK_COLOR_HEX,
   RISK_TEXT_ON_HEX,
+  MARKER_OUTLINE_HEX,
+  hatchImage,
   routeSafetyProps,
 } from '../utils/riskUtils';
 import { hexToRgba, mixHex } from '../utils/color';
@@ -35,11 +37,20 @@ const [RISK_LOW_MAX, RISK_MODERATE_MAX, RISK_HIGH_MAX] = RISK_BAND_THRESHOLDS;
 // Heatmap layers overlap by this many points either side of each band edge so adjacent
 // colours blend. It is a rendering overlap only; markers/clusters/legend use exact edges.
 const HEATMAP_BLEND = 2;
-// 'gray' is what the map endpoint sends for a route with no score.
+// 'gray' is insufficient evidence only. An unavailable route (color_code null) falls through
+// to the match default: an empty white ring, never gray and never a band colour.
 const ROUTE_COLOR_MATCH_ARMS = [
   ...Object.entries(RISK_COLOR_HEX).flat(),
   'gray', NO_RISK_HEX,
 ];
+const UNAVAILABLE_FILL = 'rgba(0, 0, 0, 0)';
+// An unfilled cluster's count sits on the map itself, so it takes the route-label colour.
+const CLUSTER_RING_TEXT_HEX = '#2c3e50';
+const HATCH_IMAGE_ID = 'risk-hatch';
+// Drawn at 2x so its 24px image covers the 12px cluster-view marker at icon-size 1.
+const HATCH_PIXEL_RATIO = 2;
+const HATCH_IMAGE = hatchImage(24);
+const HATCH_FILTER = ['==', ['get', 'hatch'], true];
 // Heatmap ramps come from the band palette so the heatmap cannot drift from the markers.
 // Edges and peaks lean toward the neighbouring band's hue so overlapping layers blend.
 const BLACK = '#000000';
@@ -279,8 +290,10 @@ export default function MapView({ selectedRouteForZoom }) {
                 type: normalizeRouteTypeForDisplay(route.type),
                 mp_route_id: route.mp_route_id,
                 location_id: route.location_id,
-                // Insufficient-data and unscored routes are gray with no score: the cluster
-                // average leaves them out, and clusterColorExpression grays a mostly-unscored cluster.
+                // Neither an insufficient nor an unavailable route carries a score, so the cluster
+                // average leaves both out. Only insufficient is gray; unavailable is the empty ring,
+                // and a mostly-unscored cluster is gray only when insufficient routes outnumber or tie
+                // unavailable ones (clusterColorExpression).
                 ...safetyProps,
               },
             });
@@ -504,6 +517,8 @@ export default function MapView({ selectedRouteForZoom }) {
   const handleMapLoad = useCallback(() => {
     const map = mapRef.current?.getMap();
     if (!map) return;
+    // MapGL is keyed on the style, so every style switch remounts and re-runs this.
+    if (!map.hasImage(HATCH_IMAGE_ID)) map.addImage(HATCH_IMAGE_ID, HATCH_IMAGE, { pixelRatio: HATCH_PIXEL_RATIO });
 
     // Log map info after load
     console.log('🗺️ Map loaded successfully');
@@ -555,23 +570,24 @@ export default function MapView({ selectedRouteForZoom }) {
                 risk_score_sum: ['+', ['coalesce', ['get', 'risk_score'], 0]],
                 // Unscored routes must not count toward the average, or they drag it greener.
                 risk_score_count: ['+', ['case', ['==', ['typeof', ['get', 'risk_score']], 'number'], 1, 0]],
+                insufficient_count: ['+', ['case', ['==', ['get', 'data_status'], 'insufficient_data'], 1, 0]],
               }}
             >
-              {/* Clustered points - gray unless half are scored, else the scored average */}
+              {/* Clustered points - scored average when half are scored, else gray or the unavailable ring */}
               <Layer
                 id="clusters"
                 type="circle"
                 source="routes"
                 filter={['has', 'point_count']}
                 paint={{
-                  'circle-color': clusterColorExpression(RISK_COLOR_HEX, NO_RISK_HEX),
+                  'circle-color': clusterColorExpression(RISK_COLOR_HEX, NO_RISK_HEX, UNAVAILABLE_FILL),
                   'circle-radius': [
                     'step',
                     ['get', 'point_count'],
                     15, 100, 22, 750, 30,
                   ],
                   'circle-stroke-width': 1.5,
-                  'circle-stroke-color': '#fff',
+                  'circle-stroke-color': MARKER_OUTLINE_HEX,
                 }}
               />
 
@@ -587,7 +603,7 @@ export default function MapView({ selectedRouteForZoom }) {
                   'text-size': 14,
                 }}
                 paint={{
-                  'text-color': clusterColorExpression(RISK_TEXT_ON_HEX, NO_RISK_TEXT_HEX),
+                  'text-color': clusterColorExpression(RISK_TEXT_ON_HEX, NO_RISK_TEXT_HEX, CLUSTER_RING_TEXT_HEX),
                 }}
               />
 
@@ -602,11 +618,23 @@ export default function MapView({ selectedRouteForZoom }) {
                     'match',
                     ['get', 'color_code'],
                     ...ROUTE_COLOR_MATCH_ARMS,
-                    '#11b4da'
+                    UNAVAILABLE_FILL
                   ],
                   'circle-radius': 6,
                   'circle-stroke-width': 1.5,
-                  'circle-stroke-color': '#fff',
+                  'circle-stroke-color': MARKER_OUTLINE_HEX,
+                }}
+              />
+
+              <Layer
+                id="unclustered-hatch"
+                type="symbol"
+                source="routes"
+                filter={['all', ['!', ['has', 'point_count']], HATCH_FILTER]}
+                layout={{
+                  'icon-image': HATCH_IMAGE_ID,
+                  'icon-allow-overlap': true,
+                  'icon-ignore-placement': true,
                 }}
               />
 
@@ -672,7 +700,7 @@ export default function MapView({ selectedRouteForZoom }) {
                 }}
               />
 
-              {/* Layer 1: LOW RISK - Green heatmap (band + HEATMAP_BLEND overlap) */}
+              {/* Layer 1: lowest band, slate heatmap (band + HEATMAP_BLEND overlap) */}
               <Layer
                 id="risk-low"
                 type="heatmap"
@@ -780,7 +808,7 @@ export default function MapView({ selectedRouteForZoom }) {
                     'match',
                     ['get', 'color_code'],
                     ...ROUTE_COLOR_MATCH_ARMS,
-                    '#11b4da'
+                    UNAVAILABLE_FILL
                   ],
                   // Smaller markers in risk view to avoid clutter
                   'circle-radius': [
@@ -794,7 +822,22 @@ export default function MapView({ selectedRouteForZoom }) {
                     16, 7,    // Normal size when zoomed in
                   ],
                   'circle-stroke-width': 1,
-                  'circle-stroke-color': '#fff',
+                  'circle-stroke-color': MARKER_OUTLINE_HEX,
+                }}
+              />
+
+              <Layer
+                id="individual-hatch"
+                type="symbol"
+                source="routes"
+                minzoom={HEATMAP_MIN_ZOOM}
+                filter={HATCH_FILTER}
+                layout={{
+                  'icon-image': HATCH_IMAGE_ID,
+                  'icon-allow-overlap': true,
+                  'icon-ignore-placement': true,
+                  // Tracks the circle radius above (radius / 6, the cluster-view radius).
+                  'icon-size': ['interpolate', ['linear'], ['zoom'], 0, 1 / 6, 6, 2 / 6, 8, 3 / 6, 12, 5 / 6, 16, 7 / 6],
                 }}
               />
 

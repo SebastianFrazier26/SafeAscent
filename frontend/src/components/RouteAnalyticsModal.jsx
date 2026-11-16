@@ -271,18 +271,23 @@ import {
 } from 'recharts';
 import { format, parseISO } from 'date-fns';
 import {
+  CONFIDENCE_LABEL,
   INSUFFICIENT_DATA_LABEL,
+  markerStyle,
   INSUFFICIENT_DATA_MESSAGE,
   NO_RISK_HEX,
-  NO_RISK_TEXT_HEX,
-  RISK_COLOR_HEX,
-  RISK_TEXT_ON_HEX,
+  UNAVAILABLE_CHIP_STYLE,
   formatRiskScore,
   formatRiskTooltip,
-  getRiskColorCode,
+  formatScoreWithRange,
   isInsufficientData,
   isRiskScore,
+  riskChipStyle,
 } from '../utils/riskUtils';
+import { SCORE_UNAVAILABLE_MESSAGE } from '../services/api';
+import RiskScoreSummary from './RiskScoreSummary';
+import AscentsHeadline from './AscentsHeadline';
+import RiskSwatch from './RiskSwatch';
 import { readableTextOn } from '../utils/color';
 import {
   LOGGED_ASCENTS_NOTE,
@@ -295,15 +300,19 @@ import {
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
 
-// Band and hex both come from riskUtils, the same source the map markers use, so a
-// score is the same colour here and on the map.
-function riskChipColors(score) {
-  if (!isRiskScore(score)) return { bgcolor: NO_RISK_HEX, color: NO_RISK_TEXT_HEX };
-  const code = getRiskColorCode(score);
-  return { bgcolor: RISK_COLOR_HEX[code], color: RISK_TEXT_ON_HEX[code] };
+const chipColorsOn = (bgcolor) => ({ bgcolor, color: readableTextOn(bgcolor) });
+
+// A stored-score cell: a number (ok), gray "Insufficient data" (no evidence), or an em-dash
+// when the model has no row at all. Never 0.
+function storedScoreChipLabel(cell) {
+  if (isInsufficientData(cell)) return INSUFFICIENT_DATA_LABEL;
+  return isRiskScore(cell?.risk_score) ? cell.risk_score.toFixed(1) : '—';
 }
 
-const chipColorsOn = (bgcolor) => ({ bgcolor, color: readableTextOn(bgcolor) });
+function formatScoreRange(range) {
+  if (!Array.isArray(range) || range.length !== 2 || !range.every(isRiskScore)) return null;
+  return `${range[0].toFixed(1)}–${range[1].toFixed(1)}`;
+}
 
 // Hexes, not theme names, so the text colour can be computed from them.
 const SEVERITY_BG = { fatal: '#b71c1c', serious: '#e65100', moderate: '#f57c00', minor: '#fbc02d' };
@@ -436,16 +445,20 @@ function formatRouteNameWithType(name, routeType) {
 // read differently and neither shows a number.
 function headerRiskChip(safety) {
   if (!safety || safety.status === 'loading') {
-    return { label: 'Risk: loading…', colors: riskChipColors(null) };
+    return { label: 'Risk: loading…', colors: UNAVAILABLE_CHIP_STYLE };
   }
   if (safety.status === 'error') {
-    return { label: 'Risk: Unavailable', colors: riskChipColors(null) };
+    return { label: 'Risk: Unavailable', colors: UNAVAILABLE_CHIP_STYLE };
   }
   if (safety.status === 'insufficient') {
-    return { label: `Risk: ${INSUFFICIENT_DATA_LABEL}`, colors: riskChipColors(null) };
+    return { label: `Risk: ${INSUFFICIENT_DATA_LABEL}`, colors: riskChipStyle(safety.data), cell: safety.data };
   }
-  const score = safety.data.risk_score;
-  return { label: `Risk: ${formatRiskScore(score)}`, colors: riskChipColors(score) };
+  const lowConfidence = safety.data.confidence === 'low' ? ` (${CONFIDENCE_LABEL.low.toLowerCase()})` : '';
+  return {
+    label: `Risk: ${formatRiskScore(safety.data.risk_score)}${lowConfidence}`,
+    colors: riskChipStyle(safety.data),
+    cell: safety.data,
+  };
 }
 
 // Tab panel component
@@ -492,6 +505,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
   const [exportMenuAnchor, setExportMenuAnchor] = useState(null);
   const displayRouteName = formatRouteNameWithType(routeData?.name, routeData?.type);
   const riskChip = headerRiskChip(safety);
+  const headerHatch = markerStyle(riskChip.cell);
 
   // Reset tab when modal opens - default to Route Details (tab 1)
   useEffect(() => {
@@ -571,7 +585,9 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
                 const response = await fetch(
                   `${API_BASE}/mp-routes/${routeId}/risk-breakdown?target_date=${selectedDate}`
                 );
-                if (!response.ok) {
+                if (response.status === 404) {
+                  store('breakdown', { error: SCORE_UNAVAILABLE_MESSAGE });
+                } else if (!response.ok) {
                   const errorText = await response.text();
                   store('breakdown', { error: `API error: ${response.status} - ${errorText.substring(0, 100)}` });
                 } else {
@@ -754,6 +770,9 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
           </Box>
           <Chip
             label={riskChip.label}
+            icon={headerHatch.hatch ? (
+              <RiskSwatch fill={headerHatch.fill} hatch borderColor={riskChip.colors.color} testId="risk-header-hatch" />
+            ) : undefined}
             sx={{
               ...riskChip.colors,
               fontWeight: 600,
@@ -825,7 +844,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
       </Box>
 
       <DialogContent sx={{ bgcolor: 'grey.50', overflow: 'auto' }}>
-        {safety?.status === 'error' && (
+        {safety?.status === 'error' && !safety.unavailable && (
           <Alert
             severity="error"
             sx={{ mb: 2 }}
@@ -838,11 +857,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
             Couldn&apos;t load the risk score for this route. {safety.message}
           </Alert>
         )}
-        {safety?.status === 'insufficient' && (
-          <Alert severity="info" sx={{ mb: 2 }}>
-            {INSUFFICIENT_DATA_MESSAGE}
-          </Alert>
-        )}
+        <RiskScoreSummary safety={safety} />
         {error && (
           <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
             {error}
@@ -909,6 +924,7 @@ export default function RouteAnalyticsModal({ open, onClose, routeData, selected
 
         {/* Tab 6: Ascent Analytics */}
         <TabPanel value={currentTab} index={6}>
+          <AscentsHeadline safety={safety} routeType={routeData?.type} selectedDate={selectedDate} />
           <AscentsTab
             data={data.ascents}
             loading={loading.ascents}
@@ -1120,7 +1136,7 @@ function ForecastTab({ data, loading, selectedDate: _selectedDate, routeData, ro
                                 : isRiskScore(day.risk_score) ? day.risk_score.toFixed(1) : 'N/A'
                             }
                             sx={{
-                              ...riskChipColors(day.risk_score),
+                              ...riskChipStyle(day),
                               fontWeight: 600,
                             }}
                           />
@@ -1542,6 +1558,60 @@ function AccidentsTab({ data, loading, routeData }) {
   );
 }
 
+function StoredScoreBreakdown({ data }) {
+  return (
+    <Grid container spacing={3}>
+      <Grid size={12}>
+        <Card elevation={3}>
+          <CardContent>
+            <Typography variant="h6" gutterBottom fontWeight={600}>
+              📊 Risk Score: {isRiskScore(data.risk_score) ? formatScoreWithRange(data.risk_score, data.score_range) : '—'}
+            </Typography>
+            {CONFIDENCE_LABEL[data.confidence] && (
+              <Typography variant="body2" color="text.secondary">{CONFIDENCE_LABEL[data.confidence]}</Typography>
+            )}
+            <Typography variant="body2" color="text.secondary" paragraph sx={{ mt: 1 }}>
+              The score is this route's percentile among routes of its type for the month. Each factor
+              below multiplies the reported-incident rate relative to a typical route of the same type
+              and month.
+            </Typography>
+          </CardContent>
+        </Card>
+      </Grid>
+      <Grid size={12}>
+        <Card>
+          <CardContent>
+            <Typography variant="h6" gutterBottom fontWeight={600}>
+              What drives this score
+            </Typography>
+            <List>
+              {data.terms.map((term, idx) => (
+                <React.Fragment key={term.name ?? idx}>
+                  <ListItem>
+                    <ListItemText
+                      primary={
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <Typography variant="body1" fontWeight={600}>{term.label}</Typography>
+                          <Chip
+                            label={Number.isFinite(term.multiplier) ? `×${term.multiplier.toFixed(2)}` : '—'}
+                            size="small"
+                            variant="outlined"
+                          />
+                        </Box>
+                      }
+                    />
+                  </ListItem>
+                  {idx < data.terms.length - 1 && <Divider />}
+                </React.Fragment>
+              ))}
+            </List>
+          </CardContent>
+        </Card>
+      </Grid>
+    </Grid>
+  );
+}
+
 function RiskBreakdownTab({ data, loading, routeData }) {
   if (loading) {
     return <LoadingState message="Analyzing risk factors..." />;
@@ -1566,6 +1636,10 @@ function RiskBreakdownTab({ data, loading, routeData }) {
         <Typography variant="body2" sx={{ color: 'text.primary' }}>{INSUFFICIENT_DATA_MESSAGE}</Typography>
       </Alert>
     );
+  }
+
+  if (Array.isArray(data?.terms)) {
+    return <StoredScoreBreakdown data={data} />;
   }
 
   if (!data || !data.factors) {
@@ -1729,11 +1803,52 @@ function RiskBreakdownTab({ data, loading, routeData }) {
   );
 }
 
+function MonthlyProfileCard({ profile }) {
+  return (
+    <Card>
+      <CardContent>
+        <Typography variant="h6" gutterBottom fontWeight={600}>
+          📈 Risk by Month
+        </Typography>
+        <Typography variant="body2" color="text.secondary" paragraph>
+          This route's stored score for each month of the year, with its likely range and confidence.
+        </Typography>
+        <Grid container spacing={1}>
+          {profile.map((cell) => {
+            const range = formatScoreRange(cell.score_range);
+            return (
+              <Grid size={{ xs: 6, sm: 4, md: 2 }} key={cell.month}>
+                <Paper sx={{ p: 1.25, textAlign: 'center' }} data-testid={`profile-month-${cell.month}`}>
+                  <Typography variant="subtitle2" fontWeight={600}>{cell.month_label}</Typography>
+                  <Chip
+                    label={storedScoreChipLabel(cell)}
+                    size="small"
+                    sx={{ ...riskChipStyle(cell), fontWeight: 600, my: 0.5 }}
+                  />
+                  {range && (
+                    <Typography variant="caption" display="block" color="text.secondary">{range}</Typography>
+                  )}
+                  {CONFIDENCE_LABEL[cell.confidence] && (
+                    <Typography variant="caption" display="block" color="text.secondary">
+                      {CONFIDENCE_LABEL[cell.confidence]}
+                    </Typography>
+                  )}
+                </Paper>
+              </Grid>
+            );
+          })}
+        </Grid>
+      </CardContent>
+    </Card>
+  );
+}
+
 function RiskTrendsTab({ data, loading, routeData: _routeData, selectedDate }) {
   if (loading) {
     return <LoadingState message="Loading risk trends..." />;
   }
 
+  const monthlyProfile = Array.isArray(data?.monthly_profile) ? data.monthly_profile : null;
   // Insufficient-data days carry no score, so they don't count toward the trend minimum.
   const daysOfData = (data?.historical_predictions ?? []).filter((p) => isRiskScore(p.risk_score)).length;
   const MIN_DAYS_REQUIRED = 30;
@@ -1745,7 +1860,7 @@ function RiskTrendsTab({ data, loading, routeData: _routeData, selectedDate }) {
     weatherVolatility.months.length > 0
   );
 
-  if (!hasRiskData && !hasVolatilityData) {
+  if (!monthlyProfile && !hasRiskData && !hasVolatilityData) {
     return (
       <DataOnTheWay
         title="📈 Risk Scores Coming Soon!"
@@ -1867,7 +1982,13 @@ function RiskTrendsTab({ data, loading, routeData: _routeData, selectedDate }) {
 
   return (
     <Grid container spacing={3}>
-      {!hasRiskData && (
+      {monthlyProfile && (
+        <Grid size={12}>
+          <MonthlyProfileCard profile={monthlyProfile} />
+        </Grid>
+      )}
+
+      {!monthlyProfile && !hasRiskData && (
         <Grid size={12}>
           <DataOnTheWay
             title="📈 Risk Scores Coming Soon!"
@@ -2174,6 +2295,11 @@ function TimeOfDayTab({ data, loading, routeData: _routeData, selectedDate }) {
     );
   }
 
+  // Stored-score API: no hourly number yet (risk: null with a note). Older responses carry
+  // risk_score per hour. Either way a missing hour is an em-dash, never 0.
+  const riskNote = data.risk_note ?? data.hourly_data.find((h) => h?.risk_note)?.risk_note ?? null;
+  const hasHourlyScores = data.hourly_data.some((h) => isRiskScore(h?.risk_score));
+
   return (
     <Grid container spacing={3}>
       <Grid size={12}>
@@ -2192,6 +2318,12 @@ function TimeOfDayTab({ data, loading, routeData: _routeData, selectedDate }) {
       {isInsufficientData(data) && (
         <Grid size={12}>
           <Alert severity="info">{INSUFFICIENT_DATA_MESSAGE}</Alert>
+        </Grid>
+      )}
+
+      {riskNote && (
+        <Grid size={12}>
+          <Alert severity="info">{riskNote}</Alert>
         </Grid>
       )}
 
@@ -2235,38 +2367,40 @@ function TimeOfDayTab({ data, loading, routeData: _routeData, selectedDate }) {
       )}
 
       {/* Hourly Risk Chart */}
-      <Grid size={12}>
-        <Card>
-          <CardContent>
-            <Typography variant="h6" gutterBottom fontWeight={600}>
-              📊 Hourly Risk Score Trend
-            </Typography>
-            <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={data.hourly_data}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis
-                  dataKey="hour"
-                  tickFormatter={(hour) => `${String(hour).padStart(2, '0')}:00`}
-                />
-                <YAxis domain={[0, 100]} />
-                <Tooltip
-                  labelFormatter={(hour) => `${String(hour).padStart(2, '0')}:00`}
-                  formatter={formatRiskTooltip}
-                />
-                <Legend />
-                <Line
-                  type="monotone"
-                  dataKey="risk_score"
-                  stroke="#1976d2"
-                  strokeWidth={2}
-                  name="Risk Score"
-                  dot={{ r: 4 }}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-      </Grid>
+      {hasHourlyScores && (
+        <Grid size={12}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom fontWeight={600}>
+                📊 Hourly Risk Score Trend
+              </Typography>
+              <ResponsiveContainer width="100%" height={300}>
+                <LineChart data={data.hourly_data}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis
+                    dataKey="hour"
+                    tickFormatter={(hour) => `${String(hour).padStart(2, '0')}:00`}
+                  />
+                  <YAxis domain={[0, 100]} />
+                  <Tooltip
+                    labelFormatter={(hour) => `${String(hour).padStart(2, '0')}:00`}
+                    formatter={formatRiskTooltip}
+                  />
+                  <Legend />
+                  <Line
+                    type="monotone"
+                    dataKey="risk_score"
+                    stroke="#1976d2"
+                    strokeWidth={2}
+                    name="Risk Score"
+                    dot={{ r: 4 }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </CardContent>
+          </Card>
+        </Grid>
+      )}
 
       {/* Hourly Conditions */}
       <Grid size={12}>
@@ -2297,9 +2431,10 @@ function TimeOfDayTab({ data, loading, routeData: _routeData, selectedDate }) {
                               ? INSUFFICIENT_DATA_LABEL
                               : isRiskScore(hour.risk_score) ? hour.risk_score.toFixed(1) : '—'
                           }
+                          title={hour.risk_note ?? undefined}
                           size="small"
                           sx={{
-                            ...riskChipColors(hour.risk_score),
+                            ...riskChipStyle(hour),
                             fontWeight: 600,
                           }}
                         />
@@ -2341,7 +2476,7 @@ function TimeOfDayTab({ data, loading, routeData: _routeData, selectedDate }) {
                               label={formatRiskScore(window.avg_risk)}
                               size="small"
                               sx={{
-                                ...riskChipColors(window.avg_risk),
+                                ...riskChipStyle({ risk_score: window.avg_risk }),
                                 fontWeight: 600,
                               }}
                             />

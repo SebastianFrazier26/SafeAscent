@@ -189,10 +189,12 @@ def test_ingest_role_generates_password_and_url(tmp_path, monkeypatch, capsys):
     assert lines["INGEST_PASSWORD"] not in capsys.readouterr().out
 
 
-def test_trainer_has_no_credential_until_phase_3(tmp_path, monkeypatch):
+def test_trainer_role_generates_password_and_url(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("OWNER_DATABASE_URL", "postgresql://owner:ownerpw@db.example.test/neondb")
     env_file = tmp_path / ".env.trainer"
-    with pytest.raises(SystemExit) as exc:
-        main(["--role", "trainer", "--env-file", str(env_file), "--generate-password"])
-    assert exc.value.code == 2
-    assert not env_file.exists()
+    assert main(["--role", "trainer", "--env-file", str(env_file), "--generate-password"]) == 0
+    lines = dict(line.split("=", 1) for line in env_file.read_text().splitlines())
+    assert len(lines["TRAINER_PASSWORD"]) == 64
+    assert lines["TRAINER_DATABASE_URL"].startswith("postgresql+asyncpg://trainer:")
+    assert lines["TRAINER_DATABASE_URL"].endswith("?ssl=verify-full")
+    assert lines["TRAINER_PASSWORD"] not in capsys.readouterr().out

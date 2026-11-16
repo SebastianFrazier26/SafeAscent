@@ -33,11 +33,17 @@ dev = [
     "mypy==2.3.1",
     "pip-audit==2.10.1",
     "fakeredis==2.38.0",
+    "hypothesis==6.170.5",
 ]
 # R10 LLM pass only (app.data.repair.r10_llm). Not in default-groups, so no image and no
 # plain `uv sync` installs it; run with `uv run --group llm`. CI audits it via the export.
 llm = [
     "anthropic==1.13.0",
+]
+# Model training (app.ml.posterior and later trainer stages). Not in default-groups, so neither
+# image installs it; run with `uv run --group train`. CI syncs it for the test job.
+train = [
+    "scipy==1.18.1",
 ]
 # Data-job dependencies (local days now; later plans append). Not in the API image: the
 # Dockerfile syncs with --no-group pipelines; Dockerfile.jobs (catalog-cycle cron) includes it.
@@ -67,6 +73,7 @@ markers = [
     "performance: marks tests as performance benchmarks (deselect with '-m \"not performance\"')",
     "needs_data: needs a populated database or live services; run with -m needs_data",
     "db: read-only acceptance checks against a Neon branch as analyst; needs VERIFY_DATABASE_URL; run with -m db",
+    "slow: full backtest suites (seconds on fixtures, not milliseconds); deselect with -m 'not slow'",
 ]
 
 [tool.ruff]
@@ -100,6 +107,7 @@ ignore_errors = true
 module = [
     "app.config",
     "app.services.risk_bands",
+    "app.services.model_scores",
     "app.healthchecks",
     "app.pipelines",
     "app.pipelines.validate",
@@ -137,7 +145,27 @@ module = [
     "app.pipelines.era5_fill",
     "app.pipelines.normals",
     "app.pipelines.era5_window",
-    "app.pipelines.r6_verify",
+    "app.ml",
+    "app.ml.bundle",
+    "app.ml.registry",
+    "app.ml.db",
+    "app.ml.cells",
+    "app.ml.incidents",
+    "app.ml.dataset",
+    "app.ml.features",
+    "app.ml.fixtures",
+    "app.ml.folds",
+    "app.ml.glm",
+    "app.ml.archetypes",
+    "app.ml.eb",
+    "app.ml.posterior",
+    "app.ml.explain",
+    "app.ml.model",
+    "app.ml.metrics",
+    "app.ml.backtest",
+    "app.ml.kernel_adapter",
+    "app.ml.materialize",
+    "app.ml.train",
     "app.pipelines.accident_facts",
     "app.pipelines.dem",
     "app.pipelines.epqs",
@@ -182,7 +210,8 @@ strict_equality = true
 # disallow_subclassing_any; everything else strict still applies.
 [[tool.mypy.overrides]]
 module = ["app.models.pipeline", "app.models.reference", "app.models.conditions", "app.models.catalog",
-          "app.models.features", "app.models.links", "app.models.exposure"]
+          "app.models.features", "app.models.links", "app.models.exposure",
+          "app.models.model_registry"]
 ignore_errors = false
 disallow_any_generics = true
 disallow_untyped_calls = true

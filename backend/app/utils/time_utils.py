@@ -3,10 +3,27 @@ Time and date utility functions for SafeAscent algorithm.
 
 Provides seasonal calculations and temporal analysis functions.
 """
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import List, Tuple
 
-from app.services.algorithm_config import SEASONS, WITHIN_WINDOW_TEMPORAL_DECAY
+# Inlined from the frozen kernel's algorithm_config (app.ml.kernel_ref.algorithm_config), which no
+# served module may import; the values must match it.
+SEASONS = {
+    "winter": [12, 1, 2],
+    "spring": [3, 4, 5],
+    "summer": [6, 7, 8],
+    "fall": [9, 10, 11],
+}
+WITHIN_WINDOW_TEMPORAL_DECAY = 0.85
+
+
+def utc_today() -> date:
+    """
+    The current UTC day, read on every call. Accident data keeps updating, so a row that is
+    "future" (a data error) today may be legitimate on a later nightly run: never cache
+    this at import or pass a fixed date.
+    """
+    return datetime.now(timezone.utc).date()
 
 
 def get_season(target_date: date) -> str:

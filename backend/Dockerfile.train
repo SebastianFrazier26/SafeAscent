@@ -1,0 +1,43 @@
+# Railway one-off fallback for training (P3:226): started on demand only when a run outgrows the
+# owner's Mac (two consecutive capacity warnings or one hard limit). Nothing deploys it and no
+# railway-*.toml points at it. It is Dockerfile.jobs with the train group in place of pipelines; keep
+# the base image, uv pin and non-root user in step with Dockerfile. TRAINER_DATABASE_URL comes from
+# the one-off service's variables, never from this image.
+
+FROM python:3.12-slim AS builder
+
+COPY --from=ghcr.io/astral-sh/uv:0.11.3 /uv /bin/uv
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/opt/venv
+
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project --group train --no-group pipelines
+
+FROM python:3.12-slim AS production
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+COPY . .
+
+RUN adduser --disabled-password --gecos '' appuser && \
+    chown -R appuser:appuser /app
+USER appuser
+
+# The runtime stage has the venv but no uv, so this is the venv's python, not `uv run`.
+CMD ["python", "-m", "app.ml.train", "run"]

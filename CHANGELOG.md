@@ -15,6 +15,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Removed the owner's absolute local home path from `CHANGELOG.md` and the `docs/superpowers/plans/` files (replaced with `<repo-root>` / `<worktree-*>` placeholders).
 
+### Project page: model v2 demo - 2026-11-15
+
+- `site/index.html` replaces the old kernel's illustrative scorer and its prose (spatial bandwidth, temporal decay, cubed weather similarity) with an illustrative model-v2 demo: made-up inputs run the Poisson-Gamma shrinkage toward nearby and similar-route estimates, the phi-widened 90% interval, the 25/50/75 bands on the percentile, the confidence levels with their evidence gate, and the insufficient (gray, no number) state. The lowest band reads "Lower than typical for this type"; unavailable is described as no colour, never gray. The architecture diagram now shows stored scores served from the active model version and offline training.
+- `backend/tests/test_site_model_constants.py` now pins the page's constants to `app.ml.posterior`, `app.ml.eb`, `app.ml.tuning`, `app.services.risk_bands` and `frontend/src/utils/riskUtils.ts` (no `kernel_ref`), and runs the page's JS math under node against the real `app.ml` functions.
+
 ### CI dependency fixes - 2026-10-23
 
 - `backend/Dockerfile.jobs` production stage installs `libexpat1`; rasterio's wheel links `libexpat.so.1`, so the jobs-image import smoke test failed without it. The API image does not ship rasterio and is unchanged.
@@ -35,6 +40,74 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `site/index.html`: a static project page (what SafeAscent does, the scoring method, an inline architecture diagram, current status, links) for the owner's portfolio to embed while safeascent.us is offline. No data, no API calls, light/dark, framable. Includes an illustrative toy scorer using the backend's constants with weather similarity set by hand; `backend/tests/test_site_model_constants.py` fails if those constants drift from `algorithm_config.py`/`risk_bands.py`/`safety_algorithm.py`.
 - `.github/workflows/pages.yml`: deploys `site/` to GitHub Pages on every push to `main` and on dispatch (actions pinned by SHA). The owner enables Pages (Source: GitHub Actions) once; see `DEPLOYMENT.md`.
+
+### Phase 3 final fixes - 2026-10-22
+
+- **`relative_rate` is the stored RR, unscaled** (reverses the Task 22 ruling). `posterior.summarize` already divides the route's rate by the national reference rate r_ref(g, m), so the extra `× r_ref` turned the Ascents "N× the national rate" headline into an absolute rate (~0.07× where 1.4× was meant). `/safety`, the map, `/risk-breakdown`, the forecast and the 12-month profile now serve `{mean: rr_mean, lo: rr_q05, hi: rr_q95}` at 4 significant figures; the bundle is read only for `/risk-breakdown`'s terms.
+- `per_10k_logged_ascents` is rounded to 4 significant figures, not 3 decimals, so a figure below 0.0005 never reaches the client as 0. A stored row whose per-10K (or RR) triple is negative, non-finite, partial or out of order is unservable: logged and shown as unavailable, so one bad row no longer turns `map-with-safety` into a 500.
+- Scores heartbeat: "missing" now uses the trainer's cell predicate (`type_group <> 'unknown'`, area `lat` not null) and fails only for a route the active version scored in another month but not this one. A qualifying route the version has no row for at all (newer than the training snapshot) is reported as `unscored_new` with a WARNING, never a failure. An active kernel baseline fails as `kernel_active_nothing_servable` instead of `bundle_missing`. `tests/ml/test_scores_heartbeat_db.py` gives each test its own database.
+- Runbook: the Task 26 R6 evidence (`r6.txt`) runs `0013`'s exact `QUALIFYING_R6` predicate and saves `n`/`r_tmax`/`p99_gust`; with a non-empty `weather` and no qualifying row the runbook stops, and R6 is re-run only from `r6_verify.py` restored in a scratch checkout from `44ca2b8` (it stays deleted). `DEPLOYMENT.md` adds the PR 3-4 pre-merge gate: auto-deploy off, prod at `0012` with `grants_phase3`/`verify_roles_phase3` passing, an `eb_v1` version active, then frontend before api.
+- Model guards: the standardizer leaves a column with sd ≤ 1e-8 unscaled and refuses a design matrix with any non-finite value; `transform_static_columns` refuses `precip_mm`/`snowfall_cm` ≤ -1 instead of letting log1p's NaN be imputed as missing (this also reaches `/risk-breakdown`, which shows "Breakdown unavailable"); `prospective_kernel_report` returns `(None, "no_test_incidents")` (or `no_scored_test_incidents`) instead of raising, recorded as `metrics.prospective_kernel_reason`; `select_conf` no longer selects a threshold pair that leaves no cell High or Medium, so G4 fails instead of passing vacuously.
+- Cleanup: the OpenAPI examples use synthetic ids (≥ 900000000) and a neutral route name, guarded by `test_openapi_examples_use_only_synthetic_ids`; the `StoredScoreFields` docstring describes the additive contract correctly. The dead kernel-era `safety:route:*` cache helpers are deleted from `app/utils/cache.py` along with `risk_bands.cached_safety`/`displayed_risk`, which only they used (this also removes the `datetime.utcnow()` deprecation warning). A drift test pins the constants `time_utils`/`geo_utils` copy from `kernel_ref.algorithm_config`; the `0013` refusal tests also assert `alembic_version` is still `0012_model_registry`; the training issue says the kernel is "evaluated", not "refit", on the current folds.
+- Frontend: the evidence line shows a positive count under 0.5 as "<1" ("≈ <1 local, 3 from similar routes elsewhere"), never 0 beside a score. The Ascents multiplier formatter (`utils/formatSmallSafe.ts`) refuses anything not finite and ≥ 0: a bad `relative_rate` shows "National comparison unavailable" and a bad per-10K "Logged ascents unavailable", never "NaN" or "∞"; 0.999 now reads "1.0" and 99.96 "100", matching their neighbours.
+
+### Phase 3 Task 29: Ascents tab headline - 2026-10-22
+
+- The Ascents tab leads with the stored relative rate: "1.5× (0.82–2.4×) the reported-incident rate of ice routes nationally in January", with the confidence label (hatched dot at Low confidence), then "About 12.3 per 10,000 logged ascents (likely 6.1–30.2) · High confidence" only when the score carries `per_10k_logged_ascents`; otherwise one sentence for `per_10k_reason` (still being collected / none logged for this type / unavailable).
+- A null `relative_rate` on an ok score shows only "National comparison unavailable"; insufficient shows the gray chip and message with no number; unavailable shows the empty-ring state. Multipliers use one decimal from 1 up and two significant figures below 1 ("<0.001" at the floor), so a small value never reads as 0.
+- The accident and logged-ascent counts stay as context, now noted as "a partial sample"; no rate is computed from them in the frontend.
+
+### Phase 3 Task 28: honest score display - 2026-10-22
+
+- Low confidence still shows the number and its likely range ("40.0 (likely 20.0–60.0)") with a "Low confidence" label; map markers get a diagonal hatch overlay, and chips a hatched leading dot (never stripes behind text, so chip text keeps >= 4.5:1).
+- Gray means no evidence only: an insufficient score is the gray, hatched "Not enough reported incidents or similar routes to estimate" with no number. Unavailable (bulk `safety: null`, a 404, a malformed entry) has no colour: an empty ring on the map, an em-dash and "Score unavailable for this route." in the modal. A cluster with under half its routes scored is gray only when insufficient routes are at least as many as unavailable ones, else an empty ring.
+- The lowest band is drawn in neutral slate (`#607d8b`), labelled "Lower than typical for this type", never "Low Risk" or "safe"; the wire `color_code` stays `green`. Every score carries the disclaimer and an "≈ geo local, similar from similar routes elsewhere" evidence line.
+- `confidence` means only the string level: the numeric `getConfidenceInfo`/`formatConfidence` helpers are removed.
+
+### Phase 3 Task 25: score parity, no-coalesce guard, MVP-1 docs - 2026-10-22
+
+- `tests/test_parity_scores.py`: `/safety`, `map-with-safety` and `/risk-breakdown` return the same `risk_score`, colour, `confidence`, `score_range` and `relative_rate` for every seeded route, and the breakdown terms rebuild the stored `rr_mean` from the cell's static features (minimum over the area's routes, as training read them). `tests/test_no_coalesce_in_ml.py` bans `coalesce(`, `or 0`, `nan_to_num(` and `fillna(0` in `app/ml` and `model_scores.py` outside a line-content allowlist. `tests/verify/test_model_scores.py` (`-m db`) checks the stored scores on prod or a branch.
+- The train CLI writes `model_card.conf_counts` ({high, medium, low, insufficient} row counts over exactly the rows `materialize` writes to `model.route_scores`; `materialize.conf_counts`). `tests/verify/test_model_scores.py` compares the live table with it and skips only for a version trained before this key existed (e.g. the kernel baseline row). `tests/ml/test_conf_counts.py` and `test_train_cli` pin the counts.
+- `risk_bands.py`: `MIN_ESTIMABLE_SCORE` and `estimable_score` deleted; `displayed_risk` and `cached_safety` have no floor (a 0.0 is a real rank). Insufficient is a stored model state.
+- Docs: model card gains the gate thresholds as implemented, the state-group subsample note and the kernel log-score caveat; README, `system_design.mmd`, `ALGORITHM_DESIGN.md`, CLAUDE.md, DEPLOYMENT.md and the `map-with-safety` docstring describe stored scores plus the scores heartbeat.
+
+### Phase 3 Task 24: `0013_drop_legacy_weather` (MVP-1 hard gate) - 2026-10-22
+
+- `0013` drops `public.weather`; `upgrade()` refuses a non-empty `weather` unless `source_ingest_log` holds an `ok` `r6_verify` row meeting n > 100, r_tmax > 0.95, p99_gust < 60 (an empty table drops freely), `downgrade()` raises (rollback is the `pre-p3-4` snapshot branch; no dump is committed). It is a contract migration and runs on prod only behind the Task 26 runbook gate.
+- Deleted: `app.models.weather`, `app.pipelines.r6_verify`, its tests and verify cell. `grants_phase2.sql` no longer grants `ingest` SELECT on `weather` and revokes it where the table still exists; `verify_roles_phase2.sql` drops the row.
+- `test_ascent_analytics` seeds a catalog point for the seasonal-patterns route (the endpoint places routes through it since Task 22).
+
+### Phase 3 Task 23: the kernel leaves serving; scores heartbeat - 2026-10-22
+
+- The kernel math moved (`git mv`) to `app.ml.kernel_ref`, frozen for the backtest; `tests/test_kernel_not_served.py` fails if anything served imports it or `kernel_adapter`. `weather_service` has its own plain `WeatherPattern`; `utc_today` moved to `app.utils.time_utils`; `time_utils` and `geo_utils` inline the constants they took from `algorithm_config`.
+- Removed: the kernel nightly (`safety_computation_optimized`), `location_safety_computation`, the in-process predict path in `api/v1/predict.py` (the 410 stays), the `trigger-cache-population` admin route, the kernel-only tests and `backend/scripts/perf/*`. Nothing in `app/` writes `historical_predictions` now, so the protected backtest window [2026-02-05, 2026-07-03) is guarded by `tests/test_backtest_window_kept.py`; the `app` role's write grants on it are unchanged.
+- `scores-heartbeat` (02:00 UTC) replaces `compute-daily-safety-scores`: one active version, a matching bundle digest and current-month rows for every scorable route, else `/fail` on `HEALTHCHECKS_SCORES_URL` and `HEALTHCHECKS_NIGHTLY_URL`. `cache_warming` warms `safety:{version}:{route}:{month}` from stored rows (still unscheduled).
+
+### Phase 3 PR 3-4: stored-score reads, additive API - 2026-10-22
+
+- The API serves the active `model.registry` version's `model.route_scores` row for the route and month (CM = 1 in MVP-1), through `app.services.model_scores`; Redis keys are `safety:{model_version}:{route_id}:{month}`, so a promotion or rollback misses the cache. No live kernel call on any served path.
+- Additive fields on `/safety` and the map's `safety`: `confidence`, `score_range`, `model_version`, `evidence`, `insufficient_reason`, `relative_rate`, `per_10k_logged_ascents`, `per_10k_reason`. A validator binds confidence, range and evidence to `data_status == "ok"`, and the range must bracket the score. Low confidence still shows the number.
+- Missing is never 0: no active version or no row is 404 `score unavailable` on `/safety` and `/risk-breakdown`, `safety: null` on the map, and a null month in the forecast and the 12-month profile. Gray is only a stored row with no evidence. The kernel's 0.05 display floor does not apply to stored percentiles.
+- `/risk-breakdown` returns the top terms of the stored row's decomposition plus the evidence term; `/historical-trends` returns the 12-month profile (`monthly_profile`); `/time-of-day` keeps hourly weather with `risk: null` and a `risk_note`; `/seasonal-patterns` returns incident counts only, placed through the route's catalog point, with year-precision rows counted apart (`year_known_only`); `/accidents` carries "context, not cause". `POST /predict` answers 410 Gone.
+- Frontend (first commit, F54): reads the new and the old shapes; the arbitrary-point predict flow is removed.
+
+### Phase 3: fit/predict orchestration and bundle export - 2026-10-22
+
+- `app.ml.model`: `fit_model(cells, counts, params, *, train_mask)` runs the stage-1 GLM, archetypes and stage-2 EB with held-out cells kept out of both stages, of the covariate statistics, of the archetype centres and of the evidence points. A GLM that did not converge (separation) is refused with `ModelFitError`, never used. EB keys regions as `state|region` so a border-split MP region nests in its state. `fold_train_mask(cells, fold)` drops a spatial fold's held-out states from training.
+- `Fitted.predict` / `Fitted.summarize` / `Fitted.to_bundle`: the bundle holds numeric arrays (`coef`, `center`, `scale`, `arch_centers`, `arch_weights`, `std_mean`, `std_sd`, `log_rref`, `hazard_center`) plus a JSON manifest (names, constants, thresholds with `d_star = null` for "never gray by distance", params, kappas, model-card notes, runbook diagnostics). Export is refused (`BundleParityError`) unless `explain()` reproduces each sampled cell's log posterior mean as its evidence term.
+- `geo_evidence` is the chain's geographic mass (`posterior.n_eff_geo`, the one definition) or state-only incident mass for the cell's state and type group (DP4): such a cell is scored, never gray, and reads at most "low" on that alone. A held-out state's own state-only mass never counts. `posterior.summarize` now refuses only a cell whose chain carries geo mass but is reported without it.
+- Parity runs on the round-tripped bytes, with at least one sufficient cell per (type group, month), and the shipped `tick_ref`, `families_on` and exposure-side center/scale must equal the fit's. Diagnostics add the state-only share per state and the cells kept out of gray only by state mass; window totals are labelled as such.
+- `CellData.take`/`subset`; synthetic `synthetic_problem`/`permute_problem` fixtures. `docs/model-card.md` skeleton for Task 20's generator.
+
+### Phase 3: CV folds - 2026-10-22
+
+- `app.ml.folds`: 8 spatial folds (one per state group, exposure cutoff = production cutoff), rolling origins 2004/2008/2012/2016 with a 3-year test, and the prospective 2026-02-05..2026-07-03 fold. Half-open windows: test starts where training ends; exposure cutoff never exceeds `train_end`.
+
+### Phase 3 PR 3-0: backtest window guard and model docs - 2026-10-22
+
+- The nightly `historical_predictions` purge now keeps 2026-02-05 to 2026-07-02, the prospective kernel backtest window (DP14); without this it would start deleting it on 2027-02-05. Guarded by `tests/test_backtest_window_kept.py`.
+- The purge is now `purge_old_history(db, today)` in `safety_computation_optimized.py` with `today` passed in, and a database test (`test_purge_deletes_only_stale_rows_outside_the_window`) runs the real DELETE against seeded rows with a pinned date.
+- Docs: `0012_model_registry` (schema `model`) and the `trainer` role (now LOGIN, allowlist grants) in `CLAUDE.md`, `data/DATABASE_STRUCTURE.md`; "Phase 3 roles" and the PR 3-0 branch-then-prod runbook in `DEPLOYMENT.md`. Training runs only from the owner's Mac, with no GitHub secret (F48). The runbook is not yet executed.
 
 ### Exposure index (PR X-2) — 2026-10-22
 

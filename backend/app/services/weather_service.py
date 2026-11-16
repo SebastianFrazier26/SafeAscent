@@ -2,7 +2,7 @@
 Weather Service - Real-Time Weather Fetching
 
 Fetches current and forecast weather from Open-Meteo API.
-Builds WeatherPattern objects for the safety algorithm.
+Builds WeatherPattern objects (7-day windows) for the forecast display.
 
 API: https://open-meteo.com/
 - Paid plan: 1M requests/month, no rate limits
@@ -14,13 +14,13 @@ Caching (Phase 8):
 - Uses Redis for fast in-memory storage
 """
 import requests
+from dataclasses import dataclass
 from datetime import date, timedelta
 from math import exp, sqrt
 from typing import Optional, Dict, Any, List, Tuple
 import logging
 
 from app.config import settings
-from app.services.weather_similarity import WeatherPattern
 from app.utils.cache import (
     cache_get,
     cache_set,
@@ -41,6 +41,21 @@ else:
     WEATHER_API_URL = "https://api.open-meteo.com/v1/forecast"
     ARCHIVE_WEATHER_API_URL = "https://archive-api.open-meteo.com/v1/archive"
     logger.warning("[WeatherService] No API key configured; using public Open-Meteo API")
+
+@dataclass
+class WeatherPattern:
+    """A 7-day window of daily weather, oldest day first.
+
+    The frozen kernel has its own WeatherPattern (app.ml.kernel_ref.weather_similarity); this one
+    is a separate plain-data type so nothing served has to import the kernel."""
+
+    temperature: List[float]
+    precipitation: List[float]
+    wind_speed: List[float]
+    visibility: List[float]
+    cloud_cover: List[float]
+    daily_temps: List[Tuple[float, float, float]]  # (min, avg, max) per day
+
 
 # Cache TTLs (Time To Live)
 WEATHER_PATTERN_TTL = 6 * 3600  # 6 hours (forecasts change slowly)

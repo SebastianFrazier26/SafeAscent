@@ -19,6 +19,8 @@ const evaluate = (expr: unknown, props: Props): unknown => {
       return num(args[0]) >= num(args[1]);
     case '/':
       return num(args[0]) / num(args[1]);
+    case '-':
+      return num(args[0]) - num(args[1]);
     case 'all':
       return args.every((a) => evaluate(a, props) === true);
     case 'case': {
@@ -40,67 +42,93 @@ const evaluate = (expr: unknown, props: Props): unknown => {
   }
 };
 
-const expressionHex = (scored: number, total: number, sum: number): unknown =>
-  evaluate(clusterColorExpression(RISK_COLOR_HEX, NO_RISK_HEX), {
+const RING = 'ring';
+
+const expressionHex = (scored: number, insufficient: number, total: number, sum: number): unknown =>
+  evaluate(clusterColorExpression(RISK_COLOR_HEX, NO_RISK_HEX, RING), {
     risk_score_count: scored,
+    insufficient_count: insufficient,
     point_count: total,
     risk_score_sum: sum,
   });
 
-const codeHex = (scored: number, total: number, sum: number): string => {
-  const code = clusterColorCode(scored, total, sum);
-  return code === 'gray' ? NO_RISK_HEX : RISK_COLOR_HEX[code];
+const codeHex = (scored: number, insufficient: number, total: number, sum: number): string => {
+  const code = clusterColorCode(scored, insufficient, total, sum);
+  if (code === 'gray') return NO_RISK_HEX;
+  if (code === 'none') return RING;
+  return RISK_COLOR_HEX[code];
 };
 
 describe('clusterColorCode', () => {
   it('is gray when 49 of 50 routes are insufficient and the one scored route is low', () => {
-    expect(clusterColorCode(1, 50, 10)).toBe('gray');
+    expect(clusterColorCode(1, 49, 50, 10)).toBe('gray');
   });
 
   it('uses the scored mean when exactly half the routes are scored', () => {
-    expect(clusterColorCode(2, 4, 110)).toBe('orange');
-    expect(clusterColorCode(25, 50, 25 * 10)).toBe('green');
+    expect(clusterColorCode(2, 0, 4, 110)).toBe('orange');
+    expect(clusterColorCode(25, 25, 50, 25 * 10)).toBe('green');
   });
 
   it('uses the scored mean when every route is scored', () => {
-    expect(clusterColorCode(3, 3, 30 + 50 + 70)).toBe('orange');
-    expect(clusterColorCode(2, 2, 160)).toBe('red');
+    expect(clusterColorCode(3, 0, 3, 30 + 50 + 70)).toBe('orange');
+    expect(clusterColorCode(2, 0, 2, 160)).toBe('red');
   });
 
-  it('is gray with no scored routes', () => {
-    expect(clusterColorCode(0, 12, 0)).toBe('gray');
-    expect(clusterColorCode(0, 0, 0)).toBe('gray');
+  it('is gray with no scored routes when all are insufficient', () => {
+    expect(clusterColorCode(0, 12, 12, 0)).toBe('gray');
   });
 
-  it('is gray just under half scored', () => {
-    expect(clusterColorCode(24, 49, 24 * 80)).toBe('gray');
+  it('is gray just under half scored when the rest are insufficient', () => {
+    expect(clusterColorCode(24, 25, 49, 24 * 80)).toBe('gray');
+  });
+
+  it('is never gray when unavailable routes outnumber insufficient ones', () => {
+    expect(clusterColorCode(0, 0, 12, 0)).toBe('none');
+    expect(clusterColorCode(1, 4, 50, 10)).toBe('none');
+    expect(clusterColorCode(24, 12, 49, 24 * 80)).toBe('none');
+  });
+
+  it('is gray on a tie between insufficient and unavailable', () => {
+    expect(clusterColorCode(0, 6, 12, 0)).toBe('gray');
+    expect(clusterColorCode(0, 0, 0, 0)).toBe('gray');
   });
 });
 
 describe('clusterColorExpression', () => {
   it.each([
-    [1, 50, 10],
-    [2, 4, 110],
-    [25, 50, 250],
-    [24, 49, 24 * 80],
-    [3, 3, 150],
-    [2, 2, 160],
-    [0, 12, 0],
-    [4, 4, 100],
-    [4, 4, 99.6],
-    [5, 7, 5 * 75],
-  ])('matches clusterColorCode for scored=%i total=%i sum=%f', (scored, total, sum) => {
-    expect(expressionHex(scored, total, sum)).toBe(codeHex(scored, total, sum));
+    [1, 49, 50, 10],
+    [1, 4, 50, 10],
+    [2, 0, 4, 110],
+    [25, 25, 50, 250],
+    [24, 25, 49, 24 * 80],
+    [24, 12, 49, 24 * 80],
+    [3, 0, 3, 150],
+    [2, 0, 2, 160],
+    [0, 12, 12, 0],
+    [0, 0, 12, 0],
+    [0, 6, 12, 0],
+    [0, 5, 12, 0],
+    [4, 0, 4, 100],
+    [4, 0, 4, 99.6],
+    [5, 0, 7, 5 * 75],
+  ])('matches clusterColorCode for scored=%i insufficient=%i total=%i sum=%f', (scored, insufficient, total, sum) => {
+    expect(expressionHex(scored, insufficient, total, sum)).toBe(codeHex(scored, insufficient, total, sum));
+  });
+
+  it('a mostly-unavailable cluster is the ring, never the no-evidence gray', () => {
+    expect(expressionHex(0, 1, 12, 0)).toBe(RING);
+    expect(expressionHex(0, 1, 12, 0)).not.toBe(NO_RISK_HEX);
   });
 });
 
 describe('MapView clusters', () => {
   const mapView = import.meta.glob('../components/MapView.jsx', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
 
-  it('colour fill and label with clusterColorExpression and keep the scored-only count', () => {
+  it('colour fill and label with clusterColorExpression and count scored and insufficient routes', () => {
     const text = (mapView['../components/MapView.jsx'] ?? '').replace(/\s+/g, '');
-    expect(text).toContain("'circle-color':clusterColorExpression(RISK_COLOR_HEX,NO_RISK_HEX)");
-    expect(text).toContain("'text-color':clusterColorExpression(RISK_TEXT_ON_HEX,NO_RISK_TEXT_HEX)");
+    expect(text).toContain("'circle-color':clusterColorExpression(RISK_COLOR_HEX,NO_RISK_HEX,UNAVAILABLE_FILL)");
+    expect(text).toContain("'text-color':clusterColorExpression(RISK_TEXT_ON_HEX,NO_RISK_TEXT_HEX,CLUSTER_RING_TEXT_HEX)");
     expect(text).toContain("risk_score_count:['+',['case',['==',['typeof',['get','risk_score']],'number'],1,0]]");
+    expect(text).toContain("insufficient_count:['+',['case',['==',['get','data_status'],'insufficient_data'],1,0]]");
   });
 });

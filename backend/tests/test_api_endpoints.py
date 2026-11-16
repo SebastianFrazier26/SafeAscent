@@ -70,115 +70,22 @@ class TestHealthEndpoints:
 # ============================================================================
 
 
-class TestPredictEndpoint:
-    """Tests for the /predict endpoint"""
+class TestPredictGone:
+    """POST /predict was retired with the kernel model (P3 Task 22, DP23): 410 for any body."""
 
-    @requires_database
-    def test_predict_valid_request(self, test_client):
-        """Valid prediction request should return risk score"""
-        request_data = {
-            "latitude": 40.0150,
-            "longitude": -105.2705,
-            "route_type": "alpine",
-            "planned_date": str(date.today() + timedelta(days=1)),
-        }
-        response = test_client.post("/api/v1/predict", json=request_data)
-
-        # Should return 200 with risk score
-        assert response.status_code == 200
-        data = response.json()
-        assert "risk_score" in data
-        assert 0 <= data["risk_score"] <= 100
-        assert "num_contributing_accidents" in data
-        assert "top_contributing_accidents" in data
-
-    def test_predict_missing_latitude(self, test_client):
-        """Request without latitude should fail validation"""
-        request_data = {
-            "longitude": -105.2705,
-            "route_type": "alpine",
-            "planned_date": str(date.today()),
-        }
-        response = test_client.post("/api/v1/predict", json=request_data)
-        assert response.status_code == 422  # Validation error
-
-    def test_predict_missing_longitude(self, test_client):
-        """Request without longitude should fail validation"""
-        request_data = {
-            "latitude": 40.0150,
-            "route_type": "alpine",
-            "planned_date": str(date.today()),
-        }
-        response = test_client.post("/api/v1/predict", json=request_data)
-        assert response.status_code == 422  # Validation error
-
-    def test_predict_missing_route_type(self, test_client):
-        """Request without route_type should fail validation"""
-        request_data = {
-            "latitude": 40.0150,
-            "longitude": -105.2705,
-            "planned_date": str(date.today()),
-        }
-        response = test_client.post("/api/v1/predict", json=request_data)
-        assert response.status_code == 422  # Validation error
-
-    def test_predict_missing_planned_date(self, test_client):
-        """Request without planned_date should fail validation"""
-        request_data = {
-            "latitude": 40.0150,
-            "longitude": -105.2705,
-            "route_type": "alpine",
-        }
-        response = test_client.post("/api/v1/predict", json=request_data)
-        assert response.status_code == 422  # Validation error
-
-    def test_predict_invalid_date_format(self, test_client):
-        """Invalid date format should fail validation"""
-        request_data = {
-            "latitude": 40.0150,
-            "longitude": -105.2705,
-            "route_type": "alpine",
-            "planned_date": "not-a-date",
-        }
-        response = test_client.post("/api/v1/predict", json=request_data)
-        assert response.status_code == 422
-
-    def test_predict_invalid_route_type(self, test_client):
-        """Invalid route_type should fail validation"""
-        request_data = {
-            "latitude": 40.0150,
-            "longitude": -105.2705,
-            "route_type": "invalid_type",
-            "planned_date": str(date.today()),
-        }
-        response = test_client.post("/api/v1/predict", json=request_data)
-        assert response.status_code == 422
-
-    def test_predict_invalid_latitude(self, test_client):
-        """Latitude outside valid range should fail validation"""
-        request_data = {
-            "latitude": 95.0,  # Invalid: > 90
-            "longitude": -105.2705,
-            "route_type": "alpine",
-            "planned_date": str(date.today()),
-        }
-        response = test_client.post("/api/v1/predict", json=request_data)
-        assert response.status_code == 422
-
-    def test_predict_invalid_longitude(self, test_client):
-        """Longitude outside valid range should fail validation"""
-        request_data = {
-            "latitude": 40.0150,
-            "longitude": -200.0,  # Invalid: < -180
-            "route_type": "alpine",
-            "planned_date": str(date.today()),
-        }
-        response = test_client.post("/api/v1/predict", json=request_data)
-        assert response.status_code == 422
+    @pytest.mark.parametrize("body", [
+        {"latitude": 40.0150, "longitude": -105.2705, "route_type": "alpine",
+         "planned_date": str(date.today() + timedelta(days=1))},
+        {"longitude": -105.2705, "route_type": "alpine", "planned_date": "2026-07-04"},
+        {"latitude": 91.0, "longitude": -105.0, "route_type": "nope", "planned_date": "07/04/2026"},
+        {},
+    ])
+    def test_predict_is_gone(self, test_client, body):
+        response = test_client.post("/api/v1/predict", json=body)
+        assert response.status_code == 410
+        assert "retired" in response.json()["detail"]
 
 
-# ============================================================================
-# Locations Endpoint Tests (requires MP tables)
 # ============================================================================
 
 
@@ -345,14 +252,14 @@ class TestErrorHandling:
         response = test_client.delete("/api/v1/health")
         assert response.status_code == 405
 
-    def test_invalid_json_body(self, test_client):
-        """Invalid JSON should return 422"""
+    def test_invalid_json_body_to_retired_predict(self, test_client):
+        """The retired /predict answers 410 before reading the body"""
         response = test_client.post(
             "/api/v1/predict",
             content="not valid json",
             headers={"Content-Type": "application/json"}
         )
-        assert response.status_code == 422
+        assert response.status_code == 410
 
 
 if __name__ == "__main__":

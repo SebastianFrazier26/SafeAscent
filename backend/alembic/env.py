@@ -46,7 +46,7 @@ def include_object(obj: Any, name: str | None, type_: str, reflected: bool, comp
     return bool(alembic_helpers.include_object(obj, name, type_, reflected, compare_to))
 
 
-MANAGED_SCHEMAS = frozenset({"public", "internal"})
+MANAGED_SCHEMAS = frozenset({"public", "internal", "model"})
 
 
 def include_name(name: str | None, type_: str, parent_names: Any) -> bool:

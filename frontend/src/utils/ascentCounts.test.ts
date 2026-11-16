@@ -36,10 +36,10 @@ describe('formatAccidentAscentCounts', () => {
     expect(formatAccidentAscentCounts(undefined, 10)).toBe('— accidents · 10 logged ascents');
   });
 
-  it('note names the undercount and defers the rate to Phase 3', () => {
+  it('note names the undercount and calls the counts a partial sample', () => {
     expect(LOGGED_ASCENTS_NOTE).toMatch(/logged ascents/);
     expect(LOGGED_ASCENTS_NOTE).toMatch(/undercount/);
-    expect(LOGGED_ASCENTS_NOTE).toMatch(/Phase 3/);
+    expect(LOGGED_ASCENTS_NOTE).toMatch(/partial sample/);
   });
 
   it("states each side's year span, dropping an empty side", () => {
