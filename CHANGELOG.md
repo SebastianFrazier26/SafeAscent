@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Frontend dev-dependency advisories - 2026-11-15
+
+- `vitest` and `@vitest/coverage-v8` 3.2.7 -> 4.1.12 (drops the vulnerable `tinypool` and `@vitest/mocker`); `vite` 7.3.6 -> 7.3.8 and `zod` 4.3.6 -> 4.6.7, `source-map-js` patched, all via lockfile. Full `npm audit` in `frontend/` now reports no high or critical findings; the 7 remaining moderates are `minimatch` under `typescript-eslint` with no patched release yet.
+- `frontend/src/test/setup.js`: `ResizeObserver` / `IntersectionObserver` mocks use `function` implementations, since vitest 4 no longer allows `new` on an arrow-function mock.
+
 ### Housekeeping - 2026-11-15
 
 - Removed the owner's absolute local home path from `CHANGELOG.md` and the `docs/superpowers/plans/` files (replaced with `<repo-root>` / `<worktree-*>` placeholders).
