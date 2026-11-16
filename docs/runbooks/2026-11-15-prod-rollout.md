@@ -743,3 +743,10 @@ SELECT extname, extversion FROM pg_extension;
 SELECT min(prediction_date), max(prediction_date) FROM historical_predictions;
 -- plus count(*) per table in section 1.1
 ```
+
+## Owner decisions (2026-11-16)
+
+- K1: (a). The role scripts become revision-aware in a reviewed PR before Stage A.
+- K6: the temporary `SELECT ON public.weather TO ingest` path, as proposed.
+- C3 / SPEND: the owner already pays for Open-Meteo, and the current API token is the paid one. No purchase step: Stage C3 uses that key, exported in the shell only and never in a file. The runbook's order stands (C3 after D2).
+- OWNER-GO: the 2026-11-15 approval is a standing go-ahead for each prod stage after its branch rehearsal passes. Stops remain for OWNER-REVIEW files, OWNER-SQL, any new spend, and any failed gate.
