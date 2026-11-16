@@ -60,6 +60,8 @@ class Settings(BaseSettings):
 
     # Phase 2 data jobs connect as the least-privilege ingest role; never set on the API.
     INGEST_DATABASE_URL: str | None = None
+    # P2-9: false makes mp_ticks missing ("disabled") in every new exposure snapshot (the removal drill).
+    EXPOSURE_ENABLE_MP_TICKS: bool = True
 
     model_config = SettingsConfigDict(
         env_file=".env",

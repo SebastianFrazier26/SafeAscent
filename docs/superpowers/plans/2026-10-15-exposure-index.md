@@ -1004,7 +1004,7 @@ Then:
 
   The PK is `(area_id, type_group, month, as_of, data_cutoff)`, with index `ix_exposure_index_snapshot (as_of, data_cutoff)`. The downgrade refuses while any row exists.
 - Produces (Python): `app.models.exposure.ExposureIndex`; `Settings.EXPOSURE_ENABLE_MP_TICKS: bool = True`.
-- Produces (grants): `ingest` gets SELECT, INSERT, UPDATE, DELETE on `internal.exposure_index`. `analyst` gets SELECT through the existing schema-wide grant. `app` and `trainer` get nothing.
+- Produces (grants): `ingest` gets SELECT, INSERT, DELETE on `internal.exposure_index` (no UPDATE: review fix 2026-10-22, the job never updates a row). `analyst` gets SELECT through the existing schema-wide grant. `app` and `trainer` get nothing.
 
 - [ ] **Step 1: Write the failing test.** `backend/tests/test_migration_0011.py`:
 
@@ -1065,9 +1065,9 @@ def test_0011_downgrade_refuses_while_rows_exist():
 Append to `test_phase2_roles_least_privilege` in `backend/tests/test_roles_phase2.py`, after the R10 block:
 
 ```python
-    # Exposure (0011): ingest rebuilds and prunes snapshots; analyst reads; app holds nothing in internal.
-    _as(ingest, "SELECT count(*) FROM internal.exposure_index; "
-        "UPDATE internal.exposure_index SET run_id = NULL WHERE false; DELETE FROM internal.exposure_index WHERE false")
+    # Exposure (0011): ingest clears, reinserts and prunes snapshots; analyst reads; app holds nothing in internal.
+    _as(ingest, "SELECT count(*) FROM internal.exposure_index; DELETE FROM internal.exposure_index WHERE false")
+    _denied(ingest, "UPDATE internal.exposure_index SET run_id = NULL WHERE false")
     _denied(ingest, "TRUNCATE internal.exposure_index")
     _as(analyst, "SELECT count(*) FROM internal.exposure_index")
     _denied(app, "SELECT count(*) FROM internal.exposure_index")
@@ -1207,11 +1207,12 @@ Register the model in `app/models/__init__.py` with `from app.models import expo
 -- Exposure plan (0011). The exposure job rebuilds snapshots and prunes old production ones (DELETE);
 -- analyst reads it through the schema-wide SELECT above; app holds nothing in internal; trainer
 -- gets it in Phase 3 (D13), together with USAGE on internal.
-GRANT SELECT, INSERT, UPDATE, DELETE ON internal.exposure_index TO ingest;
+REVOKE UPDATE ON internal.exposure_index FROM ingest;
+GRANT SELECT, INSERT, DELETE ON internal.exposure_index TO ingest;
 ```
 
 `verify_roles_phase2.sql`:
-- Append to `ingest_privs` (after the R10 rows, with the comment `-- Exposure (0011): snapshots are rebuilt and pruned.`): `('internal.exposure_index', 'SELECT'), ('internal.exposure_index', 'INSERT'), ('internal.exposure_index', 'UPDATE'), ('internal.exposure_index', 'DELETE')`.
+- Append to `ingest_privs` (after the R10 rows, with the comment `-- Exposure (0011): snapshots are cleared, reinserted and pruned, never updated.`): `('internal.exposure_index', 'SELECT'), ('internal.exposure_index', 'INSERT'), ('internal.exposure_index', 'DELETE')`.
 - Add `'internal.exposure_index'` to the `catalog relation exists` array.
 - `app holds nothing on internal relation …`, `analyst can SELECT …` and `trainer holds no privilege on …` then cover it with no further rows.
 
@@ -2016,11 +2017,20 @@ def test_cli_build_logs_metrics(monkeypatch):
 ```python
 from pathlib import Path
 
-API = Path(__file__).resolve().parents[1] / "app" / "api"
+import pytest
+
+APP = Path(__file__).resolve().parents[1] / "app"
+# The serving code is app/api and the services it calls; the DB grants (app has no access to
+# internal) are the real guard, this only catches a reader being added by mistake.
+MARKERS = ("exposure_index", "ExposureIndex", "app.models.exposure", "models import exposure")
 
 
-def test_no_endpoint_reads_the_exposure_index():
-    assert [str(p) for p in API.rglob("*.py") if "exposure_index" in p.read_text(encoding="utf-8")] == []
+@pytest.mark.parametrize("package", ["api", "services"])
+def test_no_serving_code_reads_the_exposure_index(package: str):
+    root = APP / package
+    assert root.is_dir(), root
+    hits = [str(p) for p in root.rglob("*.py") if any(m in p.read_text(encoding="utf-8") for m in MARKERS)]
+    assert hits == []
 ```
 
 F6 (controller ruling 2026-10-15, overrides the pre-flight's proposed ruling): the roles test (M4 precedent: "a grant the real SQL needs fails here rather than on the first prod run") must actually run the rock loader and the exposure build as `ingest`, not just the ad hoc `_as`/`_denied` statements Task 4 added. Extend `_run_real_jobs_as_ingest` in `backend/tests/test_roles_phase2.py`, right after its existing block that already runs `mp_tick_aggregates.main` (the one asserting `first["status"] == "ok" and first["rows_upserted"] == 2` / `again["status"] == "noop"`):
@@ -2353,6 +2363,12 @@ The Shell state, Secrets, Long runs and Gates rules are as in Task 3. **Owner do
 
 The re-entry block is Task 3's with `B=xp-2-rehearsal`, without the `EXPORT` line. The prod preamble is Task 3's with `GATE_DIR=../data/review/gates_xp2_prod`.
 
+**January blackout (accepted, owner ruling).** Build after the January ERA5 window completes.
+- **Cause.** On Jan 1, `era5_fill.prune` moves each non-incident series' `first_era5_date` up to Jan 1 of year−3. Its `last_era5_date` stays short of Dec 31 of year−1 until that January's `era5_window` run lands, so the series holds fewer than 3 complete ERA5 years.
+- **Effect.** Every such series' season reads `insufficient_history`. Plan 3's prune is not changed.
+- **Detection.** `exposure_components.season_blackout` flags these series.
+- **If it fires.** A build that sees it warns. Do not run any step of this runbook, branch or prod, until the January window has completed.
+
 - [ ] **Step 0 (agent): Checkout and tools.** As Task 3 Step 0 (agent part). `uv run alembic heads` prints exactly `0011_exposure_index (head)`.
 
 - [ ] **Step 1 (agent): Branch `xp-2-rehearsal`; migrate; grants**
@@ -2396,6 +2412,7 @@ save_once ../data/review/xp2_dry_branch.json INGMOD app.pipelines.exposure build
 python3 - <<'EOF'
 import json
 on = json.load(open("../data/review/xp2_dry_branch.json")); off = json.load(open("../data/review/xp2_drill_branch.json"))
+assert on["season_blackout_series"] == 0 and off["season_blackout_series"] == 0, "January blackout: STOP"
 assert on["cells"] == off["cells"] and off["mp_enabled"] is False
 assert on["digests"]["route_density"] == off["digests"]["route_density"]
 assert on["digests"]["season_share"] == off["digests"]["season_share"]
@@ -2415,12 +2432,47 @@ VERIFY tests/verify/test_exposure.py tests/verify/test_tick_seam.py -q -s
 ANALYST_PSQL -At -c "SELECT pg_size_pretty(pg_total_relation_size('internal.exposure_index'))"
 ```
 
+`EXPLAIN (ANALYZE, BUFFERS)` of `SEASON_SQL`, as `ingest`, bound to the first `SERIES_CHUNK` (500) series windows exactly as `season()` builds them (read-only: the transaction rolls back). The subshell repeats `INGMOD`'s own loading because `INGMOD` runs only `python -m`; it calls the helper file's functions and defines none:
+
+```bash
+( _need_target && _load ./.env.ingest || exit 1
+  url="$(_retarget "${INGEST_DATABASE_URL:-}")" || exit 1
+  INGEST_DATABASE_URL="$url" DATABASE_URL="$url" uv run python - <<'EOF'
+import asyncio
+from sqlalchemy import text
+from app.pipelines.db import ingest_engine
+from app.pipelines.exposure_components import SEASON_SQL, SERIES_CHUNK, _area_series, scope, season_window
+from app.services.temporal_weighting import utc_today
+
+async def main() -> None:
+    engine = ingest_engine()
+    try:
+        async with engine.connect() as conn:
+            today = utc_today()
+            _, spans = await _area_series(conn, await scope(conn))
+            windows = {k: season_window(v[0], v[1], today=today) for k, v in spans.items() if v is not None}
+            chunk = sorted((k, w) for k, w in windows.items() if w is not None)[:SERIES_CHUNK]
+            params = {"buckets": [k[0] for k, _ in chunk], "tzs": [k[1] for k, _ in chunk],
+                      "sinces": [w[0] for _, w in chunk], "untils": [w[1] for _, w in chunk]}
+            print(f"{len(chunk)} series bound")
+            for (line,) in await conn.execute(text("EXPLAIN (ANALYZE, BUFFERS) " + SEASON_SQL.text), params):
+                print(line)
+            await conn.rollback()
+    finally:
+        await engine.dispose()
+
+asyncio.run(main())
+EOF
+)
+```
+
 Expected:
 - The dry run prints `cells` = 12 × the scorable (area, type group) pairs, plus `null_points`.
 - The drill prints `removal drill: only mp_ticks changes`.
-- The build prints `status: ok` with the same `cells`, plus `tick_coverage_mean`, `full_coverage_cells` and (when defined) `spearman_point_ticks`.
+- The build prints `"status": "ok"` with the same `cells`, plus `tick_coverage_mean`, `full_coverage_cells` and (when defined) `spearman_point_ticks`.
 - The verify cells all pass and print coverage by type group.
 - The size is recorded; the D-11 estimate is about 120 MB.
+- The `EXPLAIN (ANALYZE, BUFFERS)` block prints `500 series bound` (fewer only if the scope holds fewer series), then the plan. The plan should reach `cell_daily_conditions` through a nested loop on its primary key `(grid_bucket, tz, date)`, not a Seq Scan of the table. Paste the plan and its timing. A Seq Scan is a finding for the owner at Step 3, before any prod build.
 
 A high `null_points` means route-point ERA5 series are not filled yet. It is reported, never floored.
 
@@ -2470,6 +2522,7 @@ All are counts, never names or ids. **STOP: owner review.** Continue only on the
 import json
 b = json.load(open("../data/review/xp2_dry_branch.json")); p = json.load(open("../data/review/xp2_dry_prod.json"))
 assert p["status"] == "dry_run" and p["proxy_version"] == b["proxy_version"], p
+assert p["season_blackout_series"] == 0, ("January blackout: STOP", p["season_blackout_series"])
 assert abs(p["cells"] - b["cells"]) <= 0.01 * b["cells"], (b["cells"], p["cells"])
 print("prod dry run matches branch")
 EOF
@@ -2484,31 +2537,70 @@ EOF
   bg_start ../data/review/logs/xp2_build_prod.log INGMOD app.pipelines.exposure build )
 ```
 
-Then, with the prod preamble:
-- `bg_wait ../data/review/logs/xp2_build_prod.log` until `status: ok`;
-- `VERIFY tests/verify/test_exposure.py -q -s` → all pass.
+4d evidence (review fix 2026-10-22: the build JSON is saved; Step 5 compares against it):
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_xp2_prod || exit 1
+  bg_wait ../data/review/logs/xp2_build_prod.log || exit 1
+  grep -q '"status": "ok"' ../data/review/logs/xp2_build_prod.log || { echo "prod build not ok: STOP" >&2; exit 1; }
+  save_once ../data/review/xp2_build_prod.json grep '^{' ../data/review/logs/xp2_build_prod.log || exit 1
+  VERIFY tests/verify/test_exposure.py -q -s )
+```
+
+Expected: `bg_wait` reports the log finished ok, and the verify cells all pass.
 
 The PR records the build JSON and the snapshot id. The code deploys after 4b: no API reads the table, so deploy order is free.
 
-- [ ] **Step 5 (agent, recurring): Rebuilds** `[decided: DP8]`. After every rock load (Task 3 Step 5), and at least monthly. F5 (blocker, hard constraint: prod runbooks follow the plan-2 safety structure): the bare `INGMOD app.pipelines.exposure build` this step used to call directly broke that structure — no `gate_pass`/`gate_require`, no `save_once` dry-run evidence, no check against the previous snapshot. Run the gated block below instead, with the prod preamble:
+- [ ] **Step 5 (agent, recurring): Rebuilds** `[decided: DP8]`. After every rock load (Task 3 Step 5), and at least monthly. F5 (blocker, hard constraint: prod runbooks follow the plan-2 safety structure): the bare `INGMOD app.pipelines.exposure build` this step used to call directly broke that structure — no `gate_pass`/`gate_require`, no `save_once` dry-run evidence, no check against the previous snapshot. Run the gated blocks below instead (review fix 2026-10-22: subshells as in 4b–4d, the check and the build in separate blocks, evidence files and gates per run, nothing overwritten).
+
+Each block sets the same literal `RUN`: today's UTC date plus the first unused run number that day, e.g. `RUN=2026-11-03_1`. A second rebuild the same day is `_2`; `save_once` and `bg_start` refuse a reused `RUN`, so a collision stops instead of overwriting. `prev` is the newest `xp2_build_prod*.json` on record: 4d's `xp2_build_prod.json` the first time, then each rebuild's `xp2_build_prod_$RUN.json`.
+
+5a — check (read-only dry run):
 
 ```bash
-D=$(date -u +%F); export GATE_DIR="../data/review/gates_xp2_rebuild_$D"
-save_once "../data/review/xp2_dry_prod_$D.json" INGMOD app.pipelines.exposure build --dry-run
-python3 - "../data/review/xp2_dry_prod_$D.json" <<'EOF' || exit 1
-import json, sys
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+  RUN=YYYY-MM-DD_N
+  export TARGET_HOST=production GATE_DIR="../data/review/gates_xp2_rebuild_$RUN" || exit 1
+  # PRODUCTION (read-only dry run)
+  save_once "../data/review/xp2_dry_prod_$RUN.json" INGMOD app.pipelines.exposure build --dry-run || exit 1
+  python3 - "../data/review/xp2_dry_prod_$RUN.json" <<'EOF' || exit 1
+import glob, json, os, sys
 p = json.load(open(sys.argv[1]))
-prev = json.load(open("../data/review/xp2_build_prod.json"))  # most recent build JSON on record
+prev_path = max(glob.glob("../data/review/xp2_build_prod*.json"), key=os.path.getmtime)
+prev = json.load(open(prev_path))
+assert prev["status"] == "ok", (prev_path, prev["status"])
 assert p["status"] == "dry_run" and p["proxy_version"] == prev["proxy_version"], p
+assert p["season_blackout_series"] == 0, ("January blackout: STOP", p["season_blackout_series"])
 assert abs(p["cells"] - prev["cells"]) <= 0.01 * prev["cells"], (prev["cells"], p["cells"])
-print("rebuild dry run matches the last snapshot on record")
+print(f"rebuild dry run matches {os.path.basename(prev_path)}")
 EOF
-gate_pass rebuild
-gate_require rebuild || exit 1
-bg_start "../data/review/logs/xp2_build_prod_$D.log" INGMOD app.pipelines.exposure build
+  gate_pass rebuild )
 ```
 
-Then: `bg_wait` that log until `status: ok`; `VERIFY tests/verify/test_exposure.py -q -s`; paste the per-type-group coverage lines into the load's record, and update `../data/review/xp2_build_prod.json` (grep `^{` from the log) so the next rebuild compares against this one. No Neon snapshot branch is needed for a rebuild: `internal.exposure_index` is fully derived from other tables, and the prune (`KEEP_SNAPSHOTS = 3`) keeps the previous 2 production snapshots alongside the new one.
+5b — build:
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+  RUN=YYYY-MM-DD_N
+  export TARGET_HOST=production GATE_DIR="../data/review/gates_xp2_rebuild_$RUN" || exit 1
+  # PRODUCTION
+  gate_require rebuild || exit 1
+  bg_start "../data/review/logs/xp2_build_prod_$RUN.log" INGMOD app.pipelines.exposure build )
+```
+
+5c — evidence:
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+  RUN=YYYY-MM-DD_N
+  export TARGET_HOST=production || exit 1
+  bg_wait "../data/review/logs/xp2_build_prod_$RUN.log" || exit 1
+  grep -q '"status": "ok"' "../data/review/logs/xp2_build_prod_$RUN.log" || { echo "rebuild not ok: STOP" >&2; exit 1; }
+  save_once "../data/review/xp2_build_prod_$RUN.json" grep '^{' "../data/review/logs/xp2_build_prod_$RUN.log" || exit 1
+  VERIFY tests/verify/test_exposure.py -q -s )
+```
+
+Then paste the per-type-group coverage lines into the load's record. `bg_wait` exits 2 while the run may still be live: call 5c again, never rerun 5b. No Neon snapshot branch is needed for a rebuild: `internal.exposure_index` is fully derived from other tables, and the prune (`KEEP_SNAPSHOTS = 3`) keeps the previous 2 production snapshots alongside the new one. The blackout assert matters here: a January build would write all-missing seasons and prune an older good snapshot.
 
   Backtest snapshots for Phase 3 are `INGMOD app.pipelines.exposure build --cutoff YYYY-MM-DD`, dropped with `drop --as-of … --cutoff …` when no longer needed.
 
