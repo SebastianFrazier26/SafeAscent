@@ -3611,7 +3611,7 @@ Every connection is TLS verify-full (`verify_full_url` for psql, `connect_args_f
 **Re-enter the rehearsal branch (Steps 1–5).** This repeats Step 1's prod-host guard; it never creates anything.
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 . scripts/runbook_helpers.sh
 unset TARGET_HOST
 B=p2a-1-rehearsal
@@ -3628,7 +3628,7 @@ Expected: `branch host ok` and `target is the rehearsal branch`. Anything else: 
 **Prod preamble (Step 6 only, after the owner's go-ahead).** There is no separate prod re-entry block. Every Step 6 block repeats this first line itself, inside its own subshell, so each block works in a fresh shell and nothing it sets outlives it:
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
 ```
 
 **Gates (Step 6; Task 12 audit C1/C2, 2026-10-01).** Every prod write runs in its own block, after a gate block that checks what it depends on. Every check in a gate block ends in `|| exit 1`, and only when all of them hold does the block call `gate_pass NAME`, which prints `GATE OK: NAME` and leaves a marker in `$GATE_DIR`. The write block opens with `gate_require NAME || exit 1`, so it refuses unless that gate passed, even when an agent runs every block blindly. **A block that does not end with its expected `GATE OK` or `finished ok` line means STOP:** run nothing further and report to the owner. No block defines a function for a later block: `save_once`, `same_ids`, `gate_pass`, `gate_require`, `bg_start` and `bg_wait` all come from `scripts/runbook_helpers.sh`, so a helper missing in a fresh shell fails with "command not found", never a pass. `same_ids` fails, and never matches, when a file or column is missing or when either export has no rows. Re-run only a block that failed; a gate that already passed is not re-run.
@@ -3644,7 +3644,7 @@ cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_hel
 - [ ] **Step 0 (owner/agent): Tools and helpers**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 uv sync --frozen
 . scripts/runbook_helpers.sh
 unset TARGET_HOST
@@ -3928,7 +3928,7 @@ Do not repeat Steps 1–5. They create a branch and re-target the shell, and Ste
 **6a. Gate: prod is at 0004, the helpers are this commit's, and no earlier prod attempt left gates.**
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
   # PRODUCTION
   for f in same_ids gate_pass gate_require bg_start bg_wait; do type "$f" >/dev/null 2>&1 || { echo "runbook helpers predate the Task 12 gates: STOP" >&2; exit 1; }; done
   [ ! -e "$GATE_DIR" ] || { echo "$GATE_DIR exists: an earlier prod attempt; STOP, ask the owner" >&2; exit 1; }
@@ -3943,7 +3943,7 @@ Expected: `0004_phase2a_foundation (head)` (correct under the 2a-1 code, whose h
 Only after `GATE OK: prod_at_0004`, the grants:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
   # PRODUCTION
   gate_require prod_at_0004 || exit 1
   OWNER_PSQL -q -f db/roles/grants_phase2.sql || exit 1
@@ -3956,7 +3956,7 @@ Expected: `phase 2 grants applied`, `ALL PHASE 2 ROLE CHECKS PASSED`, `GATE OK: 
 **6b/6c. Gate: pre-checks, future dates and dry runs equal the branch's.** A difference means prod `accidents` changed after the branch was made: STOP; the owner decides (for example, a new rehearsal from current `production`, which is not written out here). Each `save_once` runs only if its `_prod` file is not there yet, so a re-run of this gate compares the first pre-apply evidence and never a post-apply read.
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
   # PRODUCTION
   gate_require grants || exit 1
   R=../data/review
@@ -4002,7 +4002,7 @@ What the dry-run comparison checks, exactly. The branch files were saved (2026-1
 **6d. Snapshot `pre-2a-1` immediately before the apply.** Run once; if neonctl says the branch exists, stop and ask the owner (never recreate it).
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
   # PRODUCTION snapshot
   gate_require dry_runs || exit 1
   snap="$(neonctl branches create --project-id still-morning-74008008 --name pre-2a-1 --parent production --no-secrets --output json \
@@ -4016,21 +4016,21 @@ Expected: parent `br-restless-bar-ajw5zy4b` (`production`) and `GATE OK: snapsho
 **6e. Apply, in the background.** R2/R1 twice (the second run is the idempotency check), then R9. Record each `RUNBOOK_ELAPSED`.
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
   # PRODUCTION
   gate_require snapshot || exit 1
   bg_start ../data/review/logs/r2r1_apply1_prod.log ING r2r1 --apply )
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh || exit 1
   bg_wait ../data/review/logs/r2r1_apply1_prod.log )
 ```
 
 Expected: `finished ok`. Exit 2: run the same `bg_wait` block again.
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
   # PRODUCTION
   gate_require snapshot || exit 1
   bg_wait ../data/review/logs/r2r1_apply1_prod.log 0 >/dev/null || { echo "r2r1 apply 1 has not finished ok: STOP" >&2; exit 1; }
@@ -4038,14 +4038,14 @@ Expected: `finished ok`. Exit 2: run the same `bg_wait` block again.
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh || exit 1
   bg_wait ../data/review/logs/r2r1_apply2_prod.log )
 ```
 
 Gate: each R2/R1 run accounts for every change it proposed, apply 1 proposed exactly what 6c's prod dry run did, and apply 2 applied nothing.
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
   # PRODUCTION
   bg_wait ../data/review/logs/r2r1_apply2_prod.log 0 >/dev/null || { echo "r2r1 apply 2 has not finished ok: STOP" >&2; exit 1; }
   R=../data/review
@@ -4076,21 +4076,21 @@ PY
 Expected: four count lines, then `GATE OK: r2r1_applied`. Apply 1 shows `applied > 0`; apply 2 `applied: 0`, with everything else `already_recorded` or `unchanged` (`unchanged > 0` is expected, as in Step 3).
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
   # PRODUCTION
   gate_require r2r1_applied || exit 1
   bg_start ../data/review/logs/r9_apply_prod.log ING r9 --apply )
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh || exit 1
   bg_wait ../data/review/logs/r9_apply_prod.log )
 ```
 
 Gate: R9 proposed exactly what 6c's prod dry run did, and accounted for every change.
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
   # PRODUCTION
   bg_wait ../data/review/logs/r9_apply_prod.log 0 >/dev/null || { echo "r9 apply has not finished ok: STOP" >&2; exit 1; }
   R=../data/review
@@ -4113,7 +4113,7 @@ Expected: one count line, `GATE OK: r9_applied`.
 **6f. Gate: the prod hand-check samples are the branch's.** These exports go to new `_prod` filenames and never touch the owner's filled files; each runs only if its file is not there yet.
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
   # PRODUCTION
   gate_require r9_applied || exit 1
   R=../data/review
@@ -4128,12 +4128,12 @@ Expected: `40 ids match`, `50 ids match` (or the pool sizes), `GATE OK: sample_i
 - If a branch or prod export is empty (`same_ids … has no rows`), STOP and ask the owner.
 - On a mismatch, stop. Do not import the branch CSVs, and report to the owner.
 - This gate is the real guard: the import's `refuse_ineligible` checks the whole re-dated pool, not the sample, so a branch CSV would still import after a mismatch.
-- **Mismatch path (owner only).** The owner hand-checks the `_prod` files (as Step 4b), then, in writing, tells the agent to import them. The owner (not the agent) runs `( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && GATE_DIR=../data/review/gates_2a1_prod gate_pass owner_filled_prod_samples )`, and the agent runs the commented alternative in 6g.
+- **Mismatch path (owner only).** The owner hand-checks the `_prod` files (as Step 4b), then, in writing, tells the agent to import them. The owner (not the agent) runs `( cd <repo-root>/backend && . scripts/runbook_helpers.sh && GATE_DIR=../data/review/gates_2a1_prod gate_pass owner_filled_prod_samples )`, and the agent runs the commented alternative in 6g.
 
 **6g. Import the owner's filled CSVs from Step 4b; they must reproduce the branch's agreements.** Each import runs only if its `_prod` evidence file is not there yet, so a re-run never logs a second check.
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
   # PRODUCTION
   gate_require sample_ids || exit 1
   R=../data/review
@@ -4149,7 +4149,7 @@ Expected: the two import summaries, byte-equal to Step 4c's, then `GATE OK: impo
 Mismatch path only (after the owner's `owner_filled_prod_samples` marker and written instruction), in place of the block above. There is no branch agreement to compare, so R1 must clear 0.90 on its own:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
   # PRODUCTION
   gate_require r9_applied || exit 1
   gate_require owner_filled_prod_samples || exit 1
@@ -4163,7 +4163,7 @@ Mismatch path only (after the owner's `owner_filled_prod_samples` marker and wri
 **6i. Gate: prod's r1-v2 dry run equals the branch's.** r1-v2 reads the same snapshot and the same post-r1-v1 rows as Step 5a did, so its dry run must match key for key.
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
   # PRODUCTION
   gate_require imported || exit 1
   R=../data/review
@@ -4183,19 +4183,19 @@ Expected: `… matches the branch`, `GATE OK: r1v2_dry`.
 **6j. Apply r1-v2, in the background,** twice (the second is the idempotency check). Record each `RUNBOOK_ELAPSED`.
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
   # PRODUCTION
   gate_require r1v2_dry || exit 1
   bg_start ../data/review/logs/r1v2_apply1_prod.log ING r1v2 --apply )
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh || exit 1
   bg_wait ../data/review/logs/r1v2_apply1_prod.log )
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
   # PRODUCTION
   gate_require r1v2_dry || exit 1
   bg_wait ../data/review/logs/r1v2_apply1_prod.log 0 >/dev/null || { echo "r1v2 apply 1 has not finished ok: STOP" >&2; exit 1; }
@@ -4203,14 +4203,14 @@ Expected: `… matches the branch`, `GATE OK: r1v2_dry`.
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh || exit 1
   bg_wait ../data/review/logs/r1v2_apply2_prod.log )
 ```
 
 Gate: each run accounts for every change it proposed, apply 1 proposed exactly what 6i's prod dry run did, and apply 2 applied nothing.
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
   # PRODUCTION
   bg_wait ../data/review/logs/r1v2_apply2_prod.log 0 >/dev/null || { echo "r1v2 apply 2 has not finished ok: STOP" >&2; exit 1; }
   R=../data/review
@@ -4240,7 +4240,7 @@ Expected: two count lines, `GATE OK: r1v2_applied`.
 **6k. Gate: the prod r1-v2 sample is the branch's, then import the owner's filled CSV from Step 5c.** As 6f/6g: the export goes to a new `_prod` file and never touches the filled one.
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
   # PRODUCTION
   gate_require r1v2_applied || exit 1
   R=../data/review
@@ -4249,10 +4249,10 @@ Expected: two count lines, `GATE OK: r1v2_applied`.
   gate_pass r1v2_sample_ids )
 ```
 
-Expected: `40 ids match` (or the pool size), `GATE OK: r1v2_sample_ids`. On a mismatch or an empty export: STOP and report. Mismatch path (owner only), as 6f: the owner hand-checks `r1v2_year_check_prod.csv`, tells the agent in writing to import it, and runs `( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && GATE_DIR=../data/review/gates_2a1_prod gate_pass owner_filled_prod_r1v2_sample )`; the agent then runs the commented alternative below.
+Expected: `40 ids match` (or the pool size), `GATE OK: r1v2_sample_ids`. On a mismatch or an empty export: STOP and report. Mismatch path (owner only), as 6f: the owner hand-checks `r1v2_year_check_prod.csv`, tells the agent in writing to import it, and runs `( cd <repo-root>/backend && . scripts/runbook_helpers.sh && GATE_DIR=../data/review/gates_2a1_prod gate_pass owner_filled_prod_r1v2_sample )`; the agent then runs the commented alternative below.
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
   # PRODUCTION
   gate_require r1v2_sample_ids || exit 1
   R=../data/review
@@ -4266,7 +4266,7 @@ Expected: the import summary, byte-equal to Step 5d's, then `GATE OK: r1v2_impor
 Mismatch path only (after the owner's `owner_filled_prod_r1v2_sample` marker and written instruction), in place of the block above:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
   # PRODUCTION
   gate_require r1v2_applied || exit 1
   gate_require owner_filled_prod_r1v2_sample || exit 1
@@ -4279,14 +4279,14 @@ Mismatch path only (after the owner's `owner_filled_prod_r1v2_sample` marker and
 Then acceptance, read-only, in the background like the applies:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
   # PRODUCTION (read-only)
   gate_require r1v2_imported || exit 1
   bg_start ../data/review/logs/verify_prod.log VERIFY tests/verify/test_phase2a_repair.py -q -k "r1 or r2 or r9 or every_row" -s )
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh || exit 1
   bg_wait ../data/review/logs/verify_prod.log )
 ```
 
@@ -4337,7 +4337,7 @@ Every connection is TLS verify-full (`verify_full_url` for psql, `connect_args_f
 **Re-enter the rehearsal branch (Steps 1–11).** Never creates anything.
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 . scripts/runbook_helpers.sh
 unset TARGET_HOST
 B=p2a-2-rehearsal
@@ -4354,7 +4354,7 @@ Expected: `branch host ok` and `target is the rehearsal branch`. Anything else: 
 **Prod preamble (Step 12 only, after the owner's go-ahead).** There is no separate prod re-entry block. Every Step 12 block repeats this first line itself, inside its own subshell:
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
 ```
 
 - [ ] **Step 0 (owner/agent): Checkout, tools and helpers**
@@ -4369,7 +4369,7 @@ Preconditions:
 Git will not check out a branch that a worktree holds. So the agent first removes the review worktree `SafeAscent-2a2`. Removing it discards no commit, because worktrees share the repository's commits and refs. The agent never copies, links or prints an env file into a worktree.
 
 ```bash
-( M=/Users/sebastianfrazier/Developer/SafeAscent; W=/Users/sebastianfrazier/Developer/SafeAscent-2a2
+( M=<repo-root>; W=<worktree-2a2>
   [ -z "$(git -C "$M" status --porcelain --untracked-files=no)" ] || { echo "main checkout has uncommitted changes: STOP" >&2; exit 1; }
   if git -C "$M" worktree list --porcelain | grep -qx "worktree $W"; then
     [ -z "$(git -C "$W" status --porcelain)" ] || { echo "$W has uncommitted or untracked files: STOP, ask the owner" >&2; exit 1; }
@@ -4382,7 +4382,7 @@ Git will not check out a branch that a worktree holds. So the agent first remove
 Expected: `checkout ok`. Never pass `--force`: a refused removal or checkout is a stop. The main checkout's gitignored `backend/.env.*` and `data/review/` are untouched by the checkout.
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 uv sync --frozen
 . scripts/runbook_helpers.sh
 unset TARGET_HOST
@@ -4753,7 +4753,7 @@ Deploy order: this PR's code reads `gnis_summits`/`duplicate_decisions`, so it i
 **12a. Gate: prod is at 0004, and no earlier prod attempt left gates.** The `r3-states` diff waits for 12e (C3): `r3-states` reads `accidents_raw.state`, which ingest can read only after 12c's `grants_phase2.sql`, and that cannot run before 0005.
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
   # PRODUCTION
   [ ! -e "$GATE_DIR" ] || { echo "$GATE_DIR exists: an earlier prod attempt; STOP, ask the owner" >&2; exit 1; }
   cur="$(MIG current)" || exit 1
@@ -4767,7 +4767,7 @@ Expected: `0004_phase2a_foundation` (no `(head)`, I1) and `GATE OK: prod_at_0004
 **12b. Snapshot `pre-2a-2` immediately before the migration.** Run once; if neonctl says the branch exists, stop and ask the owner (never recreate it).
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
   # PRODUCTION snapshot
   gate_require prod_at_0004 || exit 1
   snap="$(neonctl branches create --project-id still-morning-74008008 --name pre-2a-2 --parent production --no-secrets --output json \
@@ -4781,7 +4781,7 @@ Expected: parent `br-restless-bar-ajw5zy4b` (`production`) and `GATE OK: snapsho
 **12c. Migrate, check, grants, verify.**
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
   # PRODUCTION
   gate_require snapshot || exit 1
   MIG upgrade head || exit 1
@@ -4800,7 +4800,7 @@ Expected: the same lines as Step 1, ending with `GATE OK: migrated`. The three S
 **12d. Gate: the same GNIS file; then load it.**
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
   # PRODUCTION
   gate_require migrated || exit 1
   shasum -a 256 ../data/review/gnis_national.zip | cmp - ../data/review/gnis_national.sha256 || { echo "not the Step 2 GNIS file: STOP" >&2; exit 1; }
@@ -4810,14 +4810,14 @@ Expected: the same lines as Step 1, ending with `GATE OK: migrated`. The three S
 Only after `GATE OK: gnis_file`:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
   # PRODUCTION
   gate_require gnis_file || exit 1
   bg_start ../data/review/logs/gnis_prod.log INGMOD app.pipelines.gnis --file ../data/review/gnis_national.zip )
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh || exit 1
   bg_wait ../data/review/logs/gnis_prod.log )
 ```
 
@@ -4826,7 +4826,7 @@ Expected: `finished ok`, with the same accepted, skipped and quarantined counts 
 **12e. Gate: states, pre-check and R3 dry run equal the branch's** byte for byte. A difference means prod changed after the branch was made: STOP; the owner decides (no gated block here recreates the rehearsal — that is Steps 1–11 run again from scratch, under a fresh owner go-ahead, never an agent decision). Each `save_once` runs only if its `_prod` file is not there yet, so a re-run of this gate compares the first pre-apply evidence.
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
   # PRODUCTION
   bg_wait ../data/review/logs/gnis_prod.log 0 >/dev/null || { echo "the GNIS load has not finished ok: STOP" >&2; exit 1; }
   R=../data/review
@@ -4844,26 +4844,26 @@ Expected: `GATE OK: r3_dry`. The owner's Step 3 confirmation covers exactly thes
 **12f. R3 apply and the idempotency rerun, then the R3 reviews from the owner's branch files.** Each prod export goes to a `_prod` name and never touches a filled file. Every `same_ids` check below (`r3a_ids`, `r3_review_ids`, `r3_plot_ids`, and their counterparts in 12g/12h) fails closed: a missing file or column, or either export with no rows, is a mismatch, never a match. If the **branch** file is the empty one, STOP and ask the owner — that is a rehearsal evidence problem, not something to patch here. On any other mismatch: STOP; the owner decides (no gated block here re-points the import at the `_prod` file instead of the owner's filled branch one).
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
   # PRODUCTION
   gate_require r3_dry || exit 1
   bg_start ../data/review/logs/r3_apply1_prod.log ING r3 --apply )
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh || exit 1
   bg_wait ../data/review/logs/r3_apply1_prod.log )
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
   # PRODUCTION
   bg_wait ../data/review/logs/r3_apply1_prod.log 0 >/dev/null || { echo "R3 apply 1 has not finished ok: STOP" >&2; exit 1; }
   bg_start ../data/review/logs/r3_apply2_prod.log ING r3 --apply )
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh || exit 1
   bg_wait ../data/review/logs/r3_apply2_prod.log )
 ```
 
@@ -4872,7 +4872,7 @@ Expected: the same `applied` counts as the branch's two applies (the second `app
 Gate: R3a ids.
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
   # PRODUCTION
   bg_wait ../data/review/logs/r3_apply2_prod.log 0 >/dev/null || { echo "R3 apply 2 has not finished ok: STOP" >&2; exit 1; }
   [ -e ../data/review/r3a_moves_prod.csv ] || ING r3a-export --out ../data/review/r3a_moves_prod.csv || exit 1
@@ -4883,7 +4883,7 @@ Gate: R3a ids.
 Only after `GATE OK: r3a_ids`:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
   # PRODUCTION
   gate_require r3a_ids || exit 1
   ING r3a-import --review-file ../data/review/r3a_moves.csv --apply || exit 1
@@ -4893,7 +4893,7 @@ Only after `GATE OK: r3a_ids`:
 Gate: R3 review ids.
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
   # PRODUCTION
   gate_require r3a_imported || exit 1
   [ -e ../data/review/r3_ambiguous_prod.csv ] || ING r3-ambiguous-export --out ../data/review/r3_ambiguous_prod.csv || exit 1
@@ -4904,7 +4904,7 @@ Gate: R3 review ids.
 Only after `GATE OK: r3_review_ids`:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
   # PRODUCTION
   gate_require r3_review_ids || exit 1
   ING r3-ambiguous-import --review-file ../data/review/r3_ambiguous.csv --apply || exit 1
@@ -4914,7 +4914,7 @@ Only after `GATE OK: r3_review_ids`:
 Gate: R3 plot ids (I3: the import is in its own block).
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
   # PRODUCTION
   gate_require r3_review_imported || exit 1
   [ -e ../data/review/r3_spot_check_prod.csv ] || ING r3-plot-export --out ../data/review/r3_spot_check_prod.csv || exit 1
@@ -4925,7 +4925,7 @@ Gate: R3 plot ids (I3: the import is in its own block).
 Only after `GATE OK: r3_plot_ids`:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
   # PRODUCTION
   gate_require r3_plot_ids || exit 1
   ING r3-plot-import --review-file ../data/review/r3_spot_check.csv || exit 1
@@ -4937,7 +4937,7 @@ Expected: every agreement equals the branch's.
 **12g. R4.** Gate: the dry run equals the branch's.
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
   # PRODUCTION
   gate_require r3_done || exit 1
   [ -e ../data/review/p2a2_r4_dry_prod.json ] || save_once ../data/review/p2a2_r4_dry_prod.json ING r4 >/dev/null || exit 1
@@ -4948,21 +4948,21 @@ Expected: every agreement equals the branch's.
 Only after `GATE OK: r4_dry`:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
   # PRODUCTION
   gate_require r4_dry || exit 1
   bg_start ../data/review/logs/r4_apply_prod.log ING r4 --apply )
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh || exit 1
   bg_wait ../data/review/logs/r4_apply_prod.log )
 ```
 
 Gate: R4 review ids. (Same `same_ids` fail-closed policy as 12f: if the branch export was empty, STOP and ask the owner; any other mismatch is also STOP; the owner decides.)
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
   # PRODUCTION
   bg_wait ../data/review/logs/r4_apply_prod.log 0 >/dev/null || { echo "R4 apply has not finished ok: STOP" >&2; exit 1; }
   [ -e ../data/review/r4_activity_review_prod.csv ] || ING r4-review-export --out ../data/review/r4_activity_review_prod.csv || exit 1
@@ -4973,7 +4973,7 @@ Gate: R4 review ids. (Same `same_ids` fail-closed policy as 12f: if the branch e
 Only after `GATE OK: r4_review_ids`:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
   # PRODUCTION
   gate_require r4_review_ids || exit 1
   ING r4-review-import --review-file ../data/review/r4_activity_review.csv --apply || exit 1
@@ -4985,7 +4985,7 @@ Only after `GATE OK: r4_review_ids`:
 Gate: R5 dry run.
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
   # PRODUCTION
   gate_require r4_done || exit 1
   [ -e ../data/review/p2a2_r5_dry_prod.json ] || save_once ../data/review/p2a2_r5_dry_prod.json ING r5 >/dev/null || exit 1
@@ -4996,21 +4996,21 @@ Gate: R5 dry run.
 Only after `GATE OK: r5_dry`:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
   # PRODUCTION
   gate_require r5_dry || exit 1
   bg_start ../data/review/logs/r5_apply1_prod.log ING r5 --apply --out ../data/review/duplicates_prod.csv )
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh || exit 1
   bg_wait ../data/review/logs/r5_apply1_prod.log )
 ```
 
 Gate: R5 round-1 pairs. (Same `same_ids` fail-closed policy as 12f: if the branch export was empty, STOP and ask the owner; any other mismatch is also STOP; the owner decides.)
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
   # PRODUCTION
   bg_wait ../data/review/logs/r5_apply1_prod.log 0 >/dev/null || { echo "R5 apply 1 has not finished ok: STOP" >&2; exit 1; }
   same_ids ../data/review/duplicates.csv ../data/review/duplicates_prod.csv low_id high_id || exit 1
@@ -5020,7 +5020,7 @@ Gate: R5 round-1 pairs. (Same `same_ids` fail-closed policy as 12f: if the branc
 Only after `GATE OK: r5_round1_pairs`. The second apply gets its own `--out` (I4):
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
   # PRODUCTION
   gate_require r5_round1_pairs || exit 1
   ING r5-import --review-file ../data/review/duplicates.csv --apply || exit 1
@@ -5028,14 +5028,14 @@ Only after `GATE OK: r5_round1_pairs`. The second apply gets its own `--out` (I4
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh || exit 1
   bg_wait ../data/review/logs/r5_apply2_prod.log )
 ```
 
 **Round 2 (only if Step 9 ran one).** The apply above then reports `review_pending > 0` and wrote `duplicates_round2_prod.csv`. Gate: those pairs equal the branch's round 2. (Same `same_ids` fail-closed policy as 12f: if the branch export was empty, STOP and ask the owner; any other mismatch is also STOP; the owner decides.)
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
   # PRODUCTION
   bg_wait ../data/review/logs/r5_apply2_prod.log 0 >/dev/null || { echo "R5 apply 2 has not finished ok: STOP" >&2; exit 1; }
   same_ids ../data/review/duplicates_round2.csv ../data/review/duplicates_round2_prod.csv low_id high_id || exit 1
@@ -5045,7 +5045,7 @@ Only after `GATE OK: r5_round1_pairs`. The second apply gets its own `--out` (I4
 Only after `GATE OK: r5_round2_pairs`:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
   # PRODUCTION
   gate_require r5_round2_pairs || exit 1
   ING r5-import --review-file ../data/review/duplicates_round2.csv --apply || exit 1
@@ -5053,7 +5053,7 @@ Only after `GATE OK: r5_round2_pairs`:
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh || exit 1
   bg_wait ../data/review/logs/r5_apply3_prod.log )
 ```
 
@@ -5062,7 +5062,7 @@ Any further round follows the same pattern with the next numbers. Prod runs exac
 Gate: R5 done. Set `R5_ROUNDS` to the round count recorded in the PR from Step 9 (1 if only the initial review ran, 2 if Round 2 also ran, and so on). `LAST` is derived from it, never hard-coded — `r5_apply2_prod.log` for `R5_ROUNDS=1`, `r5_apply3_prod.log` for `R5_ROUNDS=2`. An unset or non-numeric `R5_ROUNDS` fails closed rather than guessing a log name.
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
   # PRODUCTION
   case "${R5_ROUNDS:-}" in ''|*[!0-9]*) echo "R5_ROUNDS is unset or not a number: STOP, set it to the Step 9 PR round count" >&2; exit 1 ;; esac
   LAST="../data/review/logs/r5_apply$((R5_ROUNDS + 1))_prod.log"
@@ -5076,7 +5076,7 @@ Expected: `GATE OK: r5_done`, with `review_pending: 0` and `path: null`, as on t
 **12i. R12 and acceptance.** Gate: the R12 dry run equals the branch's.
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
   # PRODUCTION
   gate_require r5_done || exit 1
   [ -e ../data/review/p2a2_r12_dry_prod.json ] || save_once ../data/review/p2a2_r12_dry_prod.json ING r12 >/dev/null || exit 1
@@ -5087,28 +5087,28 @@ Expected: `GATE OK: r5_done`, with `review_pending: 0` and `path: null`, as on t
 Only after `GATE OK: r12_dry`:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a2_prod || exit 1
   # PRODUCTION
   gate_require r12_dry || exit 1
   bg_start ../data/review/logs/r12_apply_prod.log ING r12 --apply )
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh || exit 1
   bg_wait ../data/review/logs/r12_apply_prod.log )
 ```
 
 Then the full acceptance run (read-only), after R12 finished ok:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production || exit 1
   # PRODUCTION (read-only)
   bg_wait ../data/review/logs/r12_apply_prod.log 0 >/dev/null || { echo "R12 apply has not finished ok: STOP" >&2; exit 1; }
   bg_start ../data/review/logs/verify_prod.log VERIFY tests/verify -q -s )
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh || exit 1
   bg_wait ../data/review/logs/verify_prod.log )
 ```
 

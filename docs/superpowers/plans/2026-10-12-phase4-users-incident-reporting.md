@@ -5160,7 +5160,7 @@ Owner-only steps, each recorded in the PR 4-1 description as done/not done with 
 - [ ] **Step 2 (agent): create the role and schemas on the branch.**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh
+cd <repo-root>/backend && . scripts/runbook_helpers.sh
 ( set -a; . ./.env.triage_worker; set +a; OWNER_PSQL -f db/roles/create_roles_phase4.sql ) | tee >(save_once ../data/review/p4_create_roles_branch.log)
 ```
 
@@ -5187,7 +5187,7 @@ Expected: `0016_report_promotions (head)`, `ALL ROLE CHECKS PASSED`, `ALL PHASE 
 - [ ] **Daily (agent under owner authorization, or owner): promotion.**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production
+cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production
 read -rs OPEN_METEO_STANDARD_API_KEY && export OPEN_METEO_STANDARD_API_KEY   # the Standard forecast key, pasted, never echoed
 INGMOD app.pipelines.report_promote run --dry-run
 INGMOD app.pipelines.report_promote run

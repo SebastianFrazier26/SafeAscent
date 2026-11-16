@@ -2934,7 +2934,7 @@ git commit -m "docs: Phase 2a foundations — roles, internal schema, pipeline c
 
 ### Task 8: OWNER/AGENT RUNBOOK — backups, restore rehearsal
 
-Runs from `/Users/sebastianfrazier/Developer/SafeAscent/backend` on `main` after this plan's PR merges. The agent may run it only when the owner has placed the needed env files; the agent never opens them. No command prints a password.
+Runs from `<repo-root>/backend` on `main` after this plan's PR merges. The agent may run it only when the owner has placed the needed env files; the agent never opens them. No command prints a password.
 
 **Pre-merge gate (read before merging this plan's PR; final re-review N1).** The merged `Accident` model needs `0004`, which is applied only in Task 9 Step 4, so a deploy of the merge before then breaks `/predict`. Before clicking merge:
 - confirm auto-deploy is **off** on every Railway service (`api`, `worker`, `beat`, `frontend`); if it is on, pause it on every service first;
@@ -2989,7 +2989,7 @@ Check TLS once: `split_pg_url "$OWNER_DATABASE_URL"; verify_full_url; psql "$PG_
 **Record the prod server's major version, and use dump/restore tools of that same major** (final review C1). This machine's `libpq` is 18.6, and `pg_restore` 18 always sends `SET transaction_timeout = 0`, which a PG16 server rejects (`unrecognized configuration parameter "transaction_timeout"`), so `--exit-on-error` aborts before any data. A PG16 `pg_restore` in turn cannot read a dump written by `pg_dump` 18 (`unsupported version (1.16) in file header`). So dumps and restores both use the server's major:
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 ( set -a; . ./.env.owner; set +a
   type split_pg_url verify_full_url >/dev/null || exit 1
   split_pg_url "$OWNER_DATABASE_URL"; verify_full_url
@@ -3012,7 +3012,7 @@ Expected: all three print `(PostgreSQL) <PGMAJOR>.x`. If the server's major is 1
 The dumps must come from `$PGBIN`'s `pg_dump`, or Step 3's same-major `pg_restore` cannot read them.
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 mkdir -p ~/Developer/safeascent-private/backups/pre-2a && chmod 700 ~/Developer/safeascent-private/backups/pre-2a
 ( set -a; . ./.env.owner; set +a
   type split_pg_url verify_full_url >/dev/null || exit 1
@@ -3035,7 +3035,7 @@ Why not rewrite the schema name on the fly: a `sed s/public\./drill./` rewrite w
 Only the **pre-data and data sections** are restored (table definitions, sequences, and rows). Post-data (indexes, primary keys, the FKs from `accidents` to `mountains`/`routes`/`mp_routes`, and the `update_coordinates()` triggers) is deliberately **not rehearsed**: a `-t` dump does not carry the trigger function or the FK targets, so post-data fails by construction (`function public.update_coordinates() does not exist`, reproduced 2026-09-29). The `pre-2a` branch is the full fallback; these dumps prove the rows themselves are recoverable.
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 B=p2a-restore-drill
 neonctl branches create --project-id still-morning-74008008 --name "${B:?}" --parent production --output json \
   | python3 -c 'import json,sys; b=json.load(sys.stdin)["branch"]; print(b["id"], b["name"], b["parent_id"])'
@@ -3086,7 +3086,7 @@ The old code ignores the extra columns, so migrating first is always safe. `DEPL
 - [ ] **Step 1 (owner): Generate the ingest password straight into a file and write its role URL**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 ( set -a; . ./.env.owner; set +a; uv run python -m scripts.write_role_url --role ingest --env-file .env.ingest --generate-password )
 git check-ignore -v .env.ingest
 ```
@@ -3096,7 +3096,7 @@ Expected: `wrote INGEST_PASSWORD and INGEST_DATABASE_URL to .env.ingest` (0600, 
 - [ ] **Step 2 (owner/agent): Rehearse on a Neon branch made from `production`**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 B=p2a-0-rehearsal
 neonctl branches create --project-id still-morning-74008008 --name "${B:?}" --parent production --output json \
   | python3 -c 'import json,sys; b=json.load(sys.stdin)["branch"]; print(b["id"], b["name"], b["parent_id"])'
@@ -3117,7 +3117,7 @@ Expected: parent `br-restless-bar-ajw5zy4b` (production), then `branch host ok`.
 - `grants_phase2.sql` can instead be run as `migrator` directly (`MIGRATOR_DATABASE_URL`, through `split_pg_url; verify_full_url`), which needs no owner membership. Every later plan's grants step can use this route. As the owner without SET it refuses with `run as migrator, or as an owner with SET on migrator`.
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 ( set -a; . ./.env.owner; set +a
   [ -n "${BRANCH_HOST-}" ] || { echo 'BRANCH_HOST is not set: re-run the step that sets it' >&2; exit 1; }
   type split_pg_url verify_full_url >/dev/null || exit 1
@@ -3144,7 +3144,7 @@ Expected: `roles ingest and trainer created; schema internal owned by migrator`;
 - [ ] **Step 3 (owner/agent): Acceptance on the branch as `analyst`**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 ( set -a; . ./.env.analyst; set +a
   [ -n "${BRANCH_HOST-}" ] || { echo 'BRANCH_HOST is not set: re-run the step that sets it' >&2; exit 1; }
   VERIFY_DATABASE_URL="$(printf '%s' "$ANALYST_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")" \
@@ -3171,7 +3171,7 @@ Expected: parent `br-restless-bar-ajw5zy4b` (production). Record the `created_at
 Then apply to **production**. These are Step 2's and Step 3's blocks with no host substitution (final re-review N3):
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 # PRODUCTION
 ( set -a; . ./.env.owner; set +a
   type split_pg_url verify_full_url >/dev/null || exit 1
@@ -3203,7 +3203,7 @@ After Step 3 passes on prod, the deploy gate above is lifted.
 First on the rehearsal branch, to learn how long the scan takes:
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 ( set -a; . ./.env.migrator; set +a
   [ -n "${BRANCH_HOST-}" ] || { echo 'BRANCH_HOST is not set: re-run the step that sets it' >&2; exit 1; }
   type split_pg_url verify_full_url >/dev/null || exit 1
@@ -3279,7 +3279,7 @@ Record the three facts (or `loader: unknown`) in the PR. If any of them disagree
 On the rehearsal branch:
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 ( set -a; . ./.env.ingest; set +a
   [ -n "${BRANCH_HOST-}" ] || { echo 'BRANCH_HOST is not set: re-run the step that sets it' >&2; exit 1; }
   export INGEST_DATABASE_URL="$(printf '%s' "$INGEST_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")"
@@ -3298,7 +3298,7 @@ Expected: one JSON line, e.g. `{"counts": {"clean": …, "future": …, "orphan_
 - Then on **production**:
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 # PRODUCTION
 ( set -a; . ./.env.ingest; set +a
   DATABASE_URL="$INGEST_DATABASE_URL" uv run python -m app.pipelines.mp_ticks_quarantine )
@@ -3316,7 +3316,7 @@ In `~/Developer/safeascent-private/mp_ticks`: `./status.sh` must show all routes
 SNAPSHOT="$(mktemp -d)/mp_ice_ticks.snapshot.sqlite"
 sqlite3 ~/Developer/safeascent-private/mp_ticks/mp_ice_ticks.sqlite ".backup '$SNAPSHOT'"
 
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 ( set -a; . ./.env.ingest; set +a
   [ -n "${BRANCH_HOST-}" ] || { echo 'BRANCH_HOST is not set: re-run the step that sets it' >&2; exit 1; }
   [ -s "${SNAPSHOT-}" ] || { echo 'SNAPSHOT missing' >&2; exit 1; }
@@ -3339,7 +3339,7 @@ Expected: `"status": "ok"`, then `"status": "noop"`.
 Then on **production**, against the same `$SNAPSHOT`:
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 # PRODUCTION
 ( set -a; . ./.env.ingest; set +a
   [ -s "${SNAPSHOT-}" ] || { echo 'SNAPSHOT missing' >&2; exit 1; }

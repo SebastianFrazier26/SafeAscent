@@ -749,7 +749,7 @@ GRANT SELECT ON internal.route_tick_coverage, internal.route_tick_months TO inge
 - [ ] **Step 1: Profile the MP type vocabulary (owner/agent, read-only, prod analyst; needs the owner's go)** — run from the main checkout's `backend/` (role env files live only there; never copy them into a worktree):
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production
+cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production
 ANALYST_PSQL -At -F ' | ' -c "
 WITH t AS (SELECT lower(regexp_replace(btrim(x), '\s+', ' ', 'g')) AS tok
            FROM mp_routes, unnest(string_to_array(type, ',')) AS x)
@@ -1902,7 +1902,7 @@ Follows the plan-2/plan-3 runbook pattern (`2026-09-28-phase2a-conditions-refres
 **Re-enter the rehearsal branch** (never creates anything):
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 . scripts/runbook_helpers.sh
 unset TARGET_HOST
 B=mpc-1-rehearsal
@@ -1919,7 +1919,7 @@ Expected: `branch host ok`, `target is the rehearsal branch`.
 **Prod preamble** (Step 4 blocks only, after the owner's go):
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc1_prod || exit 1
+cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc1_prod || exit 1
 ```
 
 - [ ] **Step 0 (owner, then agent): Loader behaviour, checkout, tools**
@@ -1929,7 +1929,7 @@ cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_hel
   - **One window (2026-10-15 controller ruling).** The branch ships 0008, 0009 and 0010 together, so prod migrates once, here: `ltree`, `MIG upgrade 0010_accident_route_links`, the role scripts, then `MIG check` (which compares against the 0010 models, so it is only meaningful at 0010). Tasks 13 and 16 keep only their data steps and require prod at `0010_accident_route_links`; neither migrates nor runs the role scripts.
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 uv sync --frozen
 . scripts/runbook_helpers.sh
 unset TARGET_HOST
@@ -2010,7 +2010,7 @@ Expected: all cells pass; every state code is a US state or DC; the route-bearin
 4a — gate (read-only). It fails closed (revised 2026-10-15, final review): a `MIG current` that errors (missing `.env.migrator`, network, wrong `TARGET_HOST`) stops the block instead of passing it, and prod must positively read `0007_cell_daily_conditions`, not merely "not 0008". It also asserts the ingest URL is Neon's direct host (every ingest job refuses a `-pooler.` host too; this catches it before the gate):
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc1_prod || exit 1
   # PRODUCTION (read-only)
   [ -s ../data/review/mpc1_refresh_branch.json ] || { echo "no branch evidence" >&2; exit 1; }
   cur="$(MIG current)" || exit 1
@@ -2033,7 +2033,7 @@ Expected: `0007_cell_daily_conditions`, `ingest direct host: True`, `GATE OK: c1
 4a-snap — snapshot `pre-mpc-1` immediately before the one migration window (0008–0010) (the phase2a pattern, `2026-09-28-phase2a-conditions-refresh.md` Step 6b). Run once; if neonctl says the branch exists, stop and ask the owner (never recreate it):
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc1_prod || exit 1
   # PRODUCTION snapshot
   gate_require c1_migrate || exit 1
   snap="$(neonctl branches create --project-id still-morning-74008008 --name pre-mpc-1 --parent production --no-secrets --output json \
@@ -2047,7 +2047,7 @@ Expected: parent `br-restless-bar-ajw5zy4b` and `GATE OK: snapshot`. Record the 
 4b — `ltree`, migrate to 0010, roles, check (expected output as Step 1):
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc1_prod || exit 1
   # PRODUCTION
   gate_require c1_migrate || exit 1
   gate_require snapshot || exit 1
@@ -2069,7 +2069,7 @@ Expected: parent `br-restless-bar-ajw5zy4b` and `GATE OK: snapshot`. Record the 
 4c — gate: the prod dry run must match the branch within new scrape rows:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc1_prod || exit 1
   # PRODUCTION (read-only dry run)
   gate_require c1_migrated || exit 1
   save_once ../data/review/mpc1_dry_prod.json INGMOD app.pipelines.mp_catalog refresh --dry-run || exit 1
@@ -2087,7 +2087,7 @@ EOF
 4d — refresh prod:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc1_prod || exit 1
   gate_require c1_refresh || exit 1
   bg_start ../data/review/logs/mpc1_refresh_prod.log INGMOD app.pipelines.mp_catalog refresh )
 ```
@@ -3719,7 +3719,7 @@ Expected: every cell passes; the elevation cell accepts no `pending` point and a
 5a — gate (read-only): branch evidence, prod positively at `0010_accident_route_links` (Task 6 migrated it; this task never migrates), ingest on the direct host:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
   # PRODUCTION (read-only)
   [ -s ../data/review/mpc2_points_branch.json ] || { echo "no branch evidence" >&2; exit 1; }
   cur="$(MIG current)" || exit 1
@@ -3742,7 +3742,7 @@ Expected: `0010_accident_route_links (head)`, `ingest direct host: True`, `GATE 
 5b — snapshot `pre-mpc-2` before the data writes (run once; if it exists, stop and ask the owner):
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
   # PRODUCTION snapshot
   gate_require c2_ready || exit 1
   snap="$(neonctl branches create --project-id still-morning-74008008 --name pre-mpc-2 --parent production --no-secrets --output json \
@@ -3756,7 +3756,7 @@ Expected: parent `br-restless-bar-ajw5zy4b` and `GATE OK: snapshot`. Record the 
 5c — refresh prod, in the background:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
   # PRODUCTION
   gate_require c2_ready || exit 1
   gate_require snapshot || exit 1
@@ -3766,7 +3766,7 @@ Expected: parent `br-restless-bar-ajw5zy4b` and `GATE OK: snapshot`. Record the 
 then `bg_wait ../data/review/logs/mpc2_refresh_prod.log` (with the prod preamble) until `finished ok`. Then points, gated on the branch's count (within 1%; prod may hold a few newer scrape rows):
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
   # PRODUCTION
   gate_require snapshot || exit 1
   grep -q '^RUNBOOK_EXIT=0$' ../data/review/logs/mpc2_refresh_prod.log || { echo "prod refresh has not finished ok" >&2; exit 1; }
@@ -3784,7 +3784,7 @@ EOF
 5d — elevation; run this block again until it prints `"sampled": 0` and `"retry": 0` (the Step 2 STOP rule for a lingering `retry` applies):
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
   # PRODUCTION
   gate_require c2_points || exit 1
   INGMOD app.pipelines.static_features elevation --limit 5000 )
@@ -3793,7 +3793,7 @@ EOF
 5e — EPQS gate on prod, in the background:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
   # PRODUCTION
   gate_require c2_points || exit 1
   bg_start ../data/review/logs/mpc2_epqs_prod.log INGMOD app.pipelines.static_features epqs-check )
@@ -3802,7 +3802,7 @@ EOF
 then `bg_wait ../data/review/logs/mpc2_epqs_prod.log` (prod preamble), then the gate, which also re-checks that no point is pending:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
   # PRODUCTION (read-only)
   gate_require c2_points || exit 1
   grep -q '^RUNBOOK_EXIT=0$' ../data/review/logs/mpc2_epqs_prod.log || { echo "EPQS check did not exit 0: STOP" >&2; exit 1; }
@@ -3822,7 +3822,7 @@ EOF
 5f — route table, in the background:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc2_prod || exit 1
   # PRODUCTION
   gate_require c2_epqs || exit 1
   bg_start ../data/review/logs/mpc2_routes_prod.log INGMOD app.pipelines.static_features routes )
@@ -5251,7 +5251,7 @@ Expected: the dry run prints `legacy_accidents`, `links: {legacy_mp_id: N}`, `un
 4a — gate (read-only):
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
   # PRODUCTION (read-only)
   [ -s ../data/review/mpc3_r10_dry_branch.json ] || { echo "no branch evidence" >&2; exit 1; }
   cur="$(MIG current)" || exit 1
@@ -5274,7 +5274,7 @@ Expected: `0010_accident_route_links (head)`, `ingest direct host: True`, `GATE 
 4b — snapshot `pre-mpc-3` before the R10 writes (run once; if it exists, stop and ask the owner):
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
   # PRODUCTION snapshot
   gate_require c3_ready || exit 1
   snap="$(neonctl branches create --project-id still-morning-74008008 --name pre-mpc-3 --parent production --no-secrets --output json \
@@ -5288,7 +5288,7 @@ Expected: parent `br-restless-bar-ajw5zy4b` and `GATE OK: snapshot`. Record the 
 4c — gate: the prod dry run's `links` and `unresolved` totals are within 1% of the branch's:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
   # PRODUCTION (read-only dry run)
   gate_require c3_ready || exit 1
   gate_require snapshot || exit 1
@@ -5308,7 +5308,7 @@ EOF
 4d — apply R10 on prod (then the Step 2 queries with the prod preamble; the accidents counts are unchanged):
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
   # PRODUCTION
   gate_require c3_apply || exit 1
   ING r10 --apply )
@@ -5323,7 +5323,7 @@ EOF
   2. **Pinned ids and one fixture call per model.** Each runs `models.retrieve` on the pinned id (refuses unless it returns the same id), then one synthetic fixture call (`Fixture …` names, no real accident, no audit row; its spend goes into the same cumulative `source_ingest_log` ledger as the sample). Record `retrieved`, `status`, `input_tokens`, `output_tokens`, `cost_usd` against `ceiling_usd`. **STOP** if `status` is not `ok`, if `model_reported` differs from the pinned id (the probe refuses), or if `cost_usd` exceeds `ceiling_usd`.
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
   # PRODUCTION (paid: one fixture call per model)
   gate_require c3_ready || exit 1
   INGLLM app.data.repair.r10_llm probe --model haiku --max-usd 12 || exit 1
@@ -5335,7 +5335,7 @@ EOF
   5. **Owner sign-off.** The owner reads the record and adds one line starting `Owner sign-off:` with the date. Only then does the agent run:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
   # PRODUCTION gate (no database access)
   [ -s "$GATE_DIR/r10_llm_verify.md" ] || { echo "no verify record" >&2; exit 1; }
   grep -q '^Owner sign-off:' "$GATE_DIR/r10_llm_verify.md" || { echo "owner has not signed off the verify record: STOP" >&2; exit 1; }
@@ -5347,7 +5347,7 @@ Expected: `GATE OK: llm_verify`.
 5b — **sample** (paid). The caps sit above each model's worst-case ceiling (about $10 and $19 at 12,288 output tokens a call, M4), so the cap never stops a 150-case sample early; use `plan`'s ceiling and the probes' `output_tokens` to check the headroom left for `run`. For each model being compared (DP13):
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
   # PRODUCTION (paid)
   gate_require llm_verify || exit 1
   INGLLM app.data.repair.r10_llm plan || exit 1
@@ -5355,7 +5355,7 @@ Expected: `GATE OK: llm_verify`.
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
   # PRODUCTION (paid)
   gate_require llm_verify || exit 1
   INGLLM app.data.repair.r10_llm sample --model sonnet --n 150 --max-usd 22 --out ../data/review/r10_llm_sample_sonnet.csv )
@@ -5366,7 +5366,7 @@ Expected: `calls` ≤ 150 each, `status_counts` mostly `ok`, `spent_usd` under t
 5c — **owner spot-check, then gate** (free). The owner fills `owner_answer` in each CSV (a candidate id or `none`), ideally with the two `llm_*` columns hidden while labelling. Then, per model:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
   # PRODUCTION (no API calls; records the gate and the owner's answers)
   gate_require llm_verify || exit 1
   INGLLM app.data.repair.r10_llm gate --model haiku --review-file ../data/review/r10_llm_sample_haiku.csv || exit 1
@@ -5380,7 +5380,7 @@ Expected per model: `n_checked`, agreement, auto-band precision and `passed`. `g
 5d — **run** (paid; resumable: rerun until no case is left or the cap stops it; report `skipped_attempt_limit` and `error_counts`):
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
   # PRODUCTION (paid)
   gate_require llm_verify || exit 1
   INGLLM app.data.repair.r10_llm run --model haiku --max-usd 12 )
@@ -5391,14 +5391,14 @@ Expected per model: `n_checked`, agreement, auto-band precision and `passed`. `g
 5e — **apply** (free): dry run, then write, then R10 and the review-band export to a new file (Step 3's `r10_unresolved.csv` may already exist, and `r10-export` refuses to replace a file; `--overwrite` would wipe filled decisions):
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
   # PRODUCTION (dry run: counts per band)
   gate_require llm_verify || exit 1
   INGLLM app.data.repair.r10_llm apply --model haiku )
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_mpc3_prod || exit 1
   # PRODUCTION
   gate_require llm_verify || exit 1
   INGLLM app.data.repair.r10_llm apply --model haiku --apply || exit 1
