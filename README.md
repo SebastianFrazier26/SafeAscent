@@ -4,6 +4,8 @@ Route-level risk forecasts for climbers, built from historical accident records 
 
 > **Status (September 2026): offline for a rebuild.** safeascent.us shows a maintenance page while the data pipeline, model, and operations are rebuilt. The code here is the current state of that work, not a running service.
 
+**Project page:** https://sebastianfrazier26.github.io/SafeAscent/ (pending: goes live once GitHub Pages is enabled for this repo; source in [`site/`](./site/)). It explains the method, architecture and status while the app is offline.
+
 ## What it does
 
 For a climbing route and a date in the next few days, SafeAscent estimates risk on a 0–100 scale. Historical accidents near the route are weighted by distance, how recent they were, elevation, route type, severity, and how closely the weather in the days before each accident matches the coming forecast. Scores for every route are precomputed nightly for today and the next two days. See [`ALGORITHM_DESIGN.md`](./ALGORITHM_DESIGN.md) for the method.
@@ -76,6 +78,7 @@ Only clients for open APIs live in this repo. It never contains scraper code; CI
 - [`ALGORITHM_DESIGN.md`](./ALGORITHM_DESIGN.md): scoring method
 - [`data/`](./data/): database structure and data sources
 - [`CHANGELOG.md`](./CHANGELOG.md): dated changes
+- [`site/`](./site/): the static project page, deployed to GitHub Pages by `.github/workflows/pages.yml`
 
 ## License
 

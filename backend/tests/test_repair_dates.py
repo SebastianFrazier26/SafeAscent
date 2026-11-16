@@ -294,7 +294,7 @@ def test_r1_reads_the_raw_snapshot_so_a_later_rule_version_sees_the_same_inputs(
             }
             # G17: had R1 read live rows, re-dated row 11 would now be a trusted 2003 neighbour
             # and drop out of R1, so a new rule version would propose something different.
-            monkeypatch.setattr(dates, "R1_VERSION", "r1-v2")
+            monkeypatch.setattr(dates, "R1_VERSION", "r1-v1-rerun")
             async with engine.connect() as conn:
                 v2 = await run_r2r1(conn, argparse.Namespace(apply=False))
             assert v2["r1"]["report"] == v1["r1"]["report"]
@@ -335,7 +335,7 @@ def test_another_steps_exclusion_survives_an_r1_rerun(monkeypatch):
             async with engine.begin() as conn:
                 await run_r2r1(conn, argparse.Namespace(apply=True))
                 await conn.execute(text("UPDATE accidents SET excluded_reason = 'non_climbing' WHERE accident_id = 11"))
-            monkeypatch.setattr(dates, "R1_VERSION", "r1-v2")
+            monkeypatch.setattr(dates, "R1_VERSION", "r1-v1-rerun")
             async with engine.begin() as conn:
                 await run_r2r1(conn, argparse.Namespace(apply=True))
             async with engine.connect() as conn:

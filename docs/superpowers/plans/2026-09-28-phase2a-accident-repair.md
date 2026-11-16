@@ -3602,6 +3602,8 @@ Docs: `CHANGELOG.md` entry (heading from `printf '### Phase 2a accident repair, 
 
 Final review 2a-1 (2026-09-30) rewrote this runbook (C1–C4, I1–I5, M1, M2, M4–M6); the re-review (2026-10-01) added N1–N3 and m1–m6.
 
+**r1-v2 (owner, 2026-10-13).** The 2026-10-13 branch run left 216 AAC rows `year_unverified`, including every row of the raw "2023" corruption spike that r1-v1 could not date. Prod waits for rule `r1-v2` (`dates.r1v2_year_fixes`): a P10–P90 neighbour bound for `sequence` rows and 2018 within 2017–2018 for the eight-digit scheme, applied after r1-v1 as its own audited rule version with its own 40-row hand check. On the branch it runs as Steps 5a–5e after Step 5's cells; on prod as 6i–6k after 6g. The owner's Step 5 sign-off and the prod go-ahead cover both rule versions.
+
 Every connection is TLS verify-full (`verify_full_url` for psql, `connect_args_for` via `tests/verify/_db.fetch` and `db.ingest_engine` for Python). Every repair runs as `ingest` and prints counts only. Neon branch creation and the snapshot can be run by an agent under the owner's CLI authorization. Three things need the owner: the hand checks (Step 4b), the sign-off on the unverified counts (Step 5), and authorizing prod (Step 6).
 
 **Shell state.** `TARGET_HOST`, `B`, `BRANCH_HOST` and the helper functions live only in the shell that set them. An agent whose tool starts a fresh shell per command is in a new shell on every block. A `${VAR:?}` inside `$(…)` stops only the command substitution, not the block, so each guard below sits on its own line or opens its subshell. The helpers refuse while `TARGET_HOST` is unset, and it never defaults to prod. In a new shell, run the branch re-entry block first (Steps 1–5), then only the block you are on; every Step 6 block carries its own prod preamble instead. Never re-run an export (Step 4a) or a creation (Step 1's `neonctl branches create`, 6d).
@@ -3784,15 +3786,133 @@ VERIFY tests/verify/test_phase2a_repair.py -q -k "r1 or r2 or r9 or every_row" -
 python3 -c 'import json; print(json.dumps(json.load(open("../data/review/p2a1_r2r1_dry_branch.json"))["aac_schemes"], indent=1))'
 ```
 
-Expected: every cell passes.
+Expected: every r1-v1 cell passes. Before Step 5e has imported the r1-v2 check, `test_r1v2_hand_check_at_least_90_percent_within_one_year` errors (no `repair:r1v2-check` row yet) and `test_r1v2_rows_are_ranges…` fails (no r1-v2 rows yet); both are expected here and must pass at Step 5e.
 
-**Owner sign-off (blocks prod).** The owner reads two things:
-- the `year_unverified` counts by source and year, printed by `test_r1_unverified_year_count_is_reported`;
-- the `aac_schemes` block (`rows`/`suspects`/`unverified` per scheme).
+- [ ] **Step 5a (owner/agent): r1-v2 backtest, dry run, then apply on the branch**
 
-The owner then signs off in the PR, with both tables pasted there.
+Run the branch re-entry block first. r1-v2 refuses until r1-v1 has been applied (Step 3).
 
-This is an accuracy call. By ruling, the 8-digit 2019NNNN scheme (68 rows, dated 2018–2024) is never used as a neighbour, so every suspect in it becomes `year_unverified`. So does every `sequence` suspect with fewer than 5 trusted neighbours on its right. Those may be the genuinely recent reports that Phase 3 recency depends on. `test_r1_2023_aac_count_is_at_most_twice_the_2015_2018_mean` is only an upper bound: it passes even if every row from 2019 on is excluded. No sign-off means no Step 6.
+```bash
+( . scripts/runbook_helpers.sh || exit 1
+  [ -n "${TARGET_HOST-}" ] && [ "$TARGET_HOST" != production ] || { echo "not on the rehearsal branch: run the branch re-entry block first" >&2; exit 1; }
+  R=../data/review
+  [ -e $R/p2a1_r1v2_backtest_branch.json ] || save_once $R/p2a1_r1v2_backtest_branch.json ING r1v2-backtest || exit 1
+  [ -e $R/p2a1_r1v2_dry_branch.json ] || save_once $R/p2a1_r1v2_dry_branch.json ING r1v2 || exit 1
+  python3 - $R/p2a1_r1v2_backtest_branch.json $R/p2a1_r1v2_dry_branch.json <<'PY' || exit 1
+import json, sys
+bt, dry = (json.load(open(p, encoding="utf-8")) for p in sys.argv[1:])
+for k in ("sequence_v1", "sequence_v2", "sequence_shipped", "eight_digit"):
+    print(k, bt["backtest"][k])
+print({k: dry[k] for k in ("r1v1_unverified", "recovered", "still_unverified", "decided_elsewhere", "eight_digit_scheme_holds")})
+v2 = bt["backtest"]["sequence_v2"]
+if v2["within_one_year_rate"] is None or v2["within_one_year_rate"] < 0.95 or v2["in_range_rate"] < 0.95:
+    sys.exit("r1-v2 backtest below 0.95: STOP")
+e8 = bt["backtest"]["eight_digit"]
+if e8["within_one_year_rate"] is None or e8["within_one_year_rate"] < 0.95:
+    sys.exit("eight-digit backtest below 0.95 within one year: STOP")
+if not dry["eight_digit_scheme_holds"] or dry["decided_elsewhere"] != 0:
+    sys.exit("eight-digit scheme no longer 2017-2018, or rows decided elsewhere: STOP")
+PY
+)
+```
+
+Expected (the investigation's figures, 2026-10-13, read from this branch):
+- Backtest on the 2,292 trusted `sequence` rows: `sequence_v1` dates 1,325 at 0.983 within one year; `sequence_v2` dates about 2,188 (coverage ≈0.955) at ≈0.972 within one year with the true year in range ≈0.963; `sequence_shipped` dates as many as `sequence_v2`. `eight_digit`: 49 rows, all dated, all within one year and in range.
+- Dry run: `r1v1_unverified` about `{"eight_digit": 19, "sequence": 197}`, `recovered` about `{"eight_digit": 19, "sequence": 166}`, `still_unverified` about 31, `decided_elsewhere` 0, `eight_digit_scheme_holds` true.
+- A figure far from these (more than ~10 rows or 1 point off) means STOP: the rule or the data is not what the owner approved. The block itself stops on a sequence backtest below 0.95 (within one year or in range), an eight-digit backtest below 0.95 within one year, or a failed eight-digit check.
+
+Then apply twice, in the background (each run is one transaction):
+
+```bash
+( . scripts/runbook_helpers.sh || exit 1
+  [ -n "${TARGET_HOST-}" ] && [ "$TARGET_HOST" != production ] || { echo "not on the rehearsal branch" >&2; exit 1; }
+  bg_start ../data/review/logs/r1v2_apply1_branch.log ING r1v2 --apply )
+```
+
+```bash
+( . scripts/runbook_helpers.sh || exit 1
+  bg_wait ../data/review/logs/r1v2_apply1_branch.log )
+```
+
+```bash
+( . scripts/runbook_helpers.sh || exit 1
+  [ -n "${TARGET_HOST-}" ] && [ "$TARGET_HOST" != production ] || { echo "not on the rehearsal branch" >&2; exit 1; }
+  bg_wait ../data/review/logs/r1v2_apply1_branch.log 0 >/dev/null || { echo "r1v2 apply 1 has not finished ok: STOP" >&2; exit 1; }
+  bg_start ../data/review/logs/r1v2_apply2_branch.log ING r1v2 --apply )
+```
+
+```bash
+( . scripts/runbook_helpers.sh || exit 1
+  bg_wait ../data/review/logs/r1v2_apply2_branch.log || exit 1
+  R=../data/review
+  python3 - $R/p2a1_r1v2_dry_branch.json $R/logs/r1v2_apply1_branch.log $R/logs/r1v2_apply2_branch.log <<'PY'
+import json, sys
+def result(log):
+    lines = [x for x in open(log, encoding="utf-8") if x.startswith("{")]
+    if not lines:
+        sys.exit(f"{log} has no JSON summary: STOP")
+    return json.loads(lines[-1])["r1v2"]
+dry = json.load(open(sys.argv[1], encoding="utf-8"))["r1v2"]
+first, second = result(sys.argv[2]), result(sys.argv[3])
+for name, run in (("apply 1", first), ("apply 2", second)):
+    print(name, {k: run[k] for k in ("applied", "unchanged", "already_recorded", "proposed_total")})
+    if run["mode"] != "apply" or run["applied"] + run["unchanged"] + run["already_recorded"] != run["proposed_total"]:
+        sys.exit(f"r1v2 {name} does not account for every proposed change: STOP")
+if first["proposed_total"] != dry["proposed_total"] or first["applied"] == 0 or second["applied"] != 0:
+    sys.exit("r1v2: apply 1 differs from the dry run, applied nothing, or apply 2 applied something: STOP")
+PY
+)
+```
+
+Expected: `finished ok` twice, then two count lines and exit 0. Apply 1 shows `applied > 0` (`unchanged > 0` too: `year_source` already holds r1-v1's value); apply 2 `applied: 0`.
+
+- [ ] **Step 5b (agent): Export the r1-v2 hand-check sample — run once, never again**
+
+```bash
+ING r1v2-export --out ../data/review/r1v2_year_check.csv
+```
+
+Expected: `exported` 40 and `taken` `{"eight_digit": 8, "sequence": 32}` (no `_topup` key, which appears only when a stratum is short). The eight-digit rule dates a whole scheme from one assumption, so it gets 8 rows rather than the ~4 a uniform sample would hold; the stratum is not written to the file. It refuses an existing file, like 4a: a refusal means 5b already ran; never pass `--overwrite` unless the owner has said in writing that the filled file is to be discarded.
+
+- [ ] **Step 5c (owner): Fill in the r1-v2 hand check**
+
+Exactly as Step 4b's R1 check: the instructions are the same (`severity.R1_CHECK_INSTRUCTIONS`), and `within_one_year` is measured against the year of `date`, not the range. Eight-digit rows show `year_lo..year_hi` = 2017..2018 and a `date` of 2018-07-01. Save under the same name.
+
+- [ ] **Step 5d (owner/agent): Import the r1-v2 hand check** — re-runnable like 4c
+
+```bash
+( . scripts/runbook_helpers.sh || exit 1
+  [ -n "${TARGET_HOST-}" ] && [ "$TARGET_HOST" != production ] || { echo "not on the rehearsal branch: run the branch re-entry block first" >&2; exit 1; }
+  R=../data/review
+  [ -e $R/p2a1_r1v2_import_branch.json ] || save_once $R/p2a1_r1v2_import_branch.json ING r1v2-import --review-file $R/r1v2_year_check.csv || exit 1
+  python3 -c 'import json,sys
+a = json.load(open(sys.argv[1]))["agreement"]
+print("r1v2", a)
+sys.exit(0 if a >= 0.90 else "r1v2 agreement is below 0.90: STOP")' $R/p2a1_r1v2_import_branch.json )
+```
+
+Expected: `r1v2 <agreement>`, exit 0. Below 0.90 means STOP: r1-v2 does not go to prod as approved; the owner decides. A refusing import writes nothing (as 4c).
+
+- [ ] **Step 5e (owner/agent): All acceptance cells, then owner sign-off**
+
+```bash
+VERIFY tests/verify/test_phase2a_repair.py -q -k "r1 or r2 or r9 or every_row" -s
+```
+
+Expected: every cell passes, now including the r1-v2 ones:
+- `test_r1v2_hand_check_at_least_90_percent_within_one_year` reads Step 5d's import;
+- `test_r1v2_rows_are_ranges_of_at_most_two_years_holding_their_point` prints `r1v2_dated` about `{"r1v2-eight-digit": 19, "r1v2-sequence": 166}`, and every one has `year_hi − year_lo ≤ 2`, its point year inside the range, and day/month precision only on a single-year range;
+- `test_r1_day_precision_rows_are_single_year`: no R1 row of either version is day or month precision with `year_lo` ≠ `year_hi` (0006's `accidents_clean_daily` keeps `date_precision = 'day'`, so this is what keeps a guessed day out of it);
+- `test_r1_unverified_year_count_is_reported`: the AAC `year_unverified` total is about 31 (216 − 185) plus R2's no-date rows; Step 5's run printed 216 for AAC.
+
+**Owner sign-off (blocks prod).** The owner reads three things:
+- the `year_unverified` counts by source and year, printed by `test_r1_unverified_year_count_is_reported` (after Step 5e);
+- the `aac_schemes` block (`rows`/`suspects`/`unverified` per scheme, r1-v1's view) and Step 5a's dry-run line (what r1-v2 recovers per scheme);
+- Step 5a's backtest lines.
+
+The owner then signs off in the PR, with these pasted there. A sign-off given before Step 5e does not count; the owner signs again after 5e.
+
+This is an accuracy call. r1-v1 never uses the eight-digit 2019NNNN scheme (68 rows) as neighbours, and r1-v2 dates its suspects to 2018 only because all its trusted rows are 2017–2018. A `sequence` suspect with fewer than 5 trusted neighbours on either side, or whose neighbours' P10–P90 spans more than two years, stays `year_unverified`. AAC data effectively ends in 2018: recent accidents come from plan 3's R11, not from R1. `test_r1_2023_aac_count_is_at_most_twice_the_2015_2018_mean` is only an upper bound. No sign-off means no Step 6.
 
 - [ ] **Step 6 (owner authorizes): Prod**
 
@@ -4040,12 +4160,128 @@ Mismatch path only (after the owner's `owner_filled_prod_samples` marker and wri
   gate_pass imported )
 ```
 
+**6i. Gate: prod's r1-v2 dry run equals the branch's.** r1-v2 reads the same snapshot and the same post-r1-v1 rows as Step 5a did, so its dry run must match key for key.
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+  # PRODUCTION
+  gate_require imported || exit 1
+  R=../data/review
+  [ -e $R/p2a1_r1v2_dry_prod.json ] || save_once $R/p2a1_r1v2_dry_prod.json ING r1v2 >/dev/null || exit 1
+  python3 - $R/p2a1_r1v2_dry_branch.json $R/p2a1_r1v2_dry_prod.json <<'PY' || exit 1
+import json, sys
+branch, prod = (json.load(open(p, encoding="utf-8")) for p in sys.argv[1:])
+if not branch or prod != branch:
+    sys.exit(f"{sys.argv[2]} differs from {sys.argv[1]}: STOP")
+print(f"{sys.argv[2]} matches the branch")
+PY
+  gate_pass r1v2_dry )
+```
+
+Expected: `… matches the branch`, `GATE OK: r1v2_dry`.
+
+**6j. Apply r1-v2, in the background,** twice (the second is the idempotency check). Record each `RUNBOOK_ELAPSED`.
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+  # PRODUCTION
+  gate_require r1v2_dry || exit 1
+  bg_start ../data/review/logs/r1v2_apply1_prod.log ING r1v2 --apply )
+```
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+  bg_wait ../data/review/logs/r1v2_apply1_prod.log )
+```
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+  # PRODUCTION
+  gate_require r1v2_dry || exit 1
+  bg_wait ../data/review/logs/r1v2_apply1_prod.log 0 >/dev/null || { echo "r1v2 apply 1 has not finished ok: STOP" >&2; exit 1; }
+  bg_start ../data/review/logs/r1v2_apply2_prod.log ING r1v2 --apply )
+```
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+  bg_wait ../data/review/logs/r1v2_apply2_prod.log )
+```
+
+Gate: each run accounts for every change it proposed, apply 1 proposed exactly what 6i's prod dry run did, and apply 2 applied nothing.
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+  # PRODUCTION
+  bg_wait ../data/review/logs/r1v2_apply2_prod.log 0 >/dev/null || { echo "r1v2 apply 2 has not finished ok: STOP" >&2; exit 1; }
+  R=../data/review
+  python3 - $R/p2a1_r1v2_dry_prod.json $R/logs/r1v2_apply1_prod.log $R/logs/r1v2_apply2_prod.log <<'PY' || exit 1
+import json, sys
+def result(log):
+    lines = [x for x in open(log, encoding="utf-8") if x.startswith("{")]
+    if not lines:
+        sys.exit(f"{log} has no JSON summary: STOP")
+    return json.loads(lines[-1])["r1v2"]
+dry = json.load(open(sys.argv[1], encoding="utf-8"))["r1v2"]
+first, second = result(sys.argv[2]), result(sys.argv[3])
+for name, run in (("apply 1", first), ("apply 2", second)):
+    print(name, {k: run[k] for k in ("applied", "unchanged", "already_recorded", "proposed_total")})
+    if run["mode"] != "apply" or run["applied"] + run["unchanged"] + run["already_recorded"] != run["proposed_total"]:
+        sys.exit(f"r1v2 {name} does not account for every proposed change: STOP")
+if first["proposed_total"] != dry["proposed_total"]:
+    sys.exit(f"r1v2 apply 1 proposed {first['proposed_total']}, dry run {dry['proposed_total']}: STOP")
+if second["applied"] != 0:
+    sys.exit(f"r1v2 apply 2 applied {second['applied']}: not idempotent, STOP")
+PY
+  gate_pass r1v2_applied )
+```
+
+Expected: two count lines, `GATE OK: r1v2_applied`.
+
+**6k. Gate: the prod r1-v2 sample is the branch's, then import the owner's filled CSV from Step 5c.** As 6f/6g: the export goes to a new `_prod` file and never touches the filled one.
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+  # PRODUCTION
+  gate_require r1v2_applied || exit 1
+  R=../data/review
+  [ -e $R/r1v2_year_check_prod.csv ] || ING r1v2-export --out $R/r1v2_year_check_prod.csv || exit 1
+  same_ids $R/r1v2_year_check.csv $R/r1v2_year_check_prod.csv accident_id || { echo "r1v2 sample differs: STOP" >&2; exit 1; }
+  gate_pass r1v2_sample_ids )
+```
+
+Expected: `40 ids match` (or the pool size), `GATE OK: r1v2_sample_ids`. On a mismatch or an empty export: STOP and report. Mismatch path (owner only), as 6f: the owner hand-checks `r1v2_year_check_prod.csv`, tells the agent in writing to import it, and runs `( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && GATE_DIR=../data/review/gates_2a1_prod gate_pass owner_filled_prod_r1v2_sample )`; the agent then runs the commented alternative below.
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+  # PRODUCTION
+  gate_require r1v2_sample_ids || exit 1
+  R=../data/review
+  [ -e $R/p2a1_r1v2_import_prod.json ] || save_once $R/p2a1_r1v2_import_prod.json ING r1v2-import --review-file $R/r1v2_year_check.csv || exit 1
+  cmp $R/p2a1_r1v2_import_branch.json $R/p2a1_r1v2_import_prod.json || { echo "r1v2 agreement differs from the branch: STOP" >&2; exit 1; }
+  gate_pass r1v2_imported )
+```
+
+Expected: the import summary, byte-equal to Step 5d's, then `GATE OK: r1v2_imported`.
+
+Mismatch path only (after the owner's `owner_filled_prod_r1v2_sample` marker and written instruction), in place of the block above:
+
+```bash
+( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
+  # PRODUCTION
+  gate_require r1v2_applied || exit 1
+  gate_require owner_filled_prod_r1v2_sample || exit 1
+  R=../data/review
+  [ -e $R/p2a1_r1v2_import_prod.json ] || save_once $R/p2a1_r1v2_import_prod.json ING r1v2-import --review-file $R/r1v2_year_check_prod.csv || exit 1
+  python3 -c 'import json,sys; a=json.load(open(sys.argv[1]))["agreement"]; sys.exit(0 if a >= 0.90 else "r1v2 agreement is below 0.90: STOP")' $R/p2a1_r1v2_import_prod.json || exit 1
+  gate_pass r1v2_imported )
+```
+
 Then acceptance, read-only, in the background like the applies:
 
 ```bash
 ( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
   # PRODUCTION (read-only)
-  gate_require imported || exit 1
+  gate_require r1v2_imported || exit 1
   bg_start ../data/review/logs/verify_prod.log VERIFY tests/verify/test_phase2a_repair.py -q -k "r1 or r2 or r9 or every_row" -s )
 ```
 
@@ -4056,20 +4292,20 @@ Then acceptance, read-only, in the background like the applies:
 
 Expected:
 - `finished ok`: every cell passes.
-- The unverified counts printed in `verify_prod.log` equal the ones the owner signed off in Step 5.
+- The unverified counts and the `r1v2_dated` counts printed in `verify_prod.log` equal the ones the owner signed off after Step 5e.
 
-**6h. Clean up.** Delete `p2a-1-rehearsal` only now. Keep `pre-2a-1` until the PR has merged and the owner says otherwise.
+**6l. Clean up** (was 6h before r1-v2 added 6i–6k). Delete `p2a-1-rehearsal` only now. Keep `pre-2a-1` until the PR has merged and the owner says otherwise.
 
 - [ ] **Rollback.** What to do when something fails partway:
-  - **An apply fails or is killed** (6e: `bg_wait` returns 1 — an error, or the run gone with no exit line and no repair process running): nothing from that invocation was written. Each `ING … --apply` commits once, and its `source_ingest_log` row is in the same transaction. Confirm `pgrep -fl 'app[.]data[.]repair|app[.]pipelines'` prints nothing, then STOP; the owner decides. On the owner's go: fix the cause, move that log to `../data/review/logs/failed/`, and run its `bg_start` block again. A rerun records only what is missing (`already_recorded` covers the rest). `bg_wait` returning 2 is not a failure: the apply may still be running, so never start a second one.
-  - **A hand-check import fails** (6g): it only writes a `source_ingest_log` row, in one transaction, and `save_once` leaves no `_prod` file. Fix the CSV or the cause and rerun the 6g block.
+  - **An apply fails or is killed** (6e or 6j: `bg_wait` returns 1 — an error, or the run gone with no exit line and no repair process running): nothing from that invocation was written. Each `ING … --apply` commits once, and its `source_ingest_log` row is in the same transaction. Confirm `pgrep -fl 'app[.]data[.]repair|app[.]pipelines'` prints nothing, then STOP; the owner decides. On the owner's go: fix the cause, move that log to `../data/review/logs/failed/`, and run its `bg_start` block again. A rerun records only what is missing (`already_recorded` covers the rest). `bg_wait` returning 2 is not a failure: the apply may still be running, so never start a second one.
+  - **A hand-check import fails** (6g or 6k): it only writes a `source_ingest_log` row, in one transaction, and `save_once` leaves no `_prod` file. Fix the CSV or the cause and rerun the 6g block.
   - **The data is wrong after 6e.** STOP; the owner decides between two options:
     - **Restore `production` from `pre-2a-1`** with Neon's branch restore (or restore to a timestamp just before 6e). This is the full fallback. The exact Console/`neonctl` path was not checked while writing this; confirm it in Neon's docs before relying on it. First list what the restore would discard: `ANALYST_PSQL -At -c "SELECT source, started_at FROM source_ingest_log WHERE started_at > '<pre-2a-1 created_at>' ORDER BY 2"` (with `TARGET_HOST=production`).
-    - **Reverse single fields from `internal.accident_revisions`**, using `old_value` for rule versions `r1-v1`/`r2-v1`/`r9-v1`. This needs a reviewed script. Do not improvise it: `ingest` cannot delete revisions, and a hand-written bulk UPDATE would bypass the audit trail.
+    - **Reverse single fields from `internal.accident_revisions`**, using `old_value` for rule versions `r1-v1`/`r1-v2`/`r2-v1`/`r9-v1` (reverse `r1-v2` before `r1-v1`: its `old_value`s are r1-v1's results). This needs a reviewed script. Do not improvise it: `ingest` cannot delete revisions, and a hand-written bulk UPDATE would bypass the audit trail.
   - **The `historical_predictions` caveat.** A branch or point-in-time restore of `production` discards every write made after the snapshot. That includes the nightly's `historical_predictions` rows, any Phase 2 runs, and any role or grant change. After such a restore:
     - trigger the nightly once (`DEPLOYMENT.md`, Insufficient-data rollout step 3) to rebuild today and the next 2 days; the rows for the days in between are lost, not recomputed;
-    - re-run 6a's grants. The gate markers in `../data/review/gates_2a1_prod` describe the discarded state: on the owner's instruction move that directory aside (never delete it), then run 6a's gate and grants blocks again. If a re-apply (6b onward) is intended after the restore, also move aside every `_prod` evidence file under `../data/review/` (`p2a1_step2_prod.txt`, `p2a1_r9_dry_prod.json`, `p2a1_r2r1_dry_prod.json`, `r1_year_check_prod.csv`, `severity_check_prod.csv`, `p2a1_r1_import_prod.json`, `p2a1_r9_import_prod.json`) and `../data/review/logs/` — the restore discarded what they describe, but `save_once` and `bg_start` refuse to touch a file that already exists, so stale pre-restore evidence would otherwise be mistaken for current and no apply log could be started.
-  - **After a restore**, the `r1-v1`/`r2-v1`/`r9-v1` revisions are gone as well, so the corrected rule can be applied as the same or a new rule version.
+    - re-run 6a's grants. The gate markers in `../data/review/gates_2a1_prod` describe the discarded state: on the owner's instruction move that directory aside (never delete it), then run 6a's gate and grants blocks again. If a re-apply (6b onward) is intended after the restore, also move aside every `_prod` evidence file under `../data/review/` (`p2a1_step2_prod.txt`, `p2a1_r9_dry_prod.json`, `p2a1_r2r1_dry_prod.json`, `r1_year_check_prod.csv`, `severity_check_prod.csv`, `p2a1_r1_import_prod.json`, `p2a1_r9_import_prod.json`, `p2a1_r1v2_dry_prod.json`, `r1v2_year_check_prod.csv`, `p2a1_r1v2_import_prod.json`) and `../data/review/logs/` — the restore discarded what they describe, but `save_once` and `bg_start` refuse to touch a file that already exists, so stale pre-restore evidence would otherwise be mistaken for current and no apply log could be started.
+  - **After a restore**, the `r1-v1`/`r1-v2`/`r2-v1`/`r9-v1` revisions are gone as well, so the corrected rule can be applied as the same or a new rule version.
 
 ---
 
