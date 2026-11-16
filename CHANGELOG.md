@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Project page: model v2 demo - 2026-11-15
+
+- `site/index.html` replaces the old kernel's illustrative scorer and its prose (spatial bandwidth, temporal decay, cubed weather similarity) with an illustrative model-v2 demo: made-up inputs run the Poisson-Gamma shrinkage toward nearby and similar-route estimates, the phi-widened 90% interval, the 25/50/75 bands on the percentile, the confidence levels with their evidence gate, and the insufficient (gray, no number) state. The lowest band reads "Lower than typical for this type"; unavailable is described as no colour, never gray. The architecture diagram now shows stored scores served from the active model version and offline training.
+- `backend/tests/test_site_model_constants.py` now pins the page's constants to `app.ml.posterior`, `app.ml.eb`, `app.ml.tuning`, `app.services.risk_bands` and `frontend/src/utils/riskUtils.ts` (no `kernel_ref`), and runs the page's JS math under node against the real `app.ml` functions.
+
 ### CI dependency fixes - 2026-10-23
 
 - `backend/Dockerfile.jobs` production stage installs `libexpat1`; rasterio's wheel links `libexpat.so.1`, so the jobs-image import smoke test failed without it. The API image does not ship rasterio and is unchanged.
