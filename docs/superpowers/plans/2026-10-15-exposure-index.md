@@ -777,7 +777,7 @@ This runbook follows the MP catalog plan's Task 6 pattern; its Shell state, Secr
 **Re-enter the rehearsal branch** (never creates anything):
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 . scripts/runbook_helpers.sh
 unset TARGET_HOST
 B=xp-1-rehearsal
@@ -795,7 +795,7 @@ Expected: `branch host ok`, `target is the rehearsal branch`.
 **Prod preamble** (Step 4 blocks only, after the owner's go):
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_xp1_prod || exit 1
+cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_xp1_prod || exit 1
 EXPORT="${EXPORT:?set EXPORT to the owner-supplied export path}"
 ```
 
@@ -811,7 +811,7 @@ EXPORT="${EXPORT:?set EXPORT to the owner-supplied export path}"
 
 ```bash
 [ ! -e "${EXPORT}-wal" ] || { echo "WAL sidecar present: ask the owner to rerun export_tick_aggregates.py (Step 0)" >&2; exit 1; }
-case "$(cd "$(dirname "$EXPORT")" && pwd -P)" in /Users/sebastianfrazier/Developer/SafeAscent*) echo "export is inside the repo: STOP" >&2; exit 1 ;; esac
+case "$(cd "$(dirname "$EXPORT")" && pwd -P)" in <repo-root>*) echo "export is inside the repo: STOP" >&2; exit 1 ;; esac
 sqlite3 -readonly "$EXPORT" "SELECT count(*), sum(complete) FROM route_tick_totals; SELECT count(*) FROM route_tick_monthly"
 ```
 
@@ -864,7 +864,7 @@ The agent pastes:
 4a — gate (read-only, fails closed):
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_xp1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_xp1_prod || exit 1
   # PRODUCTION (read-only)
   [ -s ../data/review/xp1_load_branch.json ] || { echo "no branch evidence" >&2; exit 1; }
   cur="$(MIG current)" || exit 1
@@ -887,7 +887,7 @@ Expected: the revision line, `ingest direct host: True`, `GATE OK: xp1_load`.
 4a-snap — snapshot `pre-xp-1`. Run it once. If neonctl says the branch exists, STOP and ask the owner; never recreate it:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_xp1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_xp1_prod || exit 1
   # PRODUCTION snapshot
   gate_require xp1_load || exit 1
   snap="$(neonctl branches create --project-id still-morning-74008008 --name pre-xp-1 --parent production --no-secrets --output json \
@@ -899,7 +899,7 @@ Expected: the revision line, `ingest direct host: True`, `GATE OK: xp1_load`.
 4b — gate: the prod dry run must match the branch dry run for the same file:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_xp1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_xp1_prod || exit 1
   # PRODUCTION (read-only dry run)
   gate_require xp1_snapshot || exit 1
   EXPORT="${EXPORT:?}"
@@ -919,7 +919,7 @@ EOF
 4c — load prod:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_xp1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_xp1_prod || exit 1
   gate_require xp1_apply || exit 1
   bg_start ../data/review/logs/xp1_load_prod.log INGMOD app.pipelines.mp_tick_aggregates --sqlite "${EXPORT:?}" --scope rock )
 ```
@@ -935,7 +935,7 @@ Record the counts and the snapshot id in the PR.
 The owner runs `export_tick_aggregates.py --scope rock` again (Step 0) and gives the new dated export's path. The agent then runs the blocks below. `D` is the export date and `GATE_DIR=../data/review/gates_xp1_load_$D`. The branch rehearsal is repeated only if `mp_tick_aggregates.py` changed since the last rehearsal.
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production || exit 1
   D="${D:?}"; export GATE_DIR="../data/review/gates_xp1_load_$D"; EXPORT="${EXPORT:?}"
   # PRODUCTION (read-only dry run)
   save_once "../data/review/xp1_dry_prod_$D.json" INGMOD app.pipelines.mp_tick_aggregates --sqlite "$EXPORT" --scope rock --dry-run || exit 1
@@ -959,7 +959,7 @@ EOF
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production || exit 1
   D="${D:?}"; export GATE_DIR="../data/review/gates_xp1_load_$D"
   gate_require load || exit 1
   bg_start "../data/review/logs/xp1_load_prod_$D.log" INGMOD app.pipelines.mp_tick_aggregates --sqlite "${EXPORT:?}" --scope rock )
@@ -2496,7 +2496,7 @@ All are counts, never names or ids. **STOP: owner review.** Continue only on the
 4b — migrate, grants, check:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_xp2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_xp2_prod || exit 1
   # PRODUCTION
   gate_require xp2_migrate || exit 1
   gate_require xp2_snapshot || exit 1
@@ -2514,7 +2514,7 @@ All are counts, never names or ids. **STOP: owner review.** Continue only on the
 4c — gate: the prod dry run must match the branch's within catalog drift:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_xp2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_xp2_prod || exit 1
   # PRODUCTION (read-only dry run)
   gate_require xp2_migrated || exit 1
   save_once ../data/review/xp2_dry_prod.json INGMOD app.pipelines.exposure build --dry-run || exit 1
@@ -2532,7 +2532,7 @@ EOF
 4d — build prod:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_xp2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_xp2_prod || exit 1
   gate_require xp2_build || exit 1
   bg_start ../data/review/logs/xp2_build_prod.log INGMOD app.pipelines.exposure build )
 ```
@@ -2540,7 +2540,7 @@ EOF
 4d evidence (review fix 2026-10-22: the build JSON is saved; Step 5 compares against it):
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_xp2_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_xp2_prod || exit 1
   bg_wait ../data/review/logs/xp2_build_prod.log || exit 1
   grep -q '"status": "ok"' ../data/review/logs/xp2_build_prod.log || { echo "prod build not ok: STOP" >&2; exit 1; }
   save_once ../data/review/xp2_build_prod.json grep '^{' ../data/review/logs/xp2_build_prod.log || exit 1
@@ -2558,7 +2558,7 @@ Each block sets the same literal `RUN`: today's UTC date plus the first unused r
 5a — check (read-only dry run):
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh || exit 1
   RUN=YYYY-MM-DD_N
   export TARGET_HOST=production GATE_DIR="../data/review/gates_xp2_rebuild_$RUN" || exit 1
   # PRODUCTION (read-only dry run)
@@ -2580,7 +2580,7 @@ EOF
 5b — build:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh || exit 1
   RUN=YYYY-MM-DD_N
   export TARGET_HOST=production GATE_DIR="../data/review/gates_xp2_rebuild_$RUN" || exit 1
   # PRODUCTION
@@ -2591,7 +2591,7 @@ EOF
 5c — evidence:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh || exit 1
   RUN=YYYY-MM-DD_N
   export TARGET_HOST=production || exit 1
   bg_wait "../data/review/logs/xp2_build_prod_$RUN.log" || exit 1

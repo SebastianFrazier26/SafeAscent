@@ -45,7 +45,7 @@ These are called out so the owner can overrule them at review.
 10. **Legacy table stubs.** `Accident` declares FKs to `routes`/`mountains`, which have no models. PR5 adds metadata-only `Table` stubs (PK column only) so FK targets resolve, and `env.py` excludes them from autogenerate.
 11. **Irreversible downgrades.** `0001` and `0002` raise on downgrade. `0002` dropped empty tables whose models are deleted; restoring them has no use.
 12. **Frontend tests for `.jsx` components stay `.jsx`.** "New files are TS" applies to modules. A `.tsx` test of a `.jsx` component would type-check against inferred-`any` props, which adds noise and no safety. New TS modules get `.test.ts` tests.
-13. **Extra junk found in the tree:** `backend/tests/check_risk_scores.py` (a script with a hardcoded `/Users/sebastianfrazier/SafeAscent/backend` path, no tests) is deleted along with the spec's list. `run_celery_*.sh` are deleted in PR6, where the spec puts them.
+13. **Extra junk found in the tree:** `backend/tests/check_risk_scores.py` (a script with a hardcoded `<repo-root>/backend` path, no tests) is deleted along with the spec's list. `run_celery_*.sh` are deleted in PR6, where the spec puts them.
 14. **Diagrams** are regenerated from committed Mermaid sources (`docs/diagrams/*.mmd`) with `@mermaid-js/mermaid-cli`, so they can be rebuilt later.
 
 ---
@@ -159,7 +159,7 @@ These are called out so the owner can overrule them at review.
 - [ ] **Step 1: Create the branch**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent
+cd <repo-root>
 git switch main && git pull --ff-only
 git switch -c chore/p1-pr5-alembic
 ```
@@ -366,7 +366,7 @@ Auto-mode blocks agents from reading `backend/.env.analyst`, so the owner runs t
 - [ ] **Step 1 (owner): Record the server version and extensions**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 mkdir -p .schema && chmod 700 .schema
 (
   set -a; . ./.env.analyst; set +a
@@ -386,7 +386,7 @@ Expected: first line is the server version (e.g. `17.5`), then one `name version
 Use the `postgres:<major>-alpine` image that matches the first line of `server_info.txt` (shown here for 17):
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 (
   set -a; . ./.env.analyst; set +a
   PGURL="${ANALYST_DATABASE_URL/postgresql+asyncpg:/postgresql:}"
@@ -423,7 +423,7 @@ Expected: a line count in the hundreds; `git status` prints nothing (ignored). I
 - [ ] **Step 1: Scaffold Alembic from the async template**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 uv run alembic init -t async alembic
 ```
 
@@ -442,7 +442,7 @@ The template ships `sqlalchemy.url = driver://user:pass@localhost/dbname`. It mu
 - [ ] **Step 2: Sanitize the dump into the versions directory**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 uv run python -m scripts.sanitize_schema_dump .schema/prod_schema_raw.sql alembic/versions/0001_baseline.sql
 grep -nEi "password|secret|token|neondb_owner|analyst|@|^COPY |^INSERT INTO" alembic/versions/0001_baseline.sql || echo "clean"
 grep -oE "CREATE TABLE public\.[a-z_0-9]+" alembic/versions/0001_baseline.sql | sort -u
@@ -704,7 +704,7 @@ Pick the `postgis/postgis:<major>-<postgis>` tag matching `server_info.txt` (sho
 ```bash
 docker run -d --name sa-mig-pg -e POSTGRES_USER=test_user -e POSTGRES_PASSWORD=test_password -p 55432:5432 postgis/postgis:17-3.5
 until docker exec sa-mig-pg pg_isready -U test_user >/dev/null 2>&1; do sleep 1; done
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 MIGRATIONS_TEST_ADMIN_URL=postgresql://test_user:test_password@localhost:55432/postgres \
 DATABASE_URL=postgresql+asyncpg://test_user:test_password@localhost:55432/postgres \
   uv run pytest tests/test_migrations.py -v
@@ -730,7 +730,7 @@ Expected when finished: `1 passed`.
 Then run the full suite so the model edits break nothing:
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 DATABASE_URL=postgresql+asyncpg://test_user:test_password@localhost:55432/postgres uv run pytest -q
 ```
 
@@ -751,7 +751,7 @@ In `.github/workflows/ci.yml`, job `backend`:
 - [ ] **Step 10: Lint and commit**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend && uv run ruff check app/ scripts/ alembic/ tests/test_migrations.py
+cd <repo-root>/backend && uv run ruff check app/ scripts/ alembic/ tests/test_migrations.py
 cd .. && git add backend/alembic.ini backend/alembic backend/app/models backend/tests/test_migrations.py .github/workflows/ci.yml docker-compose.yml
 git commit -m "feat(db): Alembic with a baseline replaying the live schema
 
@@ -851,7 +851,7 @@ def downgrade() -> None:
 - [ ] **Step 4: Remove the models**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent && git rm backend/app/models/ascent.py backend/app/models/climber.py
+cd <repo-root> && git rm backend/app/models/ascent.py backend/app/models/climber.py
 ```
 
 `backend/app/models/__init__.py` becomes:
@@ -877,7 +877,7 @@ __all__ = [
 
 Then confirm nothing else imports them:
 
-Run: `cd /Users/sebastianfrazier/Developer/SafeAscent && git grep -nE "Climber|Ascent\b|models\.(ascent|climber)" -- backend`
+Run: `cd <repo-root> && git grep -nE "Climber|Ascent\b|models\.(ascent|climber)" -- backend`
 Expected: no output.
 
 - [ ] **Step 5: Run and confirm pass**
@@ -888,7 +888,7 @@ Expected: `4 passed` (Task 3's test plus these three).
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent
+cd <repo-root>
 git add backend/alembic/versions/0002_drop_ascents_climbers.py backend/app/models/__init__.py backend/tests/test_migrations.py
 git commit -m "feat(db): drop empty ascents/climbers tables and models (D8 stage 1)
 
@@ -1003,7 +1003,7 @@ In `backend/app/api/v1/mp_routes.py`, delete this whole block (the comment and t
 Delete the dead legacy task:
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent && git rm backend/app/tasks/safety_computation.py
+cd <repo-root> && git rm backend/app/tasks/safety_computation.py
 git grep -n "tasks.safety_computation\b\|tasks\.safety_computation\"" -- backend || echo "no references"
 ```
 
@@ -1017,7 +1017,7 @@ Expected: `1 passed`; ruff `All checks passed!`.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent
+cd <repo-root>
 git add backend/tests/test_no_runtime_ddl.py backend/app/tasks/safety_computation_optimized.py backend/app/api/v1/mp_routes.py
 git commit -m "fix(db): remove runtime CREATE TABLE; schema lives in Alembic
 
@@ -1470,7 +1470,7 @@ Expected: `10 passed` (5 migration + 5 URL-writer). In CI, the GitHub `ubuntu-la
 If the `backend` job's pytest step passes an explicit list, append `tests/test_no_runtime_ddl.py tests/test_write_role_url.py`.
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent
+cd <repo-root>
 git add backend/db/roles backend/scripts/write_role_url.py backend/tests/test_write_role_url.py backend/tests/test_migrations.py .github/workflows/ci.yml
 git commit -m "feat(db): SQL-only least-privilege roles (migrator, app) with verification
 
@@ -1507,7 +1507,7 @@ In `data/DATABASE_STRUCTURE.md`:
 
 In `README.md:120`, `| **weather_patterns** |` → `| **weather** |`. In `DEPLOYMENT.md:119`, `` | `weather_patterns` | `` → `` | `weather` | ``.
 
-Run: `cd /Users/sebastianfrazier/Developer/SafeAscent && git grep -n "weather_patterns" -- '*.md' ':!docs/superpowers'`
+Run: `cd <repo-root> && git grep -n "weather_patterns" -- '*.md' ':!docs/superpowers'`
 Expected: no output.
 
 - [ ] **Step 2: Add the CHANGELOG entry**
@@ -1534,7 +1534,7 @@ Insert directly under the `The format is based on …` line of `CHANGELOG.md` (n
 - [ ] **Step 3: Full verification**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 uv run ruff check app/ scripts/ alembic/
 MIGRATIONS_TEST_ADMIN_URL=postgresql://test_user:test_password@localhost:55432/postgres \
 DATABASE_URL=postgresql+asyncpg://test_user:test_password@localhost:55432/postgres uv run pytest -q
@@ -1546,7 +1546,7 @@ Expected: ruff `All checks passed!`; pytest shows no failures (skips only for te
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent
+cd <repo-root>
 git add data/DATABASE_STRUCTURE.md README.md DEPLOYMENT.md CHANGELOG.md
 git commit -m "docs(db): weather table name, legacy FK note, PR5 changelog
 
@@ -1559,7 +1559,7 @@ PR5 is ready for the owner to review and `/commitandpush`. Task 8 runs only afte
 
 ### Task 8: OWNER STEPS — create roles, rehearse on a Neon branch, stamp prod
 
-All commands run in the owner's terminal (zsh or bash; both verified 2026-09-28) from `/Users/sebastianfrazier/Developer/SafeAscent/backend` on an up-to-date `main` that includes PR5 and the Neon plaintext-password fix. Nothing here prints a password. Agents do not run the prod steps.
+All commands run in the owner's terminal (zsh or bash; both verified 2026-09-28) from `<repo-root>/backend` on an up-to-date `main` that includes PR5 and the Neon plaintext-password fix. Nothing here prints a password. Agents do not run the prod steps.
 
 > **Revised 2026-09-28 (Neon rehearsals 1 and 2, owner decision D1).** Neon's control plane rejects pre-hashed passwords in `CREATE ROLE ... PASSWORD` (`Neon only supports being given plaintext passwords`). `create_roles.sql` therefore reads the plaintext from `MIGRATOR_PASSWORD` / `APP_PASSWORD` via psql `\getenv` (never argv) and sends it over `verify-full` TLS; Neon stores SCRAM-SHA-256 (checked on the rehearsal branch: `pg_authid.rolpassword` starts `SCRAM-SHA-256$`). The script refuses a value shaped like a SCRAM or md5 verifier and anything under 32 characters. On this compute (read on `rehearsal2-2026-09-28`) `log_statement=none`, `log_min_duration_statement=-1`, `log_min_error_statement=panic`, and `pg_stat_statements` is not installed in `neondb`, so Postgres logs neither the statement nor a failed one; Neon's control plane does receive the plaintext. `create_roles.sql` also stops, before sending any password, if `migrator` or `app` already exists, so a rerun never sends a failing `CREATE ROLE ... PASSWORD`. `neonctl roles list` returns no password field for `migrator`/`app` (name, `authentication_method: password`, timestamps only). Whether `neonctl connection-string --role-name migrator` (Neon's reveal-password API) can return an SQL-created role's password was deliberately not tried; treat Neon project access as able to read or reset these passwords. Also folded in: the owner URL is single-quoted (D2); `create_roles.sql` itself revokes the owner's older default `SELECT` grant to `analyst` (D3); Step 7 revokes **all** privileges on `alembic_version` from `app` (D4); the prod branch is `production` (D5). The sequence passed on branch `rehearsal2-2026-09-28` (Steps 3, 7 and 8 run verbatim from this text, the rest with the same commands) — see `.superpowers/sdd/2026-09-27-phase1b-foundations-pr5-8/neon-fix-rehearsal2-report.md`.
 
@@ -1613,7 +1613,7 @@ On Neon, `pg_stat_ssl.ssl` reads `f` even over TLS (the proxy terminates it). Pr
 - [ ] **Step 2 (owner): Put the prod owner URL in a file, using an editor, not the shell**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 umask 077
 ${EDITOR:-nano} .env.owner
 ```
@@ -1631,7 +1631,7 @@ Expected: four lines, each matched by `.gitignore:…:.env.*`.
 The prod branch is named `production` (not `main`). Commands scoped by `--project-id` need no org; `neonctl projects list` needs `--org-id org-spring-wildflower-01541142` or it waits on an interactive org prompt (D6).
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 umask 077
 rm -f .env.rehearsal.owner .env.rehearsal.migrator .env.rehearsal.app
 B=p1-roles-rehearsal
@@ -1665,7 +1665,7 @@ Then run Steps 5–8 again with `E=.env` against prod.
 - [ ] **Step 5 (owner): Generate role passwords into files and write the role URLs**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 umask 077
 E=.env.rehearsal   # prod: E=.env
 ( set -a; . "./$E.owner"; set +a
@@ -1760,7 +1760,7 @@ The services still connect as `neondb_owner` at this point. They keep working th
 - [ ] **Step 1: Create the branch**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent
+cd <repo-root>
 git switch main && git pull --ff-only
 git switch -c feat/p1-pr6-celery-liveness
 ```
@@ -1869,7 +1869,7 @@ Expected: `5 passed`.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent
+cd <repo-root>
 git add backend/app/healthchecks.py backend/tests/test_healthchecks.py
 git commit -m "feat(ops): healthchecks.io ping helper that never raises or logs the URL
 
@@ -2200,7 +2200,7 @@ Expected: `10 passed`.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent
+cd <repo-root>
 git add backend/app/celery_signals.py backend/tests/test_celery_signals.py backend/pyproject.toml backend/uv.lock
 git commit -m "feat(celery): worker heartbeat bootstep and expired-task accounting
 
@@ -2454,7 +2454,7 @@ startCommand = "celery -A app.celery_app beat --loglevel=info --schedule=/tmp/ce
 Delete the superseded scripts:
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent && git rm backend/run_celery_beat.sh backend/run_celery_worker.sh
+cd <repo-root> && git rm backend/run_celery_beat.sh backend/run_celery_worker.sh
 git grep -n "run_celery_" || echo "no references"
 grep -n "\-\-beat" docker-compose.yml || echo "compose worker has no --beat"
 ```
@@ -2469,7 +2469,7 @@ Expected: `24 passed` (9 ops + 10 signals + 5 healthchecks); ruff `All checks pa
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent
+cd <repo-root>
 git add backend/app/tasks/ops.py backend/app/celery_app.py backend/app/tasks/safety_computation_optimized.py backend/railway-worker.toml backend/railway-beat.toml backend/tests/test_celery_ops.py docker-compose.yml
 git commit -m "feat(celery): split beat from worker; dead-man pings for nightly and beat
 
@@ -2569,7 +2569,7 @@ Expected: all pass (3 new + the existing Phase 0/Part A config tests).
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent
+cd <repo-root>
 git add backend/app/main.py backend/tests/test_worker_health_route.py
 git commit -m "feat(api): /health/worker reports heartbeat and expired-task counts
 
@@ -2613,7 +2613,7 @@ Insert above the PR5 entry:
 - [ ] **Step 3: Verify and commit**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend && uv run ruff check app/ && uv run pytest -q
+cd <repo-root>/backend && uv run ruff check app/ && uv run pytest -q
 cd .. && git add .github/workflows/ci.yml CHANGELOG.md
 git commit -m "chore(ci): run PR6 tests; changelog
 
@@ -2650,7 +2650,7 @@ Expected: `200` and `"status":"ok"`, with `last_heartbeat_age_seconds` under 40.
   1. Stop the `worker` service in Railway. Within ~2 min, `/health/worker` returns `503`. Within 75 min, healthchecks.io emails that `safeascent-beat` is down. Restart the worker; both recover.
   2. Pause the worker (stop it), then send a short-lived task from a local shell pointed at the prod broker. `CELERY_BROKER_URL` comes from the Railway dashboard, pasted into a gitignored `backend/.env.broker`:
      ```bash
-     cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+     cd <repo-root>/backend
      ( set -a; . ./.env.broker; set +a
        DATABASE_URL=postgresql+asyncpg://unused@localhost/unused uv run python -c \
        "from app.celery_app import celery_app; celery_app.send_task('app.tasks.ops.beat_heartbeat', expires=1)" )
@@ -2675,7 +2675,7 @@ Expected: `200` and `"status":"ok"`, with `last_heartbeat_age_seconds` under 40.
 - [ ] **Step 1: Branch and install**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent
+cd <repo-root>
 git switch main && git pull --ff-only
 git switch -c feat/p1-pr7-ts-risk-fix
 cd frontend && npm install --save-dev typescript typescript-eslint
@@ -2828,7 +2828,7 @@ In `.github/workflows/ci.yml`, job `frontend`, add after the lint step:
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent
+cd <repo-root>
 git add frontend/tsconfig.json frontend/src/vite-env.d.ts frontend/package.json frontend/package-lock.json frontend/eslint.config.js frontend/vite.config.js .github/workflows/ci.yml
 git commit -m "chore(frontend): incremental TypeScript (allowJs, strict .ts) with CI typecheck
 
@@ -2949,7 +2949,7 @@ Expected: FAIL. `isRiskScore`, `isSafetyResponse`, and `fetchRouteSafety` are no
 - [ ] **Step 2: Replace `riskUtils.js` with `riskUtils.ts`**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent && git mv frontend/src/utils/riskUtils.js frontend/src/utils/riskUtils.ts
+cd <repo-root> && git mv frontend/src/utils/riskUtils.js frontend/src/utils/riskUtils.ts
 ```
 
 `frontend/src/utils/riskUtils.ts` (full content):
@@ -3044,7 +3044,7 @@ export const getMarkerColor = (riskScore: number): string => MARKER_COLORS[getRi
 - [ ] **Step 3: Replace `api.js` with `api.ts`**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent && git mv frontend/src/services/api.js frontend/src/services/api.ts
+cd <repo-root> && git mv frontend/src/services/api.js frontend/src/services/api.ts
 ```
 
 `frontend/src/services/api.ts` (full content):
@@ -3229,7 +3229,7 @@ Expected: `10 passed`; typecheck and lint clean.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent
+cd <repo-root>
 git add frontend/src/utils frontend/src/services
 git commit -m "refactor(frontend): typed API client and risk utils with response validation
 
@@ -3378,7 +3378,7 @@ Expected: `4 passed`; typecheck and lint clean.
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent
+cd <repo-root>
 git add frontend/src/hooks
 git commit -m "feat(frontend): useRouteSafety hook with typed loading/error/ok state
 
@@ -3752,7 +3752,7 @@ Expected: `3 passed`; the full suite passes; lint, typecheck, and build clean (`
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent
+cd <repo-root>
 git add frontend/src/components/RouteAnalyticsModal.jsx frontend/src/components/MapView.jsx frontend/src/components/RouteAnalyticsModal.safety.test.jsx
 git commit -m "fix(frontend): failed safety fetch shows an error with Retry, never Risk 0.0
 
@@ -4080,7 +4080,7 @@ Insert above the PR6 entry:
 ```
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent
+cd <repo-root>
 git add frontend/src/components/PredictionResult.jsx frontend/src/components/PredictionResult.test.jsx frontend/src/App.jsx CHANGELOG.md
 git commit -m "fix(frontend): prediction errors show Retry; missing score reads Unavailable
 
@@ -4102,7 +4102,7 @@ PR7 is ready for review and `/commitandpush`.
 - [ ] **Step 1: Branch and confirm the list against the tree**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent
+cd <repo-root>
 git switch main && git pull --ff-only
 git switch -c docs/p1-pr8-hygiene
 git ls-files backend | grep -vE "^backend/(app|tests|alembic|scripts|db)/" 
@@ -4114,7 +4114,7 @@ Expected first list: `.dockerignore`, `.gitignore`, `Dockerfile`, `alembic.ini`,
 - [ ] **Step 2: Delete and move**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent
+cd <repo-root>
 git rm backend/tests/test_prediction_integration.py.backup backend/check_weather_gaps.py backend/test_weather_service.py backend/test_weather_stats_db.py backend/test_request.json backend/tests/check_risk_scores.py
 mkdir -p backend/scripts/perf
 for f in backend/tests/benchmark_*.py backend/tests/profile_*.py; do git mv "$f" backend/scripts/perf/; done
@@ -4126,7 +4126,7 @@ Expected: `no references`. If CI or `pyproject.toml` still has `--ignore=tests/b
 - [ ] **Step 3: Verify ignores and that the suite still runs**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent
+cd <repo-root>
 git check-ignore -v backend/htmlcov/x frontend/dist/x backend/app/__pycache__/x
 cd backend && uv run pytest -q
 ```
@@ -4136,7 +4136,7 @@ Expected: three lines, each matched by root `.gitignore` (`htmlcov/`, `dist/`, `
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent
+cd <repo-root>
 git add -A backend/scripts/perf backend/tests
 git commit -m "chore: remove tracked junk; move benchmark/profile scripts to scripts/perf
 
@@ -4153,7 +4153,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - [ ] **Step 1: Fetch the canonical Apache-2.0 text**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent
+cd <repo-root>
 curl -fsSL https://www.apache.org/licenses/LICENSE-2.0.txt -o LICENSE
 head -3 LICENSE | sed -n '2p'
 grep -c "END OF TERMS AND CONDITIONS" LICENSE
@@ -4192,7 +4192,7 @@ No scraper code is committed to any GitHub repository. Open-API clients (OpenBet
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent
+cd <repo-root>
 git add LICENSE DATA_LICENSE.md
 git commit -m "docs: Apache-2.0 LICENSE and DATA_LICENSE (OpenBeta CC0, MP facts rule)
 
@@ -4260,7 +4260,7 @@ Local stack: `docker compose up` (db, redis, api, worker, beat; same commands as
 - [ ] **Step 2: Commit**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent
+cd <repo-root>
 git add CLAUDE.md
 git commit -m "docs: root CLAUDE.md with commands, topology, migration and data rules
 
@@ -4343,13 +4343,13 @@ Code: Apache-2.0 (`LICENSE`). Data: see `DATA_LICENSE.md`.
 
 Check that the quickstart `DATABASE_URL` matches Part A's `docker-compose.yml` `db` credentials:
 
-Run: `cd /Users/sebastianfrazier/Developer/SafeAscent && grep -nA6 "^  db:" docker-compose.yml`
+Run: `cd <repo-root> && grep -nA6 "^  db:" docker-compose.yml`
 Update the user, password, and database in the README line to match the compose `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` defaults.
 
 Then run the quickstart from a fresh clone:
 
 ```bash
-rm -rf /private/tmp/sa-fresh && git clone --branch docs/p1-pr8-hygiene /Users/sebastianfrazier/Developer/SafeAscent /private/tmp/sa-fresh
+rm -rf /private/tmp/sa-fresh && git clone --branch docs/p1-pr8-hygiene <repo-root> /private/tmp/sa-fresh
 cd /private/tmp/sa-fresh && cp .env.example .env && docker compose up -d db redis
 cd backend && uv sync && export DATABASE_URL="$(grep -oE 'postgresql\+asyncpg://[^ ]+' ../README.md | head -1)" && export MIGRATOR_DATABASE_URL="$DATABASE_URL" && uv run alembic upgrade head && uv run alembic current
 cd /private/tmp/sa-fresh && docker compose down -v && rm -rf /private/tmp/sa-fresh
@@ -4407,7 +4407,7 @@ At 02:00 UTC, beat enqueues `compute_daily_safety_scores_optimized` (expires aft
 
 In `frontend/README.md`, `- **React 18** - UI framework` → `- **React 19** - UI framework`.
 
-Run: `cd /Users/sebastianfrazier/Developer/SafeAscent && git grep -nE "React 18|Python 3\.11" -- '*.md' ':!docs/superpowers' ':!CHANGELOG.md' || echo "clean"`
+Run: `cd <repo-root> && git grep -nE "React 18|Python 3\.11" -- '*.md' ':!docs/superpowers' ':!CHANGELOG.md' || echo "clean"`
 Expected: `clean`.
 
 - [ ] **Step 4: Diagram sources**
@@ -4452,13 +4452,13 @@ erDiagram
   mountains { int mountain_id PK }
 ```
 
-Run: `cd /Users/sebastianfrazier/Developer/SafeAscent && grep -oE "CREATE TABLE public\.[a-z_0-9]+" backend/alembic/versions/0001_baseline.sql | sed 's/CREATE TABLE public\.//' | sort -u | grep -vxE "ascents|climbers|mp_locations|mp_routes|historical_predictions|accidents|weather|routes|mountains" || echo "no extra tables"`
+Run: `cd <repo-root> && grep -oE "CREATE TABLE public\.[a-z_0-9]+" backend/alembic/versions/0001_baseline.sql | sed 's/CREATE TABLE public\.//' | sort -u | grep -vxE "ascents|climbers|mp_locations|mp_routes|historical_predictions|accidents|weather|routes|mountains" || echo "no extra tables"`
 Expected: either `no extra tables`, or names to add as `<name> { <pk type> <pk column> PK }` blocks (PK read from the table's `PRIMARY KEY` constraint in the baseline SQL).
 
 - [ ] **Step 5: Render the PNGs**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent
+cd <repo-root>
 npx -y @mermaid-js/mermaid-cli@11 -i docs/diagrams/system_design.mmd -o system_design.png -b white -w 1600
 npx -y @mermaid-js/mermaid-cli@11 -i docs/diagrams/data_model.mmd -o data_model.png -b white -w 1600
 file system_design.png data_model.png
@@ -4469,7 +4469,7 @@ Expected: both `PNG image data, 1600 x …`. Open both and check the split worke
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent
+cd <repo-root>
 git add README.md DEPLOYMENT.md frontend/README.md docs/diagrams system_design.png data_model.png
 git commit -m "docs: honest README, Railway-only DEPLOYMENT, regenerated diagrams
 
@@ -4538,7 +4538,7 @@ In `.github/workflows/ci.yml`, job `backend`, set the mypy step's command to `uv
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent
+cd <repo-root>
 git add backend/pyproject.toml .github/workflows/ci.yml
 git commit -m "chore(backend): mypy strict flags on an allowlist of typed modules
 
@@ -4575,7 +4575,7 @@ Insert above the newest entry:
 - [ ] **Step 2: Verify everything**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend && uv run ruff check app/ && uv run mypy app scripts && uv run pytest -q
+cd <repo-root>/backend && uv run ruff check app/ && uv run mypy app scripts && uv run pytest -q
 cd ../frontend && npm run lint && npm run typecheck && npm run test:run
 cd .. && git ls-files | grep -E "\.backup$|^backend/(check_|test_)[^/]*$|^backend/tests/(benchmark|profile|check)_" || echo "no junk tracked"
 ```
@@ -4585,7 +4585,7 @@ Expected: all green; `no junk tracked`.
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent
+cd <repo-root>
 git add CHANGELOG.md
 git commit -m "docs: PR8 changelog
 
@@ -4614,7 +4614,7 @@ Expected: `200`, and `"status":"ok"`.
 - [ ] **Step 2 (owner): Rotate the `neondb_owner` password** (it leaked in public git history). Use the Neon Console → Branch `production` → Roles → `neondb_owner` → Reset password. Put the new URL in `backend/.env.owner` with an editor. Confirm the old password no longer authenticates, by pasting the old URL from the leaked history, with an editor, into a gitignored `backend/.env.oldowner` as `OLD_OWNER_DATABASE_URL='...'` (single quotes: the URL may contain `&`):
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 ( set -a; . ./.env.oldowner; set +a
   U="$(pg_verify_full "$OLD_OWNER_DATABASE_URL")" || exit 1; split_pg_url "$U" && [ -n "$PG_URL_NOPASS" ] || exit 1
   psql "$PG_URL_NOPASS" -XAtc 'select 1' ) ; echo "exit=$?"
@@ -4626,7 +4626,7 @@ Expected: `password authentication failed for user "neondb_owner"` and `exit=2`.
 - [ ] **Step 3 (owner): Drop the transitional membership** (services no longer use the owner role):
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 ( set -a; . ./.env.owner; set +a
   U="$(pg_verify_full "$OWNER_DATABASE_URL")" || exit 1; split_pg_url "$U" && [ -n "$PG_URL_NOPASS" ] || exit 1
   psql "$PG_URL_NOPASS" -X -q -c "REVOKE migrator FROM CURRENT_USER" &&
@@ -4640,7 +4640,7 @@ Expected: `ALL ROLE CHECKS PASSED`. The owner no longer inherits table access, w
 - [ ] **Step 5 (owner): Observe one clean nightly run** under the `app` role. healthchecks.io `safeascent-nightly` shows start + success. `/health/worker` shows `"expired_tasks_7d": {}`. `historical_predictions` has rows for today:
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 ( set -a; . ./.env.analyst; set +a
   U="$(pg_verify_full "$ANALYST_DATABASE_URL")" || exit 1; split_pg_url "$U" && [ -n "$PG_URL_NOPASS" ] || exit 1
   psql "$PG_URL_NOPASS" -XAtc "SELECT count(*) FROM historical_predictions WHERE prediction_date = CURRENT_DATE" )

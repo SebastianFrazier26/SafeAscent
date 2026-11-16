@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Frontend dev-dependency advisories - 2026-11-15
+
+- `vitest` and `@vitest/coverage-v8` 3.2.7 -> 4.1.12 (drops the vulnerable `tinypool` and `@vitest/mocker`); `vite` 7.3.6 -> 7.3.8 and `zod` 4.3.6 -> 4.6.7, `source-map-js` patched, all via lockfile. Full `npm audit` in `frontend/` now reports no high or critical findings; the 7 remaining moderates are `minimatch` under `typescript-eslint` with no patched release yet.
+- `frontend/src/test/setup.js`: `ResizeObserver` / `IntersectionObserver` mocks use `function` implementations, since vitest 4 no longer allows `new` on an arrow-function mock.
+
+### Housekeeping - 2026-11-15
+
+- Removed the owner's absolute local home path from `CHANGELOG.md` and the `docs/superpowers/plans/` files (replaced with `<repo-root>` / `<worktree-*>` placeholders).
+
 ### Project page: model v2 demo - 2026-11-15
 
 - `site/index.html` replaces the old kernel's illustrative scorer and its prose (spatial bandwidth, temporal decay, cubed weather similarity) with an illustrative model-v2 demo: made-up inputs run the Poisson-Gamma shrinkage toward nearby and similar-route estimates, the phi-widened 90% interval, the 25/50/75 bands on the percentile, the confidence levels with their evidence gate, and the insufficient (gray, no number) state. The lowest band reads "Lower than typical for this type"; unavailable is described as no colour, never gray. The architecture diagram now shows stored scores served from the active model version and offline training.
@@ -281,7 +290,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Phase 1 PR8 — 2026-09-27
 
 - New `LICENSE` (Apache License 2.0, canonical unmodified text fetched from apache.org) and `DATA_LICENSE.md`, a summary — pending the owner's lawyer review — of what SafeAscent believes applies to each data source: OpenBeta climb/area data is CC0 1.0 (verified 2026-09-28 against `OpenBeta/climbing-data`'s README and `openbeta.io/about`); Mountain Project ice/mixed route facts (name, grade, location, type) may be displayed but are never bulk-redistributed, all other MP-derived data is internal-only and never committed, and this repo claims no license or right to MP data; accident (AAC, CAIC/Avalanche.org, NPS) and weather (Open-Meteo) sources are subject to their own terms; future Phase 4 user-submitted incident facts are planned CC0. `README.md`'s License section (previously a stale "MIT") now points to both files.
-- Removed tracked junk from `backend/`: `tests/test_prediction_integration.py.backup`, `check_weather_gaps.py`, `test_weather_service.py`, `test_weather_stats_db.py`, `test_request.json`, `tests/check_risk_scores.py` (the last had a hardcoded `/Users/sebastianfrazier/SafeAscent/backend` path and no tests). None were imported or referenced by `app/`, CI, Docker, or the Railway configs.
+- Removed tracked junk from `backend/`: `tests/test_prediction_integration.py.backup`, `check_weather_gaps.py`, `test_weather_service.py`, `test_weather_stats_db.py`, `test_request.json`, `tests/check_risk_scores.py` (the last had a hardcoded absolute local path and no tests). None were imported or referenced by `app/`, CI, Docker, or the Railway configs.
 - Moved `backend/tests/benchmark_*.py` (4) and `backend/tests/profile_*.py` (3) — one-off performance scripts, never pytest-collected (`python_files = ["test_*.py"]`) — to `backend/scripts/perf/`. Five of the seven relied on `sys.path.insert(0, .../"..")` next to `__file__` to find `app/`; that now resolves one directory short from the new location, so each was updated to `.../"..", ".."`. No other behavior changed.
 - New root `CLAUDE.md`: build/test/run commands for both stacks (verified against `backend/pyproject.toml`, `.github/workflows/ci.yml`, `frontend/package.json`, `docker-compose.yml` rather than copied from the task spec), Railway/healthchecks.io service topology, the migration and least-privilege-role rules, the no-scraper and Mountain Project data rules, the safety-accuracy rules (no fabricated risk, single risk-band source, insufficient-data threshold), and branch/secrets conventions.
 

@@ -3178,7 +3178,7 @@ Every connection is TLS verify-full (`verify_full_url` for psql; `connect_args_f
 **Re-enter the rehearsal branch (Steps 1–5).** Never creates anything.
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 . scripts/runbook_helpers.sh
 unset TARGET_HOST
 B=p2a-3-rehearsal
@@ -3195,7 +3195,7 @@ Expected: `branch host ok` and `target is the rehearsal branch`. Anything else: 
 **Prod preamble (Step 6 only, after the owner's go-ahead).** Every Step 6 block repeats this line inside its own subshell:
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
+cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
 ```
 
 - [ ] **Step 0 (owner/agent): Checkout, tools, helpers, direct host**
@@ -3203,7 +3203,7 @@ cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_hel
 As plan 2 Task 13 Step 0 (C4, G18): the role env files exist only in the main checkout's `backend/`, so the runbook runs there, with this PR's branch checked out. Git will not check out a branch a worktree holds, so the agent first removes the review worktree `SafeAscent-2a3` (no commit is lost: worktrees share refs). This session's working directory must not be inside `SafeAscent-2a3`. The agent never copies, links or prints an env file into a worktree.
 
 ```bash
-( M=/Users/sebastianfrazier/Developer/SafeAscent; W=/Users/sebastianfrazier/Developer/SafeAscent-2a3
+( M=<repo-root>; W=<worktree-2a3>
   [ -z "$(git -C "$M" status --porcelain --untracked-files=no)" ] || { echo "main checkout has uncommitted changes: STOP" >&2; exit 1; }
   if git -C "$M" worktree list --porcelain | grep -qx "worktree $W"; then
     [ -z "$(git -C "$W" status --porcelain)" ] || { echo "$W has uncommitted or untracked files: STOP, ask the owner" >&2; exit 1; }
@@ -3216,7 +3216,7 @@ As plan 2 Task 13 Step 0 (C4, G18): the role env files exist only in the main ch
 Expected: `checkout ok`. Never pass `--force`; a refused removal or checkout is a stop.
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 uv sync --frozen
 . scripts/runbook_helpers.sh
 unset TARGET_HOST
@@ -3321,7 +3321,7 @@ Do not repeat Steps 1–5. Run only the blocks below, one at a time, in order, w
 **6a. Gate: PR 2a-1/2a-2 are on prod (prod at 0006), the helpers are current, no earlier attempt left gates, and the branch evidence exists.**
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
   # PRODUCTION
   for f in same_ids gate_pass gate_require bg_start bg_wait save_once; do type "$f" >/dev/null 2>&1 || { echo "runbook helpers are stale: STOP" >&2; exit 1; }; done
   [ ! -e "$GATE_DIR" ] || { echo "$GATE_DIR exists: an earlier prod attempt; STOP, ask the owner" >&2; exit 1; }
@@ -3337,7 +3337,7 @@ Expected: `0006_accidents_clean` (no `(head)`) and `GATE OK: prod_at_0006`.
 **6b. Snapshot `pre-2a-3` immediately before the migration.** Run once; if neonctl says the branch exists, stop and ask the owner (never recreate it).
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
   # PRODUCTION snapshot
   gate_require prod_at_0006 || exit 1
   snap="$(neonctl branches create --project-id still-morning-74008008 --name pre-2a-3 --parent production --no-secrets --output json \
@@ -3351,7 +3351,7 @@ Expected: parent `br-restless-bar-ajw5zy4b` and `GATE OK: snapshot`. Record the 
 **6c. Migrate, check, grants, verify.**
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
   # PRODUCTION
   gate_require snapshot || exit 1
   MIG upgrade head || exit 1
@@ -3370,19 +3370,19 @@ Expected: the Step 1 lines, ending with `GATE OK: migrated`.
 **6d. Register on prod, in the background; then gate its counts against the branch's.**
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
   # PRODUCTION
   gate_require migrated || exit 1
   bg_start ../data/review/logs/register_2a3_prod.log INGMOD app.pipelines.era5_window register )
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh || exit 1
   bg_wait ../data/review/logs/register_2a3_prod.log )
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
   # PRODUCTION
   bg_wait ../data/review/logs/register_2a3_prod.log 0 >/dev/null || { echo "register has not finished ok: STOP" >&2; exit 1; }
   R=../data/review
@@ -3396,7 +3396,7 @@ Expected: `GATE OK: registered`. Prod's data equals the branch's parent, so the 
 **6e. Gate: the prod plan fits and has no foreign zone.**
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
   # PRODUCTION
   gate_require registered || exit 1
   R=../data/review
@@ -3422,7 +3422,7 @@ Expected: seven `branch … prod …` lines, then `GATE OK: plan_ok`. The unit f
 **6f. R7.** Gate: the prod dry run shows exactly one positive longitude, `113.2`.
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
   # PRODUCTION
   gate_require plan_ok || exit 1
   R=../data/review
@@ -3435,7 +3435,7 @@ Expected: seven `branch … prod …` lines, then `GATE OK: plan_ok`. The unit f
 Only after `GATE OK: r7_dry`:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
   # PRODUCTION
   gate_require r7_dry || exit 1
   out="$(ING r7 --apply)" || exit 1
@@ -3449,7 +3449,7 @@ Expected: `{"updated": 1}` and `GATE OK: r7_applied`. Never re-run this block af
 **6g. Acceptance (read-only).**
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
   # PRODUCTION (read-only)
   gate_require r7_applied || exit 1
   VERIFY tests/verify/test_phase2a_conditions.py -q -s -k "r7 or visibility or normals_status" || exit 1
@@ -3475,7 +3475,7 @@ Rewritten 2026-10-06 (pre-flight G6, G19, G20; Task 10 OQ5 carry). Free: no Open
 **Re-enter the rehearsal branch (Steps 2–9).** As Task 12's block, with `B=p2a-4-rehearsal`:
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 . scripts/runbook_helpers.sh
 unset TARGET_HOST
 B=p2a-4-rehearsal
@@ -3490,7 +3490,7 @@ BRANCH_HOST="$(branch_host "${B:?}")"
 **Prod preamble (Step 10 only):**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
 ```
 
 - [ ] **Step 1 (owner): Prepare the CSVs** in `~/Developer/safeascent-private/manual/`: `aac_refresh.csv` (typed by hand from ANAC 2025/2026 and The Prescription, facts only, ~60–120 rows), `caic_refresh.csv` and `nps_refresh.csv` (from the private exporters). Copy the header from `data/manual/accident_facts.template.csv` and leave `mp_route_id` blank (Step 5 fills it in copies). Set `activity` correctly per row (O1: R11 rows skip R3/R4/R12). Never put these files under the repo.
@@ -3681,7 +3681,7 @@ Do not repeat Steps 1–9. Run only the blocks below, one at a time, in order, w
 **10a. Gate: 2a-3 is on prod, prod is at 0007, the facts files and branch evidence are the rehearsal's, and no stale review file.**
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
   # PRODUCTION
   for f in same_ids gate_pass gate_require bg_start bg_wait save_once; do type "$f" >/dev/null 2>&1 || { echo "runbook helpers are stale: STOP" >&2; exit 1; }; done
   [ ! -e "$GATE_DIR" ] || { echo "$GATE_DIR exists: an earlier prod attempt; STOP, ask the owner" >&2; exit 1; }
@@ -3699,7 +3699,7 @@ Do not repeat Steps 1–9. Run only the blocks below, one at a time, in order, w
 **10b. Snapshot `pre-2a-4` immediately before the first prod write.** Run once; if the branch exists, stop and ask the owner.
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
   # PRODUCTION snapshot
   gate_require prod_ready || exit 1
   snap="$(neonctl branches create --project-id still-morning-74008008 --name pre-2a-4 --parent production --no-secrets --output json \
@@ -3713,7 +3713,7 @@ Record the id and `created_at` in the PR.
 **10c. Grants (re-applied), then gate: the baseline and the dry runs equal the branch's.**
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
   # PRODUCTION
   gate_require snapshot || exit 1
   OWNER_PSQL -q -f db/roles/grants_phase2.sql || exit 1
@@ -3723,7 +3723,7 @@ Record the id and `created_at` in the PR.
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
   # PRODUCTION
   gate_require grants || exit 1
   P=~/Developer/safeascent-private/manual; R=../data/review
@@ -3741,7 +3741,7 @@ Expected: `GATE OK: dry_runs`. Any difference means prod changed after the branc
 **10d. Load, then gate the counts against the branch's load counts.**
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
   # PRODUCTION
   gate_require dry_runs || exit 1
   P=~/Developer/safeascent-private/manual; R=../data/review
@@ -3755,7 +3755,7 @@ Expected: `GATE OK: dry_runs`. Any difference means prod changed after the branc
 **Per-file resume:** if this STOPs partway, rerunning it skips every file whose evidence JSON already exists (`[ -e ] ||`) and resumes at the one that failed. This is safe: each file's load is one transaction, so a failed file committed nothing, and even a file re-sent after a partial success only quarantines its already-loaded rows as `already_present` rather than duplicating them. Only a full `gate_pass loaded` with all three files' counts matching the branch's (below) means the load is done.
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
   # PRODUCTION
   gate_require loaded || exit 1
   R=../data/review
@@ -3780,7 +3780,7 @@ Expected: three count lines (record the gaps; they may name one more month than 
 **10e. G20 and route ids.**
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
   # PRODUCTION
   gate_require load_counts || exit 1
   P=~/Developer/safeascent-private/manual; R=../data/review
@@ -3803,7 +3803,7 @@ for s in ("r2", "r1"):
 Only after `GATE OK: g20_routes_dry`:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
   # PRODUCTION
   gate_require g20_routes_dry || exit 1
   P=~/Developer/safeascent-private/manual; R=../data/review
@@ -3817,7 +3817,7 @@ Only after `GATE OK: g20_routes_dry`:
 **10f. R5.** Gate: the dry run equals the branch's.
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
   # PRODUCTION
   gate_require routes_applied || exit 1
   [ -e ../data/review/p2a4_r5_dry_prod.json ] || save_once ../data/review/p2a4_r5_dry_prod.json ING r5 >/dev/null || exit 1
@@ -3826,21 +3826,21 @@ Only after `GATE OK: g20_routes_dry`:
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
   # PRODUCTION
   gate_require r5_dry || exit 1
   bg_start ../data/review/logs/r5_r11_apply1_prod.log ING r5 --apply --out ../data/review/duplicates_r11_prod.csv )
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh || exit 1
   bg_wait ../data/review/logs/r5_r11_apply1_prod.log )
 ```
 
 Gate: the prod review pairs are the branch's. When the branch wrote no `duplicates_r11.csv` (0 review pairs), prod must have written none either.
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
   # PRODUCTION
   bg_wait ../data/review/logs/r5_r11_apply1_prod.log 0 >/dev/null || { echo "R5 apply 1 has not finished ok: STOP" >&2; exit 1; }
   R=../data/review
@@ -3856,7 +3856,7 @@ Gate: the prod review pairs are the branch's. When the branch wrote no `duplicat
 Only after `GATE OK: r5_pairs`, and only if the branch had review pairs (otherwise skip to 10g; the last R5 log is `r5_r11_apply1_prod.log`):
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
   # PRODUCTION
   gate_require r5_pairs || exit 1
   ING r5-import --review-file ../data/review/duplicates_r11.csv --apply || exit 1
@@ -3864,14 +3864,14 @@ Only after `GATE OK: r5_pairs`, and only if the branch had review pairs (otherwi
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh || exit 1
   bg_wait ../data/review/logs/r5_r11_apply2_prod.log )
 ```
 
 Further rounds follow plan 2 Task 13 12h with the `_r11` names, exactly as many as the branch ran. Gate: R5 done. Set `LAST` to the last R5 log this step wrote:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
   # PRODUCTION
   LAST=../data/review/logs/r5_r11_apply1_prod.log  # edit to the last _r11 prod log this step actually wrote (apply2, apply3, ...)
   case "$LAST" in ../data/review/logs/r5_r11_apply[0-9]_prod.log) ;; *) echo "LAST is not set to an r5_r11 prod log: STOP" >&2; exit 1 ;; esac
@@ -3883,19 +3883,19 @@ Further rounds follow plan 2 Task 13 12h with the `_r11` names, exactly as many 
 **10g. Register on prod; gate against the branch.**
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
   # PRODUCTION
   gate_require r5_done || exit 1
   bg_start ../data/review/logs/register_2a4_prod.log INGMOD app.pipelines.era5_window register )
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh || exit 1
   bg_wait ../data/review/logs/register_2a4_prod.log )
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
   # PRODUCTION
   bg_wait ../data/review/logs/register_2a4_prod.log 0 >/dev/null || { echo "register has not finished ok: STOP" >&2; exit 1; }
   R=../data/review
@@ -3907,7 +3907,7 @@ Further rounds follow plan 2 Task 13 12h with the `_r11` names, exactly as many 
 **10h. Acceptance (read-only).**
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
   # PRODUCTION (read-only)
   gate_require registered || exit 1
   VERIFY tests/verify/test_phase2a_conditions.py -q -s -k "r11 or r7 or visibility or normals_status" || exit 1
@@ -3940,7 +3940,7 @@ Rewritten 2026-10-06 (pre-flight G6, G19, R1, R9, D20; OQ1; Task 5–7 carries).
 **Prod preamble (Step 4 only):**
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1
+cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1
 ```
 
 - [ ] **Step 1 (owner): Buy one month of Open-Meteo Professional** — OQ1 (2026-10-01): buy the first month now, once Tasks 12 and 13 are on prod, then every January. First re-check the price, the 5M-unit quota and the archive-needs-Professional rule on open-meteo.com/en/pricing (last read 2026-09-28). Put the key in the file with an editor (never `echo` it), then `chmod 600 backend/.env.openmeteo`. The purchase date is the window start (`--window-start`); the window is 30 days from it.
@@ -3948,7 +3948,7 @@ cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_hel
 The owner, not the agent, records the confirmation:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh || exit 1
   printf '%s\n' YYYY-MM-DD > ../data/review/era5w1_window_start.txt
   GATE_DIR=../data/review/gates_era5w1_prod gate_pass owner_purchase_confirmed )
 ```
@@ -3958,7 +3958,7 @@ Replace `YYYY-MM-DD` with the purchase date. The owner then tells the agent in w
 - [ ] **Step 2 (agent): Key and window checks** (no network call)
 
 ```bash
-cd /Users/sebastianfrazier/Developer/SafeAscent/backend
+cd <repo-root>/backend
 [ "$(stat -f %Lp .env.openmeteo)" = 600 ] && echo "key file is 0600"
 git check-ignore -q .env.openmeteo && echo "key file is ignored"
 ( set -a; . ./.env.openmeteo; set +a; [ -n "${OPEN_METEO_API_KEY:-}" ] && echo "key present" )
@@ -4001,7 +4001,7 @@ save_once ../data/review/era5w1_branch_spent.txt printf '%s\n' 20000
 
 Expected: `finished ok`; `fill.done` > 0, `fill.failed: 0`, `fill.stopped_for_budget: true` (the cap is small on purpose); `20000` saved once — the branch `--max-units` cap itself, not whatever this run's log says it spent. The cap is cumulative per database (R9), so branch spend is always ≤ 20,000 regardless of retries; reading the log's `units_spent_window` instead would under-count after a `_r2` rerun and let the prod final cap (4c/4f) overspend by the difference.
 
-**STOP — owner dashboard check.** The owner compares the Open-Meteo dashboard's used units with `era5w1_branch_spent.txt`. The ceiling formula over-estimates, so the dashboard should show the same or less. If it shows more, stop: the cost estimate is corrected in a reviewed commit before any further run. Only when it matches, the owner runs `( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && GATE_DIR=../data/review/gates_era5w1_prod gate_pass owner_units_confirmed_branch )`.
+**STOP — owner dashboard check.** The owner compares the Open-Meteo dashboard's used units with `era5w1_branch_spent.txt`. The ceiling formula over-estimates, so the dashboard should show the same or less. If it shows more, stop: the cost estimate is corrected in a reviewed commit before any further run. Only when it matches, the owner runs `( cd <repo-root>/backend && . scripts/runbook_helpers.sh && GATE_DIR=../data/review/gates_era5w1_prod gate_pass owner_units_confirmed_branch )`.
 
 R6 and the query plan on the partial data (Task 2 M6):
 
@@ -4020,7 +4020,7 @@ Expected: `r_tmax > 0.95`, `p99_gust < 60`, and `n > 100` (if the slice linked t
 **4a. Gate: everything the paid run depends on.**
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1
   # PRODUCTION
   for f in gate_pass gate_require bg_start bg_wait save_once; do type "$f" >/dev/null 2>&1 || { echo "runbook helpers are stale: STOP" >&2; exit 1; }; done
   gate_require owner_purchase_confirmed || exit 1
@@ -4037,7 +4037,7 @@ Expected: `r_tmax > 0.95`, `p99_gust < 60`, and `n > 100` (if the slice linked t
 **4b. Snapshot `pre-era5-w1`** (paid rows are additive; this is the restore point if a run writes wrong data). Run once.
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1
   # PRODUCTION snapshot
   gate_require prod_ready || exit 1
   snap="$(neonctl branches create --project-id still-morning-74008008 --name pre-era5-w1 --parent production --no-secrets --output json \
@@ -4049,7 +4049,7 @@ Expected: `r_tmax > 0.95`, `p99_gust < 60`, and `n > 100` (if the slice linked t
 **4c. Gate: the prod plan fits with the branch spend.**
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1
   # PRODUCTION
   gate_require snapshot || exit 1
   W="$(cat ../data/review/era5w1_window_start.txt)" || exit 1
@@ -4068,7 +4068,7 @@ If this STOPs on the budget, the owner chooses per OQ4; the slices below then st
 **STOP — owner plan review (as Task 12 Step 3).** `GATE OK: plan_ok` is a mechanical budget check only, not the owner's go-ahead to spend. The agent pastes the printed `prod total_units` and `branch spent` to the owner. Only on the owner's written "plan ok" does the owner run:
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && GATE_DIR=../data/review/gates_era5w1_prod gate_pass owner_prod_plan_ack )
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && GATE_DIR=../data/review/gates_era5w1_prod gate_pass owner_prod_plan_ack )
 ```
 
 4d requires this gate too, so the first 1,000,000-unit slice cannot run on the mechanical gate alone.
@@ -4076,7 +4076,7 @@ If this STOPs on the budget, the owner chooses per OQ4; the slices below then st
 **4d. Slice 1 (cap 1,000,000), then the owner's dashboard check.**
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1
   # PRODUCTION (paid)
   gate_require plan_ok || exit 1
   gate_require owner_prod_plan_ack || exit 1
@@ -4088,16 +4088,16 @@ If this STOPs on the budget, the owner chooses per OQ4; the slices below then st
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh || exit 1
   bg_wait ../data/review/logs/era5w1_prod_s1.log )
 ```
 
-A multi-hour slice returns 2 from `bg_wait` many times: run the same block again each time. Expected: `finished ok`, `units_spent_window` ≤ 1,000,000. **STOP — owner dashboard check** (as Step 3; the dashboard now shows branch plus prod spend). Only if it matches, the owner runs `( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && GATE_DIR=../data/review/gates_era5w1_prod gate_pass owner_units_confirmed_prod )`.
+A multi-hour slice returns 2 from `bg_wait` many times: run the same block again each time. Expected: `finished ok`, `units_spent_window` ≤ 1,000,000. **STOP — owner dashboard check** (as Step 3; the dashboard now shows branch plus prod spend). Only if it matches, the owner runs `( cd <repo-root>/backend && . scripts/runbook_helpers.sh && GATE_DIR=../data/review/gates_era5w1_prod gate_pass owner_units_confirmed_prod )`.
 
 **4e. Slice 2 (cap 2,500,000).**
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1
   # PRODUCTION (paid)
   gate_require owner_units_confirmed_prod || exit 1
   S1_LOG=../data/review/logs/era5w1_prod_s1.log  # edit to the _r2/_r3 name if slice 1 needed a rerun
@@ -4110,14 +4110,14 @@ A multi-hour slice returns 2 from `bg_wait` many times: run the same block again
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh || exit 1
   bg_wait ../data/review/logs/era5w1_prod_s2.log )
 ```
 
 **4f. The final slice (cap 4,500,000 minus the branch spend).** If slice 2 already shows `fill.chunks == fill.pending_lag_edge + fill.edge_trimmed` (every chunk left reached only the lag edge: nothing published yet, or stopped short of unpublished days) and `normals.due: 0`, skip to 4g. Early-January runs re-buy the short chunk after the 31-December split (and its pending days) until ERA5 publishes through 31 December; that is bounded at about 14 days per bucket per run, so it is expected spend, not a fault.
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1
   # PRODUCTION (paid)
   gate_require owner_units_confirmed_prod || exit 1
   S2_LOG=../data/review/logs/era5w1_prod_s2.log  # edit to the _r2/_r3 name if slice 2 needed a rerun
@@ -4132,7 +4132,7 @@ A multi-hour slice returns 2 from `bg_wait` many times: run the same block again
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh || exit 1
   bg_wait ../data/review/logs/era5w1_prod_s3.log )
 ```
 
@@ -4141,7 +4141,7 @@ Done when the last run's JSON shows `fill.chunks == fill.pending_lag_edge + fill
 **4g. Verify on prod (read-only), in the background.**
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_era5w1_prod || exit 1
   # PRODUCTION
   gate_require owner_units_confirmed_prod || exit 1
   LAST_SLICE_LOG=../data/review/logs/era5w1_prod_s3.log  # edit to s2's log if 4f was skipped, or the _r2/_r3 name if the last slice needed a rerun
@@ -4151,7 +4151,7 @@ Done when the last run's JSON shows `fill.chunks == fill.pending_lag_edge + fill
 ```
 
 ```bash
-( cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh || exit 1
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh || exit 1
   bg_wait ../data/review/logs/verify_era5w1_prod.log )
 ```
 
