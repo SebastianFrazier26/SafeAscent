@@ -1,9 +1,64 @@
 -- Read-only exact-privilege checks for the Phase 2 roles. Exits non-zero on any failure.
 -- Run as the same owner that ran create_roles_phase2.sql (membership checks compare to
--- CURRENT_USER). Cumulative: later plans append their expected rows.
+-- CURRENT_USER). Cumulative: later plans append their expected rows. Revision-aware like
+-- grants_phase2.sql (runbook K1, 2026-11-16): a migration's checks are skipped only while none of its
+-- relations exist; once any do, all must, and every expectation for that block applies in full.
 \set ON_ERROR_STOP on
 
 CREATE TEMP TABLE role_checks (check_name text PRIMARY KEY, ok boolean NOT NULL);
+
+-- PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views, so extension-owned
+-- relations are skipped throughout, as verify_roles.sql does.
+CREATE TEMP TABLE rels AS
+SELECT c.oid, n.nspname || '.' || c.relname AS tbl, n.nspname AS schema, c.relkind
+FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname IN ('public', 'internal') AND c.relkind IN ('r', 'p', 'v', 'm', 'S')
+  AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e');
+
+-- The relations each migration creates, with their kind: the same list as grants_phase2.sql, which
+-- explains why a partial block, or one present after an absent one, is a failure and not a skip.
+-- Looked up in rels (the catalog), never by to_regclass: that needs USAGE on internal.
+CREATE TEMP TABLE block_objects (rev text NOT NULL, tbl text NOT NULL, relkind "char" NOT NULL);
+INSERT INTO block_objects VALUES
+  ('0004', 'public.source_ingest_log', 'r'), ('0004', 'internal.accident_revisions', 'r'),
+  ('0004', 'internal.ingest_quarantine', 'r'), ('0004', 'internal.mp_tick_aggregates', 'r'),
+  ('0004', 'internal.accidents_raw', 'r'),
+  ('0005', 'public.gnis_summits', 'r'), ('0005', 'internal.duplicate_decisions', 'r'),
+  ('0006', 'public.accidents_clean', 'v'), ('0006', 'public.accidents_clean_daily', 'v'),
+  ('0007', 'public.cell_daily_conditions', 'r'), ('0007', 'public.grid_bucket_series', 'r'),
+  ('0007', 'public.cell_normals_status', 'r'), ('0007', 'public.cell_climate_normals', 'r'),
+  ('0007', 'public.cell_climatology', 'r'), ('0007', 'public.accident_conditions', 'v'),
+  ('0008', 'public.canonical_areas', 'r'), ('0008', 'public.canonical_routes', 'r'),
+  ('0008', 'public.scorable_routes', 'v'), ('0008', 'internal.route_tick_scrapes', 'r'),
+  ('0008', 'internal.route_tick_coverage', 'v'), ('0008', 'internal.route_tick_months', 'v'),
+  ('0009', 'public.feature_points', 'r'), ('0009', 'public.route_static_features', 'r'),
+  ('0009', 'public.scoring_unit_features', 'v'),
+  ('0010', 'public.accident_legacy_links', 'r'), ('0010', 'public.accident_route_links', 'v'),
+  ('0010', 'internal.r10_unresolved', 'r'), ('0010', 'internal.r10_llm_calls', 'r'),
+  ('0010', 'internal.r10_llm_gates', 'r'),
+  ('0011', 'internal.exposure_index', 'r');
+
+-- active: every relation of the block exists, so all of its expectations below apply.
+CREATE TEMP TABLE blocks AS
+SELECT o.rev, bool_and(r.tbl IS NOT NULL) AS active, bool_or(r.tbl IS NOT NULL) AS present
+FROM block_objects o LEFT JOIN rels r ON r.tbl = o.tbl
+GROUP BY o.rev;
+
+INSERT INTO role_checks
+SELECT 'migration block 0004 is present (run at 0004_phase2a_foundation or later)',
+       (SELECT active FROM blocks WHERE rev = '0004')
+UNION ALL
+SELECT 'migration block ' || b.rev || ' is complete or absent', b.active OR NOT b.present
+FROM blocks b
+UNION ALL
+SELECT 'migration block ' || b.rev || ' is absent, or every earlier block is present',
+       NOT b.present OR NOT EXISTS (SELECT 1 FROM blocks e WHERE e.rev < b.rev AND NOT e.active)
+FROM blocks b
+UNION ALL
+SELECT 'block ' || o.rev || ' relation exists with its expected kind: ' || o.tbl,
+       EXISTS (SELECT 1 FROM rels r WHERE r.tbl = o.tbl AND r.relkind = o.relkind)
+FROM block_objects o JOIN blocks b ON b.rev = o.rev
+WHERE b.present;
 
 INSERT INTO role_checks
 SELECT 'role exists: ' || r, EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r)
@@ -54,7 +109,9 @@ INSERT INTO role_checks VALUES
 
 -- The exact table-level privileges ingest holds. Later plans append rows here. mp_ticks,
 -- accidents UPDATE and accidents_raw are absent on purpose: those grants are column-level
--- (checked below), and a column grant leaves has_table_privilege false.
+-- (checked below), and a column grant leaves has_table_privilege false. A row for a relation that
+-- does not exist yet checks nothing; rows for older relations that block 0007 grants on (0006's
+-- clean views, area_weekly_weather) are added after, only once that block is active.
 CREATE TEMP TABLE ingest_privs (tbl text, priv text);
 INSERT INTO ingest_privs VALUES
   ('public.mp_routes', 'SELECT'),
@@ -81,11 +138,7 @@ INSERT INTO ingest_privs VALUES
   ('public.cell_climate_normals', 'UPDATE'),
   ('public.cell_climatology', 'SELECT'), ('public.cell_climatology', 'INSERT'),
   ('public.cell_climatology', 'UPDATE'),
-  ('public.accidents_clean', 'SELECT'), ('public.accidents_clean_daily', 'SELECT'),
   ('public.accident_conditions', 'SELECT'),
-  -- Plan 3 (R7): area_weekly_weather SELECT is table-level; UPDATE is column-level (longitude
-  -- only), checked below.
-  ('public.area_weekly_weather', 'SELECT'),
   -- MP catalog plan (0008): the catalog tables are upserted, never deleted; mp_locations SELECT
   -- is column-level, checked below.
   ('public.canonical_areas', 'SELECT'), ('public.canonical_areas', 'INSERT'), ('public.canonical_areas', 'UPDATE'),
@@ -114,14 +167,12 @@ INSERT INTO ingest_privs VALUES
   -- Exposure (0011): snapshots are cleared, reinserted and pruned, never updated.
   ('internal.exposure_index', 'SELECT'), ('internal.exposure_index', 'INSERT'),
   ('internal.exposure_index', 'DELETE');
-
--- PostGIS grants PUBLIC SELECT on spatial_ref_sys and its views, so extension-owned
--- relations are skipped throughout, as verify_roles.sql does.
-CREATE TEMP TABLE rels AS
-SELECT c.oid, n.nspname || '.' || c.relname AS tbl, n.nspname AS schema, c.relkind
-FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE n.nspname IN ('public', 'internal') AND c.relkind IN ('r', 'p', 'v', 'm', 'S')
-  AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e');
+-- Plan 3 reads the 0006 clean views. R7: area_weekly_weather SELECT is table-level; UPDATE is
+-- column-level (longitude only), checked below.
+INSERT INTO ingest_privs
+SELECT t, 'SELECT'
+FROM unnest(ARRAY['public.accidents_clean', 'public.accidents_clean_daily', 'public.area_weekly_weather']) AS t
+WHERE (SELECT active FROM blocks WHERE rev = '0007');
 
 WITH privs AS (
   SELECT r.tbl, p.priv, has_table_privilege('ingest', r.oid, p.priv) AS held
@@ -135,10 +186,11 @@ SELECT 'ingest ' || priv || ' on ' || tbl || ' matches the expected set',
 FROM privs;
 
 -- R11 inserts accidents through accident_id's nextval() default, which needs USAGE on its
--- sequence: that one sequence is exempt for USAGE only, never SELECT or UPDATE (setval).
+-- sequence: that one sequence is exempt for USAGE only (from block 0007), never SELECT or UPDATE (setval).
 INSERT INTO role_checks
 SELECT 'ingest has nothing on sequence ' || tbl,
-       has_sequence_privilege('ingest', oid, 'USAGE') = (tbl = 'public.accidents_accident_id_seq')
+       has_sequence_privilege('ingest', oid, 'USAGE')
+         = (tbl = 'public.accidents_accident_id_seq' AND (SELECT active FROM blocks WHERE rev = '0007'))
        AND NOT (has_sequence_privilege('ingest', oid, 'SELECT') OR has_sequence_privilege('ingest', oid, 'UPDATE'))
 FROM rels WHERE relkind = 'S'
 UNION ALL
@@ -188,17 +240,18 @@ FROM cols;
 -- ingest's column grants from plan 2: UPDATE on accidents exactly the repair columns (never
 -- description, source, source_id or accident_id), plus plan 3's tz and R11's mp_route_id; SELECT
 -- on accidents_raw only the R1-R4 inputs. INSERT (R11) is exactly accident_facts.INSERT_COLUMNS:
--- never accident_id, location, tags or elevation_meters.
-WITH cols AS (
+-- never accident_id, location, tags or elevation_meters. tz, mp_route_id and INSERT are block 0007's.
+WITH at7 AS (SELECT active FROM blocks WHERE rev = '0007'),
+cols AS (
   SELECT a.attnum, a.attname,
          a.attname IN ('date', 'year', 'latitude', 'longitude', 'coordinates', 'country', 'date_precision',
                        'year_source', 'year_lo', 'year_hi', 'geocode_precision', 'geocode_method',
                        'activity_class', 'activity_rule_version', 'inclusion_flag', 'incident_group_id',
                        'is_canonical', 'severity_scale', 'excluded_reason', 'source_url', 'updated_at',
-                       'exp_years_climbing', 'exp_stated_level', 'exp_first_season', 'guided', 'exp_rule_version',
-                       'tz', 'mp_route_id')
+                       'exp_years_climbing', 'exp_stated_level', 'exp_first_season', 'guided', 'exp_rule_version')
+           OR ((SELECT active FROM at7) AND a.attname IN ('tz', 'mp_route_id'))
            AS may_update,
-         a.attname IN ('source', 'source_id', 'date', 'year', 'date_precision', 'state', 'mountain', 'route',
+         (SELECT active FROM at7) AND a.attname IN ('source', 'source_id', 'date', 'year', 'date_precision', 'state', 'mountain', 'route',
                        'mp_route_id', 'latitude', 'longitude', 'geocode_precision', 'geocode_method', 'country',
                        'tz', 'activity', 'activity_class', 'activity_rule_version', 'inclusion_flag',
                        'accident_type', 'injury_severity', 'severity_scale', 'exp_years_climbing',
@@ -223,13 +276,15 @@ WITH cols AS (
 INSERT INTO role_checks
 SELECT 'ingest mp_locations column privileges match the expected set: ' || attname,
        has_column_privilege('ingest', 'public.mp_locations', attnum, 'SELECT')
-         = (attname IN ('mp_id', 'parent_id', 'name', 'latitude', 'longitude'))
+         = (attname IN ('mp_id', 'latitude', 'longitude')
+            OR ((SELECT active FROM blocks WHERE rev = '0008') AND attname IN ('parent_id', 'name')))
        AND NOT has_column_privilege('ingest', 'public.mp_locations', attnum, 'UPDATE')
        AND NOT has_column_privilege('ingest', 'public.mp_locations', attnum, 'INSERT')
        AND NOT has_column_privilege('ingest', 'public.mp_locations', attnum, 'REFERENCES')
 FROM cols;
 
--- R10 (0010): ingest reads only the legacy link columns of routes and mountains, never writes.
+-- R10 (0010): ingest reads only the legacy link columns of routes and mountains, never writes;
+-- before block 0010, nothing at all.
 WITH cols AS (
   SELECT a.attnum, a.attname
   FROM pg_attribute a
@@ -238,7 +293,8 @@ WITH cols AS (
 INSERT INTO role_checks
 SELECT 'ingest routes column privileges match the expected set: ' || attname,
        has_column_privilege('ingest', 'public.routes', attnum, 'SELECT')
-         = (attname IN ('route_id', 'name', 'grade', 'type', 'latitude', 'longitude', 'mp_route_id'))
+         = ((SELECT active FROM blocks WHERE rev = '0010')
+            AND attname IN ('route_id', 'name', 'grade', 'type', 'latitude', 'longitude', 'mp_route_id'))
        AND NOT has_column_privilege('ingest', 'public.routes', attnum, 'UPDATE')
        AND NOT has_column_privilege('ingest', 'public.routes', attnum, 'INSERT')
        AND NOT has_column_privilege('ingest', 'public.routes', attnum, 'REFERENCES')
@@ -252,14 +308,14 @@ WITH cols AS (
 INSERT INTO role_checks
 SELECT 'ingest mountains column privileges match the expected set: ' || attname,
        has_column_privilege('ingest', 'public.mountains', attnum, 'SELECT')
-         = (attname IN ('mountain_id', 'name', 'latitude', 'longitude'))
+         = ((SELECT active FROM blocks WHERE rev = '0010') AND attname IN ('mountain_id', 'name', 'latitude', 'longitude'))
        AND NOT has_column_privilege('ingest', 'public.mountains', attnum, 'UPDATE')
        AND NOT has_column_privilege('ingest', 'public.mountains', attnum, 'INSERT')
        AND NOT has_column_privilege('ingest', 'public.mountains', attnum, 'REFERENCES')
 FROM cols;
 
--- Plan 3 (R7): ingest's only write on area_weekly_weather is UPDATE longitude; SELECT is
--- table-level (checked in ingest_privs above), so every column already has it.
+-- Plan 3 (R7): ingest's only write on area_weekly_weather is UPDATE longitude (from block 0007);
+-- SELECT is table-level (checked in ingest_privs above), so every column already has it.
 WITH cols AS (
   SELECT a.attnum, a.attname
   FROM pg_attribute a
@@ -267,7 +323,8 @@ WITH cols AS (
 )
 INSERT INTO role_checks
 SELECT 'ingest area_weekly_weather column privileges match the expected set: ' || attname,
-       has_column_privilege('ingest', 'public.area_weekly_weather', attnum, 'UPDATE') = (attname = 'longitude')
+       has_column_privilege('ingest', 'public.area_weekly_weather', attnum, 'UPDATE')
+         = ((SELECT active FROM blocks WHERE rev = '0007') AND attname = 'longitude')
        AND NOT has_column_privilege('ingest', 'public.area_weekly_weather', attnum, 'INSERT')
        AND NOT has_column_privilege('ingest', 'public.area_weekly_weather', attnum, 'REFERENCES')
 FROM cols;
@@ -295,22 +352,8 @@ INSERT INTO role_checks VALUES
 -- views, the conditions tables, accident_conditions, the catalog and its features through migrator's default
 -- privileges and hold nothing else on them
 -- (a simple view is auto-updatable, so writes are checked too). ingest's SELECT is in the exact
--- set above; trainer's reads are verify_roles_phase3.sql's.
+-- set above; trainer's reads are verify_roles_phase3.sql's. That each exists is checked per block at the top.
 INSERT INTO role_checks
-SELECT 'clean view exists: ' || v, EXISTS (SELECT 1 FROM rels WHERE tbl = v AND relkind = 'v')
-FROM unnest(ARRAY['public.accidents_clean', 'public.accidents_clean_daily', 'public.accident_conditions']) AS v
-UNION ALL
-SELECT 'conditions table exists: ' || t, EXISTS (SELECT 1 FROM rels WHERE tbl = t AND relkind = 'r')
-FROM unnest(ARRAY['public.cell_daily_conditions', 'public.grid_bucket_series', 'public.cell_normals_status',
-                  'public.cell_climate_normals', 'public.cell_climatology']) AS t
-UNION ALL
-SELECT 'catalog relation exists: ' || t, EXISTS (SELECT 1 FROM rels WHERE tbl = t)
-FROM unnest(ARRAY['public.canonical_areas', 'public.canonical_routes', 'public.scorable_routes',
-                  'internal.route_tick_scrapes', 'internal.route_tick_coverage', 'internal.route_tick_months',
-                  'public.feature_points', 'public.route_static_features', 'public.scoring_unit_features',
-                  'public.accident_legacy_links', 'public.accident_route_links', 'internal.r10_unresolved',
-                  'internal.r10_llm_calls', 'internal.r10_llm_gates', 'internal.exposure_index']) AS t
-UNION ALL
 SELECT g || ' can SELECT ' || r.tbl || ' and nothing else',
        has_table_privilege(g, r.oid, 'SELECT')
        AND NOT (has_table_privilege(g, r.oid, 'INSERT') OR has_table_privilege(g, r.oid, 'UPDATE')
@@ -326,13 +369,14 @@ WHERE r.tbl IN ('public.accidents_clean', 'public.accidents_clean_daily', 'publi
 
 -- 0010: owner decisions on internal.r10_unresolved are final only while this trigger exists and
 -- fires ('O' = enabled in origin mode); ingest holds UPDATE/DELETE on the table (final review S7).
-INSERT INTO role_checks VALUES
-  ('r10_unresolved keep-decisions trigger exists and is enabled',
-   EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
-           JOIN pg_namespace n ON n.oid = c.relnamespace
-           -- Catalog joins, not to_regclass: the verifying role may hold no USAGE on internal.
-           WHERE n.nspname = 'internal' AND c.relname = 'r10_unresolved'
-           AND t.tgname = 'r10_unresolved_keep_decisions' AND t.tgenabled = 'O' AND NOT t.tgisinternal));
+INSERT INTO role_checks
+SELECT 'r10_unresolved keep-decisions trigger exists and is enabled',
+       EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+               JOIN pg_namespace n ON n.oid = c.relnamespace
+               -- Catalog joins, not to_regclass: the verifying role may hold no USAGE on internal.
+               WHERE n.nspname = 'internal' AND c.relname = 'r10_unresolved'
+               AND t.tgname = 'r10_unresolved_keep_decisions' AND t.tgenabled = 'O' AND NOT t.tgisinternal)
+FROM blocks WHERE rev = '0010' AND present;
 
 SELECT check_name, ok FROM role_checks ORDER BY ok, check_name;
 

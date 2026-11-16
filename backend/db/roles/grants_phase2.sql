@@ -2,6 +2,8 @@
 -- verify_roles_phase2.sql. Run it as migrator directly, or as the owner while it holds SET on
 -- migrator (SET ROLE migrator is a no-op for migrator itself): GRANT on objects migrator owns
 -- must come from migrator. Cumulative: later plans append their grants inside the transaction.
+-- Revision-aware (runbook K1, 2026-11-16): each migration's grants apply only once its relations
+-- exist, so this runs at 0004 and at every later revision; verify_roles_phase2.sql mirrors it.
 \set ON_ERROR_STOP on
 \set VERBOSITY terse
 \set SHOW_CONTEXT never
@@ -14,6 +16,55 @@ SELECT pg_has_role(current_user, 'migrator', 'SET') AS can_set_migrator \gset
 
 BEGIN;
 SET ROLE migrator;
+
+-- The relations each migration creates, which gate that migration's grants below. A block is applied
+-- only when all of its relations exist. A partial block, or a block present after an absent one,
+-- STOPs the run: alembic applies each migration in one transaction and they form a single linear
+-- chain, so neither state arises at any revision; one means hand-made drift, and granting half a
+-- block (or skipping it) would leave privileges no reviewer expects. verify_roles_phase2.sql keeps
+-- the same list. to_regclass is safe here: migrator owns schema internal.
+SELECT problems = '' AS blocks_ok, problems AS block_problems,
+       at_0005, at_0007, at_0008, at_0009, at_0010, at_0011
+FROM (
+  WITH objects (rev, rel) AS (VALUES
+    ('0004', 'public.source_ingest_log'), ('0004', 'internal.accident_revisions'),
+    ('0004', 'internal.ingest_quarantine'), ('0004', 'internal.mp_tick_aggregates'),
+    ('0004', 'internal.accidents_raw'),
+    ('0005', 'public.gnis_summits'), ('0005', 'internal.duplicate_decisions'),
+    ('0006', 'public.accidents_clean'), ('0006', 'public.accidents_clean_daily'),
+    ('0007', 'public.cell_daily_conditions'), ('0007', 'public.grid_bucket_series'),
+    ('0007', 'public.cell_normals_status'), ('0007', 'public.cell_climate_normals'),
+    ('0007', 'public.cell_climatology'), ('0007', 'public.accident_conditions'),
+    ('0008', 'public.canonical_areas'), ('0008', 'public.canonical_routes'), ('0008', 'public.scorable_routes'),
+    ('0008', 'internal.route_tick_scrapes'), ('0008', 'internal.route_tick_coverage'),
+    ('0008', 'internal.route_tick_months'),
+    ('0009', 'public.feature_points'), ('0009', 'public.route_static_features'),
+    ('0009', 'public.scoring_unit_features'),
+    ('0010', 'public.accident_legacy_links'), ('0010', 'public.accident_route_links'),
+    ('0010', 'internal.r10_unresolved'), ('0010', 'internal.r10_llm_calls'), ('0010', 'internal.r10_llm_gates'),
+    ('0011', 'internal.exposure_index')),
+  blocks AS (
+    SELECT rev, bool_and(to_regclass(rel) IS NOT NULL) AS complete, bool_or(to_regclass(rel) IS NOT NULL) AS present
+    FROM objects GROUP BY rev)
+  SELECT coalesce(string_agg(
+           CASE WHEN rev = '0004' AND NOT complete THEN '0004 incomplete (run at 0004_phase2a_foundation or later)'
+                WHEN present AND NOT complete THEN rev || ' partial'
+                WHEN present AND EXISTS (SELECT 1 FROM blocks e WHERE e.rev < b.rev AND NOT e.complete)
+                  THEN rev || ' present after an absent block' END,
+           '; ' ORDER BY rev), '') AS problems,
+         bool_or(complete) FILTER (WHERE rev = '0005') AS at_0005,
+         bool_or(complete) FILTER (WHERE rev = '0007') AS at_0007,
+         bool_or(complete) FILTER (WHERE rev = '0008') AS at_0008,
+         bool_or(complete) FILTER (WHERE rev = '0009') AS at_0009,
+         bool_or(complete) FILTER (WHERE rev = '0010') AS at_0010,
+         bool_or(complete) FILTER (WHERE rev = '0011') AS at_0011
+  FROM blocks b
+) s \gset
+\if :blocks_ok
+\else
+  \warn 'grants_phase2.sql: migration blocks inconsistent with the schema:' :block_problems
+  DO $$ BEGIN RAISE EXCEPTION 'grants_phase2.sql: STOP, no grant applied (see the line above)'; END $$;
+\endif
 
 GRANT USAGE ON SCHEMA internal TO ingest, analyst;
 GRANT SELECT ON ALL TABLES IN SCHEMA internal TO analyst;
@@ -56,14 +107,20 @@ GRANT SELECT (accident_id, source, source_id, date, year, mountain, state, latit
 -- Plan 2 (0005, PR 2a-2)
 -- The GNIS loader upserts and then deletes features GNIS dropped (SELECT for ON CONFLICT and
 -- the DELETE's WHERE). R5 upserts its decisions and never deletes one: owner decisions stay.
+\if :at_0005
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.gnis_summits TO ingest;
 GRANT SELECT, INSERT, UPDATE ON internal.duplicate_decisions TO ingest;
+\endif
 
 -- Plan 2 (0006): no grant here. app and analyst read accidents_clean[_daily] through
 -- migrator's default privileges (they cover views); ingest gets them in plan 3 (below).
 -- trainer: nothing until Phase 3 (D13), which grants it the views together with LOGIN.
 
--- Plan 3 (0007). DELETE on cell_daily_conditions is only for the 3-year prune of non-incident
+-- Plan 3 (0007), R7 and R11 are one block: tz is a 0007 column, and R7 (2a-3) and R11 (2a-4) run
+-- at 0007, so their grants on the older accidents, area_weekly_weather and the id sequence wait for
+-- 0007 too, never earlier.
+\if :at_0007
+-- DELETE on cell_daily_conditions is only for the 3-year prune of non-incident
 -- series (era5_window); the registry and normals are upserted, never deleted. app and analyst
 -- read the new tables and view through migrator's default privileges; trainer gets nothing.
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.cell_daily_conditions TO ingest;
@@ -75,6 +132,7 @@ GRANT SELECT ON public.accidents_clean, public.accidents_clean_daily, public.acc
 -- SELECT, plan 2), mp_routes (plan 1) and mp_locations through the three-column grant above, so
 -- no SELECT is widened here.
 GRANT UPDATE (tz) ON public.accidents TO ingest;
+\endif
 
 -- 0013 drops the legacy weather table; this revoke clears a database that still has it (a fresh
 -- one drops it at head, so the grant and the table are both gone).
@@ -85,10 +143,12 @@ BEGIN
   END IF;
 END $$;
 
+\if :at_0007
 -- Plan 3 (R7): the one-time longitude sign fix reads and flips area_weekly_weather.longitude
 -- only; never any other column.
 GRANT SELECT ON public.area_weekly_weather TO ingest;
 GRANT UPDATE (longitude) ON public.area_weekly_weather TO ingest;
+\endif
 
 -- Plan 3 (R11, PR 2a-4): the facts-only loader inserts new incidents, column by column, exactly
 -- the columns accident_facts.INSERT_COLUMNS names (never accident_id, location, tags or
@@ -96,8 +156,10 @@ GRANT UPDATE (longitude) ON public.area_weekly_weather TO ingest;
 -- characters, enforced by FactRow), never report text. The REVOKE first narrows a stray
 -- table-level INSERT, as for mp_ticks above. UPDATE (mp_route_id) is --apply-route-ids: the
 -- owner's later route link, only where it is NULL on an R11 row. No DELETE: incidents are never
--- deleted.
+-- deleted. The narrowing REVOKEs on tables older than their block (here and for routes/mountains
+-- below) run at every revision, so a rerun clears a stray grant even before the block applies.
 REVOKE INSERT ON public.accidents FROM ingest;
+\if :at_0007
 GRANT INSERT (source, source_id, date, year, date_precision, state, mountain, route, mp_route_id, latitude,
               longitude, geocode_precision, geocode_method, country, tz, activity, activity_class,
               activity_rule_version, inclusion_flag, accident_type, injury_severity, severity_scale,
@@ -108,24 +170,29 @@ GRANT UPDATE (mp_route_id) ON public.accidents TO ingest;
 -- accident_id comes from its column default; nextval() there needs USAGE (verified: the INSERT
 -- fails "permission denied for sequence" without it). USAGE only: no SELECT/UPDATE (setval).
 GRANT USAGE ON SEQUENCE public.accidents_accident_id_seq TO ingest;
+\endif
 
 -- MP catalog plan (0008). The refresh reads mp_locations' tree and coordinates, and the root
 -- areas' names to recognise US states (never url); Phase 4 Task 24 makes the same widening.
 -- The catalog is upserted, never deleted (FKs pin it to the MP rows). app and analyst read the
 -- new tables and views through migrator's default privileges; trainer gets nothing (D13).
+\if :at_0008
 GRANT SELECT (parent_id, name) ON public.mp_locations TO ingest;
 GRANT SELECT, INSERT, UPDATE ON public.canonical_areas, public.canonical_routes TO ingest;
 GRANT SELECT ON public.scorable_routes TO ingest;
 -- Tick-source seam (DP9): loaders upsert it, never delete.
 GRANT SELECT, INSERT, UPDATE ON internal.route_tick_scrapes TO ingest;
 GRANT SELECT ON internal.route_tick_coverage, internal.route_tick_months TO ingest;
+\endif
 
 -- MP similarity features (0009). The points step inserts points and sets their timezone; the
 -- elevation step updates them; the route step rebuilds route_static_features (DELETE only for
 -- routes that became boulders). Reads the catalog and mp_routes through grants above.
+\if :at_0009
 GRANT SELECT, INSERT, UPDATE ON public.feature_points TO ingest;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.route_static_features TO ingest;
 GRANT SELECT ON public.scoring_unit_features TO ingest;
+\endif
 
 -- R10 on the MP catalog (0010). Reads the legacy link columns it needs, never anything else
 -- of routes/mountains; never writes accidents. Owner decisions are kept: the unresolved table
@@ -133,6 +200,7 @@ GRANT SELECT ON public.scoring_unit_features TO ingest;
 -- Narrow any stray table-level grant back to the column sets below on every rerun (the mp_ticks /
 -- mp_locations pattern; a column REVOKE alone does not remove a table-level grant).
 REVOKE SELECT ON public.routes, public.mountains FROM ingest;
+\if :at_0010
 GRANT SELECT (route_id, name, grade, type, latitude, longitude, mp_route_id) ON public.routes TO ingest;
 GRANT SELECT (mountain_id, name, latitude, longitude) ON public.mountains TO ingest;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.accident_legacy_links TO ingest;
@@ -140,13 +208,16 @@ GRANT SELECT ON public.accident_route_links TO ingest;
 GRANT SELECT, INSERT, UPDATE, DELETE ON internal.r10_unresolved TO ingest;
 -- LLM pass (Task 15): the audit and the gates are append-only; a paid call is never rewritten.
 GRANT SELECT, INSERT ON internal.r10_llm_calls, internal.r10_llm_gates TO ingest;
+\endif
 
 -- Exposure plan (0011). The exposure job clears, reinserts and prunes snapshots, never updates a
 -- row; the REVOKE removes the UPDATE an earlier version of this script granted (2026-10-22).
 -- analyst reads it through the schema-wide SELECT above; app holds nothing in internal; trainer
 -- gets it in Phase 3 (D13), together with USAGE on internal.
+\if :at_0011
 REVOKE UPDATE ON internal.exposure_index FROM ingest;
 GRANT SELECT, INSERT, DELETE ON internal.exposure_index TO ingest;
+\endif
 
 RESET ROLE;
 COMMIT;
