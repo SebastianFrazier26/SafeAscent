@@ -1,9 +1,17 @@
 # One image for the api, the Celery worker and beat; Railway and
 # docker-compose pick the process via the start command.
 
-FROM python:3.12-slim AS builder
+# Pinned by digest (owner norm: pin anything deployed). Refresh with:
+# curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/python:pull" | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])"
+# then HEAD https://registry-1.docker.io/v2/library/python/manifests/3.12-slim with an
+# Authorization: Bearer <token> header and Accept: application/vnd.oci.image.index.v1+json
+# (plus the docker.distribution.manifest.list/v2 variants), and read Docker-Content-Digest.
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS builder
 
-COPY --from=ghcr.io/astral-sh/uv:0.11.3 /uv /bin/uv
+# Pinned by digest; refresh the same way but against ghcr.io: token from
+# https://ghcr.io/token?service=ghcr.io&scope=repository:astral-sh/uv:pull, then HEAD
+# https://ghcr.io/v2/astral-sh/uv/manifests/0.11.3 and read Docker-Content-Digest.
+COPY --from=ghcr.io/astral-sh/uv:0.11.3@sha256:90bbb3c16635e9627f49eec6539f956d70746c409209041800a0280b93152823 /uv /bin/uv
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
@@ -22,7 +30,9 @@ COPY pyproject.toml uv.lock ./
 # pipelines is a default group for local dev; the API image never runs the data jobs.
 RUN uv sync --frozen --no-dev --no-group pipelines --no-install-project
 
-FROM python:3.12-slim AS production
+# Same digest as the builder stage above (refresh instructions there); both stages must
+# move together or the venv's Python and the runtime's Python can drift apart.
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS production
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
