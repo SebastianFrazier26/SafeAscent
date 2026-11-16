@@ -58,7 +58,34 @@ UNION ALL
 SELECT 'block ' || o.rev || ' relation exists with its expected kind: ' || o.tbl,
        EXISTS (SELECT 1 FROM rels r WHERE r.tbl = o.tbl AND r.relkind = o.relkind)
 FROM block_objects o JOIN blocks b ON b.rev = o.rev
-WHERE b.present;
+WHERE b.present
+UNION ALL
+SELECT 'block list holds exactly 0004-0011',
+       (SELECT array_agg(rev ORDER BY rev) FROM blocks)
+         = ARRAY['0004', '0005', '0006', '0007', '0008', '0009', '0010', '0011'];
+
+-- An absent trailing block looks like an earlier revision, so the schema alone cannot tell "at 0010"
+-- from "0011 recorded but its table missing" (a bad stamp, a hand drop). alembic_version settles it:
+-- exactly the blocks at or below the recorded revision must be present (revision ids start NNNN_).
+-- migrator owns alembic_version; an owner holding SET but not INHERIT on migrator (Phase 1 relaunch
+-- step 3 and its re-grant) reads it only after SET ROLE, which is reset before any other check.
+SELECT has_table_privilege('public.alembic_version', 'SELECT') AS alembic_readable,
+       pg_has_role('migrator', 'SET') AS can_set_migrator \gset
+\if :alembic_readable
+\elif :can_set_migrator
+SET ROLE migrator;
+\endif
+SELECT count(*) AS recorded_count, coalesce(min(version_num), '') AS recorded_version FROM public.alembic_version \gset
+RESET ROLE;
+
+INSERT INTO role_checks
+SELECT 'alembic_version holds exactly one NNNN_ revision',
+       :recorded_count = 1 AND :'recorded_version' ~ '^[0-9]{4}_'
+UNION ALL
+SELECT 'migration block ' || b.rev || ' presence matches alembic_version',
+       coalesce(b.present = (b.rev::int <= CASE WHEN :'recorded_version' ~ '^[0-9]{4}_'
+                                                THEN left(:'recorded_version', 4)::int END), false)
+FROM blocks b;
 
 INSERT INTO role_checks
 SELECT 'role exists: ' || r, EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r)

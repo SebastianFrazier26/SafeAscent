@@ -22,8 +22,10 @@ SET ROLE migrator;
 -- STOPs the run: alembic applies each migration in one transaction and they form a single linear
 -- chain, so neither state arises at any revision; one means hand-made drift, and granting half a
 -- block (or skipping it) would leave privileges no reviewer expects. verify_roles_phase2.sql keeps
--- the same list. to_regclass is safe here: migrator owns schema internal.
-SELECT problems = '' AS blocks_ok, problems AS block_problems,
+-- the same list (psql cannot share a VALUES list across files without string-building SQL, so
+-- tests/test_roles_phase2.py pins the two copies equal). to_regclass is safe here: migrator owns
+-- schema internal.
+SELECT trim(leading '; ' from problems) = '' AS blocks_ok, problems AS block_problems,
        at_0005, at_0007, at_0008, at_0009, at_0010, at_0011
 FROM (
   WITH objects (rev, rel) AS (VALUES
@@ -46,19 +48,26 @@ FROM (
   blocks AS (
     SELECT rev, bool_and(to_regclass(rel) IS NOT NULL) AS complete, bool_or(to_regclass(rel) IS NOT NULL) AS present
     FROM objects GROUP BY rev)
-  SELECT coalesce(string_agg(
-           CASE WHEN rev = '0004' AND NOT complete THEN '0004 incomplete (run at 0004_phase2a_foundation or later)'
-                WHEN present AND NOT complete THEN rev || ' partial'
-                WHEN present AND EXISTS (SELECT 1 FROM blocks e WHERE e.rev < b.rev AND NOT e.complete)
-                  THEN rev || ' present after an absent block' END,
-           '; ' ORDER BY rev), '') AS problems,
-         bool_or(complete) FILTER (WHERE rev = '0005') AS at_0005,
-         bool_or(complete) FILTER (WHERE rev = '0007') AS at_0007,
-         bool_or(complete) FILTER (WHERE rev = '0008') AS at_0008,
-         bool_or(complete) FILTER (WHERE rev = '0009') AS at_0009,
-         bool_or(complete) FILTER (WHERE rev = '0010') AS at_0010,
-         bool_or(complete) FILTER (WHERE rev = '0011') AS at_0011
-  FROM blocks b
+  SELECT coalesce((SELECT string_agg(p, '; ' ORDER BY b.rev, p)
+                    FROM blocks b CROSS JOIN LATERAL (VALUES
+                      (CASE WHEN b.rev = '0004' AND NOT b.complete
+                            THEN '0004 incomplete (run at 0004_phase2a_foundation or later)' END),
+                      (CASE WHEN b.present AND NOT b.complete THEN b.rev || ' partial' END),
+                      (CASE WHEN b.present AND EXISTS (SELECT 1 FROM blocks e WHERE e.rev < b.rev AND NOT e.complete)
+                            THEN b.rev || ' present after an absent block' END)) AS v(p)), '')
+         -- A rev dropped from the list above would leave its flag NULL, which \gset unsets and \if
+         -- reads as false with only a warning: so the list itself must hold all eight.
+         || CASE WHEN (SELECT array_agg(rev ORDER BY rev) FROM blocks)
+                      = ARRAY['0004', '0005', '0006', '0007', '0008', '0009', '0010', '0011'] THEN ''
+                 ELSE '; block list does not hold exactly 0004-0011' END
+           AS problems,
+         coalesce(bool_or(complete) FILTER (WHERE rev = '0005'), false) AS at_0005,
+         coalesce(bool_or(complete) FILTER (WHERE rev = '0007'), false) AS at_0007,
+         coalesce(bool_or(complete) FILTER (WHERE rev = '0008'), false) AS at_0008,
+         coalesce(bool_or(complete) FILTER (WHERE rev = '0009'), false) AS at_0009,
+         coalesce(bool_or(complete) FILTER (WHERE rev = '0010'), false) AS at_0010,
+         coalesce(bool_or(complete) FILTER (WHERE rev = '0011'), false) AS at_0011
+  FROM blocks
 ) s \gset
 \if :blocks_ok
 \else

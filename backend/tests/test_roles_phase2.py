@@ -5,9 +5,11 @@ import argparse
 import asyncio
 import csv
 import os
+import re
 import subprocess
 import uuid
 from datetime import date
+from pathlib import Path
 
 from alembic import command
 from sqlalchemy import text
@@ -905,3 +907,36 @@ def test_role_scripts_at_each_rollout_revision(role_cleanup, fresh_db):  # noqa:
             assert "migration block 0007 is complete or absent" in caught.stderr
             _as(migrator_url, "DROP TABLE public.grid_bucket_series")
             _grants_and_verify(owner_url, phase3=False)
+
+            # A block present after an absent one (one 0008 table, no 0007) STOPs too.
+            _as(migrator_url, "REVOKE DELETE ON public.gnis_summits FROM ingest; "
+                "CREATE TABLE public.canonical_areas (x int)")
+            ahead = _psql(owner_url, GRANTS_PHASE2, {})
+            assert ahead.returncode != 0
+            assert "0008 present after an absent block" in ahead.stderr and "no grant applied" in ahead.stderr
+            assert _fetch_row(fresh_db, "SELECT has_table_privilege('ingest', 'public.gnis_summits', 'DELETE')") == [
+                False]
+            caught = _psql(owner_url, VERIFY_PHASE2, {})
+            assert caught.returncode != 0
+            for check in ("migration block 0008 is absent, or every earlier block is present",
+                          "migration block 0008 presence matches alembic_version"):
+                assert check in caught.stderr, check
+            _as(migrator_url, "DROP TABLE public.canonical_areas")
+            _grants_and_verify(owner_url, phase3=False)
+
+    # A trailing block missing at head (a bad stamp, a hand drop) looks like an earlier revision to the
+    # schema alone; alembic_version says otherwise, so verify fails.
+    _as(migrator_url, "DROP TABLE internal.exposure_index")
+    missing = _psql(owner_url, VERIFY_PHASE2, {})
+    assert missing.returncode != 0
+    assert "migration block 0011 presence matches alembic_version" in missing.stderr
+
+
+def test_grants_and_verify_share_one_block_list():
+    def blocks(script: Path) -> list[tuple[str, str]]:
+        text_ = script.read_text(encoding="utf-8")
+        return re.findall(r"\('(\d{4})', '((?:public|internal)\.\w+)'", text_)
+
+    grants, verify = blocks(GRANTS_PHASE2), blocks(VERIFY_PHASE2)
+    assert grants == verify
+    assert sorted({rev for rev, _ in grants}) == [f"{n:04d}" for n in range(4, 12)]
