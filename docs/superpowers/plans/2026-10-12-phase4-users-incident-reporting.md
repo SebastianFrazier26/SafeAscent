@@ -2,15 +2,26 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Revision 2026-10-15 (refresh against `main` e756aba and the 2026-10-15 plans).**
+- **Migrations renumbered to `0014`–`0016`.** `main` holds `0001`–`0010` (the MP catalog plan took `0008_mp_catalog`, `0009_static_features` and `0010_accident_route_links`). The exposure plan takes `0011_exposure_index`. The Phase 3 plan takes `0012_model_registry` and `0013_drop_legacy_weather`. So `0014_accounts` has `down_revision = "0013_drop_legacy_weather"`, then come `0015_reports` and `0016_report_promotions`. This one edit covers the exposure plan's Task 9 Step 4 (which moved Phase 4 to `0012`–`0014`) and the Phase 3 plan's Task 26 Step 5 (`0014`–`0016`). If PRs 4-1..4-5 are executed before Phase 3's PR 3-4, follow the Phase 3 plan's escape hatch (its `0013` renumbers after Phase 4). Either way, run `uv run alembic heads` before writing each migration.
+- **The MP catalog exists.** `catalog_seam.py` and every route/area FK now point at `canonical_routes`/`canonical_areas` (keyed by the MP ids) and `scorable_routes`. Names and grades are still read from `mp_routes`/`mp_locations` (the catalog holds derived columns only). A route's point is its area's point (`canonical_areas.lat/lon`), never `mp_routes` lat/lon (owner 2026-10-12). The state is `canonical_areas.state_code`.
+- **Promoted reports link to routes the R10 way** (Decision 11, DP16).
+- **PR 4-8 is re-pointed at the real Phase 3 interfaces** (`IncidentRow.weight`, `app.ml.train`, `internal.exposure_index`, cells `(area_id, type_group, month)`) and at the tick seam.
+- **Grants are kept in lockstep with `main`.** `ingest` already holds `mp_locations (mp_id, parent_id, name, latitude, longitude)`, `INSERT`/`UPDATE (mp_route_id)` on `accidents`, `accident_legacy_links` and `internal.accident_revisions`, so Task 24 no longer edits the Phase 2 grant files. Runbook commands now use the real `runbook_helpers.sh` helpers: `INGMOD` for modules; `ING` runs only `app.data.repair`.
+
 **Goal:** Add self-hosted accounts (email + password, opaque server-side sessions), a profile with per-discipline self-reported climbing experience, privacy export/delete, and a user incident-report pipeline. Reports are validated deterministically and redacted (Presidio/spaCy NER plus regex) before any third party sees them. Automated review is a Jev (TypeSafe AI) application, as spec D designs it: `JevTriager` (pinned `jev-1.13.0`) only classifies and picks among candidates we generate, our rules route, and `LocalTriager` (an in-house classifier) is the fallback and the shadow baseline. A human review queue decides, and a promotion job lands accepted reports in `accidents` as facts only. That job also fetches and stores each accepted incident's weather in `cell_daily_conditions` at acceptance time (owner OQ7), through the Open-Meteo **Standard** key.
 
-**Architecture:** Three new Postgres schemas, created by the owner like `internal` was: `accounts` (users, sessions, tokens, profiles, rate limits, audit log, settings), `reports` (report form facts, redacted narrative, triage results, review actions, staging, provenance) and `vault` (the raw narrative only). The API runs as `app` with explicit per-table grants. NER redaction runs on the worker as `app` (it must read `vault`). The triage Celery task runs as the new least-privilege `triage_worker` role, which can never read `vault`, and is the only code holding `TYPESAFE_API_KEY`. `accounts.app_settings.triage_mode` (`jev | local | manual`) is the kill switch. Promotion into `accidents` reuses the R11 loader (`accident_facts`) validation, quarantine and advisory lock, and runs as `ingest` from an owner-run CLI (decided: DP10). Every route and area reference goes through one seam module (`app/catalog_seam.py`) keyed by `mp_route_id` / `mp_locations.mp_id`, so the deferred catalog can replace it without touching callers.
+**Architecture:** Three new Postgres schemas, created by the owner like `internal` was: `accounts` (users, sessions, tokens, profiles, rate limits, audit log, settings), `reports` (report form facts, redacted narrative, triage results, review actions, staging, provenance) and `vault` (the raw narrative only). The API runs as `app` with explicit per-table grants. NER redaction runs on the worker as `app` (it must read `vault`). The triage Celery task runs as the new least-privilege `triage_worker` role, which can never read `vault`, and is the only code holding `TYPESAFE_API_KEY`. `accounts.app_settings.triage_mode` (`jev | local | manual`) is the kill switch. Promotion into `accidents` reuses the R11 loader (`accident_facts`) validation, quarantine and advisory lock, and runs as `ingest` from an owner-run CLI (decided: DP10). Every route and area reference goes through one seam module (`app/catalog_seam.py`) over the MP catalog: `canonical_routes.route_id` / `canonical_areas.area_id`, which are the MP ids, with names and grades joined from `mp_routes`/`mp_locations`. Each accepted report links to its route through R10's `accident_route_links`: identity on `accidents.mp_route_id` for a picked route, and an area link for a picked area (Decision 11).
 
 **Tech Stack:** Python 3.12, FastAPI 0.141, SQLAlchemy 2 async + asyncpg, Alembic, Celery 5.4 + Redis, pydantic 2, numpy (existing; the in-house classifier is written on it), `argon2-cffi` (new), `presidio-analyzer` + `presidio-anonymizer` + `spacy` + `en_core_web_sm` (new worker-only `triage` dependency group), httpx (existing; Jev, Resend, Turnstile, HIBP, Open-Meteo Forecast), pytest + `httpx.MockTransport` + `fakeredis` (existing). Frontend: React 19 + Vite + MUI 7 + TypeScript, `react-router-dom` 7 (new, decided: DP13), vitest + Testing Library.
 
-**Spec:** `docs/superpowers/specs/2026-09-27-phase4-users-incident-reporting-design.md` (rev 3), sections A, C, D (only D1, D2, D4, D8 and D9 as they apply to an in-house triager), E, G and H. Related: Phase 2 spec R5 (duplicate rule) and R11 (facts-only loader), `2026-09-28-phase3-amendment-similarity-confidence.md` (missing never 0), and the conditions plan `2026-09-28-phase2a-conditions-refresh.md` (`cell_daily_conditions`, record-kind precedence, the Professional window). Owner decisions are listed under Decisions below, with the ledger each one came from. Revised 2026-10-12 after the owner's answers (Jev restored, Presidio restored, Phase 3 first, two Open-Meteo keys, DP1–DP14 decided).
+**Spec:** `docs/superpowers/specs/2026-09-27-phase4-users-incident-reporting-design.md` (rev 3), sections A, C, D (only D1, D2, D4, D8 and D9 as they apply to an in-house triager), E, G and H. Related: Phase 2 spec R5 (duplicate rule) and R11 (facts-only loader), `2026-09-28-phase3-amendment-similarity-confidence.md` (missing never 0), the conditions plan `2026-09-28-phase2a-conditions-refresh.md` (`cell_daily_conditions`, record-kind precedence, the Professional window), the MP catalog plan `2026-10-12-mp-catalog-similarity.md` (merged: catalog, tick seam, R10), the exposure plan `2026-10-15-exposure-index.md` and the Phase 3 plan `2026-10-15-phase3-model-v2.md` (PR 4-8's interfaces). Owner decisions are listed under Decisions below, with the ledger each one came from. Revised 2026-10-12 after the owner's answers (Jev restored, Presidio restored, Phase 3 first, two Open-Meteo keys, DP1–DP14 decided).
 
-**Prerequisites:** Plans 1–3 of Phase 2a merged and applied on prod (`alembic current` = `0007_cell_daily_conditions`). Nothing here needs Phase 2b or Phase 3 code. Where the spec leans on Phase 3 (retrain trigger, weight caps, retrain guard, tick exposure), this plan only stores what Phase 3 will read (see Scope).
+**Prerequisites:**
+- Plans 1–3 of Phase 2a and the MP catalog plan are merged and applied (`0010_accident_route_links`, on `main` at e756aba).
+- Under "Phase 3 first" (DP14), the exposure plan's `0011` and Phase 3's `0012`/`0013` are applied too, so prod reads `alembic current` = `0013_drop_legacy_weather` before PR 4-1's migration.
+- `mp_catalog refresh` has run on the target, so `canonical_routes`/`canonical_areas` are populated. The seam returns nothing for an empty catalog.
+- Apart from the migration chain, PRs 4-1..4-7 need no Phase 2b or Phase 3 code. Where the spec leans on Phase 3 (retrain trigger, weight caps, retrain guard, tick exposure), this plan only stores what Phase 3 will read (see Scope).
 
 **PRs (7) + runbooks:**
 
@@ -31,13 +42,15 @@
 In this plan (PRs 4-1 to 4-7): accounts, profiles and experience, export/delete, invite-only beta registration, report intake, Presidio + regex redaction, Jev triage (shadow first) with `LocalTriager` fallback, routing, human review, staging with the 72 h veto, promotion into `accidents`, acceptance-time weather, takedowns, the gold set and eval harness, and all screens.
 
 **Gated on Phase 3 (owner 2026-10-12: Phase 3 first), PR 4-8, Tasks 37–39.** Nothing in PRs 4-1 to 4-7 depends on it. PR 4-8 starts only once the Phase 3 model v2 is merged and its retrain job exists:
-- **Ticks and exposure aggregation (spec B, M4.2):** Task 37 (tables, API, anti-spam caps, privacy) and Task 38 (distinct user-route-days per Phase 3 cell, fed to the Phase 3 exposure input).
-- **Retrain integration (spec C2.6 weights, C3):** Task 39 makes each promotion count toward the ≥50 retrain trigger at its weight, applies the weight caps (≤1.0 uncorroborated weight per cell per month, ≤25% of a cell's training incidents), and adds the retrain guard (≥50% uncorroborated and a >20-point percentile move → weight 0 for that run, listed in the M9 promotion issue). Until then PRs 4-1 to 4-7 store `verification` and `model_weight` per promoted report in `reports.report_promotions`, the exact input Task 39 reads.
+- **Ticks and exposure aggregation (spec B, M4.2):**
+  - Task 37: tables, API, anti-spam caps, privacy.
+  - Task 38: distinct user-route-days per Phase 3 cell `(area_id, type_group, month)`, written into the exposure plan's `internal.exposure_index` as the `in_app_ticks` component. It follows the tick seam's contract; see DP17.
+- **Retrain integration (spec C2.6 weights, C3):** Task 39 fills Phase 3's `IncidentRow.weight` hook from `report_promotions.model_weight` (through a view, DP18), makes each promotion count toward the ≥50 retrain trigger at its weight, applies the weight caps (≤1.0 uncorroborated weight per cell per month, ≤25% of a cell's training incidents), and adds the retrain guard (≥50% uncorroborated and a >20-point percentile move → weight 0 for that run, listed in the M9 promotion issue). Until then PRs 4-1 to 4-7 store `verification` and `model_weight` per promoted report in `reports.report_promotions`, the exact input Task 39 reads.
 - **Personalization (spec F)** stays later: its start conditions are not met.
 
 ## Global Constraints
 
-- DP1–DP14 were decided by the owner on 2026-10-12 (table below). DP15 is the only pending choice, marked `[default pending: DP15]`: the implementer builds that default behind its named seam and does not pick a different option.
+- DP1–DP14 were decided by the owner on 2026-10-12 (table below). DP15 (2026-10-12) and DP16–DP18 (added in the 2026-10-15 refresh) are pending, each marked `[default pending: DPnn]`: the implementer builds that default behind its named seam and does not pick a different option. DP16–DP18 only re-point onto code that merged after the owner's answers; none of them reopens DP1–DP14.
 - **Jev (spec D).** `JevTriager` is pinned to `model="jev-1.13.0"` and only classifies and chooses among our candidates: it never extracts dates, spans or strings. User text appears only in `state.report_text`, never in a question's instructions. Only NER-redacted text (`redaction_level='ner'`) is sent, plus the form's type/severity/weather fields, the US state and our candidate lists: never user id, email, IP, exact date or coordinates. Redaction stays even if ZDR is granted. `TYPESAFE_API_KEY` is set on the Railway **worker** only. `JEV_MONTHLY_TOKEN_CAP` (default 50,000,000) switches to `local` when reached. Client-side limit 2 requests/s. The `triage_mode` kill switch (`jev | local | manual`) changes with no redeploy. Jev runs in shadow for ≥28 days (`auto_routing` off) before it can affect routing. **No real report reaches Jev until the DPA is signed**: `triage_mode='jev'` is refused unless `app_settings.jev_dpa_ref` is set, and the runbook gate (Task 34) is hard. CI never calls Jev (an `httpx.MockTransport`).
 - **Two Open-Meteo keys, one per code path.** `OPEN_METEO_STANDARD_API_KEY` (Standard plan) serves every call Standard can serve: the live forecast, the nightly stopgap, and acceptance-time weather within 92 days. The Professional key (`OPEN_METEO_API_KEY`, exported only into the paid `era5_window run` shell) serves only the ERA5 archive back-fill inside a declared window. Each path reads exactly one key. The paid path refuses the Standard key. No runtime service carries the Professional key, and the runtime makes no archive calls (Task 21).
 - **Missing is never 0.** An absent experience level, grade, years bucket, weather value or classifier probability stays NULL/`None` and renders "Unknown" or an em-dash. No `|| 0` / `?? 0` on any risk, probability or weather value (`tests/test_no_fabricated_risk.py`, `riskUtils.test.ts` stay green). A report never produces or changes a risk score directly.
@@ -47,10 +60,21 @@ In this plan (PRs 4-1 to 4-7): accounts, profiles and experience, export/delete,
 - **Validate at the boundary.** Every request body, query parameter, CLI argument, Celery payload, third-party response (Resend, Turnstile, HIBP, Open-Meteo) and file load is a pydantic model with `extra="forbid"` (requests) or `extra="ignore"` (third-party responses) and explicit lengths and enums.
 - **Secrets never in the repo or logs.** New secrets (`RESEND_API_KEY`, `TURNSTILE_SECRET_KEY`, `SESSION_HMAC_KEY`, `IP_HMAC_KEYS`, `ORIGIN_AUTH_SECRET`, `TRIAGE_DATABASE_URL`, `TYPESAFE_API_KEY`, `OPEN_METEO_STANDARD_API_KEY`) live in Railway variables or gitignored `backend/.env.<role>` files. `.env.example` gets dummy values (parity test). The Open-Meteo **Professional** key is never set on any Railway service (owner, 2026-10-11); production startup refuses if it is present (Task 21). The promotion CLI reads only the Standard key, from the exported environment (Task 23).
 - **Authn/authz designed in.** Every route declares exactly one auth dependency from `app/auth/deps.py` (`public`, `user`, `verified_user`, `reviewer`, `admin`). The route-inventory test (Task 10) fails on any route without one.
-- **Least privilege.** `app` gets per-table grants in `accounts`/`reports` and only the `vault` access the reviewer path needs. `triage_worker` gets SELECT on redacted columns and candidate sources, and INSERT on triage results. `analyst` and `trainer` get nothing in `accounts` or `vault`. Grants change only in the three-file lockstep: `create_roles_phase4.sql` (roles and schemas), `grants_phase4.sql` (idempotent grants), `verify_roles_phase4.sql` (exact expected set).
-- **No DDL in `app/`** (`tests/test_no_runtime_ddl.py`). Schemas are created by the owner script, tables by Alembic `0008`/`0009`/`0010` as `migrator`.
+- **Least privilege.** `app` gets per-table grants in `accounts`/`reports` and only the `vault` access the reviewer path needs. `triage_worker` gets SELECT on redacted columns and candidate sources, and INSERT on triage results. `analyst` and `trainer` get nothing in `accounts` or `vault`. Grants change only in the three-file lockstep: `create_roles_phase4.sql` (roles and schemas), `grants_phase4.sql` (idempotent grants), `verify_roles_phase4.sql` (exact expected set), plus `tests/test_roles_phase4.py`.
+  - Those files cover only `accounts`/`reports`/`vault` and `triage_worker`'s `public` reads.
+  - Any change to what `ingest` holds in `public`/`internal` goes in the Phase 2 lockstep instead: `grants_phase2.sql`, `verify_roles_phase2.sql` and `tests/test_roles_phase2.py`. The exposure plan and Phase 3's PR 3-4 edit that same trio, so append after their blocks.
+  - Any change to `trainer` goes in Phase 3's `grants_phase3.sql`/`verify_roles_phase3.sql`/`test_roles_phase3.py` (Phase 3 DP17 allowlist).
+  - PRs 4-1..4-7 change neither (Task 24).
+- **No DDL in `app/`** (`tests/test_no_runtime_ddl.py`). Schemas are created by the owner script, tables by Alembic `0014`/`0015`/`0016` as `migrator`.
 - **No PostgreSQL extension is added** (`citext`, `pg_trgm`): `migrator` cannot create extensions, and Neon extension creation needs the owner. Emails are stored lower-cased with a CHECK, and route search uses a `lower(name) text_pattern_ops` index (spec G conflict, see Decisions 6).
-- **Route references** go through `app/catalog_seam.py` only: `mp_route_id` (FK `mp_routes`) and `mp_location_id` (FK `mp_locations.mp_id`). Nothing reads `canonical_routes`/`canonical_areas`/`objectives`, which do not exist (owner roadmap 2026-10-12). Candidate lists show displayable facts only (name, grade, type, area name); MP descriptions are never selected.
+- **Route references** go through `app/catalog_seam.py` only, over the MP catalog on `main`:
+  - `mp_route_id` is an FK to `canonical_routes(route_id)`, and `mp_location_id` / `home_area_id` are FKs to `canonical_areas(area_id)`. Both are the MP ids. The FK to the catalog, not to `mp_routes`, makes a promoted route reference an R10 identity link (`accident_route_links` joins `canonical_routes`).
+  - Names and grades are joined from `mp_routes`/`mp_locations`; catalog tables hold derived columns only.
+  - A route's point is its area's (`canonical_areas.lat/lon`, with `coord_precision`), never `mp_routes` lat/lon (owner decision 2026-10-12).
+  - The US state is `canonical_areas.state_code`.
+  - The type shown is `canonical_routes.type_group` (`sport`, `trad`, `rock`, `alpine`, `ice`, `mixed`, `unknown`; NULL for a boulder).
+  - Nothing reads `objectives`, which does not exist.
+  - Candidate lists show displayable facts only (name, grade, type group, area name). MP descriptions and URLs are never selected.
 - **Feature flag.** `ENABLE_ACCOUNTS` (default `False`) mounts every Phase 4 router. Off, the API is exactly the Phase 2 API.
 - **Comments are load-bearing only. `CHANGELOG.md` gets one dated entry per PR.** `.env.example` mirrors `Settings` exactly.
 - Python modules created here join the mypy strict list in `pyproject.toml` (`app.auth.*`, `app.security.*`, `app.email.*`, `app.reports.*` including `app.reports.jev` and `app.reports.redact_ner`, `app.catalog_seam`, `app.pipelines.report_promote`, `app.pipelines.report_weather`, `app.models.accounts`, `app.models.reports`).
@@ -65,7 +89,9 @@ In this plan (PRs 4-1 to 4-7): accounts, profiles and experience, export/delete,
 | Roles | `triage_worker` lands in Phase 4. | `CLAUDE.md`, Database section |
 | Accidents | Never deleted; exclusion is `excluded_reason`. | Phase 2a ledgers |
 | R11 | Rows are facts only, with no narrative text. | conditions plan, Global Constraints |
-| Roadmap 2026-10-12 | MP data (`mp_routes`/`mp_locations`) is the primary route source; the catalog is deferred and re-scoped to route-search cleanup. | memory, owner roadmap |
+| Roadmap 2026-10-12 | MP data is the primary route source. The catalog the roadmap re-scoped is now merged: `canonical_areas`/`canonical_routes`/`scorable_routes`, keyed by the MP ids (`0008_mp_catalog`). A route's point is always its location's. | owner roadmap; MP catalog plan |
+| R10 (owner 2026-10-13/14) | Accident→route links are the identity on `accidents.mp_route_id` plus `accident_legacy_links` (legacy MP id, owner decision, LLM pick), read through `accident_route_links` (`0010`). Owner decisions are final (trigger `r10_unresolved_keep_decisions`). Links are never made by name. | MP catalog plan D-N, DP8/DP13/DP14, O1 |
+| Phase 3 first (2026-10-12) | Migrations follow Phase 3: exposure `0011`, Phase 3 `0012`–`0013`, Phase 4 `0014`–`0016`. | Phase 3 plan l.74–79 |
 | 2026-10-12 answers | Jev as the spec designs it (D1–D9), with `LocalTriager` as fallback and shadow baseline; DPA a hard gate. Presidio/spaCy NER plus regex redaction. Phase 3 first: ticks, exposure and retrain integration are a gated later PR. Schemas `accounts`/`reports`/`vault` approved. Two paid Open-Meteo keys: Standard for everything it can serve, Professional only for the paid-window ERA5 back-fill. DP1–4 and DP7–14 accepted as recommended. | owner via coordinator, 2026-10-12 |
 | 2026-10-12 Q1 | A unique index on `accidents(source, source_id)` comes in a later plan, if real duplicates exist. Promotion keeps R11's advisory lock instead. | conditions ledger, l.269 |
 
@@ -77,10 +103,22 @@ In this plan (PRs 4-1 to 4-7): accounts, profiles and experience, export/delete,
 4. **The origin is locked to Cloudflare with a shared-secret header, not an IP allowlist.** Railway cannot firewall by source IP. Cloudflare's free Transform Rule adds `X-Origin-Auth: <ORIGIN_AUTH_SECRET>`. In production the API returns 403 without it (except `/health`). Only when it is present is `CF-Connecting-IP` trusted as the client IP (spec A conflict; `(decided: DP7)`).
 5. **Jev classifies, our code decides.** Jev answers only the spec's nine questions (`is_real_incident`, `is_climbing`, `incident_type`, `severity`, `weather_related`, `route_match`, `duplicate_of`, `consistent_with_form`, `addresses_system`). Its outputs pass through our isotonic calibration (fit per pinned version on the gold set) and then the deterministic routing function. The deterministic R5 duplicate rule and the deterministic route match run first; Jev's `route_match`/`duplicate_of` only break ties among our candidates (spec C2.5). `LocalTriager` runs on every report as the shadow baseline and takes over whenever Jev is off, capped, mismatched or failing. It "never auto-stages" (spec D1): when the effective triager is `local`, auto-stage is off and only the human queue and the auto-reject rule apply.
 6. **Email uniqueness without `citext`:** `email text NOT NULL CHECK (email = lower(email) AND length(email) BETWEEN 3 AND 254)` with a plain unique index. The boundary model lower-cases and NFKC-normalizes.
-7. **Report → accident mapping (facts only).** `incident_type` maps to `accident_type` (taxonomy below), `severity` to `injury_severity` (`none`→`near_miss`, `unknown`→`unknown`), `activity`=`climbing` (the reviewer may set `climbing_approach`, or reject), `geocode_precision`=`crag` for a picked MP route's point or a user pin rounded to 3 decimals, and `unknown` for free text only (no weather then: `conditions_missing`, never 0). `source`=`user_report`, `source_id`=the report UUID, `source_url`=NULL, `description`=`summary_line()`.
+7. **Report → accident mapping (facts only).** `incident_type` maps to `accident_type` (taxonomy below), `severity` to `injury_severity` (`none`→`near_miss`, `unknown`→`unknown`), `activity`=`climbing` (the reviewer may set `climbing_approach`, or reject), `geocode_precision`=`crag` for a user pin rounded to 3 decimals or a picked route/area whose catalog area point is its own (`canonical_areas.coord_precision = 'own'`), `area` when that point is inherited from a parent area (both are in `geocode.TRUSTED_POINT_PRECISIONS`, so weather still applies), and `unknown` for free text only (no weather then: `conditions_missing`, never 0). The point is always the area's, never `mp_routes` lat/lon. `source`=`user_report`, `source_id`=the report UUID, `source_url`=NULL, `description`=`summary_line()`.
 8. **`source_family` gains `user_report`.** Every `family ==` branch in `app/data/repair` is checked. `dedupe.SOURCE_RANK` puts it last (rank 3), so an R5 merge keeps the institutional record canonical.
 9. **The R11 "own row" predicate is narrowed.** `accident_facts._R11_ROW` ("absent from `accidents_raw`") would also match promoted user reports, so `--apply-route-ids` and the R11 review file would treat them as R11 rows. It becomes "absent from `accidents_raw` AND `source <> 'user_report'`" (Task 20).
 10. **Invite-only beta** (spec H) is `accounts.app_settings.registration_mode = 'invite'` plus single-use `accounts.invite_codes`, stored as SHA-256 only. `open` is the post-M4.7 value.
+11. **Promoted reports link to routes the R10 way** (`[default pending: DP16]`).
+    - **Picked route.** `accidents.mp_route_id` is set, and `accident_route_links` shows it as the identity link (`method = 'mp_route_id'`) with no extra row. This is also why the report's FK targets `canonical_routes`.
+    - **Picked area.** Promotion writes `accident_legacy_links(accident_id, route_id NULL, area_id, method 'report', r10_version 'p4-report-v1', run_id)`, and `0016` widens that table's method CHECK by `'report'`. Phase 3's placement reads `link_area_id`, so an area report still places in its area.
+    - **Free text.** No link. Phase 3 places the row from its point and state as for any unlinked accident.
+    - **Interaction with R10.** `r10 --apply` deletes only `method = 'legacy_mp_id'` links and links of accidents the owner marked `no_link`, so it never touches a `'report'` link. Its `LEGACY_SQL` picks a user report only when its `mp_route_id` is not in the catalog. That case is reason `not_in_catalog`, and it goes through the existing owner round trip (`r10-export`/`r10-import`). It never reaches the R10 LLM pass, which sends only rows whose coordinate search ran (`candidates_searched`).
+    - **Alternative.** Leave area reports unlinked, with no CHECK change. Phase 3 then places them by point only.
+12. **User ticks reach exposure as their own proxy component, not as rows in the tick seam table** (`[default pending: DP17]`, PR 4-8).
+    - `internal.route_tick_scrapes` is one row per MP route (PK `mp_route_id`, `source IN ('mp_scrape')`) with MP-export completeness semantics. The exposure plan reads it only through `internal.route_tick_coverage`/`route_tick_months` (D-7/D-8).
+    - User ticks keep the seam's contract: monthly `'YYYY-MM'` periods, an absent month is missing and never 0, and they are read only through a view. That view is `internal.user_tick_cells(area_id, type_group, period, user_route_days, distinct_users)`, Phase 3's cell with the spec B caps applied (Task 38).
+    - `ingest`'s exposure job reads the view and writes the result into `internal.exposure_index` as the deferred `in_app_ticks` component, with a `PROXY_VERSION` bump (exposure D-1/DP6).
+    - Writing them into `route_tick_scrapes` would need a second row per route (a PK and view change in the exposure plan's territory), and it would double-count climbers who log the same climb on both sites.
+    - **Alternative.** Widen the seam to `(mp_route_id, source)` with `source = 'in_app'`, and have the exposure plan's views sum both sources.
 
 ## Review Focus
 
@@ -95,7 +133,7 @@ In this plan (PRs 4-1 to 4-7): accounts, profiles and experience, export/delete,
 9. **Jev's monthly tokens reach `JEV_MONTHLY_TOKEN_CAP`, or the DPA reference is empty** — expect `local` triage and no request sent to Jev (Task 28 `test_token_cap_switches_to_local`; Task 19 `test_jev_mode_refused_without_dpa`).
 
 ---
-## Owner decisions DP1–DP14 (decided 2026-10-12) and the one pending choice
+## Owner decisions DP1–DP14 (decided 2026-10-12) and the pending choices DP15–DP18
 
 | DP | Topic | Decision | Where it lands |
 |---|---|---|---|
@@ -110,10 +148,13 @@ In this plan (PRs 4-1 to 4-7): accounts, profiles and experience, export/delete,
 | DP9 | DB layout and raw text | **Decided (owner approved the schemas):** `accounts`, `reports`, `vault`. `app` reads `vault` only from reviewer-gated handlers (every read audited) and from the worker's NER redaction task. | Tasks 2, 11, 14, 18, 24 |
 | DP10 | Promotion executor | **Decided:** owner/agent-run daily CLI `report_promote` as `ingest`. | Task 23 |
 | DP11 | Acceptance-time weather (OQ7) | **Decided, with the owner's two-key answer:** at promotion, register the incident's series. If the 7-day window ends within the last 92 days, fetch it from the Forecast API `past_days` with the **Standard** key and store it as `stopgap`. Otherwise the next January Professional window fills it as ERA5, and it reads `conditions_missing` until then. The Professional key is never used for this. | Tasks 21–23 |
-| DP12 | Route seam | **Decided:** `app/catalog_seam.py` over `mp_routes`/`mp_locations`, displayable facts only. | Task 12 |
+| DP12 | Route seam | **Decided:** `app/catalog_seam.py`, displayable facts only. Re-pointed 2026-10-15 at the merged MP catalog (`canonical_routes`/`canonical_areas`, names from `mp_routes`/`mp_locations`); the seam's interface is unchanged. | Task 12 |
 | DP13 | Frontend router | **Decided:** `react-router-dom` 7. | Task 29 |
 | DP14 | Scope | **Decided (owner):** Phase 3 first. Ticks, exposure and retrain integration are PR 4-8 (Tasks 37–39), gated on the Phase 3 model. | Scope |
 | DP15 | How the worker calls Jev | `[default pending: DP15]` **httpx against the documented REST endpoint** (`POST https://api.typesafe.ai/v1/systemone`, Bearer key) with our own pydantic request/response models, instead of the `typesafe-sdk` package. The SDK's 0.7 release switched to Pydantic in a breaking way (spec M4.0 item 4); our models are what we validate against anyway; one less dependency to pin and audit. Alternative: `typesafe-sdk` pinned exactly, wrapped by the same `JevTriager`. | Task 28 |
+| DP16 | How promoted reports link to routes (new 2026-10-15) | `[default pending: DP16]` **Identity for a picked route, an `accident_legacy_links` row with `method = 'report'` for a picked area, no link for free text** (Decision 11). `0016` widens `accident_legacy_links_method_check`. Alternative: area reports stay unlinked, and the R10 table is untouched. | Tasks 20, 23 |
+| DP17 | How user ticks reach exposure (new 2026-10-15) | `[default pending: DP17]` **A parallel seam-shaped view feeding the exposure plan's deferred `in_app_ticks` component, with a `PROXY_VERSION` bump** (Decision 12). Alternative: rows in `internal.route_tick_scrapes` under a widened `(mp_route_id, source)` key. | Tasks 37, 38 |
+| DP18 | How promotions reach the Phase 3 retrain (new 2026-10-15) | `[default pending: DP18]` **A `public.accident_report_weights` view (accident id, weight, verification, cluster freeze; no PII), read by Phase 3's `INCIDENTS_SQL` into `IncidentRow.weight`.** `trainer` gets SELECT on that view only (Phase 3 DP17 allowlist plus one), and never USAGE on `reports`. The ≥50 trigger is a `due` check in front of Phase 3's monthly `model-train.yml`. Alternative: grant `trainer` column SELECT on `reports.report_promotions`. | Task 39 |
 
 ## File Structure
 
@@ -122,19 +163,20 @@ In this plan (PRs 4-1 to 4-7): accounts, profiles and experience, export/delete,
 | `backend/db/roles/create_roles_phase4.sql` | Create | `triage_worker` role (LOGIN, `\getenv TRIAGE_WORKER_PASSWORD`), schemas `accounts`/`reports`/`vault` owned by `migrator`, REVOKE ALL FROM PUBLIC. |
 | `backend/db/roles/grants_phase4.sql` | Create | Idempotent grants for `app`, `triage_worker`, `ingest` in the three schemas. |
 | `backend/db/roles/verify_roles_phase4.sql` | Create | Exact expected privileges, including column grants; `analyst`/`trainer` hold nothing there. |
-| `backend/alembic/versions/0008_accounts.py` | Create | `accounts.*` tables. |
-| `backend/alembic/versions/0009_reports.py` | Create | `reports.*`, `vault.incident_report_raw`, the `lower(name)` indexes on `mp_routes`/`mp_locations`. |
-| `backend/alembic/versions/0010_report_promotions.py` | Create | `reports.report_promotions` (provenance and model weight). |
+| `backend/alembic/versions/0014_accounts.py` | Create | `accounts.*` tables. |
+| `backend/alembic/versions/0015_reports.py` | Create | `reports.*`, `vault.incident_report_raw`, the `lower(name)` indexes on `mp_routes`/`mp_locations`. |
+| `backend/alembic/versions/0016_report_promotions.py` | Create | `reports.report_promotions` (provenance and model weight); `accident_legacy_links` method CHECK gains `'report'` (DP16). |
 | `backend/app/models/accounts.py`, `backend/app/models/reports.py` | Create | ORM mirrors for `alembic check`. |
 | `backend/app/auth/{__init__,passwords,tokens,sessions,deps,hibp}.py` | Create | Hashing, tokens, sessions, FastAPI auth dependencies, HIBP client. |
 | `backend/app/security/{__init__,ratelimit,turnstile,client_ip,body_limit,origin_lock,disposable}.py` + `backend/app/security/disposable_domains.txt` | Create | Abuse controls and origin hardening. |
 | `backend/app/email/{__init__,sender,templates}.py`, `backend/app/tasks/email.py` | Create | `EmailSender`, Resend, in-memory, Celery send task. |
 | `backend/app/api/v1/{auth,me,incident_reports,review,admin_triage,takedowns}.py` | Create | Endpoints. |
-| `backend/app/catalog_seam.py` | Create | Route/area references, search, candidates (DP12). |
+| `backend/app/catalog_seam.py` | Create | Route/area references, search, candidates over `canonical_routes`/`canonical_areas` with names from `mp_routes`/`mp_locations` (DP12). |
 | `backend/app/reports/{__init__,form,redact,redact_ner,signals,routing,triage,jev,textmodel,gold,eval,taxonomy,duplicates,injection,review}.py` | Create | Report pipeline core (`redact_ner` and `jev` are worker-only). |
 | `backend/app/tasks/reports.py` | Create | Celery: NER redaction (as `app`), triage (as `triage_worker`), raw purge, IP-HMAC expiry, session cleanup, digests. |
 | `backend/app/pipelines/report_promote.py`, `backend/app/pipelines/report_weather.py` | Create | Promotion CLI and acceptance-time weather. |
 | `backend/app/pipelines/accident_facts.py` | Modify | `IncidentFact` base model, reusable plan/insert, `_R11_ROW` narrowing. |
+| `backend/tests/test_legacy_links.py` | Modify | Pins that `r10 --apply` keeps `method = 'report'` links and never selects a catalog-linked user report (DP16). |
 | `backend/app/pipelines/open_meteo.py`, `backend/app/pipelines/era5_window.py`, `backend/app/services/weather_service.py`, `backend/app/api/v1/mp_routes.py`, `docker-compose.yml` | Modify | Two-key split (Task 21); `ForecastClient` (the interface frozen in the 2b live-feeds plan, Task 2). |
 | `backend/app/data/repair/{sources,activity,severity,dedupe}.py` | Modify | `user_report` family. |
 | `backend/app/config.py`, `.env.example`, `backend/tests/test_env_example_parity.py` | Modify | New settings. |
@@ -153,7 +195,10 @@ In this plan (PRs 4-1 to 4-7): accounts, profiles and experience, export/delete,
 | 1 | 6–8 | `accounts.users`, `sessions`, `email_tokens` columns | Frozen in Task 1. |
 | 3 | 6–8, 13 | `tokens.new_token`, `tokens.sha256`, `tokens.hmac_hex` | Frozen in Task 3. |
 | 6 | 7, 8, 12, 14, 15, 18, 19 | `deps.public`/`user`/`verified_user`/`reviewer`/`admin` (CSRF is inside every non-public level) | Frozen in Task 6; the inventory test in Task 10 reads the marker attribute `__auth_level__`. |
-| 12 | 8, 14, 17, 22 | `catalog_seam.RouteRef`, `route_exists`, `location_exists`, `search`, `candidates_near`, `point_of`, `state_of` | Frozen in Task 12; a later catalog swaps its internals. |
+| 12 | 8, 14, 17, 22 | `catalog_seam.RouteRef`, `route_exists`, `location_exists`, `search`, `candidates_near`, `point_of`, `state_of` | Frozen in Task 12, built on the merged catalog (`canonical_*` + names from `mp_*`). |
+| 14, 15, 16 (migrations) | exposure plan `0011`, Phase 3 `0012`/`0013` | Alembic chain | `0014_accounts.down_revision = "0013_drop_legacy_weather"`. If Phase 4 runs before PR 3-4, Phase 3 renumbers `0013` after `0016` (Phase 3 plan l.79). Run `alembic heads` first. |
+| 2, 24 | exposure Task 4, Phase 3 Tasks 3 and 24 | `grants_phase2.sql`/`verify_roles_phase2.sql`/`test_roles_phase2.py` | Phase 4 adds nothing there in PRs 4-1..4-7. Every role test that upgrades `migrator` to `head` must first run the owner prerequisites of every later migration (Task 2 Step 1). |
+| 20, 23 | `legacy_links.py` (R10), `r10_llm.py` | `accident_legacy_links` method CHECK; `LEGACY_SQL` | `0016` adds `'report'`. R10's deletes and selection never touch a `'report'` link (Decision 11, pinned by a test in Task 20). |
 | 16 | 17, 22, 25, 26 | `routing.route_report(...) -> RoutingDecision`, `duplicates.match`, `injection.addresses_system`, `SourceFamily` `user_report` | Frozen in Task 16. |
 | 20 | 22 | `accident_facts.IncidentFact`, `plan_new`, `insert_one`, `summary_line`, `LOCK_SQL` | Task 20 refactors R11 with no behaviour change (the R11 tests stay green unchanged). |
 | 22 | 2b live-feeds plan Task 2 | `open_meteo.ForecastClient.fetch_forecast(locations, *, days, past_days)` | Built here with the 2b plan's exact signature and constants; the 2b plan then reuses it instead of creating it (note added to that plan's ledger by Task 24). |
@@ -165,10 +210,10 @@ In this plan (PRs 4-1 to 4-7): accounts, profiles and experience, export/delete,
 ---
 # PR 4-1 — `feat/p4-accounts-foundation`
 
-### Task 1: Migration `0008_accounts` and the `accounts` models
+### Task 1: Migration `0014_accounts` and the `accounts` models
 
 **Files:**
-- Create: `backend/alembic/versions/0008_accounts.py`, `backend/app/models/accounts.py`, `backend/tests/test_migration_0008.py`
+- Create: `backend/alembic/versions/0014_accounts.py`, `backend/app/models/accounts.py`, `backend/tests/test_migration_0014.py`
 - Modify: `backend/app/models/__init__.py` (import the new module so `alembic check` sees it), `backend/alembic/env.py` only if its `include_object` filters schemas by name (add `accounts`, `reports`, `vault` beside `internal`)
 
 **Interfaces:**
@@ -177,16 +222,16 @@ In this plan (PRs 4-1 to 4-7): accounts, profiles and experience, export/delete,
   - `accounts.users(id uuid PK default gen_random_uuid(), email text UNIQUE NOT NULL CHECK lower+length, email_verified_at timestamptz, password_hash text NOT NULL, role text NOT NULL DEFAULT 'user' CHECK IN ('user','reviewer','admin'), status text NOT NULL DEFAULT 'active' CHECK IN ('active','frozen','disabled'), age_attested_at timestamptz NOT NULL, tos_version text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), last_login_at timestamptz)`
   - `accounts.sessions(token_sha256 bytea PK CHECK octet_length=32, user_id uuid NOT NULL FK users ON DELETE CASCADE, created_at, last_seen_at, expires_at timestamptz NOT NULL, ip_hmac text NULL)`
   - `accounts.email_tokens(token_sha256 bytea PK, user_id uuid FK CASCADE, purpose text CHECK IN ('verify_email','password_reset'), expires_at, used_at NULL, created_at)`
-  - `accounts.profiles(user_id uuid PK FK CASCADE, display_name text NULL CHECK length<=40, certifications text[] NOT NULL DEFAULT '{}', home_location_id bigint NULL FK mp_locations(mp_id), updated_at)`
+  - `accounts.profiles(user_id uuid PK FK CASCADE, display_name text NULL CHECK length<=40, certifications text[] NOT NULL DEFAULT '{}', home_area_id bigint NULL FK canonical_areas(area_id), updated_at)`
   - `accounts.profile_disciplines(user_id uuid FK CASCADE, discipline text CHECK IN ('sport','trad','alpine','ice','mixed','boulder'), level text NOT NULL CHECK IN ('none','beginner','intermediate','advanced','expert'), max_grade text NULL CHECK length<=12, years_bucket text NULL CHECK IN ('<1','1-3','3-10','10+'), PK(user_id, discipline))`
   - `accounts.rate_limits(bucket text, window_start timestamptz, count integer NOT NULL CHECK >=0, PK(bucket, window_start))`
   - `accounts.audit_log(id bigserial PK, actor_type text CHECK IN ('user','reviewer','admin','system'), actor_id uuid NULL, action text NOT NULL, target_type text NOT NULL, target_id text NULL, metadata jsonb NOT NULL DEFAULT '{}', created_at timestamptz NOT NULL DEFAULT now())`
   - `accounts.app_settings(key text PK CHECK IN ('triage_mode','auto_routing','registration_mode','jev_dpa_ref'), value text NOT NULL, updated_at, updated_by uuid NULL)` seeded `('triage_mode','manual')`, `('auto_routing','off')`, `('registration_mode','invite')`, `('jev_dpa_ref','')`. `triage_mode` is `jev | local | manual` (spec D1 kill switch). It starts `manual`: no model is fitted and no DPA is signed yet. `jev_dpa_ref` holds the signed DPA's reference (≤200 chars). Empty means no real report may reach Jev (Task 19 enforces).
   - `accounts.invite_codes(code_sha256 bytea PK, created_at, used_at NULL, used_by uuid NULL FK users ON DELETE SET NULL)`
 
-`home_location_id` replaces the spec's `home_area_id` (`canonical_areas` does not exist; DP12). `max_grade` is stored as entered after per-system validation (Task 8); a NULL grade is "not given", never a lowest grade. `profile_disciplines.level` is NOT NULL because a row exists only when the user states a level; a discipline with no row is "not stated".
+`home_area_id` is the spec's own column, now that `canonical_areas` exists. The 2026-10-12 draft had `home_location_id` FK `mp_locations` while the catalog was deferred. The FK is `ON DELETE` default (no action): `mp_catalog refresh` upserts and never deletes, so an area id never disappears under a profile. `max_grade` is stored as entered after per-system validation (Task 8); a NULL grade is "not given", never a lowest grade. `profile_disciplines.level` is NOT NULL because a row exists only when the user states a level; a discipline with no row is "not stated".
 
-- [ ] **Step 1: Failing test** — `backend/tests/test_migration_0008.py`:
+- [ ] **Step 1: Failing test** — `backend/tests/test_migration_0014.py`:
 
 ```python
 import asyncpg
@@ -203,7 +248,7 @@ USER = (
 )
 
 
-def test_0008_creates_accounts_tables_and_seeds_settings():
+def test_0014_creates_accounts_tables_and_seeds_settings():
     with migrated_db() as db:
         tables = _fetch_row(db, "SELECT array_agg(table_name::text ORDER BY table_name) FROM information_schema.tables "
                                 "WHERE table_schema = 'accounts'")[0]
@@ -263,14 +308,14 @@ def test_downgrade_refuses_while_users_exist():
     with migrated_db() as db:
         run_sql(db, USER.format(email="f@example.com"))
         with pytest.raises(Exception, match="accounts.users holds rows"):
-            command.downgrade(_alembic_cfg(db), "0007_cell_daily_conditions")
+            command.downgrade(_alembic_cfg(db), "0013_drop_legacy_weather")
 ```
 
 The f-string in the last-but-one test builds test fixture SQL from two literals in the test itself, never from input; `test_no_string_sql.py` (Task 10) scans `app/` only.
 
-- [ ] **Step 2: Run to verify failure** — `cd backend && uv run pytest tests/test_migration_0008.py -q` → FAIL (schema `accounts` does not exist).
+- [ ] **Step 2: Run to verify failure** — `cd backend && uv run pytest tests/test_migration_0014.py -q` → FAIL (schema `accounts` does not exist).
 
-- [ ] **Step 3: Implement the migration** — `backend/alembic/versions/0008_accounts.py`:
+- [ ] **Step 3: Implement the migration** — `backend/alembic/versions/0014_accounts.py`:
 
 ```python
 """Phase 4 accounts: users, sessions, email tokens, profiles and self-reported experience,
@@ -286,8 +331,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "0008_accounts"
-down_revision = "0007_cell_daily_conditions"
+revision = "0014_accounts"
+down_revision = "0013_drop_legacy_weather"
 branch_labels = None
 depends_on = None
 
@@ -362,7 +407,7 @@ def upgrade() -> None:
                   sa.ForeignKey("accounts.users.id", ondelete="CASCADE"), primary_key=True),
         sa.Column("display_name", sa.Text(), nullable=True),
         sa.Column("certifications", postgresql.ARRAY(sa.Text()), server_default="{}", nullable=False),
-        sa.Column("home_location_id", sa.BigInteger(), sa.ForeignKey("mp_locations.mp_id"), nullable=True),
+        sa.Column("home_area_id", sa.BigInteger(), sa.ForeignKey("canonical_areas.area_id"), nullable=True),
         sa.Column("updated_at", TS, server_default=sa.func.now(), nullable=False),
         sa.CheckConstraint("display_name IS NULL OR length(display_name) BETWEEN 1 AND 40", name="profiles_display_name_check"),
         sa.CheckConstraint("certifications <@ ARRAY['AMGA','IFMGA','WFA','WFR','AIARE','Other']::text[]",
@@ -452,20 +497,35 @@ def downgrade() -> None:
 
 - [ ] **Step 4: ORM mirror** — `backend/app/models/accounts.py` declares one class per table above with the same columns, constraints (by name) and `__table_args__ = (..., {"schema": "accounts"})`, on `app.db.session.Base`. Add `from app.models import accounts  # noqa: F401` to `app/models/__init__.py`. If `alembic/env.py`'s `include_object` lists schemas, add `accounts`, `reports`, `vault`.
 
-- [ ] **Step 5: Run** — `cd backend && uv run pytest tests/test_migration_0008.py tests/test_migrations.py -q` → PASS (`test_baseline_builds_live_schema_and_models_match` covers model/migration parity through `alembic check`).
+- [ ] **Step 5: Run** — `cd backend && uv run pytest tests/test_migration_0014.py tests/test_migrations.py -q` → PASS (`test_baseline_builds_live_schema_and_models_match` covers model/migration parity through `alembic check`).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add backend/alembic/versions/0008_accounts.py backend/app/models/accounts.py backend/app/models/__init__.py backend/tests/test_migration_0008.py backend/alembic/env.py
-git commit -m "feat(accounts): migration 0008 accounts schema tables"
+git add backend/alembic/versions/0014_accounts.py backend/app/models/accounts.py backend/app/models/__init__.py backend/tests/test_migration_0014.py backend/alembic/env.py
+git commit -m "feat(accounts): migration 0014 accounts schema tables"
 ```
 
 ### Task 2: Role files — `triage_worker`, schemas, Phase 4 grants and exact verify
 
 **Files:**
 - Create: `backend/db/roles/create_roles_phase4.sql`, `backend/db/roles/grants_phase4.sql`, `backend/db/roles/verify_roles_phase4.sql`, `backend/tests/test_roles_phase4.py`
-- Modify: `backend/tests/test_migrations.py` (`TEST_ROLES` += `"triage_worker"`; `PHASE4_PASSWORDS = {"triage_worker": "test-triage-password-0123456789abcdef0"}`, `PHASE4_PASSWORD_ENV = {"TRIAGE_WORKER_PASSWORD": ...}`), `CLAUDE.md` (Database section: Phase 4 roles paragraph)
+- Modify:
+  - `backend/tests/test_migrations.py`:
+    - `TEST_ROLES` += `"triage_worker"`;
+    - `PHASE4_PASSWORDS = {"triage_worker": "test-triage-password-0123456789abcdef0"}` and `PHASE4_PASSWORD_ENV = {"TRIAGE_WORKER_PASSWORD": ...}`;
+    - a new helper `owner_prereqs(owner_url)`, described below.
+  - `backend/tests/test_roles_phase2.py` and Phase 3's `backend/tests/test_roles_phase3.py`: call `owner_prereqs` before `migrator` upgrades to `head`. This is test setup only; no grant changes.
+  - `CLAUDE.md`: Database section, Phase 4 roles paragraph.
+
+**Why `owner_prereqs`.**
+- Every role test runs `command.upgrade(..., "head")` as `migrator`, which has no CREATE on the database. Once `0014` is in the chain, `head` refuses without the schemas `accounts`/`reports`/`vault`, just as `0012` refuses without `model`.
+- So every role test (Phase 2's, Phase 3's and this one) runs the owner-only scripts of all later migrations first, in prod order:
+  - `backend/db/owner/schema_model_phase3.sql`, if it exists;
+  - `create_roles_phase4.sql`, unless `triage_worker` already exists.
+- `owner_prereqs` is idempotent for that reason. It is the one place a later phase adds its owner step.
+- Without it, `test_roles_phase2.py` turns red the day `0014` merges. `test_migrations.py`'s `_owner_db` cannot do this itself: it runs before `create_roles.sql` creates `migrator`.
+- Re-check the Phase 3 helper names (`run_phase2_roles`, `_phase3`) against the merged code before editing.
 
 **Interfaces:**
 - Consumes: `create_roles.sql`, `create_roles_phase2.sql` already run; test helpers `_psql`, `_as`, `_denied`, `_owner_db`, `_role_url`, `_alembic_cfg_as`, `fresh_db`, `role_cleanup`.
@@ -485,8 +545,9 @@ git commit -m "feat(accounts): migration 0008 accounts schema tables"
 - [ ] **Step 1: Failing test** — `backend/tests/test_roles_phase4.py`:
 
 ```python
-"""Prod order: 0003 → create_roles.sql → create_roles_phase2.sql → create_roles_phase4.sql →
-migrator upgrades to head → grants_phase2.sql → grants_phase4.sql → the three verify scripts."""
+"""Prod order: 0003 → create_roles.sql → create_roles_phase2.sql → schema_model_phase3.sql →
+create_roles_phase4.sql → migrator upgrades to head → grants_phase2.sql → trainer_login_phase3.sql →
+grants_phase3.sql → grants_phase4.sql → the four verify scripts."""
 
 import os
 import subprocess
@@ -511,8 +572,10 @@ from tests.test_migrations import (
     _require_psql,
     _role_url,
     fresh_db,  # noqa: F401
+    owner_prereqs,
     role_cleanup,  # noqa: F401
 )
+from tests.test_roles_phase3 import TRAINER_PASSWORD
 
 pytestmark = requires_pg
 CREATE4, GRANTS4, VERIFY4 = (ROLES_DIR / f for f in ("create_roles_phase4.sql", "grants_phase4.sql", "verify_roles_phase4.sql"))
@@ -552,12 +615,14 @@ def test_phase4_least_privilege(role_cleanup, fresh_db):  # noqa: F811
     owner = _setup(fresh_db)
     assert _psql(owner, CREATE4, PHASE4_PASSWORD_ENV).returncode == 0
     migrator = _role_url(fresh_db, "migrator", PASSWORDS["migrator"])
+    owner_prereqs(owner)  # schema model (Phase 3); triage_worker already exists, so skipped
     command.upgrade(_alembic_cfg_as(fresh_db, migrator), "head")
-    for script in ("grants_phase2.sql",):
-        assert _psql(owner, ROLES_DIR / script, {}).returncode == 0
+    assert _psql(owner, ROLES_DIR / "grants_phase2.sql", {}).returncode == 0
+    assert _psql(owner, ROLES_DIR / "trainer_login_phase3.sql", {"TRAINER_PASSWORD": TRAINER_PASSWORD}).returncode == 0
+    assert _psql(owner, ROLES_DIR / "grants_phase3.sql", {}).returncode == 0
     assert _psql(owner, GRANTS4, {}).returncode == 0
     assert _psql(owner, GRANTS4, {}).returncode == 0  # idempotent
-    for script in ("verify_roles.sql", "verify_roles_phase2.sql", "verify_roles_phase4.sql"):
+    for script in ("verify_roles.sql", "verify_roles_phase2.sql", "verify_roles_phase3.sql", "verify_roles_phase4.sql"):
         v = _psql(owner, ROLES_DIR / script, {})
         assert v.returncode == 0, f"{script}: {v.stdout}{v.stderr}"
 
@@ -578,6 +643,7 @@ def test_phase4_least_privilege(role_cleanup, fresh_db):  # noqa: F811
 def test_verify_phase4_catches_a_stray_analyst_grant(role_cleanup, fresh_db):  # noqa: F811
     owner = _setup(fresh_db)
     assert _psql(owner, CREATE4, PHASE4_PASSWORD_ENV).returncode == 0
+    owner_prereqs(owner)
     command.upgrade(_alembic_cfg_as(fresh_db, _role_url(fresh_db, "migrator", PASSWORDS["migrator"])), "head")
     assert _psql(owner, ROLES_DIR / "grants_phase2.sql", {}).returncode == 0
     assert _psql(owner, GRANTS4, {}).returncode == 0
@@ -591,7 +657,7 @@ def test_verify_phase4_catches_a_stray_analyst_grant(role_cleanup, fresh_db):  #
 - [ ] **Step 3: `create_roles_phase4.sql`** — same structure as `create_roles_phase2.sql`:
 
 ```sql
--- Run as the database owner, once, after create_roles_phase2.sql and before migration 0008.
+-- Run as the database owner, once, after create_roles_phase2.sql and before migration 0014.
 -- TRIAGE_WORKER_PASSWORD comes via \getenv, never argv (same mechanism as create_roles_phase2.sql).
 \set ON_ERROR_STOP on
 \set VERBOSITY terse
@@ -662,7 +728,7 @@ SELECT pg_has_role(current_user, 'migrator', 'SET') AS can_set_migrator \gset
 BEGIN;
 SET ROLE migrator;
 
--- PR 4-1 (0008). app is the API: it owns account lifecycle. analyst and trainer get nothing in
+-- PR 4-1 (0014). app is the API: it owns account lifecycle. analyst and trainer get nothing in
 -- accounts (no default privileges exist outside public, so nothing to revoke).
 GRANT USAGE ON SCHEMA accounts TO app, triage_worker, ingest;
 REVOKE ALL ON ALL TABLES IN SCHEMA accounts FROM app, triage_worker, ingest;
@@ -762,12 +828,12 @@ FROM cols;
 
 Sequence check: `app` and `triage_worker` hold exactly USAGE on `accounts.audit_log_id_seq`; nobody else holds anything on any sequence in the three schemas, except the identity sequences Task 11 lists.
 
-- [ ] **Step 6: Run** — `cd backend && MIGRATIONS_TEST_ADMIN_URL=... uv run pytest tests/test_roles_phase4.py tests/test_roles_phase2.py tests/test_migrations.py -q` → PASS. `test_roles_phase2.py` must stay green: its `head` now includes 0008, and `verify_roles_phase2.sql` only inspects `public`/`internal`.
+- [ ] **Step 6: Run** — `cd backend && MIGRATIONS_TEST_ADMIN_URL=... uv run pytest tests/test_roles_phase4.py tests/test_roles_phase2.py tests/test_migrations.py -q` → PASS. `test_roles_phase2.py` and `test_roles_phase3.py` must stay green. Their `head` now includes `0014`, which is why they call `owner_prereqs`. `verify_roles_phase2.sql` and `verify_roles_phase3.sql` only inspect `public`/`internal`/`model`. Add `tests/test_roles_phase3.py` to this run.
 
-- [ ] **Step 7: Docs + commit** — `CLAUDE.md` Database section: replace "`triage_worker` lands in Phase 4." with: "Phase 4: `create_roles_phase4.sql` (owner, once, before `0008`) creates `triage_worker` (`TRIAGE_WORKER_PASSWORD` from `.env.triage_worker`) and schemas `accounts`, `reports`, `vault` owned by `migrator`; after every Phase 4 migration run `grants_phase4.sql` then `verify_roles_phase4.sql`. `analyst` and `trainer` have no access to those schemas."
+- [ ] **Step 7: Docs + commit** — `CLAUDE.md` Database section: replace "`triage_worker` lands in Phase 4." with: "Phase 4: `create_roles_phase4.sql` (owner, once, before `0014`) creates `triage_worker` (`TRIAGE_WORKER_PASSWORD` from `.env.triage_worker`) and schemas `accounts`, `reports`, `vault` owned by `migrator`; after every Phase 4 migration run `grants_phase4.sql` then `verify_roles_phase4.sql`. `analyst` and `trainer` have no access to those schemas."
 
 ```bash
-git add backend/db/roles/*phase4.sql backend/tests/test_roles_phase4.py backend/tests/test_migrations.py CLAUDE.md
+git add backend/db/roles/*phase4.sql backend/tests/test_roles_phase4.py backend/tests/test_migrations.py backend/tests/test_roles_phase2.py backend/tests/test_roles_phase3.py CLAUDE.md
 git commit -m "feat(roles): triage_worker, accounts/reports/vault schemas, phase 4 grants and verify"
 ```
 
@@ -1423,7 +1489,7 @@ def send_email(to: str, template: Template, params: dict[str, str]) -> None:
 
 - [ ] **Step 4: Run** — `cd backend && uv run pytest tests/test_email_sender.py tests/test_celery_ops.py -q` → PASS.
 
-- [ ] **Step 5: PR 4-1 docs + commit** — `CHANGELOG.md` entry dated the merge day: "Phase 4 accounts foundation: `accounts`/`reports`/`vault` schemas, `triage_worker` role, migration 0008, argon2id hashing, rate limiter, `EmailSender` (all behind `ENABLE_ACCOUNTS`, default off)." `data/DATABASE_STRUCTURE.md`: an `accounts` section listing the tables and the grant summary.
+- [ ] **Step 5: PR 4-1 docs + commit** — `CHANGELOG.md` entry dated the merge day: "Phase 4 accounts foundation: `accounts`/`reports`/`vault` schemas, `triage_worker` role, migration 0014, argon2id hashing, rate limiter, `EmailSender` (all behind `ENABLE_ACCOUNTS`, default off)." `data/DATABASE_STRUCTURE.md`: an `accounts` section listing the tables and the grant summary.
 
 ```bash
 git add backend/app/email backend/app/tasks/email.py backend/app/celery_app.py backend/tests/test_email_sender.py CHANGELOG.md data/DATABASE_STRUCTURE.md
@@ -1512,6 +1578,8 @@ async def harness(db_name: str, url: str | None = None) -> AsyncIterator[Harness
         yield Harness(client, db_name, clock, outbox, ts, hibp)
     await engine.dispose()
 ```
+
+The harness also exports `async def seed_catalog(db_name: str, mp_sql: str) -> None`. It runs the MP seed SQL, then `app.pipelines.mp_catalog.refresh(conn, run_id=uuid.uuid4())` in the same transaction. Report FKs point at `canonical_routes`/`canonical_areas` (Task 11), so a test that seeds MP rows uses `seed_catalog` rather than `sql`. Seeds give each route's area a root area named after a US state, so the catalog assigns a `state_code`.
 
 `app/phase4.py` (Task 6) is the single place that wires routers, middlewares and injectable collaborators. `main.py` calls `install(app, Phase4Deps.from_settings())` only when `settings.ENABLE_ACCOUNTS` (Task 9).
 
@@ -2347,11 +2415,11 @@ git commit -m "feat(auth): register/verify/login/logout/reset endpoints with tur
 - Modify: `backend/app/api/v1/me.py`
 
 **Interfaces:**
-- Consumes: `deps.user`/`deps.verified_user`, `catalog_seam.location_exists` (Task 12 — **ordering:** Task 8 uses a local `SELECT 1 FROM mp_locations WHERE mp_id = :id` until Task 12 lands, and Task 12 replaces it with the seam call; noted in Task 12).
+- Consumes: `deps.user`/`deps.verified_user`, `catalog_seam.location_exists` (Task 12 — **ordering:** Task 8 uses a local `SELECT 1 FROM canonical_areas WHERE area_id = :id` until Task 12 lands, and Task 12 replaces it with the seam call; noted in Task 12).
 - Produces:
   - `grades.grade_problem(discipline: str, grade: str) -> str | None` per system: `sport`/`trad` YDS `5.0`–`5.15d` (`^5\.(\d|1[0-5])[abcd]?[+-]?$`, letters only from 5.10); `boulder` V `V0`–`V17` or `VB`; `ice` `WI1`–`WI7` or `AI1`–`AI6` with optional `+`/`-`; `mixed` `M1`–`M14`; `alpine` NCCS `I`–`VII` optionally followed by a YDS grade (`IV 5.9`).
-  - `GET /me` (`user`) → `{id, email, role, verified, created_at, profile: {display_name, certifications, home_location_id, home_location_name}, disciplines: [{discipline, level, max_grade, years_bucket}]}`. `home_location_name` is resolved through the seam, NULL if the id is gone.
-  - `PATCH /me/profile` (`verified_user`) body `{display_name?, certifications?, home_location_id?, disciplines?: [{discipline, level, max_grade?, years_bucket?}]}`. `disciplines` replaces the whole set (sent list = complete state; a discipline left out = "not stated", its row deleted). Duplicate disciplines → 422.
+  - `GET /me` (`user`) → `{id, email, role, verified, created_at, profile: {display_name, certifications, home_area_id, home_area_name}, disciplines: [{discipline, level, max_grade, years_bucket}]}`. `home_area_name` is resolved through the seam, NULL if the id is gone.
+  - `PATCH /me/profile` (`verified_user`) body `{display_name?, certifications?, home_area_id?, disciplines?: [{discipline, level, max_grade?, years_bucket?}]}`. `disciplines` replaces the whole set (sent list = complete state; a discipline left out = "not stated", its row deleted). Duplicate disciplines → 422.
   - `GET /me/export` (`user`) → JSON attachment of everything stored about the user: account (no `password_hash`), profile, disciplines, sessions (created/last_seen only, no hashes), the user's own reports with their form fields and **their own raw narrative if not yet purged** (it is their text), and their audit rows. Content-Disposition `attachment; filename="safeascent-export.json"`.
   - `DELETE /me` (`user`, body `{"confirm": "DELETE"}` plus `password`) → 204. One transaction: `UPDATE reports.incident_reports SET user_id = NULL ... WHERE user_id = :u` and `DELETE FROM vault.incident_report_raw WHERE report_id IN (...)` (both statements are added by Task 15, when those tables exist; Task 8 deletes the account rows), then audit `account.deleted` (actor NULL, target the id), then `DELETE FROM accounts.users` (cascades sessions, tokens, profile, disciplines), then clear the cookie.
 
@@ -2409,7 +2477,7 @@ async def test_profile_validation(phase4_db):  # noqa: F811
                {"disciplines": [{"discipline": "trad", "level": "x"}]},
                {"disciplines": [{"discipline": "trad", "level": "beginner"}, {"discipline": "trad", "level": "expert"}]},
                {"certifications": ["AMGA", "Bogus"]},
-               {"home_location_id": 999999999999},
+               {"home_area_id": 999999999999},
                {"display_name": "x" * 41}]
         for body in bad:
             r = await h.client.patch("/api/v1/me/profile", json=body, headers={"X-CSRF-Token": csrf})
@@ -2464,7 +2532,7 @@ def grade_problem(discipline: str, grade: str) -> str | None:
 
 5.10–5.15 may carry a letter; 5.0–5.9 may not (`5.9a` is not a grade). `5.16` is refused until one is confirmed.
 
-- [ ] **Step 4: Implement `me.py`** with pydantic models `DisciplineIn(discipline: Literal[...], level: Literal[...], max_grade: str | None = Field(None, max_length=12), years_bucket: Literal['<1','1-3','3-10','10+'] | None = None)` with a `model_validator` calling `grade_problem`; `ProfilePatch(display_name: str | None = Field(None, min_length=1, max_length=40), certifications: list[Literal['AMGA','IFMGA','WFA','WFR','AIARE','Other']] | None = Field(None, max_length=6), home_location_id: int | None = Field(None, ge=1), disciplines: list[DisciplineIn] | None = Field(None, max_length=6))` with `extra="forbid"` and a validator rejecting duplicate disciplines. A `display_name` is free text that is never shown publicly (spec: no public profile); it is NFC-normalized with control characters stripped. Writes go in one transaction: `UPDATE accounts.profiles SET ... , updated_at = :now`, then `DELETE FROM accounts.profile_disciplines WHERE user_id = :u` and a multi-row `INSERT` when `disciplines` is present. Only fields present in the body (`model_fields_set`) change; an explicit `null` clears that field.
+- [ ] **Step 4: Implement `me.py`** with pydantic models `DisciplineIn(discipline: Literal[...], level: Literal[...], max_grade: str | None = Field(None, max_length=12), years_bucket: Literal['<1','1-3','3-10','10+'] | None = None)` with a `model_validator` calling `grade_problem`; `ProfilePatch(display_name: str | None = Field(None, min_length=1, max_length=40), certifications: list[Literal['AMGA','IFMGA','WFA','WFR','AIARE','Other']] | None = Field(None, max_length=6), home_area_id: int | None = Field(None, ge=1), disciplines: list[DisciplineIn] | None = Field(None, max_length=6))` with `extra="forbid"` and a validator rejecting duplicate disciplines. A `display_name` is free text that is never shown publicly (spec: no public profile); it is NFC-normalized with control characters stripped. Writes go in one transaction: `UPDATE accounts.profiles SET ... , updated_at = :now`, then `DELETE FROM accounts.profile_disciplines WHERE user_id = :u` and a multi-row `INSERT` when `disciplines` is present. Only fields present in the body (`model_fields_set`) change; an explicit `null` clears that field.
 
 - [ ] **Step 5: Run** — `cd backend && uv run pytest tests/test_grades.py tests/test_me_api.py -q` → PASS.
 
@@ -2851,35 +2919,38 @@ git commit -m "test(auth): route inventory, authz matrix, no-string-sql guard, a
 ---
 # PR 4-3 — `feat/p4-report-intake`
 
-### Task 11: Migration `0009_reports`, `vault`, search indexes, grants
+### Task 11: Migration `0015_reports`, `vault`, search indexes, grants
 
 **Files:**
-- Create: `backend/alembic/versions/0009_reports.py`, `backend/app/models/reports.py`, `backend/tests/test_migration_0009.py`
+- Create: `backend/alembic/versions/0015_reports.py`, `backend/app/models/reports.py`, `backend/tests/test_migration_0015.py`
 - Modify: `backend/db/roles/grants_phase4.sql`, `backend/db/roles/verify_roles_phase4.sql`, `backend/tests/test_roles_phase4.py`, `backend/app/models/__init__.py`
 
 **Interfaces:**
 - Produces (frozen for Tasks 12–25):
-  - `reports.incident_reports(id uuid PK default gen_random_uuid(), user_id uuid NULL FK accounts.users ON DELETE SET NULL, created_at timestamptz NOT NULL default now(), event_date date NOT NULL, date_precision text NOT NULL CHECK IN ('day','month','year'), ref_kind text NOT NULL CHECK IN ('mp_route','mp_location','free_text'), mp_route_id bigint NULL FK mp_routes, mp_location_id bigint NULL FK mp_locations(mp_id), location_text text NULL CHECK length<=200, lat numeric(6,3) NULL, lon numeric(7,3) NULL, state text NULL CHECK length=2, incident_type text NOT NULL, severity text NOT NULL, weather_related text NOT NULL CHECK IN ('yes','no','unknown'), involved_years_bucket text NULL, involved_level text NULL, relationship text NOT NULL CHECK IN ('involved','witness','secondhand'), narrative_redacted text NOT NULL CHECK length BETWEEN 1 AND 4500, narrative_sha256 bytea NOT NULL, redaction_counts jsonb NOT NULL default '{}', redaction_level text NOT NULL default 'regex' CHECK IN ('regex','ner'), leftover_person boolean NOT NULL default false, license_version text NOT NULL, tos_version text NOT NULL, ip_hmac text NULL, ip_net_hmac text NULL, abuse_signals jsonb NOT NULL default '{}', status text NOT NULL default 'received', routing text NULL, routing_reasons text[] NOT NULL default '{}', decided_at timestamptz NULL, appeal_used boolean NOT NULL default false, hidden boolean NOT NULL default false)`. CHECKs: `ref_kind='mp_route' ⇒ mp_route_id IS NOT NULL`; `ref_kind='mp_location' ⇒ mp_location_id IS NOT NULL`; `ref_kind='free_text' ⇒ location_text IS NOT NULL`; `(lat IS NULL) = (lon IS NULL)`; `status IN ('received','triaged','in_review','staged','rejected','appealed','promoted','linked','held')`; `routing IS NULL OR routing IN ('auto_stage','auto_reject','human')`; `incident_type` and `severity` CHECKs list the taxonomy values of Task 13. Indexes: `(status, created_at)`, `(user_id)`, `(mp_route_id)`, `(narrative_sha256)`, `(ip_net_hmac, created_at)`.
+  - `reports.incident_reports(id uuid PK default gen_random_uuid(), user_id uuid NULL FK accounts.users ON DELETE SET NULL, created_at timestamptz NOT NULL default now(), event_date date NOT NULL, date_precision text NOT NULL CHECK IN ('day','month','year'), ref_kind text NOT NULL CHECK IN ('mp_route','mp_location','free_text'), mp_route_id bigint NULL FK canonical_routes(route_id), mp_location_id bigint NULL FK canonical_areas(area_id), location_text text NULL CHECK length<=200, lat numeric(6,3) NULL, lon numeric(7,3) NULL, state text NULL CHECK length=2, incident_type text NOT NULL, severity text NOT NULL, weather_related text NOT NULL CHECK IN ('yes','no','unknown'), involved_years_bucket text NULL, involved_level text NULL, relationship text NOT NULL CHECK IN ('involved','witness','secondhand'), narrative_redacted text NOT NULL CHECK length BETWEEN 1 AND 4500, narrative_sha256 bytea NOT NULL, redaction_counts jsonb NOT NULL default '{}', redaction_level text NOT NULL default 'regex' CHECK IN ('regex','ner'), leftover_person boolean NOT NULL default false, license_version text NOT NULL, tos_version text NOT NULL, ip_hmac text NULL, ip_net_hmac text NULL, abuse_signals jsonb NOT NULL default '{}', status text NOT NULL default 'received', routing text NULL, routing_reasons text[] NOT NULL default '{}', decided_at timestamptz NULL, appeal_used boolean NOT NULL default false, hidden boolean NOT NULL default false)`. CHECKs: `ref_kind='mp_route' ⇒ mp_route_id IS NOT NULL`; `ref_kind='mp_location' ⇒ mp_location_id IS NOT NULL`; `ref_kind='free_text' ⇒ location_text IS NOT NULL`; `(lat IS NULL) = (lon IS NULL)`; `status IN ('received','triaged','in_review','staged','rejected','appealed','promoted','linked','held')`; `routing IS NULL OR routing IN ('auto_stage','auto_reject','human')`; `incident_type` and `severity` CHECKs list the taxonomy values of Task 13. Indexes: `(status, created_at)`, `(user_id)`, `(mp_route_id)`, `(narrative_sha256)`, `(ip_net_hmac, created_at)`.
   - `vault.incident_report_raw(report_id uuid PK FK reports.incident_reports ON DELETE CASCADE, narrative_raw text NOT NULL CHECK length<=4500, purge_after timestamptz NULL)`
   - `reports.report_triage_results(id bigint identity PK, report_id uuid FK, triager text NOT NULL CHECK IN ('jev','local','manual'), model_id text NOT NULL, model_echo text NULL, request_sha256 bytea NOT NULL, response_sha256 bytea NOT NULL, request jsonb NOT NULL, answers jsonb NOT NULL, calibrated jsonb NOT NULL, routing text NOT NULL, reasons text[] NOT NULL, shadow boolean NOT NULL, latency_ms integer NOT NULL, input_tokens integer NULL CHECK >= 0, error text NULL CHECK length<=200, created_at timestamptz default now())`, index `(triager, created_at)` for the monthly token sum. `shadow` is true for every result that did not drive live routing: every row while `auto_routing='off'`, and the `local` baseline row whenever Jev is the active triager.
   - `reports.triage_fallbacks(id bigint identity PK, reason text NOT NULL CHECK IN ('model_mismatch','token_cap','eval_failed','admin'), model_id text NOT NULL, detail text NULL CHECK length<=200, created_at timestamptz default now(), cleared_at timestamptz NULL, cleared_by uuid NULL FK accounts.users ON DELETE SET NULL)`. Any uncleared row forces the effective triager to `local` (spec D3/D5). `triage_worker` can raise one but never clear it; only an admin clears, through the API (Task 19).
   - `reports.review_actions(id bigint identity PK, report_id uuid FK, reviewer_id uuid NULL FK accounts.users ON DELETE SET NULL, action text NOT NULL CHECK IN ('approve','reject','edit','merge','escalate','veto','raw_view','appeal_upheld','appeal_denied','retract'), before jsonb NULL, after jsonb NULL, reason text NULL CHECK length<=500, created_at timestamptz default now())`
   - `reports.reviewed_incidents(report_id uuid PK FK, status text NOT NULL CHECK IN ('staged','vetoed','promoted','linked','held','retracted'), verification text NOT NULL CHECK IN ('auto','human','corroborated'), approved jsonb NOT NULL, staged_at timestamptz NOT NULL, veto_deadline timestamptz NOT NULL, hold_reason text NULL, accident_id integer NULL FK accidents, linked_accident_id integer NULL FK accidents)`
   - `reports.takedown_requests(id uuid PK default gen_random_uuid(), created_at, target_kind text CHECK IN ('accident','report'), target_id text NOT NULL CHECK length<=64, reason text NOT NULL CHECK length BETWEEN 20 AND 2000, contact_email text NULL CHECK length<=254, status text NOT NULL default 'open' CHECK IN ('open','upheld','declined'), decided_at timestamptz NULL, decided_by uuid NULL FK accounts.users ON DELETE SET NULL, ip_hmac text NULL)`
-  - Indexes `ix_mp_routes_lower_name` on `lower(name) text_pattern_ops` and `ix_mp_locations_lower_name` likewise (prefix search without `pg_trgm`). Built with plain `CREATE INDEX` inside the migration: about 280K rows builds in seconds. A `SHARE` lock blocks writes to `mp_routes`, which only the owner's private loader does. The runbook runs the migration when no load is running.
+  - Indexes `ix_mp_routes_lower_name` on `lower(name) text_pattern_ops` and `ix_mp_locations_lower_name` likewise (prefix search without `pg_trgm`). Names stay in `mp_routes`/`mp_locations`, because the catalog holds derived columns only.
+    - Built with plain `CREATE INDEX` inside the migration: about 280K rows builds in seconds.
+    - A `SHARE` lock blocks writes to `mp_routes`/`mp_locations`. Only the owner's private MP loader writes those tables (the `catalog-cycle` cron writes `canonical_*`, not these). The runbook runs the migration when neither is running.
+  - The report columns keep the MP-id names (`mp_route_id`, `mp_location_id`), matching `accidents.mp_route_id`, but they reference the catalog. A report can therefore only name a route or area the catalog holds, and an accepted route report becomes an R10 identity link with no further step (Decision 11). `mp_catalog refresh` never deletes, so the FKs never block it.
 
 `approved` holds exactly the reviewer-approved facts promotion uses: `{event_date, date_precision, mp_route_id|null, lat|null, lon|null, geocode_precision, state, accident_type, injury_severity, activity, exp_years_climbing|null, exp_stated_level}`. Its shape is validated by `reports.form.ApprovedFacts` (Task 17) on write and by promotion on read.
 
-- [ ] **Step 1: Failing test** — `backend/tests/test_migration_0009.py`: the schemas' table lists; each `ref_kind` CHECK (a `free_text` row without `location_text` → CheckViolation; `mp_route` without id → CheckViolation; a lone `lat` → CheckViolation); a deleted user leaves the report with `user_id` NULL; a deleted report cascades its vault row; the two `lower(name)` indexes exist with `text_pattern_ops`; downgrade refuses while `reports.incident_reports` holds a row (message `reports.incident_reports holds rows`).
+- [ ] **Step 1: Failing test** — `backend/tests/test_migration_0015.py`: the schemas' table lists; each `ref_kind` CHECK (a `free_text` row without `location_text` → CheckViolation; `mp_route` without id → CheckViolation; a lone `lat` → CheckViolation); a deleted user leaves the report with `user_id` NULL; a deleted report cascades its vault row; the two `lower(name)` indexes exist with `text_pattern_ops`; downgrade refuses while `reports.incident_reports` holds a row (message `reports.incident_reports holds rows`).
 
-- [ ] **Step 2: Run to verify failure** — `cd backend && uv run pytest tests/test_migration_0009.py -q` → FAIL.
+- [ ] **Step 2: Run to verify failure** — `cd backend && uv run pytest tests/test_migration_0015.py -q` → FAIL.
 
-- [ ] **Step 3: Implement** — `0009_reports.py` (`down_revision = "0008_accounts"`), written in the style of `0008` with every column and CHECK above, `op.create_index("ix_mp_routes_lower_name", "mp_routes", [sa.text("lower(name) text_pattern_ops")])` and the same for `mp_locations`. The downgrade refuses on any report row, then drops in dependency order and drops both indexes. ORM mirror in `app/models/reports.py` (`vault` table included).
+- [ ] **Step 3: Implement** — `0015_reports.py` (`down_revision = "0014_accounts"`), written in the style of `0014` with every column and CHECK above, `op.create_index("ix_mp_routes_lower_name", "mp_routes", [sa.text("lower(name) text_pattern_ops")])` and the same for `mp_locations`. The downgrade refuses on any report row, then drops in dependency order and drops both indexes. ORM mirror in `app/models/reports.py` (`vault` table included).
 
 - [ ] **Step 4: Grants** — append inside the transaction of `grants_phase4.sql`:
 
 ```sql
--- PR 4-3 (0009). app is the API (intake, the user's own reports, reviewer actions); triage_worker
+-- PR 4-3 (0015). app is the API (intake, the user's own reports, reviewer actions); triage_worker
 -- reads redacted report columns and candidate sources and writes triage output only (spec D2).
 GRANT USAGE ON SCHEMA reports TO app, triage_worker;
 GRANT USAGE ON SCHEMA vault TO app;
@@ -2903,15 +2974,17 @@ GRANT SELECT, INSERT ON reports.report_triage_results TO triage_worker;
 GRANT USAGE ON SEQUENCE reports.report_triage_results_id_seq TO triage_worker;
 GRANT SELECT, INSERT ON reports.triage_fallbacks TO triage_worker;
 GRANT USAGE ON SEQUENCE reports.triage_fallbacks_id_seq TO triage_worker;
--- Candidate sources: displayable route facts only (never url) and the clean accident views
--- (no narrative columns).
+-- Candidate sources: the catalog (derived columns only), the displayable names and grades from
+-- the MP tables (never url, never prose; points come from canonical_areas), and the clean
+-- accident view (no narrative columns).
 REVOKE SELECT ON public.mp_routes, public.mp_locations FROM triage_worker;
-GRANT SELECT (mp_route_id, name, grade, type, location_id, latitude, longitude) ON public.mp_routes TO triage_worker;
-GRANT SELECT (mp_id, name, parent_id, latitude, longitude) ON public.mp_locations TO triage_worker;
+GRANT SELECT (mp_route_id, name, grade) ON public.mp_routes TO triage_worker;
+GRANT SELECT (mp_id, name) ON public.mp_locations TO triage_worker;
+GRANT SELECT ON public.canonical_routes, public.canonical_areas TO triage_worker;
 GRANT SELECT ON public.accidents_clean TO triage_worker;
 ```
 
-`triage_worker` gets no `user_id`, `ip_hmac`, `ip_net_hmac` or `license_version` column and no vault USAGE. Append the matching `expected` rows plus column checks to `verify_roles_phase4.sql`: `triage_worker` column SELECT on `incident_reports` is exactly the list, column UPDATE exactly `(status, routing, routing_reasons)`, column SELECT on `mp_routes`/`mp_locations` exactly as granted; `triage_worker` SELECT on `public.accidents` is false; `app` holds nothing on `vault` but the four privileges. Because `verify_roles.sql` (Phase 1) requires `app` SELECT on every `public` table and `triage_worker` is not covered there, add to `verify_roles_phase4.sql`: `triage_worker` holds no privilege on any `public` relation except the three above.
+`triage_worker` gets no `user_id`, `ip_hmac`, `ip_net_hmac` or `license_version` column and no vault USAGE. Append the matching `expected` rows plus column checks to `verify_roles_phase4.sql`: `triage_worker` column SELECT on `incident_reports` is exactly the list, column UPDATE exactly `(status, routing, routing_reasons)`, column SELECT on `mp_routes`/`mp_locations` exactly as granted; `triage_worker` SELECT on `public.accidents` is false; `app` holds nothing on `vault` but the four privileges. Because `verify_roles.sql` (Phase 1) requires `app` SELECT on every `public` table and `triage_worker` is not covered there, add to `verify_roles_phase4.sql`: `triage_worker` holds no privilege on any `public` relation except the five above, and nothing in `internal` or `model`.
 
 Extend `test_phase4_least_privilege`:
 
@@ -2928,13 +3001,13 @@ Extend `test_phase4_least_privilege`:
     _denied(app, "DELETE FROM reports.incident_reports")
 ```
 
-- [ ] **Step 5: Run** — `cd backend && uv run pytest tests/test_migration_0009.py tests/test_roles_phase4.py tests/test_roles_phase2.py tests/test_migrations.py -q` → PASS.
+- [ ] **Step 5: Run** — `cd backend && uv run pytest tests/test_migration_0015.py tests/test_roles_phase4.py tests/test_roles_phase2.py tests/test_migrations.py -q` → PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add backend/alembic/versions/0009_reports.py backend/app/models backend/db/roles backend/tests/test_migration_0009.py backend/tests/test_roles_phase4.py
-git commit -m "feat(reports): migration 0009 reports and vault tables, name indexes, triage_worker grants"
+git add backend/alembic/versions/0015_reports.py backend/app/models backend/db/roles backend/tests/test_migration_0015.py backend/tests/test_roles_phase4.py
+git commit -m "feat(reports): migration 0015 reports and vault tables, name indexes, triage_worker grants"
 ```
 
 ### Task 12: Route-reference seam `app/catalog_seam.py` and route search
@@ -2944,25 +3017,41 @@ git commit -m "feat(reports): migration 0009 reports and vault tables, name inde
 - Modify: `backend/app/phase4.py` (include `route_search.router`), `backend/app/api/v1/me.py` (use `location_exists`), `backend/tests/test_route_inventory.py` (no public change: search is `user` level)
 
 **Interfaces:**
-- Produces (`(decided: DP12)`):
+- Consumes (on `main`, verified at e756aba):
+  - `canonical_routes(route_id, area_id, type_group, is_boulder, scorable, unscorable_reason, ...)`;
+  - `canonical_areas(area_id, parent_id, path, tree_status, state_code, lat, lon, coord_precision, ...)`;
+  - the view `scorable_routes`;
+  - `mp_routes(mp_route_id, name, grade)` and `mp_locations(mp_id, name)` for display;
+  - `app.pipelines.geo.haversine_km_many`.
+
+  The catalog is filled by `mp_catalog refresh` / the `catalog-cycle` cron. Tests build it with `app.pipelines.mp_catalog.refresh(conn, run_id=...)` over seeded MP rows, as `tests/test_r10_llm.py` does.
+- Produces (`(decided: DP12)`; interface unchanged from the 2026-10-12 draft, internals re-pointed 2026-10-15):
   - `RefKind = Literal["mp_route", "mp_location", "free_text"]`
   - `@dataclass(frozen=True) RouteRef(kind: RefKind, id: int | None, text: str | None)`
-  - `@dataclass(frozen=True) CatalogItem(kind: RefKind, id: int, name: str, grade: str | None, type: str | None, area: str | None, lat: float | None, lon: float | None)`
-  - `async route_exists(conn, mp_route_id: int) -> bool`, `async location_exists(conn, mp_id: int) -> bool`
-  - `async search(conn, q: str, *, near: tuple[float, float] | None = None, limit: int = 20) -> list[CatalogItem]`: NFKC + lower, `q` 2–80 chars, prefix match on `lower(name) LIKE :prefix ESCAPE '\'` with `%`, `_`, `\` escaped in the bound value; routes then areas; when `near` is given, ordered by distance within 10 km.
-  - `async candidates_near(conn, lat: float, lon: float, *, radius_km: float = 10.0, limit: int = 20) -> list[CatalogItem]`
-  - `async point_of(conn, ref: RouteRef) -> tuple[float, float] | None`: a route's own point, else its area's (taken whole, like `ROUTE_POINTS_SQL`)
-  - `async state_of(conn, ref: RouteRef) -> str | None`: walks `mp_locations.parent_id` from the route's area (or the area itself) up to 12 levels and returns the two-letter code of the first ancestor whose name `geocode.classify_state` maps to `us:XX` (MP's top-level areas are states). Free text, a cycle or no US ancestor → None. Never guessed from coordinates.
-  - `GET /api/v1/routes/search?q=&lat=&lon=` (`deps.user`) → `{"items": [CatalogItem...]}`; rate limited by account (60/min, a new `Limit("search_account", 60, 60)`).
+  - `@dataclass(frozen=True) CatalogItem(kind: RefKind, id: int, name: str, grade: str | None, type: str | None, area: str | None, lat: float | None, lon: float | None)`. `type` is `canonical_routes.type_group`, or `"boulder"` when `is_boulder`. Free text from MP's `mp_routes.type` is never shown.
+  - `async route_exists(conn, mp_route_id: int) -> bool` and `async location_exists(conn, mp_id: int) -> bool`: membership in `canonical_routes` / `canonical_areas`, the tables the report FKs point at.
+  - `async search(conn, q: str, *, near: tuple[float, float] | None = None, limit: int = 20) -> list[CatalogItem]`:
+    - NFKC + lower; `q` is 2–80 chars;
+    - prefix match on `lower(name) LIKE :prefix ESCAPE '\'` (the `0015` indexes), with `%`, `_` and `\` escaped in the bound value;
+    - only ids present in the catalog; routes first, then areas;
+    - when `near` is given, ordered by distance within 10 km.
+  - `async candidates_near(conn, lat: float, lon: float, *, radius_km: float = 10.0, limit: int = 20) -> list[CatalogItem]`: a bounding box on `canonical_areas.lat/lon`, then exact haversine (the pattern of `legacy_links._box`/`_ranked`). Boulders are excluded from candidates, as `legacy_links.ROUTE_BOX_SQL` excludes them (`NOT is_boulder`).
+  - `async point_of(conn, ref: RouteRef) -> tuple[float, float] | None`: the area's point (`canonical_areas.lat/lon`), for a route through its `area_id`. Never `mp_routes` lat/lon (owner 2026-10-12). `None` when the area's `coord_precision = 'none'`.
+  - `async point_precision(conn, ref: RouteRef) -> Literal["own", "inherited"] | None`: Task 18 maps `own` to `geocode_precision = 'crag'` and `inherited` to `'area'`, so an inherited point is never presented as a crag point.
+  - `async state_of(conn, ref: RouteRef) -> str | None`: `canonical_areas.state_code` of the route's area (or of the area itself). That is `NULL` unless `tree_status = 'us'` (the catalog's own tree walk and `root_state`). Free text → None. Never guessed from coordinates.
+  - `GET /api/v1/routes/search?q=&lat=&lon=` (`deps.user`) → `{"items": [CatalogItem...]}`. Rate limited by account (60/min, a new `Limit("search_account", 60, 60)`).
 
-Every SELECT names columns explicitly: `mp_route_id, name, grade, type, location_id, latitude, longitude` and `mp_id, name, parent_id, latitude, longitude`. Never `url`, never `*`. This is the contract a future catalog keeps.
+Every SELECT names columns explicitly: the catalog's derived columns plus `mp_routes.name, mp_routes.grade` and `mp_locations.name`. Never `url`, never `*`, never `mp_routes.latitude/longitude`.
 
-- [ ] **Step 1: Failing test** — `backend/tests/test_catalog_seam.py` (seeded with two areas and three routes in a `migrated_db`):
+- [ ] **Step 1: Failing test** — `backend/tests/test_catalog_seam.py`. A `migrated_db` is seeded with MP rows, then the catalog is built with `mp_catalog.refresh`:
 
 ```python
+import uuid
+
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.catalog_seam import RouteRef, candidates_near, point_of, route_exists, search
+from app.catalog_seam import RouteRef, candidates_near, point_of, route_exists, search, state_of
+from app.pipelines.mp_catalog import refresh
 from tests.pgtest import migrated_db, requires_pg, sa_url
 
 pytestmark = requires_pg
@@ -2971,14 +3060,17 @@ INSERT INTO mp_locations (mp_id, name, parent_id, latitude, longitude) VALUES (1
   (101, 'Boulder', 100, NULL, NULL), (1, 'Eldorado Canyon', 101, 39.931, -105.283), (2, 'Lumpy Ridge', 3, 40.4, -105.5),
   (3, 'Loop A', 2, NULL, NULL);
 INSERT INTO mp_routes (mp_route_id, name, location_id, grade, type, latitude, longitude) VALUES
-  (10, 'The Bastille Crack', 1, '5.7', 'Trad', 39.9315, -105.2835),
+  (10, 'The Bastille Crack', 1, '5.7', 'Trad', 39.9399, -105.2899),
   (11, 'Bastille 100%_Route', 1, '5.10a', 'Trad', NULL, NULL),
-  (12, 'Batman Pinnacle', 2, '5.6', 'Trad', 40.401, -105.501);
+  (12, 'Batman Pinnacle', 2, '5.6', 'Trad', 40.401, -105.501),
+  (13, 'Bastille Boulder', 1, 'V2', 'Boulder', NULL, NULL);
 """
 
 
 async def _conn(db):
     engine = create_async_engine(sa_url(db))
+    async with engine.begin() as c:
+        await refresh(c, run_id=uuid.uuid4())
     return engine, await engine.connect()
 
 
@@ -2991,18 +3083,17 @@ async def test_prefix_search_is_case_insensitive_and_escapes_wildcards():
         await conn.close(); await engine.dispose()
 
 
-async def test_point_falls_back_to_area_whole_pair():
+async def test_point_is_always_the_areas_never_the_mp_route_point():
     with migrated_db(seed_sql=SEED) as db:
         engine, conn = await _conn(db)
+        assert await point_of(conn, RouteRef("mp_route", 10, None)) == (39.931, -105.283)  # not 39.9399
         assert await point_of(conn, RouteRef("mp_route", 11, None)) == (39.931, -105.283)
         assert await point_of(conn, RouteRef("free_text", None, "somewhere")) is None
         assert await route_exists(conn, 12) and not await route_exists(conn, 99)
         await conn.close(); await engine.dispose()
 
 
-async def test_state_from_area_ancestry_never_guessed():
-    from app.catalog_seam import state_of
-
+async def test_state_from_catalog_never_guessed():
     with migrated_db(seed_sql=SEED) as db:
         engine, conn = await _conn(db)
         assert await state_of(conn, RouteRef("mp_route", 10, None)) == "CO"
@@ -3011,22 +3102,25 @@ async def test_state_from_area_ancestry_never_guessed():
         await conn.close(); await engine.dispose()
 
 
-async def test_candidates_within_radius_only():
+async def test_candidates_within_radius_only_and_no_boulders():
     with migrated_db(seed_sql=SEED) as db:
         engine, conn = await _conn(db)
         ids = [c.id for c in await candidates_near(conn, 39.93, -105.28, radius_km=10)]
-        assert set(ids) == {10, 11} and 12 not in ids
+        assert set(ids) == {10, 11} and 12 not in ids and 13 not in ids
         await conn.close(); await engine.dispose()
 ```
+
+The ids are 2–3 digits, below `check_no_mp_data.py`'s 6-digit MP-id pattern, as in the existing seam tests.
 
 - [ ] **Step 2: Run to verify failure** — `cd backend && uv run pytest tests/test_catalog_seam.py -q` → FAIL.
 
 - [ ] **Step 3: Implement** — core of `catalog_seam.py`:
 
 ```python
-"""The one module that knows where routes and areas live (DP12). Today: mp_routes/mp_locations
-(MP is the primary route source, owner roadmap 2026-10-12). A later catalog replaces the bodies
-here; callers only see RouteRef/CatalogItem. Displayable facts only: never url, never prose."""
+"""The one module that knows where routes and areas live (DP12): the MP catalog keyed by the MP
+ids (canonical_routes/canonical_areas), with names and grades from mp_routes/mp_locations, since
+the catalog holds derived columns only. A route's point is its area's, never mp_routes lat/lon
+(owner 2026-10-12). Displayable facts only: never url, never prose."""
 
 from __future__ import annotations
 
@@ -3073,16 +3167,16 @@ def _prefix(q: str) -> str | None:
 
 
 _ROUTE_COLS = (
-    "SELECT r.mp_route_id, r.name, r.grade, r.type, l.name AS area, "
-    "CASE WHEN r.latitude IS NOT NULL AND r.longitude IS NOT NULL THEN r.latitude ELSE l.latitude END AS lat, "
-    "CASE WHEN r.latitude IS NOT NULL AND r.longitude IS NOT NULL THEN r.longitude ELSE l.longitude END AS lon "
-    "FROM mp_routes r LEFT JOIN mp_locations l ON l.mp_id = r.location_id "
+    "SELECT c.route_id, m.name, m.grade, CASE WHEN c.is_boulder THEN 'boulder' ELSE c.type_group END, "
+    "l.name AS area, a.lat, a.lon "
+    "FROM canonical_routes c JOIN mp_routes m ON m.mp_route_id = c.route_id "
+    "LEFT JOIN canonical_areas a ON a.area_id = c.area_id LEFT JOIN mp_locations l ON l.mp_id = c.area_id "
 )
-_SEARCH_ROUTES = text(_ROUTE_COLS + "WHERE lower(r.name) LIKE :p ESCAPE '\\' ORDER BY lower(r.name) LIMIT :n")
+_SEARCH_ROUTES = text(_ROUTE_COLS + "WHERE lower(m.name) LIKE :p ESCAPE '\\' ORDER BY lower(m.name) LIMIT :n")
 _SEARCH_AREAS = text(
-    "SELECT l.mp_id, l.name, p.name AS parent, l.latitude, l.longitude FROM mp_locations l "
-    "LEFT JOIN mp_locations p ON p.mp_id = l.parent_id WHERE lower(l.name) LIKE :p ESCAPE '\\' "
-    "ORDER BY lower(l.name) LIMIT :n"
+    "SELECT a.area_id, l.name, p.name AS parent, a.lat, a.lon FROM canonical_areas a "
+    "JOIN mp_locations l ON l.mp_id = a.area_id LEFT JOIN mp_locations p ON p.mp_id = a.parent_id "
+    "WHERE lower(l.name) LIKE :p ESCAPE '\\' ORDER BY lower(l.name) LIMIT :n"
 )
 
 
@@ -3100,7 +3194,12 @@ async def search(conn: AsyncConnection, q: str, *, near: tuple[float, float] | N
     return items[:limit]
 ```
 
-`_within` uses `haversine_km_many` over items with a point, drops items farther than the radius, and sorts by distance. `candidates_near` uses the generous-box-then-haversine pattern of `accident_facts.route_candidates`, with `_ROUTE_COLS` and a bounding-box WHERE on the route-or-area point. `_f` converts to float or None. In `me.py`, replace the inline `mp_locations` existence check with `location_exists`.
+Notes on the rest of the module:
+- `_within` uses `haversine_km_many` over items with a point, drops items farther than the radius, and sorts by distance.
+- `candidates_near` is `_ROUTE_COLS` plus `WHERE NOT c.is_boulder AND a.lat BETWEEN ... AND a.lon BETWEEN ...` (box first, then haversine).
+- `point_of`, `point_precision` and `state_of` are one-row SELECTs on `canonical_areas` (through `canonical_routes.area_id` for a route).
+- `_f` converts to float or None.
+- In `me.py`, replace the inline `canonical_areas` existence check with `location_exists`.
 
 - [ ] **Step 4: Run** — `cd backend && uv run pytest tests/test_catalog_seam.py tests/test_me_api.py tests/test_route_inventory.py -q` → PASS.
 
@@ -3108,7 +3207,7 @@ async def search(conn: AsyncConnection, q: str, *, near: tuple[float, float] | N
 
 ```bash
 git add backend/app/catalog_seam.py backend/app/api/v1/route_search.py backend/app/phase4.py backend/app/api/v1/me.py backend/tests/test_catalog_seam.py
-git commit -m "feat(catalog): route-reference seam over mp_routes/mp_locations and route search"
+git commit -m "feat(catalog): route-reference seam over the MP catalog and route search"
 ```
 
 ### Task 13: Report form model, taxonomy, redaction (regex at intake, Presidio NER in the worker)
@@ -3394,12 +3493,14 @@ git commit -m "feat(reports): report form model, taxonomy maps, regex and presid
 
 ```python
 from tests.pgtest import requires_pg
-from tests.phase4_harness import harness, phase4_db  # noqa: F401
+from tests.phase4_harness import harness, phase4_db, seed_catalog  # noqa: F401
 from tests.test_auth_api import register_verified, sql
 
 pytestmark = requires_pg
-SEED = ("INSERT INTO mp_locations (mp_id, name, latitude, longitude) VALUES (1, 'Eldorado Canyon', 39.931, -105.283);"
+SEED = ("INSERT INTO mp_locations (mp_id, name, parent_id, latitude, longitude) VALUES (100, 'Colorado', NULL, NULL, NULL), "
+        "(1, 'Eldorado Canyon', 100, 39.931, -105.283);"
         "INSERT INTO mp_routes (mp_route_id, name, location_id, grade, type) VALUES (10, 'The Bastille Crack', 1, '5.7', 'Trad');")
+# Applied with seed_catalog(phase4_db, SEED) (Task 6 harness), so route 10 is in canonical_routes.
 REPORT = {"event_date": "2026-09-20", "date_precision": "day", "location": {"kind": "mp_route", "id": 10},
           "incident_type": "lead_fall", "severity": "minor", "weather_related": "no", "relationship": "involved",
           "narrative": "Fell on the second pitch of The Bastille Crack, rope caught me, bruised ankle. Call me 303-555-0199.",
@@ -3407,7 +3508,7 @@ REPORT = {"event_date": "2026-09-20", "date_precision": "day", "location": {"kin
 
 
 async def test_submit_stores_redacted_text_and_vault_raw(phase4_db):  # noqa: F811
-    await sql(phase4_db, SEED)
+    await seed_catalog(phase4_db, SEED)
     async with harness(phase4_db) as h:
         csrf = await register_verified(h, "r1@example.com")
         r = await h.client.post("/api/v1/incident-reports", json=REPORT, headers={"X-CSRF-Token": csrf})
@@ -3419,7 +3520,7 @@ async def test_submit_stores_redacted_text_and_vault_raw(phase4_db):  # noqa: F8
 
 
 async def test_unverified_unknown_route_and_turnstile_are_rejected(phase4_db):  # noqa: F811
-    await sql(phase4_db, SEED)
+    await seed_catalog(phase4_db, SEED)
     async with harness(phase4_db) as h:
         csrf = await register_verified(h, "r2@example.com")
         assert (await h.client.post("/api/v1/incident-reports", json=REPORT | {"location": {"kind": "mp_route", "id": 99}},
@@ -3429,7 +3530,7 @@ async def test_unverified_unknown_route_and_turnstile_are_rejected(phase4_db):  
 
 
 async def test_report_rate_limit_3_per_day(phase4_db):  # noqa: F811
-    await sql(phase4_db, SEED)
+    await seed_catalog(phase4_db, SEED)
     async with harness(phase4_db) as h:
         csrf = await register_verified(h, "r3@example.com")
         codes = [(await h.client.post("/api/v1/incident-reports", json=REPORT, headers={"X-CSRF-Token": csrf})).status_code
@@ -3438,7 +3539,7 @@ async def test_report_rate_limit_3_per_day(phase4_db):  # noqa: F811
 
 
 async def test_account_age_and_signals_are_recorded(phase4_db):  # noqa: F811
-    await sql(phase4_db, SEED)
+    await seed_catalog(phase4_db, SEED)
     async with harness(phase4_db) as h:
         csrf = await register_verified(h, "r4@example.com")
         await h.client.post("/api/v1/incident-reports", json=REPORT, headers={"X-CSRF-Token": csrf})
@@ -3789,7 +3890,7 @@ git commit -m "feat(reports): pure routing rules, R5-based duplicate matcher, in
 
 **Files:**
 - Create: `backend/app/reports/triage.py`, `backend/tests/test_triage_task.py`
-- Modify: `backend/app/tasks/reports.py` (add `triage_report`), `backend/app/celery_app.py` (task route), `backend/app/pipelines/db.py` (or a new `app/reports/db.py`: `triage_engine()` refusing without `TRIAGE_DATABASE_URL` and requiring verify-full TLS on a remote host, mirroring `ingest_engine`), `backend/tests/test_roles_phase4.py` (run the task's SQL as `triage_worker`)
+- Modify: `backend/app/tasks/reports.py` (add `triage_report`), `backend/app/celery_app.py` (task route), `backend/app/pipelines/db.py` (or a new `app/reports/db.py`: `triage_engine()` refusing without `TRIAGE_DATABASE_URL` and requiring verify-full TLS on a remote host through the existing `verified_connect_args`. Phase 3 Task 2 gives that function a `var=` parameter for its error text; if PR 4-4 lands first, add the parameter here. Unlike `ingest_engine`, it does **not** call `require_direct_host`: the triage task holds no advisory lock and no long transaction, so Neon's pooler is acceptable for it. This is a refresh default the owner may tighten to the direct host.), `backend/tests/test_roles_phase4.py` (run the task's SQL as `triage_worker`)
 
 **Interfaces:**
 - Produces:
@@ -3935,7 +4036,7 @@ git commit -m "feat(reports): triager protocol, manual triager, celery triage ta
 
 **Interfaces:**
 - Produces:
-  - `form.ApprovedFacts` (pydantic, `extra="forbid"`): `event_date: date`, `date_precision`, `mp_route_id: int | None`, `lat: float | None`, `lon: float | None`, `geocode_precision: Literal['crag','unknown']`, `state: str` (two-letter US code, required: R11's country check needs it), `accident_type: str` (a value of `taxonomy.ACCIDENT_TYPE`), `injury_severity: str` (a value of `INJURY_SEVERITY`), `activity: Literal['climbing','climbing_approach']`, `exp_years_climbing: int | None`, `exp_stated_level: str`. `ApprovedFacts.from_report(row, point, state)` builds the default from the form; a model validator requires `lat`/`lon` together and `geocode_precision='unknown'` exactly when they are absent.
+  - `form.ApprovedFacts` (pydantic, `extra="forbid"`): `event_date: date`, `date_precision`, `mp_route_id: int | None`, `lat: float | None`, `lon: float | None`, `geocode_precision: Literal['crag','area','unknown']` (`area` = an inherited catalog point, `catalog_seam.point_precision`), `state: str` (two-letter US code, required: R11's country check needs it), `accident_type: str` (a value of `taxonomy.ACCIDENT_TYPE`), `injury_severity: str` (a value of `INJURY_SEVERITY`), `activity: Literal['climbing','climbing_approach']`, `exp_years_climbing: int | None`, `exp_stated_level: str`. `ApprovedFacts.from_report(row, point, state)` builds the default from the form; a model validator requires `lat`/`lon` together and `geocode_precision='unknown'` exactly when they are absent.
   - `review.stage_pending(db, *, now) -> int` (see Task 17), `review.STAGE_VETO = timedelta(hours=72)`
   - `GET /api/v1/review/queue?status=` (`reviewer`) → items ordered by severity rank (`fatal, serious, minor, unknown, none`), then age. Fields: id, created_at, event_date, precision, location label, type, severity, routing, shadow routing, reasons, signals. Includes `received` rows older than 15 minutes (triage stalled). Never raw text.
   - `GET /api/v1/review/reports/{id}` (`reviewer`) → redacted narrative, form, signals, latest triage result, duplicate candidates (structured fields only), route candidates. `?raw=true` adds `narrative_raw` and writes `review_actions(action='raw_view')` **and** `audit_log('report.raw_viewed')` in the same transaction before the response. A purged raw row → `narrative_raw: null` with `raw_purged: true`.
@@ -4002,23 +4103,28 @@ git commit -m "feat(admin): triage settings with eval gate, metrics, invite code
 ---
 # PR 4-5 — `feat/p4-promotion-weather`
 
-### Task 20: Reuse R11 for promotion — `IncidentFact`, the narrowed R11 predicate, migration `0010`
+### Task 20: Reuse R11 for promotion — `IncidentFact`, the narrowed R11 predicate, migration `0016`
 
 **Files:**
-- Create: `backend/alembic/versions/0010_report_promotions.py`, `backend/tests/test_migration_0010.py`
-- Modify: `backend/app/pipelines/accident_facts.py`, `backend/app/models/reports.py`, `backend/tests/test_accident_facts.py`
+- Create: `backend/alembic/versions/0016_report_promotions.py`, `backend/tests/test_migration_0016.py`
+- Modify: `backend/app/pipelines/accident_facts.py`, `backend/app/models/reports.py`, `backend/app/models/links.py` (the `accident_legacy_links` CHECK mirror, for `alembic check`), `backend/tests/test_accident_facts.py`, `backend/tests/test_legacy_links.py`
 
 **Interfaces:**
-- Consumes: the whole R11 loader.
+- Consumes: the whole R11 loader, as on `main` (verified 2026-10-15):
+  - `FactRow`, `derive`, `_country_problem`, `plan_new`, `Planned`, `_params`, `INSERT`/`INSERT_COLUMNS` (lockstep with `ingest`'s INSERT grant, G3), `insert_new`, `LOCK_SQL`, `_R11_ROW`, `apply_route_ids`, `unresolved_review_rows`, `match_route`.
+  - R10's `accident_legacy_links` (`0010`; method CHECK `legacy_mp_id | owner | llm`, target CHECK `num_nonnulls(route_id, area_id) = 1`) and the view `accident_route_links`.
 - Produces:
   - `accident_facts.IncidentFact(BaseModel)`: every `FactRow` field, but `source_url: str | None = Field(default=None, pattern=r"^https://\S+$")`. `FactRow(IncidentFact)` re-declares `source_url: str = Field(pattern=...)` (required). The CSV contract is unchanged, and every R11 test passes unmodified.
   - `derive`, `_country_problem`, `plan_new`, `_params`, `insert_new` take `IncidentFact` (a `FactRow` still fits).
   - `async insert_one(conn, p: Planned) -> int`: the same INSERT with `RETURNING accident_id`. The caller must already hold `LOCK_SQL` in this transaction.
   - `_R11_ROW = "NOT EXISTS (SELECT 1 FROM internal.accidents_raw r WHERE r.accident_id = a.accident_id) AND a.source IS DISTINCT FROM 'user_report'"` (Decision 9).
   - `summary_line(accident_type: str, injury_severity: str, place: str | None) -> str`: e.g. `"User report: Fall, minor injury, Eldorado Canyon"`, ≤200 characters, built only from structured fields. This is the `summary`/`description` of a promoted row, never narrative text.
-  - Migration `0010_report_promotions`: `reports.report_promotions(report_id uuid PK FK reports.incident_reports, accident_id integer NULL UNIQUE FK accidents, outcome text NOT NULL CHECK IN ('inserted','linked'), verification text NOT NULL CHECK IN ('auto','human','corroborated'), model_weight numeric(3,2) NULL CHECK (model_weight IN (0.5, 1.0)), weather_status text NOT NULL CHECK IN ('stopgap_stored','registered','none','failed','pending'), weather_reason text NULL, promoted_at timestamptz NOT NULL DEFAULT now(), run_id uuid NOT NULL, notified_at timestamptz NULL)`, with `CHECK ((outcome = 'inserted') = (model_weight IS NOT NULL))`. Also `ALTER TABLE reports.takedown_requests ADD COLUMN applied_at timestamptz NULL`. The downgrade refuses while `report_promotions` has rows.
+  - Migration `0016_report_promotions`: `reports.report_promotions(report_id uuid PK FK reports.incident_reports, accident_id integer NULL UNIQUE FK accidents, outcome text NOT NULL CHECK IN ('inserted','linked'), verification text NOT NULL CHECK IN ('auto','human','corroborated'), model_weight numeric(3,2) NULL CHECK (model_weight IN (0.5, 1.0)), weather_status text NOT NULL CHECK IN ('stopgap_stored','registered','none','failed','pending'), weather_reason text NULL, promoted_at timestamptz NOT NULL DEFAULT now(), run_id uuid NOT NULL, notified_at timestamptz NULL)`, with `CHECK ((outcome = 'inserted') = (model_weight IS NOT NULL))`. Also `ALTER TABLE reports.takedown_requests ADD COLUMN applied_at timestamptz NULL`. The downgrade refuses while `report_promotions` has rows.
+  - Also in `0016` (DP16): drop and re-create `accident_legacy_links_method_check` as `method IN ('legacy_mp_id', 'owner', 'llm', 'report')`. The downgrade also refuses while any `method = 'report'` row exists. `accident_legacy_links_llm_check` is unchanged.
+  - `accident_facts.REPORT_LINK_VERSION = "p4-report-v1"` and `async insert_report_area_link(conn, accident_id: int, area_id: int, run_id: uuid.UUID) -> None` (`INSERT ... ON CONFLICT (accident_id) DO NOTHING`; a rerun never rewrites a link). Only promotion calls it, and only for an `mp_location` report. A route report needs no row: its `mp_route_id` is the identity link.
+  - Promotion always sets `IncidentFact.route` together with `mp_route_id`, or leaves both NULL. So `plan_new`'s R11 name match (`match_route`) never links a user report by name, consistent with R10's "never by name".
 
-`model_weight` is what Phase 3 reads: `auto` 0.5, `human` and `corroborated` 1.0 (spec C2.6). A `linked` report adds corroboration to an existing record and carries no weight of its own.
+`model_weight` is what PR 4-8 Task 39 feeds into Phase 3's `IncidentRow.weight` hook (Phase 3 plan Appendix B): `auto` 0.5, `human` and `corroborated` 1.0 (spec C2.6). A `linked` report adds corroboration to an existing record and carries no weight of its own.
 
 - [ ] **Step 1: Failing tests** — append to `backend/tests/test_accident_facts.py`:
 
@@ -4066,9 +4172,18 @@ def test_user_report_rows_are_not_r11_rows():
 
 Import `asyncio`, `FactRow`, `apply_route_ids`, `unresolved_review_rows`, `migrated_db` and `sa_url` at the top of the file if they are not already imported. `BASE` is the file's existing valid-row dict; its `source_url` satisfies `FactRow`. `unresolved_review_rows` returns a `source_id` key: `_review_row` copies it.
 
-`backend/tests/test_migration_0010.py`: the weight CHECK (`outcome='linked'` with a weight → CheckViolation; `inserted` with 0.7 → CheckViolation); `accident_id` UNIQUE; `takedown_requests.applied_at` exists; downgrade refuses with a row.
+`backend/tests/test_legacy_links.py` gains `test_r10_apply_keeps_report_links_and_skips_catalog_linked_reports`. Seed a catalog (`mp_catalog.refresh`), then two `user_report` accidents:
+- one with `mp_route_id` set to a catalog route (identity, so it is absent from `LEGACY_SQL`);
+- one with `mp_route_id` NULL and a `method='report'` area link.
 
-- [ ] **Step 2: Run to verify failure** — `cd backend && uv run pytest tests/test_accident_facts.py tests/test_migration_0010.py -q` → FAIL on the new tests only.
+Run `run_r10(conn, Namespace(apply=True))` and assert:
+- the `'report'` link is unchanged;
+- neither accident appears in `internal.r10_unresolved`;
+- `accident_route_links` shows `method = 'mp_route_id'` for the first and `'report'` (area) for the second.
+
+`backend/tests/test_migration_0016.py`: the weight CHECK (`outcome='linked'` with a weight → CheckViolation; `inserted` with 0.7 → CheckViolation); `accident_id` UNIQUE; `takedown_requests.applied_at` exists; `accident_legacy_links` accepts `method='report'` with an `area_id` and still refuses `method='report'` with both targets; downgrade refuses with a row.
+
+- [ ] **Step 2: Run to verify failure** — `cd backend && uv run pytest tests/test_accident_facts.py tests/test_migration_0016.py tests/test_legacy_links.py -q` → FAIL on the new tests only.
 
 - [ ] **Step 3: Implement** the refactor (types only, plus `insert_one` and `summary_line`):
 
@@ -4086,18 +4201,28 @@ async def insert_one(conn: AsyncConnection, p: Planned) -> int:
 
 `INSERT.text + " RETURNING accident_id"` appends a constant to a module-level constant; add `pipelines/accident_facts.py` to the `test_no_string_sql.py` allowlist for that one line (`ALLOWED = {"pipelines/accident_facts.py:<line>"}`), or define `INSERT_RETURNING = text(<the same f-string as INSERT> + " RETURNING accident_id")` at module level. **Use the module-level constant**: then there is no allowlist entry.
 
-- [ ] **Step 4: Run** — `cd backend && uv run pytest tests/test_accident_facts.py tests/test_migration_0010.py tests/test_roles_phase2.py -q && uv run mypy` → PASS (the R11 role test still runs the real loader as `ingest`).
+- [ ] **Step 4: Run** — `cd backend && uv run pytest tests/test_accident_facts.py tests/test_migration_0016.py tests/test_legacy_links.py tests/test_r10_llm.py tests/test_roles_phase2.py -q && uv run mypy` → PASS. The R11 role test still runs the real loader as `ingest`. `verify_roles_phase2.sql`'s 0010 trigger check is untouched.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add backend/app/pipelines/accident_facts.py backend/alembic/versions/0010_report_promotions.py backend/app/models/reports.py backend/tests/test_accident_facts.py backend/tests/test_migration_0010.py
-git commit -m "refactor(r11): IncidentFact base, insert_one, user_report excluded from R11 own rows; migration 0010"
+git add backend/app/pipelines/accident_facts.py backend/alembic/versions/0016_report_promotions.py backend/app/models/reports.py backend/app/models/links.py backend/tests/test_accident_facts.py backend/tests/test_migration_0016.py backend/tests/test_legacy_links.py
+git commit -m "refactor(r11): IncidentFact base, insert_one, user_report excluded from R11 own rows; migration 0016"
 ```
 
 ### Task 21: Two Open-Meteo keys — Standard for everything Standard serves, Professional only in the paid window (change to plan-3 code)
 
 The owner has two paid keys (2026-10-12). Plan-3 code today has **one** name for both uses. `app.config.Settings.OPEN_METEO_API_KEY` is read by the live runtime: `weather_service.py` (forecast **and** a request-time archive call with public-host fallback) and `mp_routes.py:1301` (forecast). `mp_routes.py:937` calls the public archive host with no key. `era5_window._ExportedKey` reads the same name from the exported environment for the paid back-fill (owner ruling B8: exported only, `backend/.env` refused). This task splits the names. The paid code keeps its contract, so its existing tests stay.
+
+**Re-verified 2026-10-15 against `main` e756aba; the task still matches.**
+- `config.py:52` still has `OPEN_METEO_API_KEY: str | None`.
+- `weather_service.py:35-42` and `:145-155` still pick the customer host by that key, with a public-host archive fallback.
+- `mp_routes.py:937` (inside `GET /mp-routes/{id}/accidents`) still calls the public archive with no key. `mp_routes.py:1301` (inside `/time-of-day`) still adds the key to the forecast.
+- `era5_window._ExportedKey`/`archive_client` (l.192-207) still read only the exported `OPEN_METEO_API_KEY`, and `test_era5_window.py:123`/`:498` still pin "a value only in `backend/.env` is refused".
+- `era5_window._main` (l.286) still reaches the database only through `app.pipelines.db.ingest_engine`, which refuses Neon's `-pooler.` host and anything weaker than verify-full. This task touches neither `db.py` nor that path. The catalog jobs and `report_promote` (Task 23) use the same engine.
+- `app/celery_signals.py` has no `worker_init` handler today, so the startup guard adds one.
+
+**Interaction with Phase 3 (merged first under DP14).** Phase 3 Task 22 rewrites the `mp_routes.py` scoring endpoints (`/safety`, `/map-with-safety`, `/risk-breakdown`, `/forecast`, `/time-of-day`, `/historical-trends`) and makes `/predict` return 410. So before editing, re-locate every key use with `grep -rn "OPEN_METEO\|archive-api\|customer-api" backend/app`. Line numbers above are as of e756aba. `/accidents` is not in Phase 3's list, so its archive block is expected to remain for this task to remove. `weather_service` may have fewer callers by then. The split itself is unchanged.
 
 **Files:**
 - Modify: `backend/app/config.py` (remove `OPEN_METEO_API_KEY`; add `OPEN_METEO_STANDARD_API_KEY: SecretStr | None = None`), `.env.example`, `docker-compose.yml`, `backend/app/services/weather_service.py`, `backend/app/api/v1/mp_routes.py`, `backend/app/pipelines/open_meteo.py` (`standard_key`, `PRO_KEY_ENV`, `STANDARD_KEY_ENV`), `backend/app/pipelines/era5_window.py`, `backend/app/main.py` + `backend/app/celery_signals.py` (startup guard), `backend/tests/test_era5_window.py`, `backend/tests/test_weather_service.py`, `backend/tests/test_env_example_parity.py`, `DEPLOYMENT.md`, `CLAUDE.md`
@@ -4173,7 +4298,7 @@ Change `test_era5_window.py`'s `settings`-monkeypatch test (line ~123: `monkeypa
 
 - [ ] **Step 2: Run to verify failure** — `cd backend && uv run pytest tests/test_open_meteo_keys.py tests/test_era5_window.py tests/test_weather_service.py -q` → FAIL.
 
-- [ ] **Step 3: Implement** per Interfaces. In `era5_window._main`, call `probe_professional(client)` after the window and budget checks, before `run_window` (`plan` stays free and never probes). `refuse_pro_key_in_runtime(environment)` lives in `app/main.py` and is called at import, after `settings`. The worker's `worker_init` signal calls it too.
+- [ ] **Step 3: Implement** per Interfaces. In `era5_window._main`, call `probe_professional(client)` after the window and budget checks, before `run_window` (`plan` stays free and never probes). `refuse_pro_key_in_runtime(environment)` lives in `app/main.py` and is called at import, after `settings`. The worker's new `worker_init` signal handler in `app/celery_signals.py` calls it too.
 
 - [ ] **Step 4: Run** — `cd backend && uv run pytest -q && uv run mypy && uv run ruff check . ../scripts/` → PASS (whole suite: the runtime weather tests change behaviour).
 
@@ -4361,7 +4486,10 @@ git commit -m "feat(weather): ForecastClient and acceptance-time incident weathe
 - Create: `backend/app/pipelines/report_promote.py`, `backend/tests/test_report_promote.py`
 
 **Interfaces:**
-- Consumes: Tasks 16 (`duplicates.match`), 18 (`ApprovedFacts`), 20 (`IncidentFact`, `plan_new`, `insert_one`, `LOCK_SQL`, `summary_line`), 21 (`open_meteo.standard_key`), 22 (`plan_weather`, `store`, `forecast_client_from_env`), `ingest_log` (`start_run`, `finish_run`, `write_quarantine`), `pipelines.db.ingest_engine`.
+- Consumes:
+  - Tasks 12 (`catalog_seam.state_of`, `point_of`, names), 16 (`duplicates.match`), 18 (`ApprovedFacts`), 20 (`IncidentFact`, `plan_new`, `insert_one`, `LOCK_SQL`, `summary_line`, `insert_report_area_link`), 21 (`open_meteo.standard_key`) and 22 (`plan_weather`, `store`, `forecast_client_from_env`).
+  - `ingest_log` (`start_run`, `finish_run`, `write_quarantine`).
+  - `pipelines.db.ingest_engine`, which refuses without `INGEST_DATABASE_URL`, on Neon's `-pooler.` host (the advisory lock needs one backend), and below verify-full.
 - Produces:
   - `SOURCE = "report_promote"`, `FATAL_HOLD = timedelta(days=14)`, `WEIGHT = {"auto": 0.5, "human": 1.0, "corroborated": 1.0}`
   - `async promote_due(conn, *, now: datetime, today: date, run_id: uuid.UUID, report: ValidationReport) -> PromoteResult(inserted: list[tuple[uuid.UUID, int]], linked: int, held: dict[str, int], skipped_fatal: int)`
@@ -4375,9 +4503,11 @@ git commit -m "feat(weather): ForecastClient and acceptance-time incident weathe
 3. `ApprovedFacts` re-validated; a failure → `held` with reason `approved_invalid`.
 4. `duplicates.match(...)`: `match` → `linked` (institutional → `verification='corroborated'`; otherwise the existing verification). Write `report_promotions(outcome='linked', model_weight NULL, weather_status='none')` and set `reviewed_incidents.linked_accident_id`. `ambiguous` → `held` with reason `duplicate_review`, back to a human.
 5. `new` → `IncidentFact(source='user_report', source_id=str(report_id), date, date_precision, state, mountain=area name, route=route name, mp_route_id, latitude=lat, longitude=lon, geocode_precision, activity, accident_type, injury_severity, exp_years_climbing, exp_stated_level, guided='unknown', source_url=None, summary=summary_line(...))` → `derive`/`_country_problem` → any problem → `held` with that reason (for example `unknown_country`). Then `plan_new` (an `already_present` demotion means a rerun after a crash: link to the existing row instead) → `insert_one`. Then `report_promotions(outcome='inserted', model_weight=WEIGHT[verification], weather_status='pending')`; `reviewed_incidents.status='promoted'`, `accident_id`; `incident_reports.status='promoted'`.
+   - **Route link (DP16).** A report approved with `mp_route_id` is linked by that column alone (`accident_route_links` identity). A report whose ref is `mp_location` gets `insert_report_area_link(conn, accident_id, area_id, run_id)` in the same transaction. Free text gets no link.
+   - **No R10 rerun needed.** The link is visible at once through `accident_route_links`.
 6. Every hold is written through `write_quarantine` (`row_ref = report id`, no narrative) and the run is logged with `start_run`/`finish_run` (`rows_upserted` = inserted).
 
-- [ ] **Step 1: Failing tests** — `backend/tests/test_report_promote.py` (`migrated_db` seeded with `mp_locations` Colorado → Boulder → Eldorado Canyon, route 10, one AAC accident at 39.931,−105.283 on 2026-08-01 (`accident_type='Fall'`, `injury_severity='serious'`, `mountain='Eldorado Canyon'`, `route='The Bastille Crack'`, `geocode_precision='crag'`, `date_precision='day'`, `activity_class='climbing'`, `country='US'`, `is_canonical`), so `places_agree` holds for the R5 merge, and helper `stage(...)` inserting a report + `reviewed_incidents` row with given approved facts, verification and deadline):
+- [ ] **Step 1: Failing tests** — `backend/tests/test_report_promote.py` (`migrated_db` seeded with `mp_locations` Colorado → Boulder → Eldorado Canyon, route 10, then `mp_catalog.refresh` so both are in the catalog, one AAC accident at 39.931,−105.283 on 2026-08-01 (`accident_type='Fall'`, `injury_severity='serious'`, `mountain='Eldorado Canyon'`, `route='The Bastille Crack'`, `geocode_precision='crag'`, `date_precision='day'`, `activity_class='climbing'`, `country='US'`, `is_canonical`), so `places_agree` holds for the R5 merge, and helper `stage(...)` inserting a report + `reviewed_incidents` row with given approved facts, verification and deadline):
 
 ```python
 async def test_waits_for_veto_deadline_then_inserts_facts_only(db):
@@ -4460,6 +4590,11 @@ async def test_promotion_weather_three_cases(db):
 
 The second report sits in another 0.1° cell (39.95, −105.30), so it registers its own series: two series, and rows for the first report only. Its date is 2 years from the AAC seed row, so the duplicate check stays `new`.
 
+Also add `test_route_report_links_by_identity_area_report_by_report_link` (DP16). A staged `mp_route` report (route 10) and a staged `mp_location` report (area 1, `mp_route_id` NULL) promote, and then:
+- `SELECT route_id, area_id, method FROM accident_route_links WHERE accident_id = :a` gives `(10, None, 'mp_route_id')` for the first and `(None, 1, 'report')` for the second;
+- a free-text report has no row there;
+- a second run adds no link row.
+
 Define every helper at the top of the test file: `NOW`, `APPROVED`, the `db` fixture (a `migrated_db` with the seed), `stage(db, deadline, approved, verification="human") -> uuid` (inserts a report with `ref_kind='mp_route'` plus a `reviewed_incidents` row), `one`/`all_`/`exec_` (thin `text()` wrappers on an engine for the DB URL), `_forecast_body(days)` (Task 22's `_body` with every non-temperature value `null`) and `weather(db, client, today)` (calls `weather_pass`). `run(db, now, today=None)` opens an engine on the DB, begins, takes `LOCK_SQL`, calls `apply_exclusions` then `promote_due`, and commits. `APPROVED = {"event_date": "2026-09-20", "date_precision": "day", "mp_route_id": 10, "lat": 39.931, "lon": -105.283, "geocode_precision": "crag", "state": "CO", "accident_type": "Fall", "injury_severity": "minor", "activity": "climbing", "exp_years_climbing": None, "exp_stated_level": "unknown"}`.
 
 - [ ] **Step 2: Run to verify failure** — `cd backend && uv run pytest tests/test_report_promote.py -q` → FAIL.
@@ -4474,7 +4609,11 @@ _DUE = text(
 )
 ```
 
-The area and route names for `mountain`/`route` come from `catalog_seam` (`ingest` has `mp_routes` table SELECT and `mp_locations` only `(mp_id, latitude, longitude)`). **`mp_locations.name` is not in `ingest`'s grant.** Task 24 therefore widens `ingest`'s `mp_locations` column grant by `name` and `parent_id` (displayable facts; never `url`), with its verify row.
+The area and route names for `mountain`/`route` come from `catalog_seam`. On `main`, `ingest` already holds everything the seam reads:
+- table SELECT on `mp_routes` and `canonical_areas`/`canonical_routes`/`scorable_routes`;
+- `mp_locations (mp_id, parent_id, name, latitude, longitude)`, widened by the MP catalog plan, whose comment says "Phase 4 Task 24 makes the same widening".
+
+So no Phase 2 grant changes here (verified in `grants_phase2.sql`/`verify_roles_phase2.sql` at e756aba).
 
 - [ ] **Step 4: Run** — `cd backend && uv run pytest tests/test_report_promote.py tests/test_accident_facts.py -q` → PASS.
 
@@ -4488,7 +4627,7 @@ git commit -m "feat(promotion): report_promote CLI with veto window, fatal hold,
 ### Task 24: `ingest` grants for promotion, run-as-`ingest` test, docs
 
 **Files:**
-- Modify: `backend/db/roles/grants_phase4.sql`, `backend/db/roles/verify_roles_phase4.sql`, `backend/db/roles/grants_phase2.sql` + `verify_roles_phase2.sql` (the `mp_locations` column widening lives with the other `mp_locations` grant), `backend/tests/test_roles_phase4.py`, `backend/tests/test_roles_phase2.py` (expected `mp_locations` columns), `backend/app/tasks/reports.py` (`notify_promotions` beat task as `app`), `CLAUDE.md`, `DEPLOYMENT.md`, `CHANGELOG.md`, `data/DATABASE_STRUCTURE.md`, `docs/superpowers/plans/2026-09-28-phase2b-live-feeds-lightning.md` (conflict-ledger note only)
+- Modify: `backend/db/roles/grants_phase4.sql`, `backend/db/roles/verify_roles_phase4.sql`, `backend/tests/test_roles_phase4.py`, `backend/app/tasks/reports.py` (`notify_promotions` beat task as `app`), `CLAUDE.md`, `DEPLOYMENT.md`, `CHANGELOG.md`, `data/DATABASE_STRUCTURE.md`, `docs/superpowers/plans/2026-09-28-phase2b-live-feeds-lightning.md` (conflict-ledger note only)
 
 **Interfaces:**
 - Produces, appended to `grants_phase4.sql`:
@@ -4509,20 +4648,30 @@ GRANT UPDATE (applied_at) ON reports.takedown_requests TO ingest;
 GRANT SELECT, UPDATE (notified_at) ON reports.report_promotions TO app;
 ```
 
-`narrative_redacted` is granted to `ingest` only so the promotion test can assert that no narrative reached `accidents`. **Drop it** if the owner prefers the stricter set; the test then reads it as the owner. `(decided: DP9)` covers this. In `grants_phase2.sql`, change the `mp_locations` line to `GRANT SELECT (mp_id, name, parent_id, latitude, longitude) ON public.mp_locations TO ingest;`, with a comment (Phase 4 promotion names the area; `url` stays out), and update `verify_roles_phase2.sql`'s expected `mp_locations` column set.
+`narrative_redacted` is granted to `ingest` only so the promotion test can assert that no narrative reached `accidents`. **Drop it** if the owner prefers the stricter set; the test then reads it as the owner. `(decided: DP9)` covers this.
 
-- [ ] **Step 1: Failing test** — add `test_promotion_as_ingest` to `test_roles_phase4.py`: on the granted DB, stage one report as owner, run `report_promote.promote_due` + `apply_exclusions` + `weather_pass` (mock forecast transport) on an engine built from the `ingest` URL. Assert success and one `user_report` accident. Then `_denied(ingest, "SELECT narrative_raw FROM vault.incident_report_raw")`, `_denied(ingest, "SELECT user_id FROM reports.incident_reports")`, `_denied(ingest, "DELETE FROM public.accidents")`.
+**No Phase 2 grant change** (re-checked 2026-10-15 against `grants_phase2.sql`, `verify_roles_phase2.sql` and `test_roles_phase2.py` on e756aba). Everything promotion does in `public`/`internal` is already granted to `ingest`:
+- `INSERT` on `accidents` over exactly `accident_facts.INSERT_COLUMNS`, and `USAGE` on `accidents_accident_id_seq`;
+- `UPDATE (excluded_reason, updated_at, ...)` on `accidents`;
+- `INSERT` on `internal.accident_revisions`;
+- `SELECT`/`INSERT` on `accident_legacy_links` (the DP16 `'report'` rows);
+- `SELECT` on `accident_route_links`, `canonical_*`, `mp_routes`, the widened `mp_locations` and `accidents_clean_daily`;
+- `SELECT`/`INSERT`/`UPDATE` on `cell_daily_conditions`/`grid_bucket_series`.
+
+So the Phase 2 trio stays exactly as the exposure plan and Phase 3's PR 3-4 leave it. If a later change here needs one, it is appended after their blocks, with its `ingest_privs` row and a `test_roles_phase2.py` assertion in the same commit.
+
+- [ ] **Step 1: Failing test** — add `test_promotion_as_ingest` to `test_roles_phase4.py`: on the granted DB, stage one report as owner, run `report_promote.promote_due` + `apply_exclusions` + `weather_pass` (mock forecast transport) on an engine built from the `ingest` URL. Assert success, one `user_report` accident and its `accident_route_links` row. Then `_denied(ingest, "SELECT narrative_raw FROM vault.incident_report_raw")`, `_denied(ingest, "SELECT user_id FROM reports.incident_reports")`, `_denied(ingest, "DELETE FROM public.accidents")`.
 
 - [ ] **Step 2: Run to verify failure** — `cd backend && uv run pytest tests/test_roles_phase4.py::test_promotion_as_ingest -q` → FAIL (permission denied).
 
 - [ ] **Step 3: Apply the grants and verify rows**; implement `notify_promotions` (as `app`: `report_promotions` with `notified_at IS NULL` joined to the report's user email, send `report_decided` with `outcome` `accepted`/`linked to an existing record`, set `notified_at`; detached reports are just marked).
 
-- [ ] **Step 4: Run** — `cd backend && MIGRATIONS_TEST_ADMIN_URL=... uv run pytest tests/test_roles_phase4.py tests/test_roles_phase2.py -q` → PASS.
+- [ ] **Step 4: Run** — `cd backend && MIGRATIONS_TEST_ADMIN_URL=... uv run pytest tests/test_roles_phase4.py tests/test_roles_phase2.py tests/test_roles_phase3.py -q` → PASS.
 
 - [ ] **Step 5: Docs + commit** — `CLAUDE.md` Commands: `report_promote run [--dry-run]` (as `ingest`; reads only the exported `OPEN_METEO_STANDARD_API_KEY`, a Standard-plan key, never the Pro key). Data rules: "a promoted user report is facts only (`source='user_report'`, `description` = `summary_line`); its weather is a stopgap if the window ends within 92 days, else ERA5 at the next January window; `conditions_missing` until then." `DEPLOYMENT.md`: the daily promotion step. 2b live-feeds plan ledger: one row saying `ForecastClient` now exists (Phase 4 Task 22) with the same signature, so 2b Task 2 reuses it and only adds `forecast.py`. `CHANGELOG.md` entry for PR 4-5.
 
 ```bash
-git add backend/db/roles backend/tests backend/app/tasks/reports.py CLAUDE.md DEPLOYMENT.md CHANGELOG.md data/DATABASE_STRUCTURE.md docs/superpowers/plans/2026-09-28-phase2b-live-feeds-lightning.md
+git add backend/db/roles/grants_phase4.sql backend/db/roles/verify_roles_phase4.sql backend/tests backend/app/tasks/reports.py CLAUDE.md DEPLOYMENT.md CHANGELOG.md data/DATABASE_STRUCTURE.md docs/superpowers/plans/2026-09-28-phase2b-live-feeds-lightning.md
 git commit -m "feat(roles): ingest grants for report promotion; docs and live-feeds ledger note"
 ```
 
@@ -4974,13 +5123,22 @@ git commit -m "feat(frontend): reviewer queue and detail, admin triage dashboard
 ---
 # Runbooks
 
-The safety structure of the conditions-plan runbooks applies unchanged: `scripts/runbook_helpers.sh` (`TARGET_HOST` explicit, `MIG`, `OWNER_PSQL`, `ING`, `VERIFY`, `save_once`, `gate_pass`/`gate_require`, `bg_start`/`bg_wait`, `branch_host`); a Neon branch rehearsal first (`--parent production --no-secrets`); a `pre-p4-N` snapshot right before prod; **STOP for the owner before every prod block**; secrets only from the 0600 gitignored `backend/.env.<role>` files, never echoed; roles only through SQL as the owner; Railway variables set with `--skip-deploys`; auto-deploy stays off.
+The safety structure of the conditions-plan runbooks applies unchanged.
+
+`backend/scripts/runbook_helpers.sh`, as on `main` (re-read 2026-10-15):
+- `TARGET_HOST` must be set explicitly.
+- `MIG` runs alembic. `OWNER_PSQL`, `ANALYST_PSQL` and `VERIFY` are the database shells.
+- **`ING` runs only `python -m app.data.repair <step>`.** **`INGMOD <module> ...` runs any other module as `ingest`**, so promotion is `INGMOD app.pipelines.report_promote run`. `INGLLM` is `INGMOD` with the `llm` group, for R10's LLM pass only; Phase 4 never needs it.
+- Other helpers: `save_once`, `gate_pass`/`gate_require`, `same_ids`, `bg_start`/`bg_wait`, `branch_host`.
+- A runbook block never defines a helper for a later block.
+
+Also: a Neon branch rehearsal first (`--parent production --no-secrets`); a `pre-p4-N` snapshot right before prod; **STOP for the owner before every prod block**; secrets only from the 0600 gitignored `backend/.env.<role>` files, never echoed; roles only through SQL as the owner; Railway variables set with `--skip-deploys`; auto-deploy stays off.
 
 ### Task 34: OWNER RUNBOOK — M4.0 setup (no code)
 
 Owner-only steps, each recorded in the PR 4-1 description as done/not done with the date. Nothing here is automated by an agent, because each step creates an account, a secret or a DNS change.
 
-- [ ] **Step 1: DP15** (the only open choice). DP1–DP14 were answered 2026-10-12.
+- [ ] **Step 1: DP15–DP18** (the open choices; DP16–DP18 were added 2026-10-15). DP1–DP14 were answered 2026-10-12. DP16 must be answered before PR 4-5 (it shapes `0016`), and DP17/DP18 before PR 4-8.
 - [ ] **Step 2: Resend.** Create the account, verify `safeascent.us` (SPF, DKIM, and a DMARC `p=none` record to start), create a send-only API key, and set `RESEND_API_KEY` on the Railway **worker** only (`railway variables --service worker --set ... --skip-deploys`). Check: the domain shows "verified" in Resend.
 - [ ] **Step 3: Turnstile.** Create a widget for `safeascent.us` (managed mode). Set `TURNSTILE_SECRET_KEY` on the **api** service and `VITE_TURNSTILE_SITE_KEY` as a **frontend** build arg.
 - [ ] **Step 4: Cloudflare proxy** (spec decision 11). Add the zone, move nameservers at Porkbun (Porkbun stays the registrar), set SSL mode Full (strict), keep the Railway custom domains working, and create:
@@ -4994,7 +5152,7 @@ Owner-only steps, each recorded in the PR 4-1 description as done/not done with 
 - [ ] **Step 6c: DPA — HARD GATE.** Sign TypeSafe's DPA ([DPA](https://typesafe.ai/legal/data-processing)) and file it. **Until it is signed, no real report may reach Jev:** `triage_mode` stays `manual`/`local`, and the admin API refuses `jev` while `jev_dpa_ref` is empty (Task 19). Once signed, the owner records it through `PUT /api/v1/admin/jev-dpa` with the DPA reference and signing date. Nobody else records it, and an agent never does. If the DPA is ever withdrawn, clear `jev_dpa_ref` (the mode drops to `local` in the same transaction).
 - [ ] **Step 7: Legal list.** Hand the spec E questions 1–7 to the owner's counsel (not a launch gate, spec decision 7). Draft ToS and privacy-policy pages with the "not an emergency channel", 15+, CC0-on-facts and narrative-licence wording, and set `TOS_VERSION`/`LICENSE_VERSION` to their version ids.
 
-### Task 35: OWNER/AGENT RUNBOOK — roles, migrations 0008–0010, grants, deploy (branch, then prod)
+### Task 35: OWNER/AGENT RUNBOOK — roles, migrations 0014–0016, grants, deploy (branch, then prod)
 
 **Ordering.** PR 4-1 to PR 4-5 merged to `main` (they hold the migrations and grants). PRs 4-6 and 4-7 need no migration and deploy normally afterwards. `ENABLE_ACCOUNTS` stays `false` on prod until Step 7.
 
@@ -5013,14 +5171,15 @@ Expected: `role triage_worker and schemas accounts, reports, vault created`. A r
 ```bash
 MIG upgrade head && MIG current
 OWNER_PSQL -f db/roles/grants_phase2.sql && OWNER_PSQL -f db/roles/grants_phase4.sql
-OWNER_PSQL -f db/roles/verify_roles.sql && OWNER_PSQL -f db/roles/verify_roles_phase2.sql && OWNER_PSQL -f db/roles/verify_roles_phase4.sql
+OWNER_PSQL -f db/roles/verify_roles.sql && OWNER_PSQL -f db/roles/verify_roles_phase2.sql && OWNER_PSQL -f db/roles/verify_roles_phase3.sql && OWNER_PSQL -f db/roles/verify_roles_phase4.sql
+ANALYST_PSQL -tAc "SELECT count(*) > 0 FROM canonical_routes"   # the catalog is built (Prerequisites); expect t
 ```
 
-Expected: `0010_report_promotions (head)`, `ALL ROLE CHECKS PASSED`, `ALL PHASE 2 ROLE CHECKS PASSED`, `ALL PHASE 4 ROLE CHECKS PASSED`. Save each output with `save_once`.
+Expected: `0016_report_promotions (head)`, `ALL ROLE CHECKS PASSED`, `ALL PHASE 2 ROLE CHECKS PASSED`, the Phase 3 verify's pass line, and `ALL PHASE 4 ROLE CHECKS PASSED`. Save each output with `save_once`. The `MIG upgrade head` here applies only `0014`–`0016`: the branch is cut from prod, which already holds `0013` under DP14.
 
-- [ ] **Step 4 (agent): end-to-end on the branch.** Run the API locally against the branch (`DATABASE_URL` = the branch `app` URL, `ENABLE_ACCOUNTS=true`, `ENVIRONMENT=development`, in-memory email, Turnstile test secret `1x0000000000000000000000000000000AA`). Then register → verify → login → submit a report on a real MP route → triage with `TRIAGE_DATABASE_URL` = the branch `triage_worker` URL → set the test user to `reviewer` as owner → approve → move `veto_deadline` back on the branch only (`UPDATE reports.reviewed_incidents SET veto_deadline = now() - interval '1 minute'`, as owner) → `ING python -m app.pipelines.report_promote run`. Check: one `user_report` accident with `description` = the summary line, `report_promotions.weather_status` in (`stopgap_stored`, `registered`), and `accident_conditions` returning the incident's days (stopgap) or none (registered). Save counts only.
+- [ ] **Step 4 (agent): end-to-end on the branch.** Run the API locally against the branch (`DATABASE_URL` = the branch `app` URL, `ENABLE_ACCOUNTS=true`, `ENVIRONMENT=development`, in-memory email, Turnstile test secret `1x0000000000000000000000000000000AA`). Then register → verify → login → submit a report on a real MP route → triage with `TRIAGE_DATABASE_URL` = the branch `triage_worker` URL → set the test user to `reviewer` as owner → approve → move `veto_deadline` back on the branch only (`UPDATE reports.reviewed_incidents SET veto_deadline = now() - interval '1 minute'`, as owner) → `INGMOD app.pipelines.report_promote run`. Check: one `user_report` accident with `description` = the summary line, its `accident_route_links` row (`method = 'mp_route_id'` for the picked route), `report_promotions.weather_status` in (`stopgap_stored`, `registered`), and `accident_conditions` returning the incident's days (stopgap) or none (registered). Save counts only.
 - [ ] **Step 5 (owner): review the branch evidence and give the go for prod.**
-- [ ] **Step 6 (agent, after the go): prod.** Gate block: `MIG current` prints exactly `0007_cell_daily_conditions`, the snapshot `pre-p4-1` exists, the branch verify logs say PASSED → `gate_pass p4_prod`. Write blocks, each opening with `gate_require p4_prod || exit 1` and the prod preamble: Step 2's create (with `.env.triage_worker`), Step 3's migrate/grant/verify. Then the Railway variables: `TRIAGE_DATABASE_URL` (the prod `triage_worker` URL, verify-full TLS) on the **worker**. `TRIAGE_MODEL_PATH` stays unset and `triage_mode` stays `manual` (the seed) until Task 36's fit and the DPA.
+- [ ] **Step 6 (agent, after the go): prod.** Gate block: `MIG current` prints exactly `0013_drop_legacy_weather` (or the head the Phase 3 escape hatch left, if the owner ordered Phase 4 first), the snapshot `pre-p4-1` exists, the branch verify logs say PASSED → `gate_pass p4_prod`. Write blocks, each opening with `gate_require p4_prod || exit 1` and the prod preamble: Step 2's create (with `.env.triage_worker`), Step 3's migrate/grant/verify. Then the Railway variables: `TRIAGE_DATABASE_URL` (the prod `triage_worker` URL, verify-full TLS) on the **worker**. `TRIAGE_MODEL_PATH` stays unset and `triage_mode` stays `manual` (the seed) until Task 36's fit and the DPA.
 - [ ] **Step 7 (owner): turn accounts on** — `ENABLE_ACCOUNTS=true` on api and worker, `VITE_ENABLE_ACCOUNTS=true` on frontend, deploy. `registration_mode` stays `invite`. Generate ≤100 invite codes through `/admin` (spec H). Check: sign-up with an invite works end to end on prod, the verification email arrives, `/health/worker` is 200.
 
 ### Task 36: OWNER/AGENT RUNBOOK — daily promotion, gold set, eval
@@ -5030,8 +5189,8 @@ Expected: `0010_report_promotions (head)`, `ALL ROLE CHECKS PASSED`, `ALL PHASE 
 ```bash
 cd /Users/sebastianfrazier/Developer/SafeAscent/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production
 read -rs OPEN_METEO_STANDARD_API_KEY && export OPEN_METEO_STANDARD_API_KEY   # the Standard forecast key, pasted, never echoed
-ING python -m app.pipelines.report_promote run --dry-run
-ING python -m app.pipelines.report_promote run
+INGMOD app.pipelines.report_promote run --dry-run
+INGMOD app.pipelines.report_promote run
 unset OPEN_METEO_STANDARD_API_KEY
 ```
 
@@ -5048,40 +5207,111 @@ Expected: JSON counts (`inserted`, `linked`, `held`, `skipped_fatal`, `weather` 
 
 # PR 4-8 — `feat/p4-phase3-integration` (GATED: starts only after the Phase 3 model v2 is merged)
 
-**Gate (owner 2026-10-12, DP14).** Do not start until `main` holds the Phase 3 model v2 (the cell definition, the exposure input E, the retrain job with its "≥50 newly reviewed incidents" trigger, the five route type groups and the M9 promotion issue). **Step 0 of each task is a re-plan pass.** Read the merged Phase 3 code and correct this section's names to the real ones (cell key, exposure table, retrain entry point) before writing a test. The behaviour below is the spec's and does not change. Only the Phase 3 names are provisional, marked `<phase3: ...>`.
+**Gate (owner 2026-10-12, DP14).** Do not start until `main` holds:
+- the exposure plan's X-2: `0011_exposure_index`, `app/pipelines/exposure.py` and `exposure_components.py`;
+- Phase 3 PRs 3-0..3-4: `0012_model_registry`, `0013_drop_legacy_weather`, `app/ml/{cells,incidents,dataset,train,promote,registry}.py` and `.github/workflows/model-train.yml`.
+
+**Step 0 of each task is still a re-plan pass.** The interface names below are no longer guesses. They are the 2026-10-15 Phase 3 and exposure plans' names, so Step 0 now only confirms them against the merged code and fixes any drift before a test is written. The behaviour is the spec's (B, C2.6, C3) and does not change.
+
+**Phase 3 and exposure interfaces this PR consumes** (from `2026-10-15-phase3-model-v2.md` and `2026-10-15-exposure-index.md`):
+
+| What | Real name |
+|---|---|
+| Scoring cell | `(area_id, type_group, month)`. `app.ml.cells.TYPE_GROUPS = ("sport", "trad", "rock", "alpine", "ice", "mixed")`. A route's cell comes from `canonical_routes.area_id` and `type_group` over `scorable_routes`. |
+| Exposure input | `internal.exposure_index` (PK `(area_id, type_group, month, as_of, data_cutoff)`, `proxy` jsonb with `route_density`, `season_share`, `mp_ticks`, `PROXY_VERSION = "x-mp-v1"`), built as `ingest` by `app.pipelines.exposure`, read by `app.ml.dataset.EXPOSURE_SQL`/`SNAPSHOT_SQL`. `in_app_ticks` is a deferred component (exposure D-1/DP6). |
+| Tick seam | `internal.route_tick_scrapes` (`0008_mp_catalog`; PK `mp_route_id`, `source IN ('mp_scrape')`), read only through `internal.route_tick_coverage`/`internal.route_tick_months`. |
+| Training incidents | `app.ml.dataset.INCIDENTS_SQL`: `accidents_clean` LEFT JOIN `accident_route_links` LEFT JOIN `canonical_routes` into `app.ml.incidents.IncidentRow`, whose `weight: float = 1.0` is the hook named in Phase 3 Appendix B. `count_incidents` multiplies by `Placement.weight`, and `backtest.reweight` carries it into the bootstrap. |
+| Retrain job | `uv run --group train python -m app.ml.train run [--today]` as `trainer` (`TRAINER_DATABASE_URL`; `ml.db.trainer_engine` refuses the pooler and anything below verify-full). Workflow `model-train.yml`: cron `0 7 3 * *` (monthly) plus `workflow_dispatch`. |
+| Promotion and diff | `app.ml.promote.evaluate_gate`, `diff_report` (`DiffReport.large_shift`, `movers` kept in the DB), `issue_markdown` (aggregate-only), `registry.promote(conn, version, by="auto" or "owner")`. `model.registry(version, data_cutoff, diff_report, ...)` and `model.route_scores(model_version, route_id, month, percentile, ...)`. |
+| `trainer` grants | Phase 3 DP17 allowlist in `grants_phase3.sql`/`verify_roles_phase3.sql`/`test_roles_phase3.py`. The trainer exception list in `verify_roles_phase2.sql` is edited by Phase 3 Task 3. |
+
+Phase 3 has **no** ≥50-incident trigger, retrain guard, cluster freeze or percentile-move rule. Task 39 adds them on top of the monthly job (DP18) and never replaces Phase 3's gate.
+
+Migrations: the next free revisions after `0016`, expected to be `0017_ticks` and `0018_phase4_model_inputs`. Run `alembic heads` first: the objectives re-plan numbers after Phase 4 (exposure plan l.51), so it should not collide.
 
 ### Task 37: Ticks — table, API, caps, privacy (spec B)
 
 **Files:**
-- Create: `backend/alembic/versions/00NN_ticks.py`, `backend/app/api/v1/ticks.py`, `backend/app/reports/ticks_rules.py`, `backend/tests/test_ticks_api.py`, `backend/tests/test_ticks_rules.py`, `frontend/src/ticks/{LogClimbDialog,MyTicks}.tsx` + tests
-- Modify: `grants_phase4.sql`/`verify_roles_phase4.sql` (`app` gets SELECT/INSERT/UPDATE/DELETE on `accounts.ticks`; the Phase 3 `trainer` reads only the aggregate view from Task 38), `app/api/v1/me.py` (export and delete include ticks), `test_authz_matrix.py` (IDOR on ticks)
+- Create: `backend/alembic/versions/0017_ticks.py`, `backend/app/api/v1/ticks.py`, `backend/app/reports/ticks_rules.py`, `backend/tests/test_migration_0017.py`, `backend/tests/test_ticks_api.py`, `backend/tests/test_ticks_rules.py`, `frontend/src/ticks/{LogClimbDialog,MyTicks}.tsx` + tests
+- Modify:
+  - `grants_phase4.sql`/`verify_roles_phase4.sql`/`test_roles_phase4.py`: `app` gets SELECT/INSERT/UPDATE/DELETE on `accounts.ticks`. Nobody else gets anything on it, and `trainer` never does.
+  - `app/api/v1/me.py`: export and delete include ticks.
+  - `test_authz_matrix.py`: IDOR on ticks.
 
 **Interfaces:**
-- `accounts.ticks(id uuid PK, user_id uuid FK users ON DELETE CASCADE, mp_route_id bigint NOT NULL FK mp_routes, climbed_on date NOT NULL CHECK (climbed_on >= '1950-01-01'), style text CHECK IN ('lead','follow','toprope','solo','aid','boulder'), outcome text CHECK IN ('send','attempt','bail'), pitches smallint NULL CHECK > 0, party_size smallint NULL CHECK BETWEEN 1 AND 20, notes text NULL CHECK length <= 1000, visibility text NOT NULL DEFAULT 'private' CHECK IN ('private','public'), created_at timestamptz, frozen boolean NOT NULL DEFAULT false, UNIQUE (user_id, mp_route_id, climbed_on))`. The route reference goes through `catalog_seam` (DP12). The future-date check is in the API, against the injected clock.
+- `accounts.ticks(id uuid PK, user_id uuid FK users ON DELETE CASCADE, mp_route_id bigint NOT NULL FK canonical_routes(route_id), climbed_on date NOT NULL CHECK (climbed_on >= '1950-01-01'), style text CHECK IN ('lead','follow','toprope','solo','aid','boulder'), outcome text CHECK IN ('send','attempt','bail'), pitches smallint NULL CHECK > 0, party_size smallint NULL CHECK BETWEEN 1 AND 20, notes text NULL CHECK length <= 1000, visibility text NOT NULL DEFAULT 'private' CHECK IN ('private','public'), created_at timestamptz, frozen boolean NOT NULL DEFAULT false, UNIQUE (user_id, mp_route_id, climbed_on))`. The route reference goes through `catalog_seam.route_exists` (DP12). The future-date check is in the API, against the injected clock.
 - `GET|POST /me/ticks`, `PATCH|DELETE /me/ticks/{id}` (`verified_user`; ownership in the SQL, 404 otherwise).
 - `ticks_rules.counts_toward_exposure(user, tick, now) -> bool`: verified account ≥7 days old, the tick not `frozen`. `ticks_rules.over_daily_limit` (≤30 ticks/day → 429), one per user-route-day (the UNIQUE → 409). >100 ticks in 24 h freezes the account's contribution (`frozen=true` on its ticks plus an audit row) pending review.
 
-- [ ] **Step 0: Re-plan pass** (see the gate). **Step 1: Failing tests** for each rule above, the IDOR matrix, and export/delete including ticks. **Step 2: Run → FAIL. Step 3: Implement. Step 4: Run → PASS. Step 5: Commit** `feat(ticks): ticks table, api, caps and privacy`.
+- [ ] **Step 0: Re-plan pass** (see the gate). **Step 1: Failing tests** for each rule above, the IDOR matrix, export/delete including ticks, and `0017`'s FK and downgrade refusal. **Step 2: Run → FAIL. Step 3: Implement. Step 4: Run → PASS. Step 5: Commit** `feat(ticks): ticks table, api, caps and privacy`.
 
-### Task 38: Tick exposure aggregation into the Phase 3 exposure input (spec B privacy, M4.2)
+### Task 38: Tick exposure: the tick seam's contract into `internal.exposure_index` (spec B privacy, M4.2)
 
-**Interfaces:**
-- A view `reports.tick_exposure` (or a nightly table, whichever `<phase3: exposure input>` consumes) with rows `(cell <phase3: cell key>, month, distinct_user_route_days)`. Only ticks where `counts_toward_exposure` holds count, capped at ≤20 user-route-days per user per cell-month (spec B anti-spam). The model sees aggregates only.
+**Files:**
+- Create: `backend/alembic/versions/0018_phase4_model_inputs.py` (this view and Task 39's) and `backend/tests/test_user_tick_cells.py`.
+- Modify:
+  - the exposure plan's `backend/app/pipelines/exposure_components.py`: `in_app_ticks` component, `PROXY_VERSION` bump;
+  - the Phase 2 role trio `grants_phase2.sql`/`verify_roles_phase2.sql`/`test_roles_phase2.py`: append after the exposure and Phase 3 blocks.
+
+**Interfaces (`[default pending: DP17]`, Decision 12):**
+- View `internal.user_tick_cells(area_id, type_group, period, user_route_days, distinct_users)`, owned by `migrator`.
+  - `period` is `'YYYY-MM'`, the same as `internal.route_tick_months.period`.
+  - Grouping is by Phase 3's cell over `canonical_routes` joined to `scorable_routes`.
+  - Only ticks where `counts_toward_exposure` holds count. The 7-day age and `frozen` rules are re-expressed in SQL, so the view needs no Python.
+  - Each user is capped at ≤20 user-route-days per cell-month (spec B anti-spam) before summing.
+  - A month with no qualifying tick is absent, never a 0 row (the seam's "missing is not zero").
+  - Because the view lives in `internal`, it is read with its owner's rights. `ingest` gets SELECT on the view only and never on `accounts.ticks`.
+  - `analyst` reads it through `grants_phase2.sql`'s schema-wide internal SELECT. `app` and `trainer` get nothing.
+- The view never reads `internal.route_tick_scrapes`, and the seam table is not changed. MP-scrape completeness (`complete_through`) has no meaning for in-app logs.
+- The exposure job adds `in_app_ticks` to `proxy` (`{"user_route_days": n, "distinct_users": k}` or a missing flag) and bumps `PROXY_VERSION` to `x-mp-v2` (exposure Appendix B). Phase 3 sees the component only through `internal.exposure_index`. Whether the model uses it is a Phase 3 re-plan question, so this PR records it and does not wire it in.
 - Public aggregates hide cells with fewer than 5 distinct users. Per-user ticks are public only with per-tick opt-in (`visibility='public'`).
-- `trainer` gets SELECT on this aggregate only, never `accounts.ticks`. The three-file grants lockstep applies.
+- **Grants (Phase 2 lockstep):**
+  - `grants_phase2.sql` gets `GRANT SELECT ON internal.user_tick_cells TO ingest;`.
+  - `verify_roles_phase2.sql` gets an `ingest_privs` row `('internal.user_tick_cells', 'SELECT')`, and `'internal.user_tick_cells'` joins the "catalog relation exists" array.
+  - `test_roles_phase2.py` gets the matching assertion, plus a denial on `accounts.ticks` as `ingest`.
+  - `verify_roles_phase4.sql` keeps "trainer has no USAGE on accounts".
 
-- [ ] **Step 0: Re-plan pass. Step 1: Failing tests:** the 20-day cap per user per cell-month; the <5-user suppression; frozen and young-account ticks excluded; a missing month is absent (never a 0 row). It also feeds the Phase 3 fixture (spec M4.2 accept: "Phase 3 fixture fed; caps tested"). **Steps 2–5** as usual; commit `feat(ticks): exposure aggregation for the phase 3 model`.
+- [ ] **Step 0: Re-plan pass. Step 1: Failing tests:** the 20-day cap per user per cell-month; the <5-user suppression; frozen and young-account ticks excluded; a missing month is absent (never a 0 row); the proxy carries `in_app_ticks` with the bumped version and an older snapshot keeps `x-mp-v1`. It also feeds the Phase 3 fixture (spec M4.2 accept: "Phase 3 fixture fed; caps tested"). **Steps 2–5** as usual; commit `feat(ticks): user tick cells into the exposure index`.
 
 ### Task 39: Promotions in the retrain — trigger, weights, caps, cluster freeze, retrain guard (spec C2.6, C3)
 
-**Interfaces:**
-- `<phase3: retrain trigger>` counts each `report_promotions` row with `outcome='inserted'` at its `model_weight` (auto 0.5; human and corroborated 1.0) toward the ≥50 trigger.
-- `<phase3: training-set builder>` reads `model_weight` through a view joining `report_promotions` to `accidents_clean` (no narrative columns) and applies the caps: uncorroborated user weight ≤1.0 per cell per month, and ≤25% of a cell's training incidents (excess scaled down proportionally, never dropped silently; the scaling is logged per cell).
-- Retrain guard (automatic, no hold): before fitting, any cell where uncorroborated user reports are ≥50% of its new incidents and would move a route's percentile by >20 points gets those reports' weight set to 0 for that run. The version then goes through the Phase 3 gate and auto-publishes as normal. The affected cells are listed in the M9 promotion issue. Corroborating the reports restores their weight at the next retrain.
-- Cluster freeze (C3): promotions whose report was routed `cluster` stay frozen (weight 0) until a human clears the cluster.
-- Reports only add evidence: a promotion can never lower a score. Risk goes down only through takedowns, retractions and reviewer edits (`excluded_reason`), which the training-set builder already honours through `accidents_clean`.
+**Files:**
+- Create: `backend/app/ml/report_weights.py` and `backend/tests/ml/test_report_weights.py`.
+- Modify:
+  - `0018_phase4_model_inputs.py`: the view below.
+  - Phase 3's `backend/app/ml/dataset.py` (`INCIDENTS_SQL`), `backend/app/ml/train.py` (a `due` subcommand; the guard) and `.github/workflows/model-train.yml` (a daily `due` check).
+  - Phase 3's role trio `grants_phase3.sql`/`verify_roles_phase3.sql`/`test_roles_phase3.py`: `trainer` SELECT on the new view.
+  - `verify_roles_phase2.sql`/`test_roles_phase2.py`: the trainer exception list gains the view, because Phase 3 Task 3 made that list allowlist-based.
 
-- [ ] **Step 0: Re-plan pass. Step 1: Failing tests:** trigger arithmetic at mixed weights (99 auto promotions → 49.5, which does not fire); each cap; the guard on a synthetic cell (≥50% uncorroborated and a 25-point move → weight 0 and the cell listed; a 15-point move → untouched); a corroboration restoring the weight next run. **Steps 2–5** as usual; commit `feat(retrain): weighted user-report promotions, caps and retrain guard`.
+**Interfaces (`[default pending: DP18]`):**
+- View `public.accident_report_weights(accident_id, model_weight, verification, cluster_frozen, promoted_at)` over `reports.report_promotions` (`outcome = 'inserted'`) joined to `reports.incident_reports`.
+  - `cluster_frozen` is true while the report's `routing_reasons` holds `cluster` and no reviewer cleared it.
+  - It has no user id, IP hash, narrative or date beyond `promoted_at`.
+  - Owned by `migrator`, so `trainer` needs SELECT on the view only and never USAGE on `reports`.
+  - Through `migrator`'s `public` default privileges, `app` and `analyst` get SELECT too; that is harmless, as there is no PII. `ingest` gets nothing, which `verify_roles_phase2.sql`'s exact `ingest_privs` set already enforces.
+- `INCIDENTS_SQL` gains `LEFT JOIN accident_report_weights w ON w.accident_id = a.accident_id`.
+  - `IncidentRow.weight` becomes `1.0` for every non-report incident, and `report_weights.apply(...)` sets it for report incidents.
+  - The raw weight is `w.model_weight` (auto 0.5; human and corroborated 1.0), or 0 while `cluster_frozen` (C3 cluster freeze).
+  - Caps are applied per cell `(area_id, type_group, month)` at placement: uncorroborated user weight ≤1.0 per cell per month, and ≤25% of a cell's training incidents. Any excess is scaled down proportionally, never dropped silently, and the scaling is logged per cell in the run's `model_card`.
+  - A user report never raises another incident's weight and never lowers an institutional one.
+- **Retrain guard** (automatic, no hold), in `app.ml.train run` after the candidate fit:
+  - Any cell where uncorroborated user reports are ≥50% of its new incidents, and where the candidate's `model.route_scores.percentile` moves a route in that cell by >20 points against the active version (the `diff_report` inputs), gets those reports' weight set to 0. The candidate is then refit once.
+  - The cells go into `model.registry.diff_report["user_report_guard"]` and the aggregate-only promotion issue (`issue_markdown`). The version then goes through Phase 3's unchanged gate and promotes as normal.
+  - Corroborating the reports restores their weight at the next retrain.
+- **Trigger:**
+  - `app.ml.train due` exits 0 when the weighted sum of `accident_report_weights.model_weight` over rows with `promoted_at` later than the active version's `created_at` reaches 50 (spec C2.6), and exits 3 otherwise.
+  - `model-train.yml` gains a daily `due` step that dispatches `run` only on exit 0. The monthly cron run is unchanged.
+- Reports only add evidence: a promotion can never lower a score. Risk goes down only through takedowns, retractions and reviewer edits (`excluded_reason`), which `INCIDENTS_SQL` already honours, because `accidents_clean` drops excluded rows.
+
+- [ ] **Step 0: Re-plan pass. Step 1: Failing tests:**
+  - trigger arithmetic at mixed weights (99 auto promotions → 49.5, which does not fire);
+  - each cap;
+  - the guard on a synthetic cell: ≥50% uncorroborated and a 25-point move gives weight 0 and the cell listed; a 15-point move leaves it untouched;
+  - cluster-frozen reports weigh 0 until cleared;
+  - a corroboration restores the weight next run;
+  - `trainer` can SELECT the view and is denied `reports.report_promotions`.
+
+  **Steps 2–5** as usual; commit `feat(retrain): weighted user-report promotions, caps and retrain guard`.
 
 ---
 
@@ -5093,7 +5323,7 @@ Expected: JSON counts (`inserted`, `linked`, `held`, `skipped_fatal`, `weather` 
 |---|---|
 | A accounts, argon2id, HIBP, sessions, CSRF, CORS | Tasks 1, 3, 6, 7, 9 (CSRF as a synchronizer token, Decision 2) |
 | A email (Resend behind `EmailSender`) | Task 5 |
-| A profile, experience per discipline, certifications, home area | Tasks 1, 8, 31 (home area = `mp_locations`, DP12) |
+| A profile, experience per discipline, certifications, home area | Tasks 1, 8, 31 (home area = `canonical_areas`, DP12) |
 | A minimized PII, IP HMAC 30 days, export, delete, 15+ | Tasks 1, 7, 8, 15 |
 | A Turnstile, disposable domains, rate limits, Cloudflare, origin hardening | Tasks 4, 7, 9, 14, 19, 34 |
 | A roles user/reviewer/admin | Tasks 1, 6 |
@@ -5122,8 +5352,19 @@ Expected: JSON counts (`inserted`, `linked`, `held`, `skipped_fatal`, `weather` 
 
 **Placeholder scan.** Every code step has code, or names the exact pattern and file to copy. The frontend screen steps (Tasks 30–33) specify behaviour and tests rather than full component code: they are UI glue (owner norm: tests on core logic), and their core rules (validators, payload shape) are pinned by shared fixtures with the backend.
 
-**Type consistency.** Names checked across tasks: `Principal`, `Phase4Deps`, `deps.public|user|verified_user|reviewer|admin`, `RouteRef`/`CatalogItem`, `AbuseSignals`, `TriageScores`, `RoutingInput`/`RoutingDecision`, `DuplicateResult`, `ApprovedFacts`, `IncidentFact`/`FactRow`, `insert_one`, `summary_line`, `WeatherPlan`/`plan_weather`/`store`, `ForecastClient.fetch_forecast`, `report_promotions.weather_status` values, `LIMITS` keys.
+**Type consistency.** Names checked across tasks: `Principal`, `Phase4Deps`, `deps.public|user|verified_user|reviewer|admin`, `RouteRef`/`CatalogItem`, `AbuseSignals`, `TriageScores`, `RoutingInput`/`RoutingDecision`, `DuplicateResult`, `ApprovedFacts`, `IncidentFact`/`FactRow`, `insert_one`, `summary_line`, `WeatherPlan`/`plan_weather`/`store`, `ForecastClient.fetch_forecast`, `report_promotions.weather_status` values, `LIMITS` keys. Added 2026-10-15: `seed_catalog`, `owner_prereqs`, `point_precision`, `insert_report_area_link`/`REPORT_LINK_VERSION`, `internal.user_tick_cells`, `public.accident_report_weights`, and the Phase 3 names `IncidentRow.weight`, `INCIDENTS_SQL`, `app.ml.train run|due`, `internal.exposure_index`.
 
 **Review Focus.** Each of the nine items has a named test in its owning task (Tasks 4, 6, 7, 10, 13, 16, 19, 22, 23, 28).
 
 **Revision 2026-10-12 (owner answers).** Jev restored per spec D (Decision 5, Tasks 17, 19, 28, runbook Steps 6b–6c). Presidio NER restored (Task 13, redaction task in Task 14). Two Open-Meteo keys (Task 21, a change to plan-3 code). Phase 3 work moved to the gated PR 4-8. DP1–DP14 decided; DP15 open.
+
+**Revision 2026-10-15 (refresh, no owner input).**
+- **Renumbering.** Migrations are now `0014`–`0016` after exposure `0011` and Phase 3 `0012`/`0013`, with tests, downgrade targets and the runbook gate renumbered to match.
+- **Catalog.** The seam and the FKs moved onto the merged MP catalog. Points come from areas, `state_code` comes from the catalog, and `home_area_id` was restored.
+- **R10 linking.** Promoted reports link the R10 way (DP16; `0016` widens the `accident_legacy_links` method CHECK).
+- **PR 4-8.** It is rewritten on the real Phase 3 and exposure interfaces: DP17 for ticks into exposure through the seam's contract, DP18 for weights through a view into `IncidentRow.weight`.
+- **Role tests.** They gained `owner_prereqs`, so Phase 2/3 role tests survive `0014`.
+- **Grants.** Task 24 no longer edits the Phase 2 grants, because `main` already has the `mp_locations` widening.
+- **Task 21.** Re-verified against main's Open-Meteo code, the `pipelines.db` pooler refusal and the Phase 3 serving rewrite.
+- **Runbooks.** They use `INGMOD`, not `ING`, for modules.
+- **Owner decisions.** DP1–DP14 are unchanged. DP15–DP18 are pending.

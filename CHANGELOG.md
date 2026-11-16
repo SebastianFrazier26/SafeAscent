@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### CI dependency fixes - 2026-10-23
+
+- `backend/Dockerfile.jobs` production stage installs `libexpat1`; rasterio's wheel links `libexpat.so.1`, so the jobs-image import smoke test failed without it. The API image does not ship rasterio and is unchanged.
+- `certifi` pinned at 2026.10.19 (was 2026.7.22) in `backend/pyproject.toml` and `backend/uv.lock`, the fix release for PYSEC-2026-4320 found by `pip-audit`.
+- `follow-redirects` bumped in `frontend/package-lock.json` for GHSA-q3jh-wrc6-jgq8 and GHSA-8r9p-f939-6h3c; `npm audit --omit=dev --audit-level=high` is clean.
+- `follow-redirects` bumped again to 1.16.3 for GHSA-mrwp-f3q8-3g9p (new advisory, 2026-11-15).
+
+### Hardening: tick-reload metrics and pinned base images — 2026-10-15
+
+- `mp_tick_aggregates` now persists `already_loaded_same` and `already_loaded_changed` as run metrics on `source_ingest_log` (not just printed), via `finish_run(metrics=...)`; both names join `ingest_log._ALLOWED_METRICS`.
+- `backend/Dockerfile`, `backend/Dockerfile.jobs` and `frontend/Dockerfile` pin their base images (`python:3.12-slim`, `ghcr.io/astral-sh/uv:0.11.3`, `node:22-alpine`, `nginx:alpine`) by digest (`image:tag@sha256:...`), per the owner norm to pin anything deployed. Each pin carries a comment with the registry API call to refresh it.
+
+### Frontend audit fix - 2026-11-15
+
+- `follow-redirects` 1.16.1 → 1.16.3 in `frontend/package-lock.json` (transitive via axios) for GHSA-mrwp-f3q8-3g9p; `npm audit --omit=dev --audit-level=high` is clean again.
+
+### Project page on GitHub Pages — 2026-10-22
+
+- `site/index.html`: a static project page (what SafeAscent does, the scoring method, an inline architecture diagram, current status, links) for the owner's portfolio to embed while safeascent.us is offline. No data, no API calls, light/dark, framable. Includes an illustrative toy scorer using the backend's constants with weather similarity set by hand; `backend/tests/test_site_model_constants.py` fails if those constants drift from `algorithm_config.py`/`risk_bands.py`/`safety_algorithm.py`.
+- `.github/workflows/pages.yml`: deploys `site/` to GitHub Pages on every push to `main` and on dispatch (actions pinned by SHA). The owner enables Pages (Source: GitHub Actions) once; see `DEPLOYMENT.md`.
+
 ### Rock tick loader (PR X-1) — 2026-10-15
 
 - `mp_tick_aggregates --scope rock` loads the private rock tick export, logged as `mp_tick_aggregates_rock`. It reads only routes the tick seam has not already seen at that scrape time or later, so reloading the same cumulative export is a no-op (`routes_unchanged`), and an older export never rolls the seam back.
@@ -67,6 +88,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `python -m app.pipelines.mp_catalog refresh [--dry-run]` (as `ingest`): rebuilds the catalog from `mp_locations`/`mp_routes` in one transaction, logged to `source_ingest_log` as `mp_catalog`. It upserts and never deletes, never reads route coordinates (a route's point is its location's), and quarantines cyclic/orphaned areas and bad US coordinates. A run whose scorable count falls more than 3% (`MAX_SCORABLE_DROP`) below the stored catalog's is rejected and writes nothing but its log row.
 - `grants_phase2.sql`/`verify_roles_phase2.sql`: `ingest` reads `mp_locations (parent_id, name)` (root names identify US states), upserts the catalog and the tick seam, and reads `scorable_routes` and the seam views.
 - MP-data CI guard: `scripts/check_no_mp_data.py` (CI `guards` job) fails on MP route/area URLs, or on real MP ids (below the synthetic floor 900000000), in tracked files under `data/`, `docs/` and `backend/tests/fixtures/`. One existing plan doc quoted a placeholder MP route URL; its id is now `<id>`. `tests/test_no_mp_prose_in_schemas.py` checks that no API schema, API SQL or catalog/MP table column carries MP prose. Read-only acceptance cells: `tests/verify/test_mp_catalog.py`.
+
+### R1 AAC year repair, rule r1-v2 — 2026-10-13
+
+- Owner decision 2026-10-13: a second R1 rule version, `r1-v2`, dates the AAC rows `r1-v1` leaves `year_unverified`; rows `r1-v1` dated keep its values. A `sequence` row uses r1-v1's neighbourhood (up to 10 trusted neighbours per side, at least 5 on each side) and takes `year_lo`/`year_hi` from the 10th/90th percentile of those neighbours' years (linear interpolation between closest ranks, Hyndman-Fan type 7, in integer arithmetic; `year_lo` rounded down, `year_hi` up) and the floor of their median as the point year, and is accepted when the range spans at most two years. This replaces r1-v1's tight bound and min/max spread gate for these rows, so one out-of-order neighbour no longer voids a row. An eight-digit (`2019NNNN`) row is dated 2018 within 2017–2018, and only while at least ten trusted rows in that scheme exist and all lie in 2017–2018. A row whose range is wider than one year is `year` precision on 1 July; only a single-year range keeps its day, so `date_precision = 'day'` still implies `year_lo = year_hi`.
+- `python -m app.data.repair r1v2 [--apply]` (refuses until `r1-v1` has been applied; audited and idempotent per rule version like every repair; lifts only R1's own `year_unverified`; never re-decides a field another rule or an owner decision wrote, including an exclusion they set, which stays). A later `r2r1` rerun leaves rows `r1-v2` dated alone and counts them only as `superseded_by_r1v2`.
+- `r1v2-export`/`r1v2-import`: a 40-row hand check of the rows `r1-v2` dated (8 eight-digit, 32 sequence when available) to `data/review/r1v2_year_check.csv`, with the R1 instructions and the same guards. The `r1` hand-check pool now excludes `r1-v2` rows, so its sample is the same before and after `r1-v2`.
+- `r1v2-backtest`: read-only leave-one-out accuracy on the trusted snapshot rows (coverage, ±1-year rate and range coverage for r1-v1, r1-v2 and the two combined, plus the eight-digit rule).
+- Runbook Task 12 applies `r1-v2` after `r1-v1` on the branch and on prod, with its own dry-run, export, owner check, import gate and acceptance cells (`test_r1v2_*`, `test_r1_day_precision_rows_are_single_year`).
 
 ### Phase 2a final-review fixes (plan 3) — 2026-10-06
 
