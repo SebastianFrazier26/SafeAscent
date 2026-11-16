@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### CI dependency fixes - 2026-10-23
+
+- `backend/Dockerfile.jobs` production stage installs `libexpat1`; rasterio's wheel links `libexpat.so.1`, so the jobs-image import smoke test failed without it. The API image does not ship rasterio and is unchanged.
+- `certifi` pinned at 2026.10.19 (was 2026.7.22) in `backend/pyproject.toml` and `backend/uv.lock`, the fix release for PYSEC-2026-4320 found by `pip-audit`.
+- `follow-redirects` bumped in `frontend/package-lock.json` for GHSA-q3jh-wrc6-jgq8 and GHSA-8r9p-f939-6h3c; `npm audit --omit=dev --audit-level=high` is clean.
+
+### Frontend audit fix - 2026-11-15
+
+- `follow-redirects` 1.16.1 → 1.16.3 in `frontend/package-lock.json` (transitive via axios) for GHSA-mrwp-f3q8-3g9p; `npm audit --omit=dev --audit-level=high` is clean again.
+
 ### Project page on GitHub Pages — 2026-10-22
 
 - `site/index.html`: a static project page (what SafeAscent does, the scoring method, an inline architecture diagram, current status, links) for the owner's portfolio to embed while safeascent.us is offline. No data, no API calls, light/dark, framable. Includes an illustrative toy scorer using the backend's constants with weather similarity set by hand; `backend/tests/test_site_model_constants.py` fails if those constants drift from `algorithm_config.py`/`risk_bands.py`/`safety_algorithm.py`.
