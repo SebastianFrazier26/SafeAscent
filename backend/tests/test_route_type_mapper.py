@@ -10,7 +10,7 @@ Note: Implementation is intentionally conservative, matching specific phrases
 rather than individual keywords to avoid false positives.
 """
 import pytest
-from app.services.route_type_mapper import infer_route_type_from_accident
+from app.ml.kernel_ref.route_type_mapper import infer_route_type_from_accident
 
 
 class TestRouteTypePriority:

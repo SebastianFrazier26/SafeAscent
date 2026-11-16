@@ -6,7 +6,8 @@ Provides distance and bearing calculations using the Haversine formula.
 import math
 from typing import Tuple
 
-from app.services.algorithm_config import EARTH_RADIUS_KM
+# Same value as app.ml.kernel_ref.algorithm_config.EARTH_RADIUS_KM, inlined so nothing served imports the kernel.
+EARTH_RADIUS_KM = 6371.0
 
 
 def haversine_distance(

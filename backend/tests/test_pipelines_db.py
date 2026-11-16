@@ -68,3 +68,15 @@ def test_ingest_engine_refuses_the_pooler_host_for_every_job(monkeypatch, host):
     monkeypatch.setattr(pipelines_db.settings, "INGEST_DATABASE_URL", f"postgresql+asyncpg://ingest:x@{host}/db")
     with pytest.raises(SystemExit, match="pooler"):
         ingest_engine()
+
+
+@pytest.mark.parametrize("url", ["not a url secret-pw", "postgresql+asyncpg://ingest:secret-pw@/neondb"])
+def test_ingest_engine_never_echoes_an_unusable_url(monkeypatch, url):
+    """Twin of tests/ml/test_db.py: connect_args_for's ValueError quotes the (masked) URL."""
+    monkeypatch.setattr(pipelines_db, "create_async_engine", lambda *a, **k: pytest.fail("built an engine"))
+    monkeypatch.setattr(settings, "INGEST_DATABASE_URL", url)
+    with pytest.raises(SystemExit) as refused:
+        ingest_engine()
+    message = str(refused.value)
+    assert "INGEST_DATABASE_URL" in message
+    assert "secret-pw" not in message and "ingest:" not in message and "***" not in message and "neondb" not in message

@@ -26,6 +26,7 @@ from tests.test_gnis import _line as gnis_line
 from tests.test_mp_tick_aggregates import _export
 from tests.test_migrations import (
     ANALYST_FIXTURE_SQL,
+    OWNER_ROLE,
     PASSWORDS,
     PHASE2_PASSWORD_ENV,
     PHASE2_PASSWORDS,
@@ -36,6 +37,7 @@ from tests.test_migrations import (
     _denied,
     _fetch_row,
     _owner_db,
+    _owner_schema_model,
     _psql,
     _require_psql,
     _role_url,
@@ -363,6 +365,7 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
     for plaintext in PHASE2_PASSWORDS.values():
         assert plaintext not in rerun.stdout + rerun.stderr
 
+    _owner_schema_model(owner_url)
     migrator_url = _role_url(fresh_db, "migrator", PASSWORDS["migrator"])
     command.upgrade(_alembic_cfg_as(fresh_db, migrator_url), "head")
 
@@ -473,12 +476,6 @@ def test_phase2_roles_least_privilege(role_cleanup, fresh_db, tmp_path, monkeypa
     _denied(ingest, "TRUNCATE cell_daily_conditions")
     _as(app, "SELECT count(*) FROM cell_daily_conditions; SELECT count(*) FROM accident_conditions")
     _denied(app, "DELETE FROM cell_daily_conditions WHERE false")
-
-    # Plan 3 (R6 verify): ingest reads the legacy weather table, never writes it.
-    _as(ingest, "SELECT count(*) FROM weather")
-    _denied(ingest, "UPDATE weather SET temperature_max = 0 WHERE false")
-    _denied(ingest, "DELETE FROM weather WHERE false")
-    _denied(ingest, "INSERT INTO weather (date, latitude, longitude) VALUES ('2020-01-01', 0, 0)")
 
     # Plan 3 (R7): ingest reads area_weekly_weather and can flip longitude only.
     _as(ingest, "SELECT count(*) FROM area_weekly_weather")
@@ -635,6 +632,7 @@ def test_after_relaunch_revoke_owner_regrants_set_and_migrator_runs_grants(role_
     created = _psql(owner_url, CREATE_PHASE2, PHASE2_PASSWORD_ENV)
     assert created.returncode == 0, created.stderr
 
+    _owner_schema_model(owner_url)
     migrator_url = _role_url(fresh_db, "migrator", PASSWORDS["migrator"])
     command.upgrade(_alembic_cfg_as(fresh_db, migrator_url), "head")
     granted = _psql(migrator_url, GRANTS_PHASE2, {})
@@ -656,6 +654,7 @@ def test_grants_phase2_narrows_a_preexisting_table_level_grant(role_cleanup, fre
     _as(owner_url, ANALYST_FIXTURE_SQL)
     assert _psql(owner_url, ROLES_DIR / "create_roles.sql", ROLE_PASSWORD_ENV).returncode == 0
     assert _psql(owner_url, CREATE_PHASE2, PHASE2_PASSWORD_ENV).returncode == 0
+    _owner_schema_model(owner_url)
     migrator_url = _role_url(fresh_db, "migrator", PASSWORDS["migrator"])
     command.upgrade(_alembic_cfg_as(fresh_db, migrator_url), "head")
 
@@ -676,6 +675,21 @@ def test_grants_phase2_narrows_a_preexisting_table_level_grant(role_cleanup, fre
     assert verified.returncode == 0, verified.stdout + verified.stderr
 
 
+def run_phase2_roles(dbname: str) -> str:
+    """Prod order through grants_phase2.sql, for Phase 3 tests; returns the owner URL. Assumes _owner_db ran."""
+    owner_url = _role_url(dbname, OWNER_ROLE, PASSWORDS["owner"])
+    command.upgrade(_alembic_cfg_as(dbname, owner_url), "0003_hist_insufficient_data")
+    _as(owner_url, ANALYST_FIXTURE_SQL)
+    assert _psql(owner_url, ROLES_DIR / "create_roles.sql", ROLE_PASSWORD_ENV).returncode == 0
+    assert _psql(owner_url, CREATE_PHASE2, PHASE2_PASSWORD_ENV).returncode == 0
+    _owner_schema_model(owner_url)
+    migrator_url = _role_url(dbname, "migrator", PASSWORDS["migrator"])
+    command.upgrade(_alembic_cfg_as(dbname, migrator_url), "head")
+    granted = _psql(owner_url, GRANTS_PHASE2, {})
+    assert granted.returncode == 0, granted.stderr
+    return owner_url
+
+
 def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F811
     _require_psql()
     owner_url = _owner_db(fresh_db)
@@ -683,6 +697,7 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
     _as(owner_url, ANALYST_FIXTURE_SQL)
     assert _psql(owner_url, ROLES_DIR / "create_roles.sql", ROLE_PASSWORD_ENV).returncode == 0
     assert _psql(owner_url, CREATE_PHASE2, PHASE2_PASSWORD_ENV).returncode == 0
+    _owner_schema_model(owner_url)
     migrator_url = _role_url(fresh_db, "migrator", PASSWORDS["migrator"])
     command.upgrade(_alembic_cfg_as(fresh_db, migrator_url), "head")
     assert _psql(owner_url, GRANTS_PHASE2, {}).returncode == 0
@@ -699,7 +714,6 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "GRANT USAGE ON SEQUENCE public.mp_ticks_tick_id_seq TO ingest;"
         "ALTER DEFAULT PRIVILEGES IN SCHEMA internal GRANT SELECT ON TABLES TO ingest;"
         "GRANT SELECT ON public.accidents TO trainer;"
-        "GRANT SELECT ON public.accidents_clean TO trainer;"
         "REVOKE SELECT ON public.accidents_clean_daily FROM ingest;"
         "GRANT DELETE ON public.grid_bucket_series TO ingest;"
         "GRANT TRUNCATE ON public.cell_daily_conditions TO ingest;"
@@ -710,23 +724,19 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "GRANT CREATE ON SCHEMA internal TO app;"
         "REVOKE SELECT ON internal.accident_revisions FROM analyst;"
         "REVOKE UPDATE (tz) ON public.accidents FROM ingest;"
-        "REVOKE SELECT ON public.weather FROM ingest;"
         "GRANT INSERT (location) ON public.accidents TO ingest;"
         "REVOKE INSERT (description) ON public.accidents FROM ingest;"
         "GRANT SELECT ON SEQUENCE public.accidents_accident_id_seq TO ingest;"
         "GRANT DELETE ON public.canonical_routes TO ingest;"
         "REVOKE UPDATE ON internal.route_tick_scrapes FROM ingest;"
         "GRANT INSERT ON public.canonical_areas TO app;"
-        "GRANT SELECT ON public.scorable_routes TO trainer;"
         "GRANT DELETE ON public.feature_points TO ingest;"
         "GRANT INSERT ON public.route_static_features TO app;"
-        "GRANT SELECT ON public.scoring_unit_features TO trainer;"
         "GRANT SELECT (mountain_name) ON public.routes TO ingest;"
         "GRANT SELECT ON public.mountains TO ingest;"
         "GRANT UPDATE ON internal.r10_llm_calls TO ingest;"
         "GRANT DELETE ON internal.r10_llm_gates TO ingest;"
         "GRANT INSERT ON public.accident_legacy_links TO app;"
-        "GRANT SELECT ON public.accident_route_links TO trainer;"
         "GRANT TRUNCATE ON internal.exposure_index TO ingest;"
         "GRANT UPDATE ON internal.exposure_index TO ingest;"
         "ALTER TABLE internal.r10_unresolved DISABLE TRIGGER r10_unresolved_keep_decisions;",
@@ -751,7 +761,6 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "ingest has nothing on sequence public.mp_ticks_tick_id_seq",
         "no default privileges grant ingest or trainer anything",
         "trainer holds no privilege on public.accidents",
-        "trainer holds no privilege on public.accidents_clean",
         "ingest SELECT on public.accidents_clean_daily matches the expected set",
         "ingest DELETE on public.grid_bucket_series matches the expected set",
         "ingest TRUNCATE on public.cell_daily_conditions matches the expected set",
@@ -763,23 +772,19 @@ def test_verify_phase2_catches_stray_grants(role_cleanup, fresh_db):  # noqa: F8
         "analyst can SELECT internal.accident_revisions",
         "nobody can SET or INHERIT ingest",
         "nobody but CURRENT_USER holds ADMIN on ingest",
-        "ingest SELECT on public.weather matches the expected set",
         "ingest accidents column privileges match the expected set: location",
         "ingest accidents column privileges match the expected set: description",
         "ingest has nothing on sequence public.accidents_accident_id_seq",
         "ingest DELETE on public.canonical_routes matches the expected set",
         "ingest UPDATE on internal.route_tick_scrapes matches the expected set",
         "app can SELECT public.canonical_areas and nothing else",
-        "trainer holds no privilege on public.scorable_routes",
         "ingest DELETE on public.feature_points matches the expected set",
         "app can SELECT public.route_static_features and nothing else",
-        "trainer holds no privilege on public.scoring_unit_features",
         "ingest routes column privileges match the expected set: mountain_name",
         "ingest SELECT on public.mountains matches the expected set",
         "ingest UPDATE on internal.r10_llm_calls matches the expected set",
         "ingest DELETE on internal.r10_llm_gates matches the expected set",
         "app can SELECT public.accident_legacy_links and nothing else",
-        "trainer holds no privilege on public.accident_route_links",
         "ingest TRUNCATE on internal.exposure_index matches the expected set",
         "ingest UPDATE on internal.exposure_index matches the expected set",
     ):

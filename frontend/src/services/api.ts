@@ -44,13 +44,37 @@ api.interceptors.response.use(
 export type RiskColorCode = 'green' | 'yellow' | 'orange' | 'red';
 export type DataStatus = 'ok' | 'insufficient_data';
 
+export type Confidence = 'high' | 'medium' | 'low';
+export type Interval = { mean: number; lo: number; hi: number };
+
 /**
  * A risk result is either a real 0-100 score with its band colour, or (owner decision
- * 2026-09-28) insufficient data: too little evidence, so no number and gray.
+ * 2026-09-28) insufficient data: too little evidence, so no number and gray. The Legacy
+ * shapes are what a backend that predates the stored-score contract still sends; they are
+ * accepted so a frontend deployed first keeps working, and never given invented fields.
  */
-export type ScoredRisk = { risk_score: number; color_code: RiskColorCode; data_status: 'ok' };
-export type InsufficientRisk = { risk_score: null; color_code: 'gray'; data_status: 'insufficient_data' };
-export type RiskResult = ScoredRisk | InsufficientRisk;
+export type ScoredRisk = {
+  risk_score: number;
+  color_code: RiskColorCode;
+  data_status: 'ok';
+  confidence: Confidence;
+  score_range: [number, number];
+  model_version: string;
+  evidence: { geo: number; similar: number };
+  relative_rate: Interval | null;
+  per_10k_logged_ascents: Interval | null;
+  per_10k_reason: string | null;
+};
+export type InsufficientRisk = {
+  risk_score: null;
+  color_code: 'gray';
+  data_status: 'insufficient_data';
+  insufficient_reason: 'no_evidence';
+  model_version: string;
+};
+export type LegacyScoredRisk = { risk_score: number; color_code: RiskColorCode; data_status: 'ok' };
+export type LegacyInsufficientRisk = { risk_score: null; color_code: 'gray'; data_status: 'insufficient_data' };
+export type RiskResult = ScoredRisk | InsufficientRisk | LegacyScoredRisk | LegacyInsufficientRisk;
 
 export type SafetyResponse = {
   route_id: number;
@@ -58,37 +82,30 @@ export type SafetyResponse = {
   target_date: string;
 } & RiskResult;
 
-export interface PredictionParams {
-  latitude: number;
-  longitude: number;
-  route_type: string;
-  planned_date: string;
-  elevation_meters?: number;
-  search_radius_km?: number;
-  route_grade?: string;
-}
+export const isScored = (r: RiskResult): r is ScoredRisk | LegacyScoredRisk =>
+  r.data_status === 'ok' && typeof r.risk_score === 'number';
 
-export interface ContributingAccident {
-  accident_id: number;
-  total_influence: number;
-  distance_km: number;
-  days_ago: number;
-  spatial_weight: number;
-  temporal_weight: number;
-  elevation_weight: number;
-  weather_weight: number;
-  route_type_weight: number;
-  severity_weight: number;
-  grade_weight?: number;
-}
+export const isInsufficient = (r: RiskResult): r is InsufficientRisk | LegacyInsufficientRisk =>
+  r.data_status === 'insufficient_data';
 
-export type PredictionResponse = {
-  num_contributing_accidents: number;
-  top_contributing_accidents: ContributingAccident[];
-  metadata: Record<string, unknown>;
-} & RiskResult;
+export const isStoredScore = (r: RiskResult): r is ScoredRisk =>
+  r.data_status === 'ok' && 'confidence' in r && r.confidence != null;
 
 const COLOR_CODES: readonly string[] = ['green', 'yellow', 'orange', 'red'];
+const CONFIDENCES: readonly string[] = ['high', 'medium', 'low'];
+const STORED_KEYS = [
+  'confidence',
+  'score_range',
+  'model_version',
+  'evidence',
+  'insufficient_reason',
+  'relative_rate',
+  'per_10k_logged_ascents',
+  'per_10k_reason',
+] as const;
+
+const isFiniteNumber = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null;
 
 // Exactly the two legal shapes: a gray colour with a number, or a number with an
 // insufficient status, is malformed (the backend schema rejects both too).
@@ -98,8 +115,7 @@ const isRiskResult = (body: Record<string, unknown>): boolean => {
   }
   return (
     body.data_status === 'ok' &&
-    typeof body.risk_score === 'number' &&
-    Number.isFinite(body.risk_score) &&
+    isFiniteNumber(body.risk_score) &&
     body.risk_score >= 0 &&
     body.risk_score <= 100 &&
     typeof body.color_code === 'string' &&
@@ -107,27 +123,79 @@ const isRiskResult = (body: Record<string, unknown>): boolean => {
   );
 };
 
-export const isSafetyResponse = (value: unknown): value is SafetyResponse => {
-  if (typeof value !== 'object' || value === null) return false;
-  const body = value as Record<string, unknown>;
+const isInterval = (v: unknown): boolean =>
+  isRecord(v) &&
+  isFiniteNumber(v.mean) &&
+  isFiniteNumber(v.lo) &&
+  isFiniteNumber(v.hi) &&
+  v.lo >= 0 &&
+  v.lo <= v.mean &&
+  v.mean <= v.hi;
+
+// The backend serialises absent optional fields as explicit null (no exclude_none), so null
+// and undefined both mean "absent" everywhere below.
+const isOptionalInterval = (v: unknown): boolean => v == null || isInterval(v);
+
+const isStoredOk = (body: Record<string, unknown>): boolean => {
+  const score = body.risk_score as number;
+  const range = body.score_range;
+  const evidence = body.evidence;
   return (
-    typeof body.route_id === 'number' &&
-    typeof body.route_name === 'string' &&
-    typeof body.target_date === 'string' &&
-    isRiskResult(body)
+    typeof body.confidence === 'string' &&
+    CONFIDENCES.includes(body.confidence) &&
+    Array.isArray(range) &&
+    range.length === 2 &&
+    isFiniteNumber(range[0]) &&
+    isFiniteNumber(range[1]) &&
+    range[0] >= 0 &&
+    range[0] <= score &&
+    score <= range[1] &&
+    range[1] <= 100 &&
+    typeof body.model_version === 'string' &&
+    isRecord(evidence) &&
+    isFiniteNumber(evidence.geo) &&
+    isFiniteNumber(evidence.similar) &&
+    evidence.geo >= 0 &&
+    evidence.similar >= 0 &&
+    body.insufficient_reason == null &&
+    isOptionalInterval(body.relative_rate) &&
+    isOptionalInterval(body.per_10k_logged_ascents) &&
+    (body.per_10k_reason == null || typeof body.per_10k_reason === 'string')
   );
 };
 
-export const isPredictionResponse = (value: unknown): value is PredictionResponse => {
-  if (typeof value !== 'object' || value === null) return false;
-  const body = value as Record<string, unknown>;
-  return (
-    typeof body.num_contributing_accidents === 'number' &&
-    Array.isArray(body.top_contributing_accidents) &&
-    typeof body.metadata === 'object' &&
-    body.metadata !== null &&
-    isRiskResult(body)
-  );
+const isStoredInsufficient = (body: Record<string, unknown>): boolean =>
+  body.insufficient_reason === 'no_evidence' &&
+  typeof body.model_version === 'string' &&
+  body.confidence == null &&
+  body.score_range == null &&
+  body.evidence == null &&
+  body.relative_rate == null &&
+  body.per_10k_logged_ascents == null &&
+  body.per_10k_reason == null;
+
+// Any stored-score key present means the body claims the new contract and must meet all of
+// it; none present is the old shape. A half-formed body is never read as the old shape.
+export const isSafetyResponse = (value: unknown): value is SafetyResponse => {
+  if (!isRecord(value)) return false;
+  const body = value;
+  if (
+    typeof body.route_id !== 'number' ||
+    typeof body.route_name !== 'string' ||
+    typeof body.target_date !== 'string' ||
+    !isRiskResult(body)
+  ) {
+    return false;
+  }
+  if (STORED_KEYS.every((key) => body[key] == null)) return true;
+  return body.data_status === 'ok' ? isStoredOk(body) : isStoredInsufficient(body);
+};
+
+export const parseSafety = (value: unknown): SafetyResponse => {
+  if (!isSafetyResponse(value)) {
+    throw new Error('Malformed safety response from the API.');
+  }
+  return value;
 };
 
 const toReadableError = (error: unknown): Error => {
@@ -143,37 +211,24 @@ const toReadableError = (error: unknown): Error => {
   return error instanceof Error ? error : new Error('Unexpected error.');
 };
 
+export const SCORE_UNAVAILABLE_MESSAGE = 'Score unavailable for this route.';
+
 export const fetchRouteSafety = async (routeId: number, targetDate: string): Promise<SafetyResponse> => {
   let data: unknown;
   try {
     const response = await api.post(`/mp-routes/${routeId}/safety`, null, {
-      params: { target_date: targetDate, bypass_cache: true },
+      params: { target_date: targetDate },
     });
     data = response.data;
   } catch (error) {
-    throw toReadableError(error);
-  }
-  if (!isSafetyResponse(data)) {
-    throw new Error('Malformed safety response from the API.');
-  }
-  return data;
-};
-
-export const predictRouteSafety = async (params: PredictionParams): Promise<PredictionResponse> => {
-  let data: unknown;
-  try {
-    const response = await api.post('/predict', params);
-    data = response.data;
-  } catch (error) {
-    if (axios.isAxiosError(error) && error.response?.status === 422) {
-      throw new Error('Invalid prediction parameters. Please check your input.');
+    // The stored-score API answers 404 when the active model has no row for the route:
+    // the score is unavailable, which is not the same as "no evidence" (gray).
+    if (axios.isAxiosError(error) && error.response?.status === 404) {
+      throw new Error(SCORE_UNAVAILABLE_MESSAGE);
     }
     throw toReadableError(error);
   }
-  if (!isPredictionResponse(data)) {
-    throw new Error('Malformed prediction response from the API.');
-  }
-  return data;
+  return parseSafety(data);
 };
 
 // Names must match GET /accidents (lat, lon, radius_km); the API rejects a partial set with

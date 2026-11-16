@@ -13,22 +13,21 @@ One repo; each Railway service builds from its own root directory and config fil
 | Role | Railway service | Config | Start command | Notes |
 |---|---|---|---|---|
 | API | `backend` | `backend/railway.toml` | `uvicorn app.main:app --host 0.0.0.0 --port 8000` (Dockerfile default) | Healthcheck `/health`. Worker liveness is `/health/worker`, deliberately not the Railway healthcheck, so a worker outage doesn't take the API down |
-| Worker | `celery-worker` | `backend/railway-worker.toml` | `celery -A app.celery_app worker --loglevel=info --concurrency=2 -E` | One replica. Runs the nightly job and the beat heartbeat task |
+| Worker | `celery-worker` | `backend/railway-worker.toml` | `celery -A app.celery_app worker --loglevel=info --concurrency=2 -E` | One replica. Runs the scores heartbeat and the beat heartbeat task |
 | Beat | `beat` (**owner creates it**) | `backend/railway-beat.toml` | `celery -A app.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule` | Exactly one replica; a second double-schedules every task |
 | Catalog cycle | `catalog-cycle` (**owner creates it**) | `backend/railway-catalog-cycle.toml` | `python -m app.pipelines.catalog_cycle run` | Cron `0 9 2 1 *` (UTC), built from `backend/Dockerfile.jobs`. Auto-deploy off; deployed by hand after merges that touch `app/pipelines`. See Scheduled jobs |
 | Frontend | `frontend` | `frontend/railway.toml` | nginx serving the Vite build | Healthcheck `/health`. `MAINTENANCE_MODE` build arg, see below |
-| Redis | Railway Redis | — | — | Celery broker, result backend, and score cache |
+| Redis | Railway Redis | — | — | Celery broker, result backend, and stored-score cache (keys carry the model version) |
 
 The API, worker, and beat all build from `backend/Dockerfile` (Python 3.12, uv, non-root). `catalog-cycle` builds from `backend/Dockerfile.jobs`: the same image plus the `pipelines` dependency group (h3, rasterio, timezonefinder), which the API image leaves out. The frontend builds from `frontend/Dockerfile` (Node 22 build, nginx serve).
 
 Domains: `safeascent.us` (frontend), `www.safeascent.us` (301 to the apex), `api.safeascent.us` (API). TLS is Railway's automatic certificates.
 
-**The worker change and the beat service ship together.** The worker no longer runs an embedded beat. If the new worker deploys without a running `beat` service, nothing schedules the nightly job or the heartbeat.
+**The worker change and the beat service ship together.** The worker no longer runs an embedded beat. If the new worker deploys without a running `beat` service, nothing schedules the scores heartbeat or the beat heartbeat.
 
 Worker notes for the relaunch:
-- `--concurrency=2` (owner decision): the ~2h nightly run holds one slot and `beat_heartbeat` needs the other. The nightly Redis lock (`SET NX`, 6h TTL) keeps two nightly runs from overlapping. Check the worker's memory with two prefork slots against the Railway plan's memory limit.
+- `--concurrency=2` (owner decision, kept for compose parity): a slow task cannot starve `beat_heartbeat`. Check the worker's memory with two prefork slots against the Railway plan's memory limit.
 - `SKIP_WEATHER_STATISTICS` must be off (unset or `false`) on the worker at relaunch (owner decision).
-- The stale-lock recovery counts active nightly runs with `inspect().active()`, which assumes a single worker replica (`numReplicas = 1`).
 
 ## Environment variables
 
@@ -37,12 +36,72 @@ Worker notes for the relaunch:
 - `DATABASE_URL` on `backend`, `celery-worker`, and `beat`. The target is the least-privilege `app` role. Until the relaunch gate the services still use the owner role; switching them is the first relaunch step (plan Task 26).
 - `REDIS_URL` (or the per-purpose `CACHE_REDIS_URL` / `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND`, which fall back to it).
 - `ENVIRONMENT` unset or `production`. `ENABLE_ADMIN_ROUTES` off except for a deliberate admin session. `CORS_ORIGINS` unset (defaults to the production origins).
-- `HEALTHCHECKS_NIGHTLY_URL` and `HEALTHCHECKS_BEAT_URL` on the worker (both tasks run there). An unset URL skips the ping with a WARNING.
+- `HEALTHCHECKS_SCORES_URL`, `HEALTHCHECKS_NIGHTLY_URL` and `HEALTHCHECKS_BEAT_URL` on the worker (the scores heartbeat pings the first two; the beat heartbeat the third). An unset URL skips the ping with a WARNING.
 - `INGEST_DATABASE_URL` on `catalog-cycle` **only**: the `ingest` role on Neon's **direct** host (not the `-pooler` host; every ingest job, `catalog_cycle` included, refuses it), with verify-full TLS (`app.db.ssl` builds the verifying context; `ingest_engine` refuses a URL whose `ssl`/`sslmode` asks for anything weaker). Never set it on `backend`, `celery-worker`, `beat` or `frontend`. Set it as a Railway variable (with `--skip-deploys`), never in a file.
 - `DATABASE_URL` on `catalog-cycle` is the inert placeholder `postgresql+asyncpg://unused@invalid.invalid/unused`, never a reference to `INGEST_DATABASE_URL` or any real database: `Settings` requires the field, the job never uses it, and a code path that wrongly reads it fails instead of connecting as `ingest` (fail closed).
 - `HEALTHCHECKS_CATALOG_URL` (optional) on `catalog-cycle`: `/start`, then success only for an `ok` cycle, `/fail` otherwise.
 - Frontend build args: `VITE_API_BASE_URL` (the API's `/api/v1` URL), `VITE_MAPBOX_TOKEN` (public token), `MAINTENANCE_MODE`.
 - `MIGRATOR_DATABASE_URL` is set on **no** service. It lives only in the owner's gitignored `backend/.env.migrator`, for the explicit migration step.
+
+## Trainer (Phase 3)
+
+- `TRAINER_DATABASE_URL` (the `trainer` role) lives only in the owner's gitignored `backend/.env.trainer` on the Mac. Training, promotion and rollback run from there through the runbook.
+- It is never a Railway service variable and never a GitHub Actions secret (pre-flight F48, 2026-10-22): the repo is public, and no workflow holds a production credential.
+- Neon's **direct** host with verify-full TLS, as for ingest: `app.ml.db.trainer_engine` refuses an unset URL, the `-pooler.` host, and any `ssl`/`sslmode` weaker than verify-full, and never puts the URL in an error message.
+- `HEALTHCHECKS_TRAIN_URL` (35-day dead-man check for the monthly training) goes in `backend/.env.trainer` too. `HEALTHCHECKS_SCORES_URL` is the daily stored-score heartbeat.
+
+## Phase 3 roles
+
+Training runs only from the owner's Mac (pre-flight F48); nothing here becomes a GitHub secret or Railway variable. All commands run from `backend/` after `. scripts/runbook_helpers.sh`, with `TARGET_HOST` set explicitly (a Neon branch host, or `production`). Rehearse on a fresh branch of production first; prod follows only after `gate_pass p3_0_branch`. The helpers are `MIG` (alembic as `migrator`), `OWNER_PSQL` (psql as the owner), `save_once`, `gate_pass` and `gate_require`; there is no `$OWNER_URL` or `$MIGRATOR_URL`. Agents never read `.env.trainer` or print any password.
+
+Owner steps, in order, on the target. Each runs in its own subshell from `backend/`, so a failed step cannot leak a half-loaded environment into the shell:
+
+1. `( . scripts/runbook_helpers.sh && export TARGET_HOST=<target> && OWNER_PSQL -f db/owner/schema_model_phase3.sql )` creates schema `model` (owned by `migrator`).
+2. `uv run python -m scripts.write_role_url --role trainer --env-file .env.trainer --generate-password` writes `TRAINER_DATABASE_URL` and `TRAINER_PASSWORD` into `.env.trainer` (0600, never printed). It needs the owner URL: run it as `( set -a; . ./.env.owner; set +a; uv run python -m scripts.write_role_url ... )` so `.env.owner` is sourced inside the subshell and nothing is echoed.
+   - **On prod, skip this step** when the rehearsal ran on a Neon branch of the same project: roles are shared across a project's branches, so the rehearsal's `trainer` password is already the prod one, and `.env.trainer` stays as it is. Regenerating would write a password that does not match the existing role. Only if the rehearsal ran somewhere else (a different project or a local database), delete `.env.trainer` deliberately and regenerate it, because the old password then belongs to a role that is not prod's.
+3. `( set -a; . ./.env.trainer; set +a; . scripts/runbook_helpers.sh; export TARGET_HOST=<target>; OWNER_PSQL -f db/roles/trainer_login_phase3.sql )` gives `trainer` LOGIN with `CONNECTION LIMIT 4`. The password reaches psql through `\getenv`, never argv. It refuses a rerun. Login scripts run with `psql -X`, never `-L`, which would write the statement text to a log file. (`OWNER_PSQL` already passes `-X`; do not add `-L`.)
+
+Then the migration and grants (agent or owner), as one subshell that stops at the first failure:
+
+```bash
+( cd backend && . scripts/runbook_helpers.sh && : "${TARGET_HOST:?export TARGET_HOST first (branch host or production)}"
+  MIG upgrade 0012_model_registry || exit 1
+  save_once ../data/review/p3-0/current-after.txt MIG current || exit 1
+  OWNER_PSQL -f db/roles/grants_phase3.sql || exit 1
+  OWNER_PSQL -f db/roles/verify_roles_phase3.sql || exit 1
+  OWNER_PSQL -f db/roles/verify_roles_phase2.sql || exit 1
+  gate_pass p3_0_branch )
+```
+
+`grants_phase3.sql` does `SET ROLE migrator`, which the owner holds. A failed verify row stops the run and nothing reaches prod. Rerun `grants_phase3.sql` then `verify_roles_phase3.sql` after every Phase 3 migration. A block that does not end with `GATE OK: ...` means STOP.
+
+### PR 3-0 runbook
+
+Rehearsal on branch `p3-0-rehearsal` (a fresh branch of production):
+
+```bash
+( cd backend && . scripts/runbook_helpers.sh
+  TARGET_HOST="$(branch_host p3-0-rehearsal)" || exit 1; export TARGET_HOST
+  save_once ../data/review/p3-0/heads.txt uv run alembic heads || exit 1          # expect 0012_model_registry (head)
+  save_once ../data/review/p3-0/current-before.txt MIG current || exit 1 )         # expect 0011_exposure_index
+```
+
+STOP. The owner runs owner steps 1-3 above on the branch, then the migration-and-grants block (with `TARGET_HOST` exported as the branch host) ends in `gate_pass p3_0_branch`.
+
+Prod, only after the owner's go. The owner first creates Neon branch `pre-p3-0` from `production` as the snapshot, then runs owner steps 1 and 3 on prod (step 2 per the note above). Then:
+
+```bash
+( cd backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production
+  gate_require p3_0_branch || exit 1
+  MIG upgrade 0012_model_registry || exit 1
+  save_once ../data/review/p3-0/current-prod-after.txt MIG current || exit 1
+  OWNER_PSQL -f db/roles/grants_phase3.sql || exit 1
+  OWNER_PSQL -f db/roles/verify_roles_phase3.sql || exit 1
+  OWNER_PSQL -f db/roles/verify_roles_phase2.sql || exit 1
+  gate_pass p3_0_prod )
+```
+
+The owner then keeps `TRAINER_DATABASE_URL` (direct host, `ssl=verify-full`) in `backend/.env.trainer` only, and creates the healthchecks.io check `train` (period 35 days, grace 3 days), adding its URL as `HEALTHCHECKS_TRAIN_URL` to `.env.trainer`. This runbook has not been executed.
 
 ## Database, roles, and migrations
 
@@ -52,7 +111,7 @@ Worker notes for the relaunch:
   2. Apply to prod the same way from the owner's machine.
 - Roles are created **only** with SQL run as the owner: `backend/db/roles/create_roles.sql`, then `backend/db/roles/verify_roles.sql` (prints `ALL ROLE CHECKS PASSED`). Never with neonctl, the Neon Console, or the Neon API; those grant `neon_superuser`.
   - `migrator` owns the schema objects and is the only app-side role with DDL rights. The owner role keeps DDL for the stamp and role steps, and inherits `migrator` (`WITH SET TRUE, INHERIT TRUE`) until the relaunch gate revokes that membership.
-  - `app` has `SELECT` on the tables and writes only `historical_predictions` (the nightly upsert and purge).
+  - `app` has `SELECT` on the tables and still holds write grants on `historical_predictions` from the retired kernel nightly; no code writes it now (`tests/test_backtest_window_kept.py`).
   - `analyst` is pre-existing and read-only: `SELECT` via default privileges, no DML or DDL. It must already exist before `create_roles.sql` runs (the script grants it default privileges and `verify_roles.sql` checks it).
   - Role passwords are generated into the gitignored 0600 env files (from `backend/`: `python -m scripts.write_role_url --role <r> --env-file .env.<r> --generate-password`). `create_roles.sql` reads them as plaintext from `MIGRATOR_PASSWORD`/`APP_PASSWORD` via psql `\getenv` (never argv) and sends them over `verify-full` TLS; the server stores SCRAM-SHA-256. Neon rejects pre-hashed verifiers ("Neon only supports being given plaintext passwords", 2026-09-28), so the script refuses a value that looks like a SCRAM or md5 verifier, and anything under 32 characters.
   - `create_roles.sql` also revokes the running owner's default table grants to `analyst` in `public` (prod's `neondb_owner` had one). After `alembic stamp` and `alembic upgrade head`, `REVOKE ALL ON public.alembic_version FROM app`: the stamp creates that table under `migrator`'s default `SELECT` grant to `app`.
@@ -64,29 +123,30 @@ Worker notes for the relaunch:
 - `0008_mp_catalog` needs the `ltree` extension, which `migrator` cannot create (no `CREATE` on the database): before upgrading a branch or prod to it, the owner runs `backend/db/owner/extensions_mp_catalog.sql` with `psql`, then after the migration `grants_phase2.sql` and `verify_roles_phase2.sql` as for every Phase 2 migration. Its downgrade refuses while `canonical_routes`, `canonical_areas` or `internal.route_tick_scrapes` holds any row.
 - MP catalog: run `uv run python -m app.pipelines.mp_catalog refresh` (as `ingest`, from `backend/`; `--dry-run` prints the counts and writes nothing) after every private MP scrape load, so `canonical_routes`/`canonical_areas` cover every `mp_routes`/`mp_locations` row. The scrape loader must upsert MP rows, never delete them: the catalog's FKs (`ON DELETE RESTRICT`) refuse the delete. A refresh whose scorable count falls more than 3% below the stored catalog's is rejected (logged in `source_ingest_log`, source `mp_catalog`) and changes nothing; find out why the scrape lost type strings before re-running. The `catalog-cycle` cron service runs it yearly as the first step of its cycle (Scheduled jobs, below); after a scrape load, run that service on demand, or run the refresh and the data jobs below by hand.
 - Data jobs, after each `mp_catalog refresh` (as `ingest`, from `backend/`; the same order the `catalog-cycle` service runs): `uv run python -m app.pipelines.static_features points` (one point per area that holds a scorable route), then `uv run python -m app.pipelines.static_features elevation` repeated until its output reports `"sampled": 0, "retry": 0` (a non-zero `retry` is a transient DEM read error on that batch, not a failure — rerun), then `uv run python -m app.pipelines.static_features epqs-check` (the EPQS gate; exit 1 means it failed: stop, do not rebuild routes), then `uv run python -m app.pipelines.static_features routes` to rebuild `route_static_features` (it refuses if `points` hasn't covered every scorable route yet). The gate runs before every routes rebuild, by hand or in the cycle (reconciled 2026-10-15; an earlier line here called `epqs-check` a one-off acceptance run). Every ingest job refuses Neon's `-pooler.` host: use the direct host. Climate normals for newly-registered grid buckets are **not** filled by this sequence — they fill the next time `era5_window run` executes inside a Professional window (see Open-Meteo, below) — and `scoring_unit_features.normals_status` reads `pending` for them until then, never a fabricated value.
-- `weather` (legacy, read-only) stays until the Phase 3 MVP-1 PR, which **must** drop it (hard gate: MVP-1 does not merge while `weather` exists). Until then the live kernel reads legacy weather that is mislinked for some accidents; the relaunch caveat lists this.
+- `weather` (legacy) is dropped by `0013_drop_legacy_weather`, the Phase 3 MVP-1 hard gate. It is a contract migration: the previously deployed nightly and `/predict` read the table, so it runs on prod only after PR 3-4 is deployed and the nightly has switched to the scores heartbeat, behind its own runbook gate (Task 26). A non-empty table is refused unless an `ok` `r6_verify` row in `source_ingest_log` meets the agreement thresholds (n > 100, r_tmax > 0.95, p99_gust < 60), and has no downgrade: rollback is the `pre-p3-4` Neon snapshot branch. No dump is committed. The runbook's evidence (`data/review/p3-4/r6.txt`, plan Task 26 Step 1) runs the migration's own `QUALIFYING_R6` predicate and saves `n`, `r_tmax` and `p99_gust`. If `weather` is non-empty and no row qualifies, STOP: `app/pipelines/r6_verify.py` was deleted with Task 24 and stays deleted; to re-run R6, restore it in a scratch checkout from git `44ca2b8` (`git show 44ca2b8:backend/app/pipelines/r6_verify.py`), run it as `ingest`, re-save the evidence, and never commit the restored module.
+- **Pre-merge gate for PR 3-4** (`feat/p3-mvp1-serving`; same shape as the `0004` gate above). The API code reads `model.registry` and `model.route_scores`, so merging it ahead of the database breaks every score route. **Before merging that PR**, confirm and record, failing loudly (STOP, never a degraded deploy) if any one is false:
+  1. auto-deploy is off on every Railway service (pause it if it is on: with auto-deploy on, the merge itself deploys);
+  2. prod is at `0012_model_registry` (`MIG current`), and `grants_phase3.sql` then `verify_roles_phase3.sql` pass on prod;
+  3. an `eb_v1` version is active (`SELECT version, family FROM model.registry WHERE status = 'active'` returns one `eb_v1` row: Task 21's first training run is done). With only the kernel baseline active every route is unavailable, so the merge waits.
+  Then deploy the **frontend service first**, then the api, worker and beat (plan Task 26 Step 2): no live bundle may call `/predict` or read the old trends/hourly shapes. `0013` runs only after that deploy, behind its own gate (Task 26 Step 2b).
 - Relaunch caveat, Open-Meteo key: `app/services/weather_service.py` and `app/api/v1/mp_routes.py` still send `settings.OPEN_METEO_API_KEY` on live calls, outside `era5_window`'s Budget and spend log. Per owner OQ7 the live app reads weather history from our database, so the production runtime (`backend`, `celery-worker`, `beat`) must not carry the Professional key; it is exported only into the paid `era5_window run` shell.
 
 ## Open-Meteo
 
 The archive API needs Professional (Standard excludes it; pricing read 2026-09-28, re-check before buying). One Professional month per year, started on or after 10 January: run `era5_window run --window-start <day> --max-units <cap>` on prod until it reports no chunks and no normals due, then downgrade to Standard (which the nightly forecast and its `past_days` stopgap need). Between windows no ERA5 call is made.
 
-## Nightly job
+## Scores heartbeat
 
-At 02:00 UTC, beat enqueues `compute_daily_safety_scores_optimized` (message expires after 8h). The worker:
+The kernel nightly is gone (P3 Task 23); scores are written by the monthly training run. At 02:00 UTC beat enqueues `app.tasks.scores_heartbeat.scores_heartbeat` (message expires after 1h). It computes nothing. It checks that exactly one registry version is active, that its bundle bytes match `bundle_sha256`, and that it has a `model.route_scores` row for the current UTC month for every route the version scored. The routes counted are the trainer's cells (`app.ml.dataset.AREAS_SQL`: scorable, `type_group <> 'unknown'`, area `lat` not null); one the version scored in another month but not this one is `missing_scores`. A route the version has no row for at all (added to the catalog, or newly given coordinates, after the training snapshot) is reported as `unscored_new` and logged as a WARNING, never a failure: it stays unavailable until the next training run. Healthy: it pings `HEALTHCHECKS_SCORES_URL` and `HEALTHCHECKS_NIGHTLY_URL` (kept so the old dead-man check stays meaningful). Otherwise it pings `/fail` on both, logs the reason, and returns it (`no_active_version`, `multiple_active_versions`, `kernel_active_nothing_servable`, `bundle_missing`, `bundle_sha_mismatch`, `missing_scores` with the count). While only the kernel baseline row is active, it fails with `kernel_active_nothing_servable`: nothing is servable until the first model version is promoted, and `bundle_missing` is kept for an `eb_v1` version whose bundle is gone.
 
-- takes the population lock, then computes today plus the next 2 days;
-- writes Redis score keys (2-day TTL) and `historical_predictions` rows (a route with too little evidence is stored as `risk_score` NULL + `gray`);
-- purges `historical_predictions` rows older than a year;
-- pings `HEALTHCHECKS_NIGHTLY_URL` with `/start`, then success or `/fail` (the error is re-raised). A run skipped by the lock sends no pings.
+`tests/verify/test_model_scores.py` (`-m db`, analyst) checks one active version, 12 months per scorable route, no number on an insufficient row, and that the active version's `model_card.conf_counts` (written by the train CLI; the check skips for a version trained before that key existed) equals the live `conf_level` row counts.
 
-Time limits: soft 5h, hard 5.5h, below the 6h lock TTL and broker visibility timeout, so a hung run is killed before a redelivered copy could start a duplicate.
+`app.tasks.cache_warming` warms `safety:{version}:{route}:{month}` from the active version's stored rows; it is not scheduled.
 
 Operator notes:
 
-- A lost broker connection cancels the in-flight nightly (`worker_cancel_long_running_tasks_on_connection_loss`). With the Redis broker the unacked message comes back only after the 6h `visibility_timeout`, so a run cancelled soon after 02:00 reruns around 08:00 UTC, and not at all if redelivery lands after the message's 8h `expires` (it is then discarded and counted as expired). The cancelled child may skip its `finally` lock release; the stale-lock recovery then applies, and it fails closed (keeps the lock) when `inspect()` does not answer.
-- `GET /api/v1/mp-routes/admin/trigger-cache-population` runs the same task, which pings `HEALTHCHECKS_NIGHTLY_URL` on success like the scheduled run. A manual run therefore resets the nightly check and can mask a missed scheduled run for up to a day.
-- Beat keeps its schedule state in `/tmp/celerybeat-schedule`, which is lost when the beat container restarts. A beat restart that straddles 02:00 UTC skips that night's run (a fresh beat does not catch up a missed crontab slot); the `safeascent-nightly` healthchecks alert catches it.
+- A lost broker connection cancels the in-flight task (`worker_cancel_long_running_tasks_on_connection_loss`). With the Redis broker the unacked message comes back only after the 6h `visibility_timeout`; the heartbeat's 1h `expires` discards a late copy, counted as expired.
+- Beat keeps its schedule state in `/tmp/celerybeat-schedule`, which is lost when the beat container restarts. A beat restart that straddles 02:00 UTC skips that day's heartbeat; the `safeascent-nightly` healthchecks alert catches it.
 
 Revoked and expired tasks are logged at ERROR; expired ones are counted per task per UTC day. `GET /health/worker` reports the 7-day counts.
 
@@ -94,7 +154,7 @@ Revoked and expired tasks are logged at ERROR; expired ones are counted per task
 
 | Check | Pinged by | Period | Grace |
 |---|---|---|---|
-| `safeascent-nightly` | the nightly job (start, success, fail) | 24h | 4h |
+| `safeascent-nightly` | the scores heartbeat (success, fail); the check predates it | 24h | 4h |
 | `safeascent-beat` | `beat_heartbeat`, scheduled by beat every 15 min and run on the worker | 15 min | 60 min |
 
 The beat check proves both that beat scheduled the task and that the worker consumed it, so a dead consumer alerts within 75 minutes.
@@ -142,6 +202,6 @@ To flip: set the variable on the `frontend` service and redeploy. Locally: `fron
 
 ## Insufficient-data rollout (2026-09-28)
 
-1. Run `alembic upgrade head` (migration `0003_hist_insufficient_data`) before the new backend/worker code runs. Without it the nightly history insert hits `risk_score NOT NULL` for any batch containing an insufficient route, and the task now fails on that.
+1. Run `alembic upgrade head` (migration `0003_hist_insufficient_data`) before the new backend/worker code runs. (Historical note: the retired kernel nightly's history insert needed it.)
 2. Deploy backend and frontend together (the frontend requires `data_status`).
-3. Right after the deploy, trigger the nightly population task (`compute_daily_safety_scores_optimized`) once, e.g. via `GET /api/v1/mp-routes/admin/trigger-cache-population` (only mounted when `ENABLE_ADMIN_ROUTES` is set) or by calling the Celery task from a worker shell. Redis still holds scores from before the deploy; reads already map a stale `0.0` to insufficient, but a fresh run rewrites every route under the new rule.
+3. The kernel nightly this rollout once triggered no longer exists; the stored-score API needs no warm-up.

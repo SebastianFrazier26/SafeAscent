@@ -86,7 +86,7 @@ async def run(conn: AsyncConnection, *, today: date) -> dict[str, int]:
 
 async def _main() -> None:
     from app.pipelines.db import ingest_engine
-    from app.services.temporal_weighting import utc_today
+    from app.utils.time_utils import utc_today
 
     engine = ingest_engine()
     try:

@@ -60,3 +60,25 @@ def test_mp_and_catalog_tables_have_no_prose_columns():
         found = asyncio.run(columns(pg_url(name)))
     assert {t for t, _ in found} == set(CATALOG_TABLES)
     assert [f"{t}.{c}" for t, c in found if c.lower() in FORBIDDEN] == []
+
+
+def _example_ids(node: object, key: str = "") -> list[tuple[str, int]]:
+    if isinstance(node, dict):
+        return [hit for k, v in node.items() for hit in _example_ids(v, str(k))]
+    if isinstance(node, list):
+        return [hit for v in node for hit in _example_ids(v, key)]
+    if isinstance(node, int) and not isinstance(node, bool) and (key.endswith("_id") or key == "id"):
+        return [(key, node)]
+    return []
+
+
+def test_openapi_examples_use_only_synthetic_ids():
+    # A real MP (or accident) id in a published example is a real record in the docs; fixtures start
+    # at 900000000 (scripts/check_no_mp_data.py's floor).
+    offenders = []
+    for module in (mp_location, mp_route, prediction):
+        for name, cls in inspect.getmembers(module, inspect.isclass):
+            if issubclass(cls, BaseModel) and cls.__module__ == module.__name__:
+                extra = cls.model_config.get("json_schema_extra")
+                offenders += [f"{name}.{k}={v}" for k, v in _example_ids(extra) if v < 900_000_000]
+    assert offenders == []

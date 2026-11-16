@@ -11,8 +11,8 @@ from app.services.weather_service import (
     fetch_current_weather_pattern,
     fetch_weather_statistics,
     _month_distance,
+    WeatherPattern,
 )
-from app.services.weather_similarity import WeatherPattern
 
 
 class TestFetchCurrentWeatherPattern:

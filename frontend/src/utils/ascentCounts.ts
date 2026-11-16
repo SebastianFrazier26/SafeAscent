@@ -1,12 +1,11 @@
 /**
  * The Ascents tab shows plain counts, never an accidents-per-ascents rate: MP ticks are a
- * capped, recent, self-reported sample, so a raw ratio would misstate risk. A shrunk rate
- * (per 10,000 logged ascents) comes with the Phase 3 model.
+ * capped, recent, self-reported sample, so a raw ratio would misstate risk. The model's
+ * stored rates are shown by AscentsHeadline.
  */
 
 export const LOGGED_ASCENTS_NOTE =
-  'Counts from Mountain Project logged ascents, which undercount real ascents. '
-  + 'A rate estimate comes with the Phase 3 model.';
+  'Counts from Mountain Project logged ascents, a partial sample that undercounts real ascents.';
 
 const isCount = (value: unknown): value is number =>
   typeof value === 'number' && Number.isInteger(value) && value >= 0;

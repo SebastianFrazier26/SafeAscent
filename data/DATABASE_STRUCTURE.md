@@ -131,8 +131,8 @@ WHERE ST_DWithin(
 
 ---
 
-### 4. weather (legacy)
-**Purpose:** 7-day weather windows for accident dates. Superseded by `cell_daily_conditions` (table 10) as of `0007`/plan 3; read-only from here on, kept only as the comparison input to `r6_verify`'s one-time ERA5-vs-legacy agreement check (`app/pipelines/r6_verify.py`). Nothing in `app/` writes it. It stays until the Phase 3 MVP-1 PR, which **must** drop it (hard gate: MVP-1 does not merge while `weather` exists); see `DEPLOYMENT.md`.
+### 4. weather (dropped by `0013_drop_legacy_weather`)
+**Purpose:** 7-day weather windows for accident dates. Superseded by `cell_daily_conditions` (table 10) as of `0007`/plan 3. `0013` drops a non-empty table only once an `ok` `r6_verify` run meeting n > 100, r_tmax > 0.95, p99_gust < 60 is logged (the R6 evidence and how to re-run R6 are in `DEPLOYMENT.md`); the columns below describe the table as it was. Rollback is the `pre-p3-4` snapshot branch (`DEPLOYMENT.md`).
 **Records:** ~25,000
 
 | Column | Type | Description |
@@ -173,7 +173,7 @@ WHERE ST_DWithin(
 **Constraints:**
 - UNIQUE on `(route_id, prediction_date)` - one score per route per day
 - CHECK (`NOT VALID`, from `0003`): `risk_score IS NULL` exactly when `color_code = 'gray'`
-- Auto-purges data older than 1 year
+- Auto-purges data older than 1 year, except the Phase 3 prospective backtest window 2026-02-05 to 2026-07-02, which the nightly purge keeps (2026-10-15, DP14) until Phase 3 records it
 
 **Use Cases:**
 - Route risk trend analysis (improving/worsening over time)
@@ -500,8 +500,6 @@ mp_locations (45K)
             └── historical_predictions (growing daily)
 
 accidents (6.9K)
-    │
-    └── weather (25K)
 ```
 
 `canonical_areas` and `canonical_routes` (`0008`) hang one-to-one off `mp_locations` and `mp_routes` by the same ids, with `ON DELETE RESTRICT` FKs; `internal.route_tick_scrapes` hangs off `mp_routes` the same way.
@@ -528,6 +526,17 @@ Added by `0004_phase2a_foundation`. Owned by `migrator`; `app` has no `USAGE` on
 | `r10_llm_calls` | Added by `0010`, written by `app.data.repair.r10_llm` (`sample`, `run`): one append-only audit row per call (pinned `model` and `model_reported`, `prompt_version`, `payload_fields` and `request_sha256` — never the payload or narrative text, offered `candidate_ids`, `status` `ok`/`invalid`/`refusal`/`max_tokens`/`error`, `pick_id` or `pick_none`, `confidence`, `reason_code`, tokens, `cost_usd`, `is_sample`). The database refuses a pick that was not offered. `apply` uses only the latest `ok` call whose `candidate_ids` still equal the row's current candidates. Each run's spend, including the in-flight call's worst case recorded before it is sent, is in `source_ingest_log` under source `r10_llm` (`cost_units` in USD, `content_sha256` = sha256 of `model|prompt_version`); the `--max-usd` cap is checked against the sum of every such row for the model and prompt (failed and running rows included), so it is cumulative. At most 2 rows per accident, model and prompt. Known gap: if the process dies after the API answered but before the audit row commits, that call's answer and tokens are lost; its worst-case reservation stays in the ledger (counted against the cap) and a later run calls the case again |
 | `r10_llm_gates` | Added by `0010`: one append-only gate decision per (model, prompt version) sample run, from `r10_llm gate` (`n_checked`, `n_agree`, `n_auto_band`, `n_auto_band_agree`, `auto_threshold` 0.80, `passed`: ≥ 100 checked, ≥ 30 in the auto band, ≥ 95% auto-band precision). `apply` links nothing, and `run` refuses to call the API, unless the latest gate row for its model and `PROMPT_VERSION` passed (a later failing gate revokes an earlier pass). `gate` also saves each spot-check answer as an owner decision on the accident's `r10_unresolved` row (`link` with `decided_route_id` or `decided_area_id` per the candidate kind, or `no_link` for `none`), whether or not the gate passes; a row the owner already decided keeps its decision (reported as `owner_decisions_skipped`), and `apply` never overrides an owner decision |
 | `exposure_index` | Added by `0011`. Exposure snapshots, written by `app.pipelines.exposure` (`build`/`drop`), never served. PK `(area_id, type_group, month, as_of, data_cutoff)`; `n_routes`, `proxy` (JSONB), `proxy_version` (`x-mp-v1`), `tick_coverage`, `exposure_point`/`exposure_lo`/`exposure_hi`, `run_id`. A production snapshot has `data_cutoff = as_of`; a backtest sets an earlier cutoff. The point is route density x season share (no floor: a missing season gives a NULL point), bounds are point ÷3 and x3; CHECKs enforce order, >= 0, no NaN/inf and all-or-none bounds. `proxy` holds three components, each `{value, missing, reason?, ...detail}`: `route_density` (routes in the cell), `season_share` and `mp_ticks`. Missing reasons: `no_point`, `no_tz`, `no_era5`, `insufficient_history` (season: fewer than 28 known days for the calendar month across the 3-year window), `no_complete_routes` (ticks), `disabled` (`EXPOSURE_ENABLE_MP_TICKS=false`), `table_dropped` (tick views gone). **Ticks:** MP tick periods (believed to be climb dates; unverified) for the cell's calendar month over the 60 complete months ending at the earlier of `complete_through` and the last day of the month before the cutoff, summed over complete routes (never scaled), averaged per year of the 60-month window; `tick_coverage` = complete routes / routes. Rock coverage is biased by scrape order (accident areas first), so a partial sum is not low traffic. Counts are frozen at scrape time: ticks logged after a cutoff on older months are counted. **Season share:** the share of known days meeting the rock/ice/alpine rule over the 3 complete calendar years ending at the last Dec 31 on or before the series' `last_era5_date` (per series, so areas may sit on different windows); it is time-invariant within a window and uses climate (ERA5) dates. `--cutoff` bounds only ticks. Backtest snapshots use the current season window and the current catalog (DP4). A build before the January ERA5 window leaves some seasons `insufficient_history`. Access: `app` none, `analyst` SELECT, `ingest` SELECT/INSERT/DELETE (no UPDATE), `trainer` none until Phase 3 grants it. Downgrade refuses while rows exist |
+
+---
+
+## Schema `model`
+
+Added by `0012_model_registry`; the owner creates the schema first (`backend/db/owner/schema_model_phase3.sql`), owned by `migrator`. `trainer` has the Phase 3 allowlist (`backend/db/roles/grants_phase3.sql`, checked by `verify_roles_phase3.sql`). Downgrade refuses while either table holds a row.
+
+| Table | Purpose |
+|-------|---------|
+| `registry` | One row per trained model version (PK `version`): `family` (`kernel` or `eb_v1`), `data_hash`, `train_start`, `data_cutoff`, `exposure_as_of`, `metrics`, `thresholds`, `model_card`, the serialized `bundle` with `bundle_sha256`/`bundle_bytes` (all three set or all NULL), `status`, `promoted_at`, `promoted_by` (`auto` or `owner`), `parent_version` (FK), `gate_result`, `diff_report`, `scores_rows`. Partial unique indexes allow at most one `active` and one `previous` row. CHECKs: `family` in (`kernel`, `eb_v1`), `status` in (`candidate`, `active`, `previous`, `rejected`, `retired`), `promoted_by` in (`auto`, `owner`), the bundle triple all-or-none, servable (a non-kernel `active`/`previous` row has a bundle and `scores_rows` > 0), `promoted_at` set exactly for `active`/`previous`/`retired` non-kernel rows, and non-negative `scores_rows` and `bundle_bytes` |
+| `route_scores` | Stored scores, PK `(model_version, route_id, month)`; FKs to `registry`, `canonical_routes` and `canonical_areas` (all `ON DELETE RESTRICT`): `type_group`, `insufficient` and `insufficient_reason`, relative risk `rr_mean`/`rr_q05`/`rr_q95`, `percentile` with bounds, `conf_level`, `n_eff_geo`/`n_eff_feature`, and `per10k_*` with `per10k_reason`. CHECKs: month 1-12, `type_group` and `conf_level` value lists, `insufficient_reason` only `no_evidence`, `insufficient` equal to `conf_level = 'insufficient'` and to a non-NULL reason, all-or-none score numbers, `rr_q05 <= rr_mean <= rr_q95` with `rr_q05 > 0`, percentile order within 0-100, per10k all-or-none with its reason, finite values (no NaN/inf) and non-negative finite `n_eff_*`. Doubles for rr/pct/per10k (pre-flight F31) |
 
 ---
 
@@ -566,14 +575,6 @@ FROM mp_routes r
 JOIN mp_locations l ON r.location_id = l.mp_id
 WHERE l.latitude IS NOT NULL
   AND l.longitude IS NOT NULL;
-```
-
-### Weather Pattern Matching
-```sql
--- Get 7-day weather window for an accident
-SELECT * FROM weather
-WHERE accident_id = :id
-ORDER BY date ASC;
 ```
 
 ---

@@ -1,6 +1,7 @@
 -- Run as the database owner. MIGRATOR_PASSWORD / APP_PASSWORD come via \getenv, never argv,
 -- and reach the server as plaintext over verify-full TLS; the server stores SCRAM-SHA-256.
 -- Create roles only through this file: neonctl / Console / API roles join neon_superuser.
+-- Run with psql -X; never with -L (the session log records statements with the password in them).
 \set ON_ERROR_STOP on
 \set VERBOSITY terse
 \set SHOW_CONTEXT never
@@ -13,6 +14,9 @@ SELECT NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname IN ('migrator', 'app')) 
   DO $$ BEGIN RAISE EXCEPTION 'migrator/app already exist; do not rerun create_roles.sql'; END $$;
 \endif
 
+-- -e/-a/-b would echo every statement after this point with the password interpolated.
+\set ECHO none
+\set ECHO_HIDDEN off
 \getenv migrator_password MIGRATOR_PASSWORD
 \getenv app_password APP_PASSWORD
 \if :{?migrator_password}
@@ -118,8 +122,8 @@ END $$;
 
 SET ROLE migrator;
 
--- The app only reads, except for the nightly historical_predictions upsert and purge
--- (app/tasks/safety_computation_optimized.py). nextval needs USAGE on the id sequence.
+-- The app only reads. The historical_predictions write grants below date from the retired kernel
+-- nightly (removed in P3 Task 23); nothing in app/ writes the table now. nextval needs USAGE on the id sequence.
 DO $$
 DECLARE
   obj record;

@@ -1,9 +1,12 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fetchRouteSafety, type SafetyResponse } from '../services/api';
+import { fetchRouteSafety, SCORE_UNAVAILABLE_MESSAGE, type SafetyResponse } from '../services/api';
 import { useRouteSafety } from './useRouteSafety';
 
-vi.mock('../services/api', () => ({ fetchRouteSafety: vi.fn() }));
+vi.mock('../services/api', () => ({
+  fetchRouteSafety: vi.fn(),
+  SCORE_UNAVAILABLE_MESSAGE: 'Score unavailable for this route.',
+}));
 
 const OK: SafetyResponse = {
   route_id: 42,
@@ -54,6 +57,20 @@ describe('useRouteSafety', () => {
     vi.mocked(fetchRouteSafety).mockResolvedValue(INSUFFICIENT);
     const { result } = renderHook(() => useRouteSafety(42, '2026-09-27'));
     await waitFor(() => expect(result.current.state).toEqual({ status: 'insufficient', data: INSUFFICIENT }));
+  });
+
+  it('reads an unavailable score as its own state with no data', async () => {
+    vi.mocked(fetchRouteSafety).mockRejectedValueOnce(new Error(SCORE_UNAVAILABLE_MESSAGE));
+    const { result } = renderHook(() => useRouteSafety(42, '2026-09-27'));
+    await waitFor(() => expect(result.current.state).toMatchObject({ status: 'error', unavailable: true }));
+    expect(result.current.state).not.toHaveProperty('data');
+  });
+
+  it('does not mark an ordinary failure as unavailable', async () => {
+    vi.mocked(fetchRouteSafety).mockRejectedValueOnce(new Error('Network down'));
+    const { result } = renderHook(() => useRouteSafety(42, '2026-09-27'));
+    await waitFor(() => expect(result.current.state).toMatchObject({ status: 'error' }));
+    expect(result.current.state).not.toHaveProperty('unavailable');
   });
 
   it('ignores a stale response after the route changes', async () => {

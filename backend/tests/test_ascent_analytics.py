@@ -47,6 +47,13 @@ INSERT INTO accidents (accident_id, date, route_id, mp_route_id) VALUES
     (4, '2008-03-02', NULL, {ROUTE}),
     (5, '3901-01-20', NULL, {ROUTE}),
     (3, NULL, NULL, {ROUTE});
+-- Seasonal patterns place a route through its catalog point, never mp_routes lat/lon.
+INSERT INTO canonical_areas (area_id, parent_id, path, depth, tree_status, state_code, lat, lon, coord_precision,
+  coord_source_id, point_key, catalog_version) VALUES
+  (10, NULL, '10', 1, 'us', 'CO', 40.0, -105.0, 'own', 10, '40.00000:-105.00000', 'v');
+INSERT INTO canonical_routes (route_id, area_id, type_group, is_boulder, disciplines, type_rule_version, scorable,
+  unscorable_reason, facts_sha256, catalog_version) VALUES
+  ({THIRD_ROUTE}, 10, 'trad', false, '{{trad}}', 'rt-mp-v3', true, NULL, 'x', 'v');
 -- Nearby accidents for the route-accidents endpoint (Third Route, ~1 km away).
 INSERT INTO accidents (accident_id, date, route, mp_route_id, latitude, longitude) VALUES
     (11, '2015-05-01', 'Unrelated Name', {THIRD_ROUTE}, 40.005, -105.0),
@@ -55,6 +62,9 @@ INSERT INTO accidents (accident_id, date, route, mp_route_id, latitude, longitud
     (14, '3901-05-01', 'Third Route', {THIRD_ROUTE}, 40.008, -105.0),
     (15, '2018-05-01', 'Third Route', {THIRD_ROUTE}, NULL, NULL),
     (16, '2018-06-01', 'Third Route', NULL, NULL, NULL);
+-- The seasonal counts read accidents_clean: canonical, climbing, US, with a known day.
+UPDATE accidents SET is_canonical = true, activity_class = 'climbing', country = 'US', date_precision = 'day'
+  WHERE accident_id BETWEEN 11 AND 14;
 """
 
 
