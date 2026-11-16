@@ -12,6 +12,12 @@ WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
 CI = WORKFLOWS / "ci.yml"
 FORBIDDEN = ("TRAINER_DATABASE_URL", "app.ml.train", "issue_comment")
 USES = re.compile(r"^\s*-?\s*uses:\s*(\S+?)@(\S+)", re.MULTILINE)
+# Actions only pages.yml uses (PR #19), so ci.yml carries no pin for them; reviewed 2026-11-15.
+EXTRA_PINS = {
+    "actions/configure-pages": {"45bfe0192ca1faeb007ade9deae92b16b8254a0d"},
+    "actions/upload-pages-artifact": {"fc324d3547104276b827a68afc52ff2a11cc49c9"},
+    "actions/deploy-pages": {"368f82528645a54fb793d4d04e342629a3f51346"},
+}
 
 
 def _files() -> list[Path]:
@@ -68,6 +74,8 @@ def test_every_action_is_pinned_to_the_sha_ci_uses(path):
     for action, ref in USES.findall(CI.read_text(encoding="utf-8")):
         pins.setdefault(action, set()).add(ref)
     assert all(len(refs) == 1 for refs in pins.values()), f"ci.yml pins an action two ways: {pins}"
+    assert not pins.keys() & EXTRA_PINS.keys(), "ci.yml now pins an EXTRA_PINS action; drop it from EXTRA_PINS"
+    pins.update(EXTRA_PINS)
     for action, ref in USES.findall(path.read_text(encoding="utf-8")):
         assert re.fullmatch(r"[0-9a-f]{40}", ref), f"{path.name}: {action}@{ref} is not a full commit SHA"
         assert action in pins, f"{path.name}: {action} is not used by ci.yml, so it has no reviewed pin"
