@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### CI dependency fixes - 2026-10-23
+
+- `backend/Dockerfile.jobs` production stage installs `libexpat1`; rasterio's wheel links `libexpat.so.1`, so the jobs-image import smoke test failed without it. The API image does not ship rasterio and is unchanged.
+- `certifi` pinned at 2026.10.19 (was 2026.7.22) in `backend/pyproject.toml` and `backend/uv.lock`, the fix release for PYSEC-2026-4320 found by `pip-audit`.
+- `follow-redirects` bumped in `frontend/package-lock.json` for GHSA-q3jh-wrc6-jgq8 and GHSA-8r9p-f939-6h3c; `npm audit --omit=dev --audit-level=high` is clean.
+
 ### MP catalog final-review fixes — 2026-10-15
 
 - Route types `rt-mp-v3` (2026-10-14): a route whose only discipline evidence is toprope or aid ("Rock, TR" included) maps to `rock` (sport or trad, unknown), no longer `trad`; a V grade means a boulder whatever the type flags. The first refresh under the new version rewrites every route's `facts_sha256` once.
