@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `backend/Dockerfile.jobs` production stage installs `libexpat1`; rasterio's wheel links `libexpat.so.1`, so the jobs-image import smoke test failed without it. The API image does not ship rasterio and is unchanged.
 - `certifi` pinned at 2026.10.19 (was 2026.7.22) in `backend/pyproject.toml` and `backend/uv.lock`, the fix release for PYSEC-2026-4320 found by `pip-audit`.
 - `follow-redirects` bumped in `frontend/package-lock.json` for GHSA-q3jh-wrc6-jgq8 and GHSA-8r9p-f939-6h3c; `npm audit --omit=dev --audit-level=high` is clean.
+- `follow-redirects` bumped again to 1.16.3 for GHSA-mrwp-f3q8-3g9p (new advisory, 2026-11-15).
 
 ### Hardening: tick-reload metrics and pinned base images — 2026-10-15
 
