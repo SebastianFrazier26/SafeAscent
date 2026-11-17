@@ -168,14 +168,30 @@ def test_r3a_named_peaks_are_near_their_summit():
 
 
 def test_r3_no_trusted_rows_at_raw_fallback_points_and_no_alaska_text_below_55n():
-    from app.data.repair.geocode import TRUSTED_POINT_PRECISIONS, GeoRow, alaska_point_misplaced, find_fallback_points
+    from app.data.repair.geocode import (
+        GNIS_SQL,
+        MP_LOCATIONS_SQL,
+        MP_ROUTE_COUNTS_SQL,
+        TRUSTED_POINT_PRECISIONS,
+        GeoRow,
+        alaska_point_misplaced,
+        find_fallback_points,
+        mp_area_index_from_rows,
+        summit_index_from_rows,
+    )
     from app.pipelines.gnis import state_code
 
-    # G6: fallback points come from the pre-repair snapshot with the step's own rule; rebuilt
-    # from live coordinates, R3a's summit moves would form "clusters" of area rows by design.
+    # G6: fallback points come from the pre-repair snapshot with the step's own rule (both of its
+    # exemptions, from the same tables); rebuilt from live coordinates, R3a's summit moves would form
+    # "clusters" of area rows by design.
     raw = fetch("SELECT accident_id, mountain, latitude, longitude FROM internal.accidents_raw")
+    summits = summit_index_from_rows([tuple(r.values()) for r in fetch(GNIS_SQL)])
+    mp = mp_area_index_from_rows(
+        [tuple(r.values()) for r in fetch(MP_LOCATIONS_SQL)], [tuple(r.values()) for r in fetch(MP_ROUTE_COUNTS_SQL)]
+    )
     points = find_fallback_points(
-        [GeoRow(r["accident_id"], "aac", r["mountain"], None, r["latitude"], r["longitude"], None) for r in raw]
+        [GeoRow(r["accident_id"], "aac", r["mountain"], None, r["latitude"], r["longitude"], None) for r in raw],
+        summits, mp,
     )
     live = fetch("SELECT accident_id, latitude, longitude, geocode_precision FROM accidents WHERE latitude IS NOT NULL")
     at_fallback = [

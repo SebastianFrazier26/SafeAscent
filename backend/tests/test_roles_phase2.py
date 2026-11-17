@@ -800,13 +800,16 @@ STAGED_MUTATIONS: dict[str, list[tuple[str, str, str | None]]] = {
     "0004_phase2a_foundation": [
         ("REVOKE SELECT ON public.source_ingest_log FROM ingest",
          "ingest SELECT on public.source_ingest_log matches the expected set", None),
-        # 0008's widening, before 0008: an older table, so only the block guard keeps it out.
+        # Block 0005's widening (R3's crag exemption), before 0005: an older table, so only the block
+        # guard keeps it out.
         ("GRANT SELECT (parent_id) ON public.mp_locations TO ingest",
          "ingest mp_locations column privileges match the expected set: parent_id", None),
     ],
     "0006_accidents_clean": [
         ("REVOKE DELETE ON public.gnis_summits FROM ingest",
          "ingest DELETE on public.gnis_summits matches the expected set", None),
+        ("REVOKE SELECT (name) ON public.mp_locations FROM ingest",
+         "ingest mp_locations column privileges match the expected set: name", None),
         ("GRANT SELECT ON public.area_weekly_weather TO ingest",
          "ingest SELECT on public.area_weekly_weather matches the expected set",
          "REVOKE SELECT ON public.area_weekly_weather FROM ingest"),
@@ -894,6 +897,10 @@ def test_role_scripts_at_each_rollout_revision(role_cleanup, fresh_db):  # noqa:
             _denied(ingest, "SELECT route_id FROM routes")
 
         if revision == "0006_accidents_clean":
+            # R3 runs here (Stage B), before 0008: its exact MP reads, and still never url.
+            _as(ingest, geocode.MP_LOCATIONS_SQL)
+            _as(ingest, geocode.MP_ROUTE_COUNTS_SQL)
+            _denied(ingest, "SELECT url FROM mp_locations")
             # A partial block (0007's registry without the rest) STOPs the grants with nothing applied.
             _as(migrator_url, "REVOKE DELETE ON public.gnis_summits FROM ingest; "
                 "CREATE TABLE public.grid_bucket_series (x int)")

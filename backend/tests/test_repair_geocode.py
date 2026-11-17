@@ -15,20 +15,27 @@ from app.data.repair.geocode import (
     KEEP,
     TRUSTED_POINT_PRECISIONS,
     GeoFix,
+    MP_CRAG_EXEMPT_KM,
     GeoRow,
+    MpArea,
+    MpAreaIndex,
     SummitIndex,
     alaska_point_misplaced,
     changes_for,
+    clean_mp_name,
     classify_state,
     cluster_summary,
     find_fallback_points,
     foreign_state,
     geocode_fix,
+    mp_area_index_from_rows,
     owner_review_changes,
     plot_stratum,
     rejection_changes,
     review_candidates,
     snapshot_fixes,
+    split_fallback_points,
+    subtree_route_counts,
     run_r3,
     run_r3_ambiguous_export,
     run_r3_ambiguous_import,
@@ -38,6 +45,7 @@ from app.data.repair.geocode import (
     run_r3a_export,
     run_r3a_import,
 )
+from app.pipelines.geo import haversine_km
 from app.pipelines.gnis import Summit
 from tests.pgtest import migrated_db, requires_pg, sa_url
 
@@ -49,6 +57,7 @@ MCKINLEY_PEAK = Summit(1423626, "McKinley Peak", "mckinley", "AK", 61.0, -147.0)
 BALDY_CO = Summit(12, "Bald Mountain", "bald", "CO", 39.4, -105.9)
 BALDY_OR = Summit(13, "Bald Mountain", "bald", "OR", 44.6, -122.1)
 INDEX = SummitIndex([RAINIER, MCKINLEY, BALDY_CO, BALDY_OR])
+NO_MP = MpAreaIndex([])
 
 
 def row(i=1, family="aac", mountain=None, state=None, lat=None, lon=None, mp=None):
@@ -150,7 +159,7 @@ def test_foreign_places_get_a_country_and_no_coordinates():
 
 def test_fallback_cluster_rows_become_region_fallback_with_state():
     rows = [row(i, mountain=f"Place {i}", state="CO", lat=39.739, lon=-104.990) for i in range(6)]
-    points = find_fallback_points(rows, INDEX)
+    points = find_fallback_points(rows, INDEX, NO_MP)
     assert points == {(39.739, -104.99)}
     fix = geocode_fix(rows[0], INDEX, points)
     assert (fix.location, fix.precision, fix.method, fix.country) == (KEEP, "region_fallback", "fallback_state", "US")
@@ -160,12 +169,12 @@ def test_fallback_cluster_rows_become_region_fallback_with_state():
 def test_a_point_needs_enough_rows_and_names_to_be_a_fallback():
     same_name = [row(i, mountain="Longs Peak", lat=40.255, lon=-105.615) for i in range(9)]
     few = [row(i, mountain=f"Place {i}", lat=39.0, lon=-105.0) for i in range(4)]
-    assert find_fallback_points([*same_name, *few, row(99)], INDEX) == set()
+    assert find_fallback_points([*same_name, *few, row(99)], INDEX, NO_MP) == set()
 
 
 def test_fallback_without_a_state_keeps_coordinates_and_is_unknown():
     rows = [row(i, mountain=f"Place {i}", lat=39.739, lon=-104.990) for i in range(6)]
-    fix = geocode_fix(rows[0], INDEX, find_fallback_points(rows, INDEX))
+    fix = geocode_fix(rows[0], INDEX, find_fallback_points(rows, INDEX, NO_MP))
     assert (fix.location, fix.precision, fix.method, fix.country) == (KEEP, "unknown", "fallback_no_state", None)
 
 
@@ -235,6 +244,7 @@ INSERT INTO gnis_summits (gnis_id, name, name_key, state_code, lat, lon) VALUES
   (10, 'Mount Rainier', 'rainier', 'WA', 46.853, -121.76),
   ({DENALI_GNIS_ID}, 'Mount McKinley', 'mckinley', 'AK', 63.069, -151.007),
   (1423626, 'McKinley Peak', 'mckinley', 'AK', 61.0, -147.0);
+INSERT INTO mp_locations (mp_id, name) VALUES (900000900, 'Fixture Area');
 INSERT INTO accidents (accident_id, source, source_id, mountain, state, latitude, longitude, description) VALUES
   (1, 'AAC', 'a1', 'Mt. Rainier', 'WA', 47.6, -122.2, 'narrative one'),
   (2, 'AAC', 'a2', 'Synthetic Peak', 'Argentina', 40.0, -105.0, 'narrative two'),
@@ -278,7 +288,7 @@ def test_r3_labels_moves_and_nulls_with_an_audit_and_a_rerun_changes_nothing():
                 audit = await _rows(
                     conn,
                     "SELECT accident_id, old_value, new_value FROM internal.accident_revisions "
-                    "WHERE field = 'latlon' AND rule_version = 'r3-v2' ORDER BY accident_id",
+                    "WHERE field = 'latlon' AND rule_version = 'r3-v3' ORDER BY accident_id",
                 )
             assert got == [
                 (1, 46.853, -121.76, "area", "gnis_summit", "US", False),
@@ -487,7 +497,7 @@ def test_r3_decides_from_the_snapshot_so_hand_edits_and_v1_output_never_feed_it(
             assert got == [(1, 46.853, -121.76, "gnis_summit"), (3, 36.5, -118.3, "nps_source")]
             assert restored == [("snapshot_point", "36.000000,-118.000000", "36.500000,-118.300000")]
             # A later rule version still sees the pre-repair points, not v1's moves and nulls.
-            monkeypatch.setattr(geocode, "R3_VERSION", "r3-v3")
+            monkeypatch.setattr(geocode, "R3_VERSION", "r3-v4")
             async with engine.connect() as conn:
                 v2 = await run_r3(conn, argparse.Namespace(apply=False))
             assert v2["methods"] == v1["methods"]
@@ -553,8 +563,8 @@ def test_the_shared_alaska_rule_exempts_only_the_aleutian_band():
 
 def test_blank_names_do_not_count_as_distinct_cluster_names():
     rows = [row(i, mountain=m, lat=39.739, lon=-104.99) for i, m in enumerate([None, "", "  ", "Place A", "Place B"])]
-    assert find_fallback_points(rows, INDEX) == set()
-    assert find_fallback_points([*rows, row(9, mountain="Place C", lat=39.739, lon=-104.99)], INDEX) == {(39.739, -104.99)}
+    assert find_fallback_points(rows, INDEX, NO_MP) == set()
+    assert find_fallback_points([*rows, row(9, mountain="Place C", lat=39.739, lon=-104.99)], INDEX, NO_MP) == {(39.739, -104.99)}
 
 
 SYNTH_SUMMIT = Summit(900000001, "Synthetic Dome", "syntheticdome", "CO", 39.0, -105.0)
@@ -567,20 +577,20 @@ def _cluster(lat, lon, n=6):
 
 
 def test_a_cluster_on_a_summit_is_not_a_fallback_but_one_1km_away_is():
-    assert find_fallback_points(_cluster(39.0, -105.0), SUMMIT_INDEX) == set()
+    assert find_fallback_points(_cluster(39.0, -105.0), SUMMIT_INDEX, NO_MP) == set()
     # 0.009 degrees of latitude is about 1.0 km.
-    assert find_fallback_points(_cluster(39.009, -105.0), SUMMIT_INDEX) == {(39.009, -105.0)}
-    assert find_fallback_points(_cluster(39.0, -105.0), SUMMIT_INDEX_EMPTY) == {(39.0, -105.0)}
+    assert find_fallback_points(_cluster(39.009, -105.0), SUMMIT_INDEX, NO_MP) == {(39.009, -105.0)}
+    assert find_fallback_points(_cluster(39.0, -105.0), SUMMIT_INDEX_EMPTY, NO_MP) == {(39.0, -105.0)}
 
 
 def test_the_summit_exemption_boundary_is_250_m():
     # Candidate points are rounded to 0.001 degrees (about 111 m), so 0.002 is ~222 m and 0.003 is ~333 m.
-    assert find_fallback_points(_cluster(39.002, -105.0), SUMMIT_INDEX) == set()
-    assert find_fallback_points(_cluster(39.003, -105.0), SUMMIT_INDEX) == {(39.003, -105.0)}
+    assert find_fallback_points(_cluster(39.002, -105.0), SUMMIT_INDEX, NO_MP) == set()
+    assert find_fallback_points(_cluster(39.003, -105.0), SUMMIT_INDEX, NO_MP) == {(39.003, -105.0)}
 
 
 def test_cluster_summary_lists_each_excluded_point_without_names():
-    out = cluster_summary(_cluster(39.002, -105.0, 7), SUMMIT_INDEX)
+    out = cluster_summary(_cluster(39.002, -105.0, 7), SUMMIT_INDEX, NO_MP)
     assert out["summit_excluded"] == [{"lat": 39.002, "lon": -105.0, "rows": 7, "gnis_id": 900000001, "distance_m": 222}]
     assert "Synthetic" not in str(out)
 
@@ -605,17 +615,17 @@ def test_no_us_state_name_or_code_is_foreign():
 
 def test_cluster_summary_counts_what_the_summit_check_excluded():
     rows = [*_cluster(39.0, -105.0, 7), *_cluster(39.5, -105.5, 6)]
-    out = cluster_summary(rows, SUMMIT_INDEX)
+    out = cluster_summary(rows, SUMMIT_INDEX, NO_MP)
     assert (out["fallback_points"], out["rows_at_fallback_points"]) == (1, 6)
     assert (out["summit_excluded_points"], out["summit_excluded_rows"]) == (1, 7)
 
 
 def test_cluster_summary_reports_family_counts_and_no_names():
     rows = [row(i, family="aac" if i < 4 else "nps", mountain=f"Place {i}", lat=39.739, lon=-104.99) for i in range(6)]
-    out = cluster_summary([*rows, row(50, mountain="Elsewhere", lat=40.0, lon=-105.0)], INDEX)
+    out = cluster_summary([*rows, row(50, mountain="Elsewhere", lat=40.0, lon=-105.0)], INDEX, NO_MP)
     assert out == {
         "fallback_points": 1, "rows_at_fallback_points": 6, "summit_excluded_points": 0, "summit_excluded_rows": 0,
-        "summit_excluded": [],
+        "summit_excluded": [], "crag_excluded_points": 0, "crag_excluded_rows": 0, "crag_excluded": [],
         "points": {"39.739,-104.99": {"rows": 6, "families": {"aac": 4, "nps": 2}}},
     }
     assert "Place" not in str(out)
@@ -629,32 +639,32 @@ def test_snapshot_fixes_never_re_decide_owner_or_curated_rows():
     raw = {1: SEATTLE_RAINIER, 3: NPS_ROW}
     live = {1: (63.0, -151.0, "area"), 3: (36.5, -118.3, "crag")}
     history = {1: [("latlon", "r3-review-pick-v1"), ("geocode_method", "r3-review-pick-v1")]}
-    fixes, changes, skipped = snapshot_fixes(raw, live, INDEX, history)
+    fixes, changes, skipped = snapshot_fixes(raw, live, INDEX, NO_MP, history)
     assert (fixes, changes, dict(skipped)) == ([], [], {"owner_decided": 1, "labelled_elsewhere": 1})
 
 
 def test_the_rule_that_set_the_label_last_decides_whether_r3_may_relabel():
     live = {3: (36.5, -118.3, "crag")}
     relabelled = [("geocode_precision", "r3-v2"), ("geocode_precision", "r11-v1")]
-    fixes, changes, skipped = snapshot_fixes({3: NPS_ROW}, live, INDEX, {3: relabelled})
+    fixes, changes, skipped = snapshot_fixes({3: NPS_ROW}, live, INDEX, NO_MP, {3: relabelled})
     assert (fixes, changes, dict(skipped)) == ([], [], {"labelled_elsewhere": 1})
-    fixes, _, skipped = snapshot_fixes({3: NPS_ROW}, live, INDEX, {3: relabelled[::-1]})
+    fixes, _, skipped = snapshot_fixes({3: NPS_ROW}, live, INDEX, NO_MP, {3: relabelled[::-1]})
     assert [f.method for f in fixes] == ["nps_source"] and not skipped
 
 
 def test_snapshot_fixes_re_decide_r3s_own_rows_from_the_snapshot():
     # r3-v3 after r3-v2: the live point is r3-v2's move, the labels are r3-v2's; the decision comes from raw.
     history = {1: [("latlon", "r3-v2"), ("geocode_precision", "r3-v2")]}
-    fixes, changes, _ = snapshot_fixes({1: SEATTLE_RAINIER}, {1: (46.853, -121.76, "area")}, INDEX, history)
+    fixes, changes, _ = snapshot_fixes({1: SEATTLE_RAINIER}, {1: (46.853, -121.76, "area")}, INDEX, NO_MP, history)
     assert [f.method for f in fixes] == ["gnis_summit"]
     assert changes[0].field == LOCATION and changes[0].new_value == (46.853, -121.76)
 
 
 def test_snapshot_restore_is_skipped_when_another_rule_moved_the_point():
     nps = {3: NPS_ROW}
-    hand = snapshot_fixes(nps, {3: (36.0, -118.0, None)}, INDEX, {})
+    hand = snapshot_fixes(nps, {3: (36.0, -118.0, None)}, INDEX, NO_MP, {})
     assert [(c.field, c.method) for c in hand[1]][0] == (LOCATION, "snapshot_point")
-    ruled = snapshot_fixes(nps, {3: (36.0, -118.0, None)}, INDEX, {3: [("latlon", "r11-v1")]})
+    ruled = snapshot_fixes(nps, {3: (36.0, -118.0, None)}, INDEX, NO_MP, {3: [("latlon", "r11-v1")]})
     assert [(f.precision, f.method, f.location) for f in ruled[0]] == [("unknown", "moved_by_other_rule", KEEP)]
     assert all(c.field != LOCATION for c in ruled[1])
 
@@ -683,7 +693,7 @@ def test_owner_decisions_survive_r3_reruns_and_a_v2(tmp_path, monkeypatch):
                 await run_r3_ambiguous_import(conn, argparse.Namespace(review_file=str(path), apply=True))
             async with engine.begin() as conn:
                 again = await run_r3(conn, argparse.Namespace(apply=True))
-            monkeypatch.setattr(geocode, "R3_VERSION", "r3-v3")
+            monkeypatch.setattr(geocode, "R3_VERSION", "r3-v4")
             async with engine.connect() as conn:
                 v2 = await run_r3(conn, argparse.Namespace(apply=False))
                 got = await _rows(
@@ -781,6 +791,198 @@ def test_task13_state_precheck_runs_and_flags_unmapped_values():
                 {"state": "Argentina", "n": 1, "class": "foreign:AR"},
             ]
             assert {"state": "Alaska", "n": 1, "class": "us:AK"} in out["states"]
+        finally:
+            await engine.dispose()
+
+    with migrated_db(seed_sql=GEO_SEED) as name:
+        asyncio.run(scenario(sa_url(name)))
+
+
+# MP crag exemption (r3-v3). Synthetic MP areas and accidents only (ids >= 900000000, made-up names).
+CRAG_POINT = (40.5, -106.5)
+ZORBLAT = MpArea(900000201, "B. Zorblat Buttress", 40.5, -106.502, 50)
+# Accident-only words (Quillon, Vexmoor, Tarnwick) must never reach the cluster output.
+ZORBLAT_ROWS = ["Zorblat Buttress", "Zorblat Buttress Quillon Face", "Zorblat Spur", "Zorblat Gully", "Vexmoor Hill",
+                "Tarnwick Knob"]
+
+
+def _crag_rows(mountains, lat=CRAG_POINT[0], lon=CRAG_POINT[1]):
+    return [row(900000300 + i, mountain=m, state="CO", lat=lat, lon=lon) for i, m in enumerate(mountains)]
+
+
+def _split(mountains, *areas, summits=SUMMIT_INDEX_EMPTY):
+    return split_fallback_points(_crag_rows(mountains), summits, MpAreaIndex(list(areas)))
+
+
+def test_a_crag_point_sharing_a_distinctive_mp_name_is_not_a_fallback():
+    split = _split(ZORBLAT_ROWS, ZORBLAT)
+    assert split.fallback == set() and split.on_summit == set()
+    match = split.on_crag[CRAG_POINT]
+    assert (match.area.mp_id, match.key, match.rows, round(match.share, 3)) == (900000201, "zorblat", 4, 0.667)
+    assert find_fallback_points(_crag_rows(ZORBLAT_ROWS), SUMMIT_INDEX_EMPTY, MpAreaIndex([ZORBLAT])) == set()
+
+
+def test_a_key_shared_by_under_60_percent_of_rows_is_not_enough():
+    rows = ["Zorblat Buttress", "Zorblat Spur", "Zorblat Gully", "Vexmoor Hill", "Tarnwick Knob", "Brindle Dome"]
+    assert _split(rows, ZORBLAT).fallback == {CRAG_POINT}
+    # 3 of 5 is exactly 60%: exempt.
+    assert _split(rows[:5], ZORBLAT).fallback == set()
+
+
+def test_a_key_needs_at_least_three_rows():
+    mp = MpAreaIndex([ZORBLAT])
+    assert mp.crag_match(*CRAG_POINT, ["Zorblat Spur", "Zorblat Gully"]) is None
+    assert mp.crag_match(*CRAG_POINT, ["Zorblat Spur", "Zorblat Gully", "Zorblat Top"]) is not None
+
+
+def _glimmer(n_areas):
+    fillers = [MpArea(900000400 + i, f"Glimmer Fill {i}", None, None, 0) for i in range(n_areas - 1)]
+    return [MpArea(900000399, "Glimmer", 40.5, -106.502, 50), *fillers]
+
+
+GLIMMER_ROWS = ["Glimmer North", "Glimmer South", "Glimmer East", "Glimmer West", "Glimmer", "Glimmer Top"]
+
+
+def test_a_token_in_more_than_25_mp_area_names_is_not_distinctive():
+    assert _split(GLIMMER_ROWS, *_glimmer(26)).fallback == {CRAG_POINT}
+    assert _split(GLIMMER_ROWS, *_glimmer(25)).fallback == set()
+
+
+def test_an_mp_area_with_more_than_400_routes_is_not_a_crag():
+    big = MpArea(900000202, "Zorblat Buttress", 40.5, -106.502, 401)
+    assert _split(ZORBLAT_ROWS, big).fallback == {CRAG_POINT}
+    assert _split(ZORBLAT_ROWS, MpArea(900000202, "Zorblat Buttress", 40.5, -106.502, 400)).fallback == set()
+    # An area holding no route at all is no crag either.
+    assert _split(ZORBLAT_ROWS, MpArea(900000202, "Zorblat Buttress", 40.5, -106.502, 0)).fallback == {CRAG_POINT}
+
+
+def test_an_mp_area_more_than_1_km_away_does_not_exempt():
+    # 0.01 degrees of latitude is about 1.11 km, 0.008 about 0.89 km.
+    far = MpArea(900000203, "Zorblat Buttress", 40.51, -106.5, 50)
+    near = MpArea(900000203, "Zorblat Buttress", 40.508, -106.5, 50)
+    assert haversine_km(*CRAG_POINT, 40.51, -106.5) > MP_CRAG_EXEMPT_KM > haversine_km(*CRAG_POINT, 40.508, -106.5)
+    assert _split(ZORBLAT_ROWS, far).fallback == {CRAG_POINT}
+    assert _split(ZORBLAT_ROWS, near).fallback == set()
+
+
+def test_the_summit_exemption_is_applied_before_the_crag_exemption():
+    summits = SummitIndex([Summit(900000002, "Zorblat Dome", "zorblatdome", "CO", 40.501, -106.5)])
+    split = _split(ZORBLAT_ROWS, ZORBLAT, summits=summits)
+    assert (split.fallback, split.on_summit, split.on_crag) == (set(), {CRAG_POINT}, {})
+    out = cluster_summary(_crag_rows(ZORBLAT_ROWS), summits, MpAreaIndex([ZORBLAT]))
+    assert (out["summit_excluded_points"], out["crag_excluded_points"], out["crag_excluded"]) == (1, 0, [])
+
+
+def test_a_crag_name_of_common_words_matches_as_a_whole_phrase():
+    fillers = [MpArea(900000500 + i, f"Fennick Fill {i}", None, None, 0) for i in range(25)]
+    fillers += [MpArea(900000600 + i, f"Ledge Fill {i}", None, None, 0) for i in range(25)]
+    crag = MpArea(900000499, "*Fennick Ledge", 40.5, -106.502, 30)
+    rows = ["Fennick Ledge", "Fennick Ledge Upper", "Fennick Ledge Gully", "Vexmoor Hill", "Tarnwick Knob"]
+    split = _split(rows, crag, *fillers)
+    assert split.on_crag[CRAG_POINT].key == "fennick ledge"
+    # Word-bounded: a longer word does not contain the phrase.
+    assert _split(["Fennick Ledges", *rows[1:]], crag, *fillers).fallback == {CRAG_POINT}
+
+
+def test_crag_output_lists_mp_facts_and_never_accident_names():
+    out = cluster_summary(_crag_rows(ZORBLAT_ROWS), SUMMIT_INDEX_EMPTY, MpAreaIndex([ZORBLAT]))
+    assert (out["fallback_points"], out["crag_excluded_points"], out["crag_excluded_rows"]) == (0, 1, 6)
+    assert out["crag_excluded"] == [{
+        "lat": 40.5, "lon": -106.5, "rows": 6, "mp_area_id": 900000201, "mp_area_name": "B. Zorblat Buttress",
+        "distance_m": round(haversine_km(40.5, -106.5, 40.5, -106.502) * 1000), "token": "zorblat", "share": 0.667,
+    }]
+    text_out = json.dumps(out)
+    for word in ("Quillon", "Vexmoor", "Tarnwick", "Spur", "Gully", "Knob"):
+        assert word not in text_out
+    assert not any(m in text_out for m in ZORBLAT_ROWS[1:])
+
+
+def test_mp_names_lose_sort_prefixes_and_stats_suffixes():
+    assert [clean_mp_name(n) for n in ("B. Zorblat Buttress", "05. Zorblat Ravine", "*Zorblat Ledge", "Zorblat 1,204/37/2",
+                                       "Zorblat's Wall")] == [
+        "zorblat buttress", "zorblat ravine", "zorblat ledge", "zorblat", "zorblats wall"]
+
+
+def test_route_counts_roll_up_the_area_tree():
+    parents = {900000701: None, 900000702: 900000701, 900000703: 900000702, 900000704: 900000705, 900000705: 900000704}
+    counts = subtree_route_counts(parents, {900000703: 2, 900000702: 1, 900000704: 1})
+    assert (counts[900000701], counts[900000702], counts[900000703]) == (3, 3, 2)
+    # A parent cycle stops at the depth guard instead of looping.
+    assert counts[900000704] + counts[900000705] == 20
+
+
+def test_the_index_counts_routes_under_each_area_from_db_rows():
+    mp = mp_area_index_from_rows(
+        [(900000801, "Zorblat Buttress", None, 40.5, -106.502), (900000802, "Zorblat Left", 900000801, None, None)],
+        [(900000802, 5)],
+    )
+    match = mp.crag_match(*CRAG_POINT, ZORBLAT_ROWS)
+    assert match is not None and (match.area.mp_id, match.area.routes) == (900000801, 5)
+
+
+CRAG_SEED = GEO_SEED + """
+INSERT INTO mp_locations (mp_id, name, parent_id, latitude, longitude) VALUES
+  (900000901, 'B. Zorblat Buttress', 900000900, 40.5, -106.502),
+  (900000902, 'Zorblat Left', 900000901, 40.5, -106.503);
+INSERT INTO mp_routes (mp_route_id, name, location_id, type) VALUES
+  (900000901, 'Fixture Line One', 900000902, 'Trad'), (900000902, 'Fixture Line Two', 900000901, 'Sport');
+INSERT INTO internal.accidents_raw (accident_id, source, source_id, mountain, state, latitude, longitude) VALUES
+  (900000301, 'AAC', 'c1', 'Zorblat Buttress', 'CO', 40.5, -106.5),
+  (900000302, 'AAC', 'c2', 'Zorblat Spur', 'CO', 40.5, -106.5),
+  (900000303, 'AAC', 'c3', 'Zorblat Gully', 'CO', 40.5, -106.5),
+  (900000304, 'AAC', 'c4', 'Zorblat Top', 'CO', 40.5, -106.5),
+  (900000305, 'AAC', 'c5', 'Vexmoor Hill', 'CO', 40.5, -106.5),
+  (900000306, 'AAC', 'c6', 'Tarnwick Knob', 'CO', 40.5, -106.5),
+  (900000311, 'AAC', 'f1', 'Brindle Dome', 'CO', 39.739, -104.99),
+  (900000312, 'AAC', 'f2', 'Cobble Hill', 'CO', 39.739, -104.99),
+  (900000313, 'AAC', 'f3', 'Marrow Point', 'CO', 39.739, -104.99),
+  (900000314, 'AAC', 'f4', 'Wexley Knob', 'CO', 39.739, -104.99),
+  (900000315, 'AAC', 'f5', 'Pallet Spire', 'CO', 39.739, -104.99);
+INSERT INTO accidents (accident_id, source, source_id, mountain, state, latitude, longitude)
+  SELECT accident_id, source, source_id, mountain, state, latitude, longitude FROM internal.accidents_raw
+  WHERE accident_id >= 900000301;
+"""
+
+
+@requires_pg
+def test_r3_and_r3_clusters_share_the_crag_exemption():
+    async def scenario(url: str) -> None:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                clusters = await run_r3_clusters(conn, argparse.Namespace())
+                dry = await run_r3(conn, argparse.Namespace(apply=False))
+            assert (clusters["fallback_points"], clusters["crag_excluded_points"], clusters["crag_excluded_rows"]) == (1, 1, 6)
+            [crag] = clusters["crag_excluded"]
+            assert (crag["mp_area_id"], crag["token"], crag["share"]) == (900000901, "zorblat", 0.667)
+            assert "Vexmoor" not in json.dumps(clusters)
+            # The apply path labels the crag rows from the same split: only the other point is a fallback.
+            assert dry["methods"]["fallback_state"] == 5
+            async with engine.begin() as conn:
+                await run_r3(conn, argparse.Namespace(apply=True))
+            async with engine.connect() as conn:
+                got = await _rows(
+                    conn, "SELECT geocode_method, count(*) FROM accidents WHERE accident_id >= 900000301 GROUP BY 1 ORDER BY 1"
+                )
+            assert got == [("fallback_state", 5), ("source_geocode", 6)]
+        finally:
+            await engine.dispose()
+
+    with migrated_db(seed_sql=CRAG_SEED) as name:
+        asyncio.run(scenario(sa_url(name)))
+
+
+@requires_pg
+def test_r3_refuses_without_mp_locations():
+    async def scenario(url: str) -> None:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                await conn.execute(text("DELETE FROM mp_locations"))
+                with pytest.raises(SystemExit, match="mp_locations is empty"):
+                    await run_r3(conn, argparse.Namespace(apply=False))
+                with pytest.raises(SystemExit, match="mp_locations is empty"):
+                    await run_r3_clusters(conn, argparse.Namespace())
         finally:
             await engine.dispose()
 

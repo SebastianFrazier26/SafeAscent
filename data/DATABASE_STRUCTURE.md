@@ -402,7 +402,7 @@ A refresh whose scorable count falls more than 3% (`mp_catalog.MAX_SCORABLE_DROP
 
 Columns: `route_id, area_id, type_group, type_rule_version, area_path, state_code, point_key, coord_precision, updated_at`.
 
-Grants: `app` and `analyst` read the catalog tables and this view through `migrator`'s default privileges; `ingest` reads `mp_locations (parent_id, name)`, upserts both tables and reads this view (`grants_phase2.sql`); `trainer` gets nothing (D13).
+Grants: `app` and `analyst` read the catalog tables and this view through `migrator`'s default privileges; `ingest` reads `mp_locations (parent_id, name)` (from block 0005, for R3's crag exemption), upserts both tables and reads this view (`grants_phase2.sql`); `trainer` gets nothing (D13).
 
 ---
 
