@@ -350,8 +350,8 @@ Rehearsal (plan 2a-2 Task 13 Steps 0–11; branch `p2a-2-rehearsal`). Agent step
 - Steps 4, 9a and 10: the dry runs and applies, as written.
 
 Owner reviews, each a hard STOP:
-- Step 3: the `foreign` and `unmapped` state lists. The owner confirms each value, or asks for a mapping.
-- Step 4: the fallback cluster list. Each point should be a city or park centroid, never a crag.
+- Step 3: the `foreign` and `unmapped` state lists. The owner confirms each value, or asks for a mapping. R3 decides foreign from the state field only; mountain text is never used.
+- Step 4: the fallback cluster list. Each point should be a city or park centroid, never a crag. Candidate points within 250 m of a GNIS summit are already excluded; `summit_excluded_points` and `summit_excluded_rows` in the output say how many.
 - Step 5b: `data/review/r3a_moves.csv`. Fill `correct`.
 - Step 6b: `data/review/r3_ambiguous.csv`. Fill `gnis_id` or `none`.
 - Step 7b: `data/review/r3_spot_check.csv` with `r3_spot_check.geojson`, opened in local QGIS only. Fill `plausible`.
