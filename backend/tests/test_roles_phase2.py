@@ -141,6 +141,11 @@ def _run_real_jobs_as_ingest(ingest_url: str, owner_url: str, tmp_path, monkeypa
     # R3 and its check exports as ingest: snapshot, gnis_summits and revisions reads, the label writes.
     monkeypatch.setattr(review, "REVIEW_DIR", tmp_path)
 
+    # R3 refuses without a usable MP crag area (coordinates and 1-400 routes); this one is far from
+    # every fixture row and removed right after, so later jobs' counts never see it.
+    _as(owner_url, "INSERT INTO mp_locations (mp_id, name, latitude, longitude) VALUES (900000960, 'Fixture Crag', 44.0, -71.0);"
+        "INSERT INTO mp_routes (mp_route_id, name, location_id, type) VALUES (900000960, 'Fixture Crag Line', 900000960, 'Trad')")
+
     async def r3() -> tuple[dict[str, object], ...]:
         engine = create_async_engine(sa_ingest)
         try:
@@ -157,6 +162,7 @@ def _run_real_jobs_as_ingest(ingest_url: str, owner_url: str, tmp_path, monkeypa
             await engine.dispose()
 
     r3_out, r3a, plot, ambiguous = asyncio.run(r3())
+    _as(owner_url, "DELETE FROM mp_routes WHERE mp_route_id = 900000960; DELETE FROM mp_locations WHERE mp_id = 900000960")
     # The fixture repair above moved both points under an audited rule, so R3 keeps them but
     # cannot vouch for them: labels only, both untrusted.
     assert r3_out["applied"] == 6 and r3_out["methods"] == {"moved_by_other_rule": 2}

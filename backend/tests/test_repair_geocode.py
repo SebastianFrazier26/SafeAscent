@@ -29,6 +29,7 @@ from app.data.repair.geocode import (
     foreign_state,
     geocode_fix,
     mp_area_index_from_rows,
+    require_crag_areas,
     owner_review_changes,
     plot_stratum,
     rejection_changes,
@@ -244,7 +245,9 @@ INSERT INTO gnis_summits (gnis_id, name, name_key, state_code, lat, lon) VALUES
   (10, 'Mount Rainier', 'rainier', 'WA', 46.853, -121.76),
   ({DENALI_GNIS_ID}, 'Mount McKinley', 'mckinley', 'AK', 63.069, -151.007),
   (1423626, 'McKinley Peak', 'mckinley', 'AK', 61.0, -147.0);
-INSERT INTO mp_locations (mp_id, name) VALUES (900000900, 'Fixture Area');
+-- One usable crag area (coordinates, a route), far from every fixture row: R3 refuses without one.
+INSERT INTO mp_locations (mp_id, name, latitude, longitude) VALUES (900000900, 'Fixture Area', 44.0, -71.0);
+INSERT INTO mp_routes (mp_route_id, name, location_id, type) VALUES (900000900, 'Fixture Line', 900000900, 'Trad');
 INSERT INTO accidents (accident_id, source, source_id, mountain, state, latitude, longitude, description) VALUES
   (1, 'AAC', 'a1', 'Mt. Rainier', 'WA', 47.6, -122.2, 'narrative one'),
   (2, 'AAC', 'a2', 'Synthetic Peak', 'Argentina', 40.0, -105.0, 'narrative two'),
@@ -889,7 +892,7 @@ def test_crag_output_lists_mp_facts_and_never_accident_names():
     assert (out["fallback_points"], out["crag_excluded_points"], out["crag_excluded_rows"]) == (0, 1, 6)
     assert out["crag_excluded"] == [{
         "lat": 40.5, "lon": -106.5, "rows": 6, "mp_area_id": 900000201, "mp_area_name": "B. Zorblat Buttress",
-        "distance_m": round(haversine_km(40.5, -106.5, 40.5, -106.502) * 1000), "token": "zorblat", "share": 0.667,
+        "distance_m": round(haversine_km(40.5, -106.5, 40.5, -106.502) * 1000), "matched_key": "zorblat", "share": 0.667,
     }]
     text_out = json.dumps(out)
     for word in ("Quillon", "Vexmoor", "Tarnwick", "Spur", "Gully", "Knob"):
@@ -898,9 +901,11 @@ def test_crag_output_lists_mp_facts_and_never_accident_names():
 
 
 def test_mp_names_lose_sort_prefixes_and_stats_suffixes():
-    assert [clean_mp_name(n) for n in ("B. Zorblat Buttress", "05. Zorblat Ravine", "*Zorblat Ledge", "Zorblat 1,204/37/2",
-                                       "Zorblat's Wall")] == [
-        "zorblat buttress", "zorblat ravine", "zorblat ledge", "zorblat", "zorblats wall"]
+    assert [clean_mp_name(n) for n in ("B. Zorblat Buttress", "05. Zorblat Ravine", "07a. Zorblat Slab", "*Zorblat Ledge",
+                                       "Zorblat 1,204/37/2", "Zorblat's Wall", "St. Zorblat", "Mt. Zorblat",
+                                       "Zörblat Pêche")] == [
+        "zorblat buttress", "zorblat ravine", "zorblat slab", "zorblat ledge", "zorblat", "zorblats wall", "st zorblat",
+        "mt zorblat", "zorblat peche"]
 
 
 def test_route_counts_roll_up_the_area_tree():
@@ -954,7 +959,7 @@ def test_r3_and_r3_clusters_share_the_crag_exemption():
                 dry = await run_r3(conn, argparse.Namespace(apply=False))
             assert (clusters["fallback_points"], clusters["crag_excluded_points"], clusters["crag_excluded_rows"]) == (1, 1, 6)
             [crag] = clusters["crag_excluded"]
-            assert (crag["mp_area_id"], crag["token"], crag["share"]) == (900000901, "zorblat", 0.667)
+            assert (crag["mp_area_id"], crag["matched_key"], crag["share"]) == (900000901, "zorblat", 0.667)
             assert "Vexmoor" not in json.dumps(clusters)
             # The apply path labels the crag rows from the same split: only the other point is a fallback.
             assert dry["methods"]["fallback_state"] == 5
@@ -978,13 +983,41 @@ def test_r3_refuses_without_mp_locations():
         engine = create_async_engine(url)
         try:
             async with engine.connect() as conn:
-                await conn.execute(text("DELETE FROM mp_locations"))
-                with pytest.raises(SystemExit, match="mp_locations is empty"):
+                # Areas without any route are no crag: refused already, before mp_locations is empty.
+                await conn.execute(text("DELETE FROM mp_routes"))
+                with pytest.raises(SystemExit, match="no MP area has coordinates and 1-400 routes"):
                     await run_r3(conn, argparse.Namespace(apply=False))
-                with pytest.raises(SystemExit, match="mp_locations is empty"):
+                await conn.execute(text("DELETE FROM mp_locations"))
+                with pytest.raises(SystemExit, match="no MP area has coordinates and 1-400 routes"):
                     await run_r3_clusters(conn, argparse.Namespace())
         finally:
             await engine.dispose()
 
     with migrated_db(seed_sql=GEO_SEED) as name:
         asyncio.run(scenario(sa_url(name)))
+
+
+def test_a_stop_word_area_name_is_no_key_once_common():
+    fillers = [MpArea(900001000 + i, f"Fill{chr(97 + i % 26)}{i} Cliffs", None, None, 0) for i in range(26)]
+    cliffs = MpArea(900000999, "Cliffs", 40.5, -106.502, 30)
+    rows = ["Red Cliffs", "Blue Cliffs", "Gray Cliffs", "Red Cliffs North", "Blue Cliffs South"]
+    assert MpAreaIndex([cliffs, *fillers])._keys(cliffs) == []
+    assert _split(rows, cliffs, *fillers).fallback == {CRAG_POINT}
+    # A name made only of stop words is never a phrase key, however rare.
+    assert MpAreaIndex([cliffs])._keys(cliffs) == []
+
+
+def test_r3_refuses_an_mp_index_with_no_usable_crag_area():
+    no_routes = MpAreaIndex([MpArea(900000801, "Zorblat Buttress", 40.5, -106.502, 0)])
+    no_coords = MpAreaIndex([MpArea(900000801, "Zorblat Buttress", None, None, 5)])
+    too_big = MpAreaIndex([MpArea(900000801, "Zorblat Buttress", 40.5, -106.502, 401)])
+    for index in (MpAreaIndex([]), no_routes, no_coords, too_big):
+        with pytest.raises(SystemExit, match="no MP area has coordinates"):
+            require_crag_areas(index)
+    assert require_crag_areas(MpAreaIndex([ZORBLAT])).crag_areas == 1
+
+
+def test_accented_names_fold_to_ascii_keys():
+    mp = MpAreaIndex([MpArea(900000802, "Zörblat Buttress", 40.5, -106.502, 50)])
+    match = mp.crag_match(*CRAG_POINT, ["Zorblat Spur", "Zörblat Gully", "Zorblat Top", "Vexmoor Hill"])
+    assert match is not None and (match.key, match.rows) == ("zorblat", 3)

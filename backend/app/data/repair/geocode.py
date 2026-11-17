@@ -189,14 +189,18 @@ _CRAG_STOP = frozenset(
     "cliffs".split()
 )
 _MP_STATS_SUFFIX = re.compile(r"[\d,]+/[\d,/]+.*$")
-_MP_SORT_PREFIX = re.compile(r"^[\W_]*(?:[A-Za-z0-9]{1,2}\.|\d+\.)\s*")
+# A sort prefix is digits ("05. ", "07a.") or one capital letter and a space ("B. "). The rehearsal
+# analysis also took any 1-2 letters ("St. ", "Mt. "), which ate "St." from "St. Vrain"; not intended.
+_MP_SORT_PREFIX = re.compile(r"^[\W_]*(?:\d+[A-Za-z]?\.\s*|[A-Z]\.\s+)")
 _ALNUM = re.compile(r"[a-z0-9]+")
 
 
 def crag_norm(value: str | None) -> str:
     # Deliberately not textsim.normalize_text: no abbreviation expansion, so the keys are the ones
-    # the owner-approved counts were measured with.
-    return " ".join(_ALNUM.findall((value or "").lower().replace("'", "")))
+    # the owner-approved counts were measured with. Accents fold as in _fold ("Pêche" -> "peche").
+    decomposed = unicodedata.normalize("NFKD", value or "")
+    folded = "".join(c for c in decomposed if not unicodedata.combining(c))
+    return " ".join(_ALNUM.findall(folded.lower().replace("'", "")))
 
 
 def crag_tokens(value: str | None) -> frozenset[str]:
@@ -234,19 +238,23 @@ class MpAreaIndex:
                 key=lambda a: a.mp_id,
             )
         )
-        self.size = len(areas)
+        self.crag_areas = len(self._crags)
 
-    def _areas_with(self, key: str) -> int:
-        if " " not in key:
-            return self._token_areas[key]
-        if key not in self._phrase_areas:
-            self._phrase_areas[key] = sum(1 for c in self._padded if f" {key} " in c)
-        return self._phrase_areas[key]
+    def _areas_with_phrase(self, phrase: str) -> int:
+        # Always the full scan, one word or several: _token_areas skips stop words, so a one-word
+        # phrase such as "cliffs" would otherwise count 0 areas and pass the cap.
+        if phrase not in self._phrase_areas:
+            self._phrase_areas[phrase] = sum(1 for c in self._padded if f" {phrase} " in c)
+        return self._phrase_areas[phrase]
 
     def _keys(self, area: MpArea) -> list[str]:
         cleaned = self._cleaned[area.mp_id]
         keys = {t for t in crag_tokens(cleaned) if self._token_areas[t] <= MP_KEY_MAX_AREAS}
-        if len(cleaned) >= MP_PHRASE_MIN_CHARS and self._areas_with(cleaned) <= MP_KEY_MAX_AREAS:
+        if (
+            len(cleaned) >= MP_PHRASE_MIN_CHARS
+            and crag_tokens(cleaned)
+            and self._areas_with_phrase(cleaned) <= MP_KEY_MAX_AREAS
+        ):
             keys.add(cleaned)
         return sorted(keys)
 
@@ -553,14 +561,20 @@ async def _index(conn: AsyncConnection) -> SummitIndex:
     return index
 
 
-async def _mp_index(conn: AsyncConnection) -> MpAreaIndex:
-    # Refused rather than run without it: an empty index silently turns every crag back into a fallback.
-    index = mp_area_index_from_rows(
-        (await conn.execute(text(MP_LOCATIONS_SQL))).all(), (await conn.execute(text(MP_ROUTE_COUNTS_SQL))).all()
-    )
-    if not index.size:
-        raise SystemExit("mp_locations is empty: R3's crag exemption needs the MP areas loaded")
+def require_crag_areas(index: MpAreaIndex) -> MpAreaIndex:
+    # Refused rather than run without them: an index with no usable area silently turns every
+    # crag back into a fallback (empty mp_locations or mp_routes, or no coordinates).
+    if not index.crag_areas:
+        raise SystemExit(
+            "no MP area has coordinates and 1-400 routes: R3's crag exemption needs mp_locations and mp_routes loaded"
+        )
     return index
+
+
+async def _mp_index(conn: AsyncConnection) -> MpAreaIndex:
+    return require_crag_areas(mp_area_index_from_rows(
+        (await conn.execute(text(MP_LOCATIONS_SQL))).all(), (await conn.execute(text(MP_ROUTE_COUNTS_SQL))).all()
+    ))
 
 
 async def raw_geo_rows(conn: AsyncConnection) -> dict[int, GeoRow]:
@@ -599,7 +613,7 @@ def cluster_summary(rows: Sequence[GeoRow], index: SummitIndex, mp_index: MpArea
     crag_excluded = [
         {
             "lat": lat, "lon": lon, "rows": per_point[(lat, lon)], "mp_area_id": m.area.mp_id, "mp_area_name": m.area.name,
-            "distance_m": round(m.distance_km * 1000), "token": m.key, "share": round(m.share, 3),
+            "distance_m": round(m.distance_km * 1000), "matched_key": m.key, "share": round(m.share, 3),
         }
         for (lat, lon), m in sorted(split.on_crag.items())
     ]
