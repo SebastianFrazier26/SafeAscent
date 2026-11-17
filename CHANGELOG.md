@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Runbook: Stage A VERIFY filter no longer selects r11/r12 tests - 2026-11-17
+
+- `docs/runbooks/2026-11-15-prod-rollout.md` (Stage A background `VERIFY`): `-k "r1 or r2 or r9 or every_row"` matched by substring, so it also selected `test_r11_refresh_window_has_incidents`, `test_r11_backtest_inputs_exist` and `test_r12_golden_precision_on_filled_values_and_recall_reported`, which fail before those stages. It is now `-k "test_r1_ or test_r1v2_ or test_r2_ or test_r9_ or test_every_row_"`, which selects exactly the 9 intended tests (12 before). It is the only `-k` filter in `docs/runbooks/`.
+
 ### R3 rule r3-v4: state contradictions drop the fallback point - 2026-11-16
 
 - Owner-approved ("drop the point"). On a fallback point (after the summit and MP crag exemptions), the point's state is the state of its nearest GNIS summit within 25 km (`POINT_STATE_KM`). A row whose state field is a US state other than the point's loses its coordinates (NULL lat/lon, as for foreign rows), labelled precision `unknown`, method `fallback_state_contradiction`, country `US`; the row stays. Rows with a blank, matching or unmapped state keep the point as before (`region_fallback`/`unknown`), and nothing changes at a point with no summit within 25 km. Rows off fallback points are never checked, so border accidents near a state line keep their points. The rule is about the point, not the row's source: route-linked (`mp_route_id`) and avalanche-family rows that contradict are nulled too. A contradiction outranks R3a's kept-point labels (`gnis_state_unmatched`, `gnis_ambiguous`), but an R3a move to a summit in the row's own state still moves.

@@ -3782,7 +3782,7 @@ Expected: `r1 <agreement>` and `r9 <agreement>`, and the block exits 0.
 - [ ] **Step 5 (owner/agent): Acceptance cells on the branch, then owner sign-off**
 
 ```bash
-VERIFY tests/verify/test_phase2a_repair.py -q -k "r1 or r2 or r9 or every_row" -s
+VERIFY tests/verify/test_phase2a_repair.py -q -k "test_r1_ or test_r1v2_ or test_r2_ or test_r9_ or test_every_row_" -s
 python3 -c 'import json; print(json.dumps(json.load(open("../data/review/p2a1_r2r1_dry_branch.json"))["aac_schemes"], indent=1))'
 ```
 
@@ -3896,7 +3896,7 @@ Expected: `r1v2 <agreement>`, exit 0. Below 0.90 means STOP: r1-v2 does not go t
 - [ ] **Step 5e (owner/agent): All acceptance cells, then owner sign-off**
 
 ```bash
-VERIFY tests/verify/test_phase2a_repair.py -q -k "r1 or r2 or r9 or every_row" -s
+VERIFY tests/verify/test_phase2a_repair.py -q -k "test_r1_ or test_r1v2_ or test_r2_ or test_r9_ or test_every_row_" -s
 ```
 
 Expected: every cell passes, now including the r1-v2 ones:
@@ -4282,7 +4282,7 @@ Then acceptance, read-only, in the background like the applies:
 ( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a1_prod || exit 1
   # PRODUCTION (read-only)
   gate_require r1v2_imported || exit 1
-  bg_start ../data/review/logs/verify_prod.log VERIFY tests/verify/test_phase2a_repair.py -q -k "r1 or r2 or r9 or every_row" -s )
+  bg_start ../data/review/logs/verify_prod.log VERIFY tests/verify/test_phase2a_repair.py -q -k "test_r1_ or test_r1v2_ or test_r2_ or test_r9_ or test_every_row_" -s )
 ```
 
 ```bash
@@ -4552,7 +4552,7 @@ Writes the CSV and `r3_spot_check.geojson`, stratified (GNIS moves, `region_fall
 
 ```bash
 ING r3-plot-import --review-file ../data/review/r3_spot_check.csv
-VERIFY tests/verify/test_phase2a_repair.py -q -k r3 -s
+VERIFY tests/verify/test_phase2a_repair.py -q -k "test_r3_ or test_r3a_" -s
 ```
 
 Expected: agreement ≥0.95 and the R3 cells pass. Give every `no` row's `accident_id` to the agent: a rule fix (a rule change: restart), never a hand edit. The R3 pending-review count printed by the cells goes in the PR.
@@ -4602,7 +4602,7 @@ ING r4-review-import --review-file ../data/review/r4_activity_review.csv
 
 ```bash
 ING r4-review-import --review-file ../data/review/r4_activity_review.csv --apply
-VERIFY tests/verify/test_phase2a_repair.py -q -k r4 -s
+VERIFY tests/verify/test_phase2a_repair.py -q -k test_r4_ -s
 ```
 
 Expected: golden ≥0.95; the remaining `review_pending` is printed and recorded. A different answer for an already-decided row refuses (it needs a new review version).
@@ -4661,7 +4661,7 @@ If owner merges surface new review pairs (`review_pending > 0`), that apply wrot
 
 ```bash
 ANALYST_PSQL -At -c "SELECT low_id, high_id, score FROM internal.duplicate_decisions WHERE decided_by = 'auto' AND decision = 'merge' AND run_id = (SELECT run_id FROM source_ingest_log WHERE source = 'repair:r5' AND status = 'ok' ORDER BY finished_at DESC LIMIT 1) ORDER BY random() LIMIT 30"
-VERIFY tests/verify/test_phase2a_repair.py -q -k r5 -s
+VERIFY tests/verify/test_phase2a_repair.py -q -k test_r5_ -s
 ```
 
 All 30 must be real duplicates (spec: 100%); any miss is a rule fix (a rule change: restart).
@@ -4694,7 +4694,7 @@ bg_wait ../data/review/logs/r12_apply2_branch.log
 ```
 
 ```bash
-VERIFY tests/verify/test_phase2a_repair.py -q -k r12 -s
+VERIFY tests/verify/test_phase2a_repair.py -q -k test_r12_ -s
 uv run pytest tests/test_experience_not_required.py -q
 ```
 
@@ -4711,7 +4711,7 @@ bg_wait ../data/review/logs/verify_branch.log
 ```
 
 ```bash
-VERIFY tests/verify/test_phase2a_repair.py -q -s -k "r1_2023 or r3a_named or r3_no_trusted or r5_no_exact or clean_set or cm_training"
+VERIFY tests/verify/test_phase2a_repair.py -q -s -k "test_r1_2023_ or test_r3a_named_ or test_r3_no_trusted_ or test_r5_no_exact_ or test_clean_set_ or test_cm_training_"
 ```
 
 The second command is the spec 2a-2 "re-running the audit clears red flags 1–4" gate as this plan reads the audit's accident flags: (1) AAC year corruption, (2) misgeocoded named peaks / Alaska text below 55°N, (3) exact duplicates among canonical rows, (4) non-climbing, known-foreign or unverified rows in the clean set. The owner also re-runs the original 2026-09-27 audit queries from the private notes and confirms flags 1–4 clear; if the audit's flag list differs from this reading, the agent adds the missing cell before prod.
@@ -5118,7 +5118,7 @@ Expected: every cell passes, with the same counts the owner signed off in Step 1
 
 - [ ] **Rollback.** As Task 12's rollback section, with `pre-2a-2` and the rule versions of this PR (`r3-*`, `r3-review-v1`, `r4-*`, `r5-v1+…`, `r12-*`). An apply or import that fails or is killed wrote nothing (one transaction each, run log included): fix the cause and rerun (a backgrounded one: move its log to `logs/failed/` first, so `bg_start` accepts the rerun). Wrong data after 12c: restore `production` from `pre-2a-2` (confirm Neon's restore path in its docs first, list what the restore discards from `source_ingest_log`, then trigger the nightly once and re-run 12c's grants), or reverse single fields from `internal.accident_revisions` with a reviewed script, never a hand-written bulk UPDATE. A restore also discards the 0005/0006 migration, so `MIG current` reads `0004_phase2a_foundation` again.
 
-- [ ] **Step 13 (deferred to plan 6's runbook): R4/R5 re-run with objectives** — once `0011_objectives` is applied and objectives are loaded (plan 6), run `ING r4` (expect `terrain_version: r4-v2`), `ING r4 --apply`, `ING r5 --apply`, then `VERIFY tests/verify/test_phase2a_repair.py -q -k "r4 or r5"`. Spec R4 counts objectives in the ski-approach radius; until this step runs, ski rows near an objective with no MP alpine/ice/mixed route stay `non_climbing` (a known under-count, recorded in the PR). Plan 6 grants `ingest` SELECT on `objectives`.
+- [ ] **Step 13 (deferred to plan 6's runbook): R4/R5 re-run with objectives** — once `0011_objectives` is applied and objectives are loaded (plan 6), run `ING r4` (expect `terrain_version: r4-v2`), `ING r4 --apply`, `ING r5 --apply`, then `VERIFY tests/verify/test_phase2a_repair.py -q -k "test_r4_ or test_r5_"`. Spec R4 counts objectives in the ski-approach radius; until this step runs, ski rows near an objective with no MP alpine/ice/mixed route stay `non_climbing` (a known under-count, recorded in the PR). Plan 6 grants `ingest` SELECT on `objectives`.
 
 ---
 

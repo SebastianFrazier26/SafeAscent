@@ -3148,7 +3148,7 @@ cd <repo-root>/backend
 ( set -a; . ./.env.analyst; set +a
   [ -n "${BRANCH_HOST-}" ] || { echo 'BRANCH_HOST is not set: re-run the step that sets it' >&2; exit 1; }
   VERIFY_DATABASE_URL="$(printf '%s' "$ANALYST_DATABASE_URL" | sed -E "s#@[^/]+/#@${BRANCH_HOST}/#")" \
-    uv run pytest -m db tests/verify/test_phase2a_foundation.py -q -k accidents_raw )
+    uv run pytest -m db tests/verify/test_phase2a_foundation.py -q -k test_accidents_raw_ )
 ```
 
 Only the host is swapped. `tests/verify/_db.py` strips the driver prefix and query and connects with `connect_args_for`, i.e. verify-full, so no `ssl=`→`sslmode=` rewrite is needed.
@@ -3189,7 +3189,7 @@ cd <repo-root>/backend
 # PRODUCTION acceptance as analyst
 ( set -a; . ./.env.analyst; set +a
   VERIFY_DATABASE_URL="$ANALYST_DATABASE_URL" \
-    uv run pytest -m db tests/verify/test_phase2a_foundation.py -q -k accidents_raw )
+    uv run pytest -m db tests/verify/test_phase2a_foundation.py -q -k test_accidents_raw_ )
 ```
 
 Expected outputs are identical to Steps 2 and 3. The membership note under Step 2 applies to production separately.
