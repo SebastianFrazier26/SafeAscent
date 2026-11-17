@@ -433,20 +433,24 @@ def geocode_fix(
     foreign = None if state else foreign_state(row.state)
     if foreign is not None:
         return GeoFix(row.accident_id, None, "unknown", "foreign_place", foreign)
-    moved = _r3a(row, index, state)
-    if moved is not None:
-        return moved
     lat, lon = row.lat, row.lon
+    # Only on fallback points, never every row: a stated row near a state line (a border
+    # accident) is not evidence its point is wrong. The rule is about the point, so a route-linked
+    # or avalanche row is no exception.
+    point_state = (point_states or {}).get(_point(lat, lon)) if lat is not None and lon is not None else None
+    contradicted = state is not None and point_state is not None and state != point_state
+    moved = _r3a(row, index, state)
+    # A contradiction outranks R3a's kept-point labels (owner, 2026-11-16): they vouch for no point.
+    # An R3a move goes to a summit in the row's own state, so it stands.
+    if moved is not None and not (contradicted and moved.location is KEEP):
+        return moved
     if lat is None or lon is None:
         return GeoFix(row.accident_id, KEEP, "unknown", "no_coords", "US" if state else None)
     if _point(lat, lon) in fallback or (state == "AK" and alaska_point_misplaced(lat, lon)):
         hits = index.lookup(place_key(row.mountain), state) if state else []
         if len(hits) == 1 and _moveable(row):
             return GeoFix(row.accident_id, (hits[0].lat, hits[0].lon), "area", "gnis_summit", "US")
-        # Only on fallback points, never every row: a stated row near a state line (a border
-        # accident) is not evidence its point is wrong.
-        point_state = (point_states or {}).get(_point(lat, lon))
-        if state is not None and point_state is not None and state != point_state:
+        if contradicted:
             return GeoFix(row.accident_id, None, "unknown", STATE_CONTRADICTION, "US")
         # Coordinates stay (D10 principle); the label keeps every spatial rule off them.
         if state is not None:
@@ -633,7 +637,7 @@ def cluster_summary(rows: Sequence[GeoRow], index: SummitIndex, mp_index: MpArea
                 families[p][r.family] += 1
                 code = state_code(r.state)
                 row_states[p][code or ("blank" if not (r.state or "").strip() else "other")] += 1
-                # The step's own decision per row, so a row R3a moves or nulls first is not counted.
+                # The step's own decision per row, so a row R3a moves first is not counted.
                 if geocode_fix(r, index, split.fallback, point_states).method == STATE_CONTRADICTION:
                     dropped[p] += 1
     summit_excluded = []

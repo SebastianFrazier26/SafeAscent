@@ -1095,6 +1095,50 @@ def test_state_contradictions_are_reported_as_counts_without_accident_text():
         assert word not in text_out
 
 
+
+# Summits named only by the R3a rows below: one out of state, two in AK, one unique in AK.
+ZENNOR_WA = Summit(900000411, "Mount Zennor", "zennor", "WA", 47.0, -121.0)
+OMBRY_AK = [Summit(900000412, "Mount Ombry", "ombry", "AK", 61.0, -147.0),
+            Summit(900000413, "Mount Ombry", "ombry", "AK", 62.0, -148.0)]
+KESTREL_AK = Summit(900000414, "Kestrel Horn", "kestrel horn", "AK", 60.5, -145.0)
+R3A_INDEX = SummitIndex([GLIMMET, ZENNOR_WA, *OMBRY_AK, KESTREL_AK])
+
+
+def _r3a_state_rows():
+    raw = _state_rows()
+    for i, m in ((900000520, "Mount Zennor"), (900000521, "Mount Ombry"), (900000522, "Kestrel Horn")):
+        raw[i] = row(i, mountain=m, state="AK", lat=STATE_POINT[0], lon=STATE_POINT[1])
+    return raw
+
+
+def test_a_contradiction_outranks_r3a_kept_point_labels():
+    raw = _r3a_state_rows()
+    # Off the fallback point the same rows keep R3a's labels and their coordinates.
+    assert geocode_fix(raw[900000520], R3A_INDEX, set()).method == "gnis_state_unmatched"
+    assert geocode_fix(raw[900000521], R3A_INDEX, set()).method == "gnis_ambiguous"
+    fixes, _ = _state_fixes(raw, R3A_INDEX)
+    assert fixes[900000520] == fixes[900000521] == (None, "unknown", geocode.STATE_CONTRADICTION, "US")
+
+
+def test_an_r3a_move_to_a_summit_in_the_rows_own_state_still_moves():
+    raw = _r3a_state_rows()
+    fixes, _ = _state_fixes(raw, R3A_INDEX)
+    assert fixes[900000522] == ((60.5, -145.0), "area", "gnis_summit", "US")
+    out = cluster_summary(list(raw.values()), R3A_INDEX, NO_MP)
+    [point] = out["state_contradictions"]
+    assert point["rows_dropped"] == 6 and point["row_states"]["AK"] == 6
+
+
+def test_route_linked_and_avalanche_rows_lose_a_contradicted_point_too():
+    raw = _state_rows()
+    raw[900000530] = row(900000530, mountain="Kestrel Horn", state="AK", lat=STATE_POINT[0], lon=STATE_POINT[1],
+                         mp=900000531)
+    raw[900000532] = row(900000532, family="avalanche", mountain="Kestrel Horn", state="AK", lat=STATE_POINT[0],
+                         lon=STATE_POINT[1])
+    fixes, _ = _state_fixes(raw, R3A_INDEX)
+    assert fixes[900000530] == fixes[900000532] == (None, "unknown", geocode.STATE_CONTRADICTION, "US")
+
+
 STATE_SEED = CRAG_SEED + """
 -- About 6.8 km from the fallback point (39.739,-104.99): names its state.
 INSERT INTO gnis_summits (gnis_id, name, name_key, state_code, lat, lon) VALUES
