@@ -3305,7 +3305,7 @@ Expected:
 save_once ../data/review/p2a3_r7_dry_branch.json ING r7
 save_once ../data/review/p2a3_r7_apply_branch.json ING r7 --apply
 ING r7
-VERIFY tests/verify/test_phase2a_conditions.py -q -k "r7 or visibility"
+VERIFY tests/verify/test_phase2a_conditions.py -q -k "test_r7_ or test_no_visibility_"
 ```
 
 Expected: the dry run is exactly `{"mode": "dry_run", "would_update_longitude": 113.2}`; the apply prints `{"updated": 1}`; the rerun prints `"note": "no positive longitudes"`; both cells pass. If the dry run refuses (`expected exactly one positive longitude`), stop: the data is not what R7 was written for.
@@ -3452,7 +3452,7 @@ Expected: `{"updated": 1}` and `GATE OK: r7_applied`. Never re-run this block af
 ( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
   # PRODUCTION (read-only)
   gate_require r7_applied || exit 1
-  VERIFY tests/verify/test_phase2a_conditions.py -q -s -k "r7 or visibility or normals_status" || exit 1
+  VERIFY tests/verify/test_phase2a_conditions.py -q -s -k "test_r7_ or test_no_visibility_ or test_normals_status_" || exit 1
   gate_pass verified_2a3 )
 ```
 
@@ -3664,8 +3664,8 @@ Expected: `incident_series` grows by the new incident buckets from 1990 on; `acc
 - [ ] **Step 8 (owner/agent): Acceptance on the branch**
 
 ```bash
-VERIFY tests/verify/test_phase2a_conditions.py -q -s -k "r11 or r7 or visibility or normals_status"
-VERIFY tests/verify/test_phase2a_repair.py -q -s -k r5
+VERIFY tests/verify/test_phase2a_conditions.py -q -s -k "test_r11_ or test_r7_ or test_no_visibility_ or test_normals_status_"
+VERIFY tests/verify/test_phase2a_repair.py -q -s -k test_r5_
 ```
 
 Expected: every cell passes. Record `feb5_jul2_2026_clean_incidents`, `backtest_incidents` and `backtest_with_prediction` in the PR now (spec 2a-4 acceptance): `historical_predictions` rows older than a year are purged, and plan 8 folds rows older than 7 days. The backtest cell needs Step 5's route links; a zero there with links applied is a STOP for the owner.
@@ -3910,8 +3910,8 @@ Further rounds follow plan 2 Task 13 12h with the `_r11` names, exactly as many 
 ( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
   # PRODUCTION (read-only)
   gate_require registered || exit 1
-  VERIFY tests/verify/test_phase2a_conditions.py -q -s -k "r11 or r7 or visibility or normals_status" || exit 1
-  VERIFY tests/verify/test_phase2a_repair.py -q -s -k r5 || exit 1
+  VERIFY tests/verify/test_phase2a_conditions.py -q -s -k "test_r11_ or test_r7_ or test_no_visibility_ or test_normals_status_" || exit 1
+  VERIFY tests/verify/test_phase2a_repair.py -q -s -k test_r5_ || exit 1
   gate_pass verified_2a4 )
 ```
 
@@ -4007,7 +4007,7 @@ R6 and the query plan on the partial data (Task 2 M6):
 
 ```bash
 INGMOD app.pipelines.r6_verify
-VERIFY tests/verify/test_phase2a_conditions.py -q -s -k "r6 or visibility"
+VERIFY tests/verify/test_phase2a_conditions.py -q -s -k "test_r6_ or test_no_visibility_"
 save_once ../data/review/era5w1_explain_branch.txt ANALYST_PSQL -v ON_ERROR_STOP=1 -At -c "EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM accident_conditions"
 ```
 

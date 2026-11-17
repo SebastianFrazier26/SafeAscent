@@ -1817,7 +1817,7 @@ Expected: both verify scripts report no failing check; `seed` prints `no_region_
 ING r4
 ING r4 --apply
 ING r5 --apply
-VERIFY tests/verify/test_phase2a_repair.py -q -k "r4 or r5"
+VERIFY tests/verify/test_phase2a_repair.py -q -k "test_r4_ or test_r5_"
 ```
 
 Expected: the dry run prints `terrain_version: r4-v2` and `unmapped` empty; the apply writes the changed activity classes (record the count of rows that moved to `climbing_approach` in the PR); `r5 --apply` regroups under the new classes (rows that leave a group are reset, plan 2); the cells pass. Then `INGMOD app.pipelines.objectives links` and `INGMOD app.pipelines.coverage badges` again, because objective links and badges read `accidents_clean`.
