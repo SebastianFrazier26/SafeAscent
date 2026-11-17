@@ -66,7 +66,7 @@ _MEXICAN_STATES = (
 )
 # Country names and foreign peak or place names that occur as a whole state value. Only the
 # entire folded state field is compared, never substrings and never mountain text (owner,
-# 2026-11-16): a Colorado slide path named "Alberta Gulch Slide" was marked foreign by it.
+# 2026-11-16): a US-state row whose mountain text names a Canadian province (e.g. a Colorado slide path) is not foreign.
 _COUNTRY_NAMES = {
     "mexico": "MX", "nepal": "NP", "pakistan": "PK", "argentina": "AR", "chile": "CL", "ecuador": "EC",
     "tibet": "CN", "china": "CN", "tanzania": "TZ", "switzerland": "CH", "new zealand": "NZ",

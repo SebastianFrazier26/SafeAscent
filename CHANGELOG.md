@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### R3 foreign-state comment wording - 2026-11-16
+
+- Comment-only: `backend/app/data/repair/geocode.py` no longer names a real slide path as the Colorado false positive; behavior unchanged.
+
 ### R3 rule r3-v2: foreign from state only, summit-exempt fallback clusters - 2026-11-16
 
 - Foreign is decided from the state field alone (owner, option A2). The mountain-text list (`FOREIGN_TERMS`, `foreign_country`) is removed: it marked 154 extra rows foreign, including a Colorado slide path with "Alberta" in its name. A state field whose whole value is a province, Mexican state, country (`_COUNTRY_NAMES`) or foreign peak/place name (`_PLACE_NAMES`, e.g. Everest, Squamish) is still foreign; blank-state rows with foreign-sounding mountain text are not.
