@@ -304,7 +304,7 @@ INSERT INTO role_checks
 SELECT 'ingest mp_locations column privileges match the expected set: ' || attname,
        has_column_privilege('ingest', 'public.mp_locations', attnum, 'SELECT')
          = (attname IN ('mp_id', 'latitude', 'longitude')
-            OR ((SELECT active FROM blocks WHERE rev = '0008') AND attname IN ('parent_id', 'name')))
+            OR ((SELECT active FROM blocks WHERE rev = '0005') AND attname IN ('parent_id', 'name')))
        AND NOT has_column_privilege('ingest', 'public.mp_locations', attnum, 'UPDATE')
        AND NOT has_column_privilege('ingest', 'public.mp_locations', attnum, 'INSERT')
        AND NOT has_column_privilege('ingest', 'public.mp_locations', attnum, 'REFERENCES')

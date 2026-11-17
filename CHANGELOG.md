@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### R3 rule r3-v3: MP crag exemption for fallback clusters - 2026-11-16
+
+- Owner-approved. A fallback-cluster candidate that survives the GNIS summit check is not a fallback when an MP area (`mp_locations`) within 1 km (`MP_CRAG_EXEMPT_KM`) holding at most 400 routes in its subtree (`MP_CRAG_MAX_ROUTES`) shares a distinctive name key with the point's rows: the key is in at most 25 MP area names (`MP_KEY_MAX_AREAS`) and in the mountain names of at least 60% (`MP_KEY_MIN_SHARE`) and at least 3 (`MP_KEY_MIN_ROWS`) of the point's rows. Keys are the area name's tokens after dropping MP sort prefixes (digits such as `05. `, or one capital letter and a space such as `B. `; `St. Vrain` keeps its `St.`), a leading `*` and stats suffixes, with accents folded, plus the whole cleaned name (5+ characters, not only stop words, its own area count under the same cap, word-bounded), so a crag named only in common words still matches. Only the accident `mountain` field feeds the match; route names gave false matches in the analysis and are never used.
+- `MpAreaIndex` is loaded like `SummitIndex` and passed into `split_fallback_points` / `find_fallback_points` / `cluster_summary` / `snapshot_fixes`, so `r3 --apply` and `r3-clusters` use the same split. `split_fallback_points` returns a `FallbackSplit` (fallback, summit-exempt, crag-exempt). R3 refuses if no MP area is usable as a crag (coordinates and 1-400 routes), e.g. `mp_locations` or `mp_routes` empty.
+- `r3-clusters` adds `crag_excluded_points`, `crag_excluded_rows` and a `crag_excluded` list (lat/lon, rows, `mp_area_id`, `mp_area_name`, `distance_m`, `matched_key`, `share`; never accident text). On the p2a-2 rehearsal data it exempts 17 points (157 rows), the 16 crag and 1 mixed verdicts of `data/review/p2a2_r3_clusters_mp_match.md`, leaving 42 fallback points.
+- Grants (security-relevant): `ingest` gets column-level `SELECT (parent_id, name)` on `mp_locations` in block 0005 of `grants_phase2.sql`, since R3 runs at 0006, before 0008's catalog; block 0008 no longer repeats it. `url` and `created_at` stay ungranted. `verify_roles_phase2.sql` expects the two columns from block 0005, and the revision test checks R3's exact reads as `ingest` at 0006.
+- `R3_VERSION` r3-v2 -> r3-v3. No r3-v2 has been applied to prod; the rehearsal restarts. The `tests/verify` fallback cell now builds both indexes, as the step does.
+
+### R3 foreign-state comment wording - 2026-11-16
+
+- Comment-only: `backend/app/data/repair/geocode.py` no longer names a real slide path as the Colorado false positive; behavior unchanged.
+
 ### R3 rule r3-v2: foreign from state only, summit-exempt fallback clusters - 2026-11-16
 
 - Foreign is decided from the state field alone (owner, option A2). The mountain-text list (`FOREIGN_TERMS`, `foreign_country`) is removed: it marked 154 extra rows foreign, including a Colorado slide path with "Alberta" in its name. A state field whose whole value is a province, Mexican state, country (`_COUNTRY_NAMES`) or foreign peak/place name (`_PLACE_NAMES`, e.g. Everest, Squamish) is still foreign; blank-state rows with foreign-sounding mountain text are not.

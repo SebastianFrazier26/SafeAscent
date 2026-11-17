@@ -7,9 +7,10 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import unicodedata
 from collections import Counter, defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -26,7 +27,7 @@ from app.pipelines.gnis import Summit, state_code
 from app.pipelines.textsim import normalize_text, place_key
 from app.pipelines.validate import ValidationReport, in_us
 
-R3_VERSION = "r3-v2"
+R3_VERSION = "r3-v3"
 # Owner decisions. Every r3-review-* revision freezes the row against later R3 runs.
 R3_REVIEW_VERSION = "r3-review-v1"
 R3_PICK_VERSION = "r3-review-pick-v1"
@@ -34,6 +35,22 @@ MOVE_KM = 50.0
 # A candidate fallback point this close to a GNIS summit is that summit, not a state or park
 # centroid: popular summits collect many rows under several route names (owner, 2026-11-16).
 SUMMIT_EXEMPT_KM = 0.25
+# MP crag exemption (owner, 2026-11-16; r3-v3). A candidate point that survives the summit check
+# is a crag, not a centroid, when an MP area this close, small enough to be one crag rather than
+# a whole mountain or park, shares a distinctive name key with most of the point's rows. Fitted
+# on the p2a-2 rehearsal (17 points, 157 rows): 2 km admitted town and whole-mountain points,
+# 600 m lost real crags.
+MP_CRAG_EXEMPT_KM = 1.0
+MP_CRAG_MAX_ROUTES = 400
+# A key in more MP area names than this is a park or region word, not one crag's name.
+MP_KEY_MAX_AREAS = 25
+MP_KEY_MIN_SHARE = 0.6
+MP_KEY_MIN_ROWS = 3
+# The whole cleaned area name is a key too, when at least this long: some crag names are made
+# only of common words.
+MP_PHRASE_MIN_CHARS = 5
+# Cycle guard on the parent chain, as in the rehearsal analysis.
+MP_TREE_MAX_DEPTH = 20
 ALASKA_MIN_LAT = 55.0
 # The Aleutians and the western Alaska Peninsula lie south of 55N at these longitudes; the
 # 55N rule is for AK-labelled rows geocoded into the lower 48 or Hawaii. The latitude floor
@@ -66,7 +83,7 @@ _MEXICAN_STATES = (
 )
 # Country names and foreign peak or place names that occur as a whole state value. Only the
 # entire folded state field is compared, never substrings and never mountain text (owner,
-# 2026-11-16): a Colorado slide path named "Alberta Gulch Slide" was marked foreign by it.
+# 2026-11-16): a US-state row whose mountain text names a Canadian province (e.g. a Colorado slide path) is not foreign.
 _COUNTRY_NAMES = {
     "mexico": "MX", "nepal": "NP", "pakistan": "PK", "argentina": "AR", "chile": "CL", "ecuador": "EC",
     "tibet": "CN", "china": "CN", "tanzania": "TZ", "switzerland": "CH", "new zealand": "NZ",
@@ -148,6 +165,130 @@ class SummitIndex:
         return [s for s in hits if s.state_code == state] if state else list(hits)
 
 
+@dataclass(frozen=True)
+class MpArea:
+    mp_id: int
+    name: str
+    lat: float | None
+    lon: float | None
+    # Routes under the area, its whole subtree included.
+    routes: int
+
+
+@dataclass(frozen=True)
+class CragMatch:
+    area: MpArea
+    distance_km: float
+    key: str
+    rows: int
+    share: float
+
+
+_CRAG_STOP = frozenset(
+    "mount mountain mt the of and a an peak point national park state area via route rock to in on at wall crag cliff "
+    "cliffs".split()
+)
+_MP_STATS_SUFFIX = re.compile(r"[\d,]+/[\d,/]+.*$")
+# A sort prefix is digits ("05. ", "07a.") or one capital letter and a space ("B. "). The rehearsal
+# analysis also took any 1-2 letters ("St. ", "Mt. "), which ate "St." from "St. Vrain"; not intended.
+_MP_SORT_PREFIX = re.compile(r"^[\W_]*(?:\d+[A-Za-z]?\.\s*|[A-Z]\.\s+)")
+_ALNUM = re.compile(r"[a-z0-9]+")
+
+
+def crag_norm(value: str | None) -> str:
+    # Deliberately not textsim.normalize_text: no abbreviation expansion, so the keys are the ones
+    # the owner-approved counts were measured with. Accents fold as in _fold ("Pêche" -> "peche").
+    decomposed = unicodedata.normalize("NFKD", value or "")
+    folded = "".join(c for c in decomposed if not unicodedata.combining(c))
+    return " ".join(_ALNUM.findall(folded.lower().replace("'", "")))
+
+
+def crag_tokens(value: str | None) -> frozenset[str]:
+    return frozenset(t for t in crag_norm(value).split() if t not in _CRAG_STOP and len(t) > 1)
+
+
+def clean_mp_name(name: str | None) -> str:
+    """An MP area name without its sort prefix ("B. ", "05. ", "*") or a stats suffix."""
+    return crag_norm(_MP_SORT_PREFIX.sub("", _MP_STATS_SUFFIX.sub("", name or "")))
+
+
+def subtree_route_counts(parents: Mapping[int, int | None], direct: Mapping[int, int]) -> Counter[int]:
+    counts: Counter[int] = Counter()
+    for location, n in direct.items():
+        node: int | None = location
+        for _ in range(MP_TREE_MAX_DEPTH):
+            if node is None:
+                break
+            counts[node] += n
+            node = parents.get(node)
+    return counts
+
+
+class MpAreaIndex:
+    def __init__(self, areas: Sequence[MpArea]) -> None:
+        # Key frequency counts every area, located or not: a word is common whether or not the
+        # areas carrying it have coordinates.
+        self._cleaned = {a.mp_id: clean_mp_name(a.name) for a in areas}
+        self._token_areas: Counter[str] = Counter(t for c in self._cleaned.values() for t in crag_tokens(c))
+        self._padded = tuple(f" {c} " for c in self._cleaned.values())
+        self._phrase_areas: dict[str, int] = {}
+        self._crags = tuple(
+            sorted(
+                (a for a in areas if a.lat is not None and a.lon is not None and 0 < a.routes <= MP_CRAG_MAX_ROUTES),
+                key=lambda a: a.mp_id,
+            )
+        )
+        self.crag_areas = len(self._crags)
+
+    def _areas_with_phrase(self, phrase: str) -> int:
+        # Always the full scan, one word or several: _token_areas skips stop words, so a one-word
+        # phrase such as "cliffs" would otherwise count 0 areas and pass the cap.
+        if phrase not in self._phrase_areas:
+            self._phrase_areas[phrase] = sum(1 for c in self._padded if f" {phrase} " in c)
+        return self._phrase_areas[phrase]
+
+    def _keys(self, area: MpArea) -> list[str]:
+        cleaned = self._cleaned[area.mp_id]
+        keys = {t for t in crag_tokens(cleaned) if self._token_areas[t] <= MP_KEY_MAX_AREAS}
+        if (
+            len(cleaned) >= MP_PHRASE_MIN_CHARS
+            and crag_tokens(cleaned)
+            and self._areas_with_phrase(cleaned) <= MP_KEY_MAX_AREAS
+        ):
+            keys.add(cleaned)
+        return sorted(keys)
+
+    def crag_match(self, lat: float, lon: float, mountains: Sequence[str | None]) -> CragMatch | None:
+        """The best qualifying MP area for a point's rows (most rows sharing one key, then the
+        nearest area), or None when no area meets the exemption."""
+        if not mountains:
+            return None
+        padded = [f" {crag_norm(m)} " for m in mountains]
+        band = MP_CRAG_EXEMPT_KM / 111.0
+        near = []
+        for a in self._crags:
+            assert a.lat is not None and a.lon is not None
+            if abs(a.lat - lat) > band:
+                continue
+            d = haversine_km(lat, lon, a.lat, a.lon)
+            if d <= MP_CRAG_EXEMPT_KM:
+                near.append((d, a))
+        best: tuple[int, MpArea, float, str] | None = None
+        for d, a in sorted(near, key=lambda x: (x[0], x[1].mp_id)):
+            for key in self._keys(a):
+                # Word-bounded: a token is one whole word of the row's name, a phrase a run of them.
+                k = sum(1 for p in padded if f" {key} " in p)
+                if best is None or k > best[0]:
+                    best = (k, a, d, key)
+        if best is None:
+            return None
+        k, area, d, key = best
+        share = k / len(mountains)
+        if k < MP_KEY_MIN_ROWS or share < MP_KEY_MIN_SHARE:
+            return None
+        return CragMatch(area, d, key, k, share)
+
+
 def _fold(value: str | None) -> str:
     # "Querétaro" and "Cañada" fold to plain ASCII before matching, not to "quer taro".
     decomposed = unicodedata.normalize("NFKD", value or "")
@@ -183,29 +324,45 @@ def _point(lat: float, lon: float) -> tuple[float, float]:
     return round(lat, 3), round(lon, 3)
 
 
+Point = tuple[float, float]
+
+
+@dataclass(frozen=True)
+class FallbackSplit:
+    fallback: set[Point]
+    on_summit: set[Point]
+    on_crag: dict[Point, CragMatch]
+
+
 def split_fallback_points(
-    rows: Sequence[GeoRow], index: SummitIndex, *, min_rows: int = 5, min_names: int = 3
-) -> tuple[set[tuple[float, float]], set[tuple[float, float]]]:
-    """(fallback points, candidate points the summit check excluded)."""
-    names: dict[tuple[float, float], set[str]] = defaultdict(set)
-    counts: Counter[tuple[float, float]] = Counter()
+    rows: Sequence[GeoRow], index: SummitIndex, mp_index: MpAreaIndex, *, min_rows: int = 5, min_names: int = 3
+) -> FallbackSplit:
+    """Candidate points split into fallbacks and the ones each exemption took out. The summit
+    check runs first, so a point on a summit is never also listed as a crag."""
+    names: dict[Point, set[str]] = defaultdict(set)
+    mountains: dict[Point, list[str | None]] = defaultdict(list)
     for r in rows:
         if r.lat is None or r.lon is None:
             continue
         p = _point(r.lat, r.lon)
-        counts[p] += 1
+        mountains[p].append(r.mountain)
         key = place_key(r.mountain)
         if key:
             names[p].add(key)
-    candidates = {p for p, n in counts.items() if n >= min_rows and len(names[p]) >= min_names}
+    candidates = {p for p, ms in mountains.items() if len(ms) >= min_rows and len(names[p]) >= min_names}
     on_summit = {p for p in candidates if index.nearest_summit_within(p[0], p[1], SUMMIT_EXEMPT_KM) is not None}
-    return candidates - on_summit, on_summit
+    on_crag: dict[Point, CragMatch] = {}
+    for p in sorted(candidates - on_summit):
+        match = mp_index.crag_match(p[0], p[1], mountains[p])
+        if match is not None:
+            on_crag[p] = match
+    return FallbackSplit(candidates - on_summit - set(on_crag), on_summit, on_crag)
 
 
 def find_fallback_points(
-    rows: Sequence[GeoRow], index: SummitIndex, *, min_rows: int = 5, min_names: int = 3
-) -> set[tuple[float, float]]:
-    return split_fallback_points(rows, index, min_rows=min_rows, min_names=min_names)[0]
+    rows: Sequence[GeoRow], index: SummitIndex, mp_index: MpAreaIndex, *, min_rows: int = 5, min_names: int = 3
+) -> set[Point]:
+    return split_fallback_points(rows, index, mp_index, min_rows=min_rows, min_names=min_names).fallback
 
 
 def alaska_point_misplaced(lat: float, lon: float) -> bool:
@@ -314,7 +471,8 @@ def _labelled_elsewhere(precision: str | None, history: Sequence[tuple[str, str]
 
 
 def snapshot_fixes(
-    raw: Mapping[int, GeoRow], live: Mapping[int, LiveRow], index: SummitIndex, history: History
+    raw: Mapping[int, GeoRow], live: Mapping[int, LiveRow], index: SummitIndex, mp_index: MpAreaIndex,
+    history: History,
 ) -> tuple[list[GeoFix], list[Change], Counter[str]]:
     """Decisions come from the pre-repair snapshot only (G17 principle, as R1): a hand edit to
     a live row, or R3's own earlier moves and nulls, never feed a later run. A kept point is
@@ -324,7 +482,7 @@ def snapshot_fixes(
     Never re-decided, only counted: rows an owner decided (any r3-review-* revision), and rows
     whose geocode_precision was set by something other than an R3 rule version (curated after
     the snapshot). Rows absent from the snapshot are labelled untrusted and never moved."""
-    fallback = find_fallback_points(list(raw.values()), index)
+    fallback = find_fallback_points(list(raw.values()), index, mp_index)
     fixes: list[GeoFix] = []
     changes: list[Change] = []
     skipped: Counter[str] = Counter()
@@ -373,12 +531,50 @@ def _geo_row(r: Mapping[str, object]) -> GeoRow:
     )
 
 
+GNIS_SQL = "SELECT gnis_id, name, name_key, state_code, lat, lon FROM gnis_summits"
+# Only the columns ingest's grant covers at 0006 (when Stage B runs R3): never url.
+MP_LOCATIONS_SQL = "SELECT mp_id, name, parent_id, latitude, longitude FROM mp_locations"
+MP_ROUTE_COUNTS_SQL = "SELECT location_id, count(*) FROM mp_routes WHERE location_id IS NOT NULL GROUP BY location_id"
+
+
+def summit_index_from_rows(rows: Iterable[Sequence[object]]) -> SummitIndex:
+    return SummitIndex([
+        Summit(int(str(g)), str(n), str(k), str(s), float(str(la)), float(str(lo))) for g, n, k, s, la, lo in rows
+    ])
+
+
+def mp_area_index_from_rows(
+    locations: Iterable[Sequence[object]], route_counts: Iterable[Sequence[object]]
+) -> MpAreaIndex:
+    """From MP_LOCATIONS_SQL and MP_ROUTE_COUNTS_SQL rows (shared with the acceptance cell)."""
+    located = [(int(str(m)), str(n), int(str(p)) if p is not None else None, _float(la), _float(lo))
+               for m, n, p, la, lo in locations]
+    direct = {int(str(loc)): int(str(c)) for loc, c in route_counts}
+    routes = subtree_route_counts({m: p for m, _, p, _, _ in located}, direct)
+    return MpAreaIndex([MpArea(m, n, la, lo, routes[m]) for m, n, _, la, lo in located])
+
+
 async def _index(conn: AsyncConnection) -> SummitIndex:
-    result = await conn.execute(text("SELECT gnis_id, name, name_key, state_code, lat, lon FROM gnis_summits"))
-    summits = [Summit(int(g), str(n), str(k), str(s), float(la), float(lo)) for g, n, k, s, la, lo in result.all()]
-    if not summits:
+    index = summit_index_from_rows((await conn.execute(text(GNIS_SQL))).all())
+    if not index.ids:
         raise SystemExit("gnis_summits is empty: run python -m app.pipelines.gnis first")
-    return SummitIndex(summits)
+    return index
+
+
+def require_crag_areas(index: MpAreaIndex) -> MpAreaIndex:
+    # Refused rather than run without them: an index with no usable area silently turns every
+    # crag back into a fallback (empty mp_locations or mp_routes, or no coordinates).
+    if not index.crag_areas:
+        raise SystemExit(
+            "no MP area has coordinates and 1-400 routes: R3's crag exemption needs mp_locations and mp_routes loaded"
+        )
+    return index
+
+
+async def _mp_index(conn: AsyncConnection) -> MpAreaIndex:
+    return require_crag_areas(mp_area_index_from_rows(
+        (await conn.execute(text(MP_LOCATIONS_SQL))).all(), (await conn.execute(text(MP_ROUTE_COUNTS_SQL))).all()
+    ))
 
 
 async def raw_geo_rows(conn: AsyncConnection) -> dict[int, GeoRow]:
@@ -394,41 +590,52 @@ async def raw_geo_rows(conn: AsyncConnection) -> dict[int, GeoRow]:
     return rows
 
 
-def cluster_summary(rows: Sequence[GeoRow], index: SummitIndex) -> dict[str, object]:
-    """Coordinates, row counts and source-family counts only (no names), for the owner's
-    cluster review before r3 --apply."""
-    points, on_summit = split_fallback_points(rows, index)
-    families: dict[tuple[float, float], Counter[str]] = defaultdict(Counter)
+def cluster_summary(rows: Sequence[GeoRow], index: SummitIndex, mp_index: MpAreaIndex) -> dict[str, object]:
+    """Coordinates, row counts and source-family counts, plus the GNIS and MP ids (and MP area
+    names) behind each exemption; never accident text. For the owner's review before r3 --apply."""
+    split = split_fallback_points(rows, index, mp_index)
+    per_point: Counter[Point] = Counter()
+    families: dict[Point, Counter[str]] = defaultdict(Counter)
     for r in rows:
-        if r.lat is not None and r.lon is not None and _point(r.lat, r.lon) in points:
-            families[_point(r.lat, r.lon)][r.family] += 1
-    excluded = []
-    for lat, lon in sorted(on_summit):
+        if r.lat is not None and r.lon is not None:
+            p = _point(r.lat, r.lon)
+            per_point[p] += 1
+            if p in split.fallback:
+                families[p][r.family] += 1
+    summit_excluded = []
+    for lat, lon in sorted(split.on_summit):
         near = index.nearest_summit_within(lat, lon, SUMMIT_EXEMPT_KM)
         assert near is not None
-        excluded.append({
-            "lat": lat, "lon": lon,
-            "rows": sum(1 for r in rows if r.lat is not None and r.lon is not None and _point(r.lat, r.lon) == (lat, lon)),
-            "gnis_id": near[0].gnis_id, "distance_m": round(near[1] * 1000),
+        summit_excluded.append({
+            "lat": lat, "lon": lon, "rows": per_point[(lat, lon)], "gnis_id": near[0].gnis_id,
+            "distance_m": round(near[1] * 1000),
         })
+    crag_excluded = [
+        {
+            "lat": lat, "lon": lon, "rows": per_point[(lat, lon)], "mp_area_id": m.area.mp_id, "mp_area_name": m.area.name,
+            "distance_m": round(m.distance_km * 1000), "matched_key": m.key, "share": round(m.share, 3),
+        }
+        for (lat, lon), m in sorted(split.on_crag.items())
+    ]
     by_point = {
         f"{lat},{lon}": {"rows": sum(families[(lat, lon)].values()), "families": dict(sorted(families[(lat, lon)].items()))}
-        for lat, lon in sorted(points)
+        for lat, lon in sorted(split.fallback)
     }
     return {
-        "fallback_points": len(points),
+        "fallback_points": len(split.fallback),
         "rows_at_fallback_points": sum(sum(f.values()) for f in families.values()),
-        "summit_excluded_points": len(on_summit),
-        "summit_excluded_rows": sum(
-            1 for r in rows if r.lat is not None and r.lon is not None and _point(r.lat, r.lon) in on_summit
-        ),
-        "summit_excluded": excluded,
+        "summit_excluded_points": len(split.on_summit),
+        "summit_excluded_rows": sum(per_point[p] for p in split.on_summit),
+        "summit_excluded": summit_excluded,
+        "crag_excluded_points": len(split.on_crag),
+        "crag_excluded_rows": sum(per_point[p] for p in split.on_crag),
+        "crag_excluded": crag_excluded,
         "points": by_point,
     }
 
 
 async def run_r3_clusters(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
-    return cluster_summary(list((await raw_geo_rows(conn)).values()), await _index(conn))
+    return cluster_summary(list((await raw_geo_rows(conn)).values()), await _index(conn), await _mp_index(conn))
 
 
 async def run_r3_states(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
@@ -458,7 +665,7 @@ async def run_r3(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, o
         _id(r): (_float(r["latitude"]), _float(r["longitude"]), _str(r["geocode_precision"]))
         for r in await fetch_accidents(conn, ["latitude", "longitude", "geocode_precision"])
     }
-    fixes, changes, skipped = snapshot_fixes(raw, live, index, await _history(conn))
+    fixes, changes, skipped = snapshot_fixes(raw, live, index, await _mp_index(conn), await _history(conn))
     report = ValidationReport("repair:r3")
     methods: Counter[str] = Counter()
     for fix in fixes:

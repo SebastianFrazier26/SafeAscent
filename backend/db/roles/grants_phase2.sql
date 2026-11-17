@@ -119,6 +119,9 @@ GRANT SELECT (accident_id, source, source_id, date, year, mountain, state, latit
 \if :at_0005
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.gnis_summits TO ingest;
 GRANT SELECT, INSERT, UPDATE ON internal.duplicate_decisions TO ingest;
+-- R3's MP crag exemption (r3-v3, 2026-11-16) reads area names and the area tree (routes under each
+-- area). R3 needs GNIS, so this block, and it runs at 0006 (Stage B), before 0008's catalog. Never url.
+GRANT SELECT (parent_id, name) ON public.mp_locations TO ingest;
 \endif
 
 -- Plan 2 (0006): no grant here. app and analyst read accidents_clean[_daily] through
@@ -182,11 +185,11 @@ GRANT USAGE ON SEQUENCE public.accidents_accident_id_seq TO ingest;
 \endif
 
 -- MP catalog plan (0008). The refresh reads mp_locations' tree and coordinates, and the root
--- areas' names to recognise US states (never url); Phase 4 Task 24 makes the same widening.
+-- areas' names to recognise US states (never url) through block 0005's column grant; Phase 4
+-- Task 24 makes the same widening.
 -- The catalog is upserted, never deleted (FKs pin it to the MP rows). app and analyst read the
 -- new tables and views through migrator's default privileges; trainer gets nothing (D13).
 \if :at_0008
-GRANT SELECT (parent_id, name) ON public.mp_locations TO ingest;
 GRANT SELECT, INSERT, UPDATE ON public.canonical_areas, public.canonical_routes TO ingest;
 GRANT SELECT ON public.scorable_routes TO ingest;
 -- Tick-source seam (DP9): loaders upsert it, never delete.
