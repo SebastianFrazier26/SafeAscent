@@ -26,11 +26,14 @@ from app.pipelines.gnis import Summit, state_code
 from app.pipelines.textsim import normalize_text, place_key
 from app.pipelines.validate import ValidationReport, in_us
 
-R3_VERSION = "r3-v1"
+R3_VERSION = "r3-v2"
 # Owner decisions. Every r3-review-* revision freezes the row against later R3 runs.
 R3_REVIEW_VERSION = "r3-review-v1"
 R3_PICK_VERSION = "r3-review-pick-v1"
 MOVE_KM = 50.0
+# A candidate fallback point this close to a GNIS summit is that summit, not a state or park
+# centroid: popular summits collect many rows under several route names (owner, 2026-11-16).
+SUMMIT_EXEMPT_KM = 0.25
 ALASKA_MIN_LAT = 55.0
 # The Aleutians and the western Alaska Peninsula lie south of 55N at these longitudes; the
 # 55N rule is for AK-labelled rows geocoded into the lower 48 or Hawaii. The latitude floor
@@ -49,24 +52,6 @@ GNIS_ALIASES: dict[int, tuple[str, ...]] = {
     # "Denali" was its official name 2015-2025 and is what most accident records say.
     DENALI_GNIS_ID: ("denali",),
 }
-# Whole-token matches on mountain and state text. Left out on purpose because they are also
-# US summit or place names: "peru" (Peru Peak VT), "bolivia", "scotland" (US towns),
-# "matterhorn" (Matterhorn Peak CA, the Matterhorn NV/OR), "yukon" (the Yukon River, AK),
-# "canada" (Canada del Oro, AZ), "ontario", "patagonia", "norway", "china". Provinces and
-# Mexican states are matched on the state field only (STATE_FOREIGN). "new mexico" is
-# stripped before matching "mexico".
-FOREIGN_TERMS: dict[str, str] = {
-    "british columbia": "CA", "alberta": "CA", "robson": "CA",
-    "squamish": "CA", "bugaboos": "CA", "mexico": "MX", "potrero chico": "MX", "orizaba": "MX",
-    "nepal": "NP", "everest": "NP", "ama dablam": "NP", "pakistan": "PK", "k2": "PK",
-    "huascaran": "PE", "argentina": "AR", "aconcagua": "AR", "fitz roy": "AR", "chile": "CL",
-    "ecuador": "EC", "chimborazo": "EC", "cotopaxi": "EC", "tibet": "CN", "tanzania": "TZ",
-    "kilimanjaro": "TZ", "switzerland": "CH", "chamonix": "FR", "mont blanc": "FR",
-    "dolomites": "IT", "new zealand": "NZ", "iceland": "IS", "kyrgyzstan": "KG",
-    "elbrus": "RU",
-}
-
-
 _PROVINCES = (
     "alberta ab", "british columbia bc", "manitoba mb", "new brunswick nb", "newfoundland and labrador nl",
     "newfoundland nl", "nova scotia ns", "northwest territories nt", "nunavut nu", "ontario on",
@@ -79,6 +64,22 @@ _MEXICAN_STATES = (
     "queretaro", "quintana roo", "san luis potosi", "sinaloa", "sonora", "tabasco", "tamaulipas", "tlaxcala",
     "veracruz", "yucatan", "zacatecas",
 )
+# Country names and foreign peak or place names that occur as a whole state value. Only the
+# entire folded state field is compared, never substrings and never mountain text (owner,
+# 2026-11-16): a Colorado slide path named "Alberta Gulch Slide" was marked foreign by it.
+_COUNTRY_NAMES = {
+    "mexico": "MX", "nepal": "NP", "pakistan": "PK", "argentina": "AR", "chile": "CL", "ecuador": "EC",
+    "tibet": "CN", "china": "CN", "tanzania": "TZ", "switzerland": "CH", "new zealand": "NZ",
+    "iceland": "IS", "kyrgyzstan": "KG", "peru": "PE", "france": "FR", "italy": "IT", "russia": "RU",
+    "austria": "AT", "bolivia": "BO", "india": "IN", "japan": "JP", "united kingdom": "GB",
+    "scotland": "GB", "norway": "NO",
+}
+_PLACE_NAMES = {
+    "robson": "CA", "squamish": "CA", "bugaboos": "CA", "potrero chico": "MX", "orizaba": "MX",
+    "everest": "NP", "ama dablam": "NP", "k2": "PK", "huascaran": "PE", "aconcagua": "AR",
+    "fitz roy": "AR", "chimborazo": "EC", "cotopaxi": "EC", "kilimanjaro": "TZ", "chamonix": "FR",
+    "mont blanc": "FR", "dolomites": "IT", "elbrus": "RU",
+}
 # The whole state field, folded. Canadian two-letter codes never collide with US ones; Mexican
 # abbreviations do (CO, MO ...), so only full Mexican state names are listed.
 STATE_FOREIGN: dict[str, str] = (
@@ -86,6 +87,8 @@ STATE_FOREIGN: dict[str, str] = (
     | {p.rsplit(" ", 1)[1]: "CA" for p in _PROVINCES}
     | {"canada": "CA"}
     | {m: "MX" for m in _MEXICAN_STATES}
+    | _COUNTRY_NAMES
+    | _PLACE_NAMES
 )
 
 
@@ -120,12 +123,25 @@ class SummitIndex:
     def __init__(self, summits: Sequence[Summit]) -> None:
         self._by_key: dict[str, list[Summit]] = defaultdict(list)
         self.ids: frozenset[int] = frozenset(s.gnis_id for s in summits)
+        self._all: tuple[Summit, ...] = tuple(summits)
         for s in summits:
             self._by_key[s.name_key].append(s)
         for s in summits:
             for alias in GNIS_ALIASES.get(s.gnis_id, ()):
                 if s not in self._by_key[alias]:
                     self._by_key[alias].append(s)
+
+    def nearest_summit_within(self, lat: float, lon: float, km: float) -> tuple[Summit, float] | None:
+        # The latitude band is a cheap prefilter; only a handful of candidate points ask.
+        band = km / 111.0
+        best: tuple[Summit, float] | None = None
+        for s in self._all:
+            if abs(s.lat - lat) > band:
+                continue
+            d = haversine_km(lat, lon, s.lat, s.lon)
+            if d <= km and (best is None or d < best[1]):
+                best = (s, d)
+        return best
 
     def lookup(self, key: str, state: str | None) -> list[Summit]:
         hits = self._by_key.get(key, [])
@@ -145,8 +161,8 @@ def foreign_state(state: str | None) -> str | None:
     """The whole state field only, never a substring ("Durango, CO", "Ontario, OR" are US);
     "<province or Mexican state>, <its country>" is the one compound form accepted."""
     folded = _fold(state)
-    if folded in STATE_FOREIGN or folded in FOREIGN_TERMS:
-        return STATE_FOREIGN.get(folded) or FOREIGN_TERMS[folded]
+    if folded in STATE_FOREIGN:
+        return STATE_FOREIGN[folded]
     head, _, country = folded.rpartition(" ")
     code = _COUNTRY_SUFFIXES.get(country)
     return code if code is not None and STATE_FOREIGN.get(head) == code else None
@@ -163,19 +179,14 @@ def classify_state(state: str | None) -> str:
     return f"foreign:{foreign}" if foreign else "unmapped"
 
 
-def foreign_country(*texts: str | None) -> str | None:
-    haystack = f" {' '.join(_fold(t) for t in texts if t)} ".replace(" new mexico ", " ")
-    for term, code in FOREIGN_TERMS.items():
-        if f" {term} " in haystack:
-            return code
-    return None
-
-
 def _point(lat: float, lon: float) -> tuple[float, float]:
     return round(lat, 3), round(lon, 3)
 
 
-def find_fallback_points(rows: Sequence[GeoRow], *, min_rows: int = 5, min_names: int = 3) -> set[tuple[float, float]]:
+def split_fallback_points(
+    rows: Sequence[GeoRow], index: SummitIndex, *, min_rows: int = 5, min_names: int = 3
+) -> tuple[set[tuple[float, float]], set[tuple[float, float]]]:
+    """(fallback points, candidate points the summit check excluded)."""
     names: dict[tuple[float, float], set[str]] = defaultdict(set)
     counts: Counter[tuple[float, float]] = Counter()
     for r in rows:
@@ -186,7 +197,15 @@ def find_fallback_points(rows: Sequence[GeoRow], *, min_rows: int = 5, min_names
         key = place_key(r.mountain)
         if key:
             names[p].add(key)
-    return {p for p, n in counts.items() if n >= min_rows and len(names[p]) >= min_names}
+    candidates = {p for p, n in counts.items() if n >= min_rows and len(names[p]) >= min_names}
+    on_summit = {p for p in candidates if index.nearest_summit_within(p[0], p[1], SUMMIT_EXEMPT_KM) is not None}
+    return candidates - on_summit, on_summit
+
+
+def find_fallback_points(
+    rows: Sequence[GeoRow], index: SummitIndex, *, min_rows: int = 5, min_names: int = 3
+) -> set[tuple[float, float]]:
+    return split_fallback_points(rows, index, min_rows=min_rows, min_names=min_names)[0]
 
 
 def alaska_point_misplaced(lat: float, lon: float) -> bool:
@@ -234,8 +253,8 @@ def _r3a(row: GeoRow, index: SummitIndex, state: str | None) -> GeoFix | None:
 
 def geocode_fix(row: GeoRow, index: SummitIndex, fallback: set[tuple[float, float]]) -> GeoFix:
     state = state_code(row.state)
-    # Free-text terms scan the mountain name only; the state field is matched whole (N3).
-    foreign = (None if state else foreign_state(row.state)) or foreign_country(row.mountain)
+    # The state field alone decides foreign, matched whole (N3); mountain text never does.
+    foreign = None if state else foreign_state(row.state)
     if foreign is not None:
         return GeoFix(row.accident_id, None, "unknown", "foreign_place", foreign)
     moved = _r3a(row, index, state)
@@ -305,7 +324,7 @@ def snapshot_fixes(
     Never re-decided, only counted: rows an owner decided (any r3-review-* revision), and rows
     whose geocode_precision was set by something other than an R3 rule version (curated after
     the snapshot). Rows absent from the snapshot are labelled untrusted and never moved."""
-    fallback = find_fallback_points(list(raw.values()))
+    fallback = find_fallback_points(list(raw.values()), index)
     fixes: list[GeoFix] = []
     changes: list[Change] = []
     skipped: Counter[str] = Counter()
@@ -375,14 +394,23 @@ async def raw_geo_rows(conn: AsyncConnection) -> dict[int, GeoRow]:
     return rows
 
 
-def cluster_summary(rows: Sequence[GeoRow]) -> dict[str, object]:
+def cluster_summary(rows: Sequence[GeoRow], index: SummitIndex) -> dict[str, object]:
     """Coordinates, row counts and source-family counts only (no names), for the owner's
     cluster review before r3 --apply."""
-    points = find_fallback_points(rows)
+    points, on_summit = split_fallback_points(rows, index)
     families: dict[tuple[float, float], Counter[str]] = defaultdict(Counter)
     for r in rows:
         if r.lat is not None and r.lon is not None and _point(r.lat, r.lon) in points:
             families[_point(r.lat, r.lon)][r.family] += 1
+    excluded = []
+    for lat, lon in sorted(on_summit):
+        near = index.nearest_summit_within(lat, lon, SUMMIT_EXEMPT_KM)
+        assert near is not None
+        excluded.append({
+            "lat": lat, "lon": lon,
+            "rows": sum(1 for r in rows if r.lat is not None and r.lon is not None and _point(r.lat, r.lon) == (lat, lon)),
+            "gnis_id": near[0].gnis_id, "distance_m": round(near[1] * 1000),
+        })
     by_point = {
         f"{lat},{lon}": {"rows": sum(families[(lat, lon)].values()), "families": dict(sorted(families[(lat, lon)].items()))}
         for lat, lon in sorted(points)
@@ -390,12 +418,17 @@ def cluster_summary(rows: Sequence[GeoRow]) -> dict[str, object]:
     return {
         "fallback_points": len(points),
         "rows_at_fallback_points": sum(sum(f.values()) for f in families.values()),
+        "summit_excluded_points": len(on_summit),
+        "summit_excluded_rows": sum(
+            1 for r in rows if r.lat is not None and r.lon is not None and _point(r.lat, r.lon) in on_summit
+        ),
+        "summit_excluded": excluded,
         "points": by_point,
     }
 
 
 async def run_r3_clusters(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
-    return cluster_summary(list((await raw_geo_rows(conn)).values()))
+    return cluster_summary(list((await raw_geo_rows(conn)).values()), await _index(conn))
 
 
 async def run_r3_states(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:

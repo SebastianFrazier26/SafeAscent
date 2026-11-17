@@ -22,7 +22,6 @@ from app.data.repair.geocode import (
     classify_state,
     cluster_summary,
     find_fallback_points,
-    foreign_country,
     foreign_state,
     geocode_fix,
     owner_review_changes,
@@ -136,24 +135,22 @@ def test_source_measured_points_are_never_moved_by_name():
     assert (linked.location, linked.precision) == (KEEP, "crag")
 
 
-def test_us_names_that_contain_foreign_words_stay_us():
-    assert foreign_country("Organ Mountains", "New Mexico") is None
-    assert foreign_country("Indian Peaks", "CO") is None
-    # D5: also US summit names, so they never null a US row.
-    assert foreign_country("Peru Peak", "VT") is None
-    assert foreign_country("Matterhorn Peak", "California") is None
-    assert foreign_country("Scotland", None) is None
+def test_mountain_text_never_makes_a_row_foreign():
+    # Synthetic names: foreign words in the mountain field do not decide anything.
+    for mountain, state in [("Alberta Gulch Slide 900000001", "CO"), ("Robson Ridge", "Colorado"), ("Alberta Gulch Slide 900000001", None),
+                            ("Robson Ridge", None), ("Organ Mountains", "New Mexico"), ("Peru Peak", "VT")]:
+        fix = geocode_fix(row(i=900000001, mountain=mountain, state=state, lat=39.6, lon=-105.9), INDEX, set())
+        assert fix.method != "foreign_place" and fix.country != "CA", (mountain, state)
 
 
 def test_foreign_places_get_a_country_and_no_coordinates():
-    assert foreign_country("Aconcagua", None) == "AR"
-    fix = geocode_fix(row(mountain="Mount Robson, British Columbia", lat=53.1, lon=-119.2), INDEX, set())
+    fix = geocode_fix(row(mountain="Synthetic Peak", state="British Columbia", lat=53.1, lon=-119.2), INDEX, set())
     assert (fix.location, fix.precision, fix.country) == (None, "unknown", "CA")
 
 
 def test_fallback_cluster_rows_become_region_fallback_with_state():
     rows = [row(i, mountain=f"Place {i}", state="CO", lat=39.739, lon=-104.990) for i in range(6)]
-    points = find_fallback_points(rows)
+    points = find_fallback_points(rows, INDEX)
     assert points == {(39.739, -104.99)}
     fix = geocode_fix(rows[0], INDEX, points)
     assert (fix.location, fix.precision, fix.method, fix.country) == (KEEP, "region_fallback", "fallback_state", "US")
@@ -163,12 +160,12 @@ def test_fallback_cluster_rows_become_region_fallback_with_state():
 def test_a_point_needs_enough_rows_and_names_to_be_a_fallback():
     same_name = [row(i, mountain="Longs Peak", lat=40.255, lon=-105.615) for i in range(9)]
     few = [row(i, mountain=f"Place {i}", lat=39.0, lon=-105.0) for i in range(4)]
-    assert find_fallback_points([*same_name, *few, row(99)]) == set()
+    assert find_fallback_points([*same_name, *few, row(99)], INDEX) == set()
 
 
 def test_fallback_without_a_state_keeps_coordinates_and_is_unknown():
     rows = [row(i, mountain=f"Place {i}", lat=39.739, lon=-104.990) for i in range(6)]
-    fix = geocode_fix(rows[0], INDEX, find_fallback_points(rows))
+    fix = geocode_fix(rows[0], INDEX, find_fallback_points(rows, INDEX))
     assert (fix.location, fix.precision, fix.method, fix.country) == (KEEP, "unknown", "fallback_no_state", None)
 
 
@@ -240,7 +237,7 @@ INSERT INTO gnis_summits (gnis_id, name, name_key, state_code, lat, lon) VALUES
   (1423626, 'McKinley Peak', 'mckinley', 'AK', 61.0, -147.0);
 INSERT INTO accidents (accident_id, source, source_id, mountain, state, latitude, longitude, description) VALUES
   (1, 'AAC', 'a1', 'Mt. Rainier', 'WA', 47.6, -122.2, 'narrative one'),
-  (2, 'AAC', 'a2', 'Aconcagua', NULL, 40.0, -105.0, 'narrative two'),
+  (2, 'AAC', 'a2', 'Synthetic Peak', 'Argentina', 40.0, -105.0, 'narrative two'),
   (3, 'NPS', NULL, NULL, NULL, 36.5, -118.3, NULL),
   (4, 'AAC', 'a4', 'Mount McKinley', 'Alaska', 61.2, -149.9, NULL),
   (5, 'avalanche.org', NULL, 'Mount Rainier', 'WA', 47.6, -122.2, NULL),
@@ -281,7 +278,7 @@ def test_r3_labels_moves_and_nulls_with_an_audit_and_a_rerun_changes_nothing():
                 audit = await _rows(
                     conn,
                     "SELECT accident_id, old_value, new_value FROM internal.accident_revisions "
-                    "WHERE field = 'latlon' AND rule_version = 'r3-v1' ORDER BY accident_id",
+                    "WHERE field = 'latlon' AND rule_version = 'r3-v2' ORDER BY accident_id",
                 )
             assert got == [
                 (1, 46.853, -121.76, "area", "gnis_summit", "US", False),
@@ -490,7 +487,7 @@ def test_r3_decides_from_the_snapshot_so_hand_edits_and_v1_output_never_feed_it(
             assert got == [(1, 46.853, -121.76, "gnis_summit"), (3, 36.5, -118.3, "nps_source")]
             assert restored == [("snapshot_point", "36.000000,-118.000000", "36.500000,-118.300000")]
             # A later rule version still sees the pre-repair points, not v1's moves and nulls.
-            monkeypatch.setattr(geocode, "R3_VERSION", "r3-v2")
+            monkeypatch.setattr(geocode, "R3_VERSION", "r3-v3")
             async with engine.connect() as conn:
                 v2 = await run_r3(conn, argparse.Namespace(apply=False))
             assert v2["methods"] == v1["methods"]
@@ -511,7 +508,6 @@ def test_provinces_and_mexican_states_are_foreign_on_the_state_field_only():
     for mountain, state in [("Canada del Oro", "AZ"), ("Cañada del Oro", "Arizona"), ("Ontario Peak", "CA"),
                             ("Sonora Peak", "CA"), ("Yukon River bluffs", "AK")]:
         assert geocode_fix(row(mountain=mountain, state=state, lat=32.4, lon=-110.8), INDEX, set()).method != "foreign_place"
-    assert foreign_country("El Potrero Chico", None) == "MX"
 
 
 def test_foreign_state_matches_the_whole_field_or_a_country_suffix():
@@ -522,7 +518,7 @@ def test_foreign_state_matches_the_whole_field_or_a_country_suffix():
                         ("Nuevo León, México", "MX"), ("Canada", "CA")]:
         assert foreign_state(value) == code, value
     assert classify_state("Durango, CO") == "unmapped"
-    assert foreign_country("Potrero Chico", "Nuevo Leon") == "MX"
+    assert foreign_state("Argentina") == "AR"
 
 
 def test_a_state_that_is_not_a_us_state_never_scopes_a_name_move():
@@ -557,15 +553,69 @@ def test_the_shared_alaska_rule_exempts_only_the_aleutian_band():
 
 def test_blank_names_do_not_count_as_distinct_cluster_names():
     rows = [row(i, mountain=m, lat=39.739, lon=-104.99) for i, m in enumerate([None, "", "  ", "Place A", "Place B"])]
-    assert find_fallback_points(rows) == set()
-    assert find_fallback_points([*rows, row(9, mountain="Place C", lat=39.739, lon=-104.99)]) == {(39.739, -104.99)}
+    assert find_fallback_points(rows, INDEX) == set()
+    assert find_fallback_points([*rows, row(9, mountain="Place C", lat=39.739, lon=-104.99)], INDEX) == {(39.739, -104.99)}
+
+
+SYNTH_SUMMIT = Summit(900000001, "Synthetic Dome", "syntheticdome", "CO", 39.0, -105.0)
+SUMMIT_INDEX = SummitIndex([SYNTH_SUMMIT])
+SUMMIT_INDEX_EMPTY = SummitIndex([])
+
+
+def _cluster(lat, lon, n=6):
+    return [row(900000100 + i, mountain=f"Synthetic Route {i}", state="CO", lat=lat, lon=lon) for i in range(n)]
+
+
+def test_a_cluster_on_a_summit_is_not_a_fallback_but_one_1km_away_is():
+    assert find_fallback_points(_cluster(39.0, -105.0), SUMMIT_INDEX) == set()
+    # 0.009 degrees of latitude is about 1.0 km.
+    assert find_fallback_points(_cluster(39.009, -105.0), SUMMIT_INDEX) == {(39.009, -105.0)}
+    assert find_fallback_points(_cluster(39.0, -105.0), SUMMIT_INDEX_EMPTY) == {(39.0, -105.0)}
+
+
+def test_the_summit_exemption_boundary_is_250_m():
+    # Candidate points are rounded to 0.001 degrees (about 111 m), so 0.002 is ~222 m and 0.003 is ~333 m.
+    assert find_fallback_points(_cluster(39.002, -105.0), SUMMIT_INDEX) == set()
+    assert find_fallback_points(_cluster(39.003, -105.0), SUMMIT_INDEX) == {(39.003, -105.0)}
+
+
+def test_cluster_summary_lists_each_excluded_point_without_names():
+    out = cluster_summary(_cluster(39.002, -105.0, 7), SUMMIT_INDEX)
+    assert out["summit_excluded"] == [{"lat": 39.002, "lon": -105.0, "rows": 7, "gnis_id": 900000001, "distance_m": 222}]
+    assert "Synthetic" not in str(out)
+
+
+def test_whole_state_values_naming_foreign_places_are_foreign():
+    for value, code in [("Squamish", "CA"), ("Everest", "NP"), ("K2", "PK"), ("Chamonix", "FR"), ("Kilimanjaro", "TZ"),
+                        ("Alberta", "CA"), ("Bugaboos", "CA"), ("Robson", "CA"), ("Potrero Chico", "MX"), ("Orizaba", "MX"),
+                        ("Peru", "PE"), ("Japan", "JP"), ("Scotland", "GB"), ("United Kingdom", "GB"), ("India", "IN")]:
+        assert foreign_state(value) == code, value
+    # A mountain name never counts, whatever the state is.
+    assert foreign_state("CO") is None
+    fix = geocode_fix(row(900000002, mountain="Everest Chamonix Robson", state=None, lat=39.6, lon=-105.9), INDEX, set())
+    assert fix.method != "foreign_place"
+
+
+def test_no_us_state_name_or_code_is_foreign():
+    from app.pipelines.gnis import STATE_CODES
+
+    for value in [*STATE_CODES, *STATE_CODES.values()]:
+        assert foreign_state(value) is None, value
+
+
+def test_cluster_summary_counts_what_the_summit_check_excluded():
+    rows = [*_cluster(39.0, -105.0, 7), *_cluster(39.5, -105.5, 6)]
+    out = cluster_summary(rows, SUMMIT_INDEX)
+    assert (out["fallback_points"], out["rows_at_fallback_points"]) == (1, 6)
+    assert (out["summit_excluded_points"], out["summit_excluded_rows"]) == (1, 7)
 
 
 def test_cluster_summary_reports_family_counts_and_no_names():
     rows = [row(i, family="aac" if i < 4 else "nps", mountain=f"Place {i}", lat=39.739, lon=-104.99) for i in range(6)]
-    out = cluster_summary([*rows, row(50, mountain="Elsewhere", lat=40.0, lon=-105.0)])
+    out = cluster_summary([*rows, row(50, mountain="Elsewhere", lat=40.0, lon=-105.0)], INDEX)
     assert out == {
-        "fallback_points": 1, "rows_at_fallback_points": 6,
+        "fallback_points": 1, "rows_at_fallback_points": 6, "summit_excluded_points": 0, "summit_excluded_rows": 0,
+        "summit_excluded": [],
         "points": {"39.739,-104.99": {"rows": 6, "families": {"aac": 4, "nps": 2}}},
     }
     assert "Place" not in str(out)
@@ -585,7 +635,7 @@ def test_snapshot_fixes_never_re_decide_owner_or_curated_rows():
 
 def test_the_rule_that_set_the_label_last_decides_whether_r3_may_relabel():
     live = {3: (36.5, -118.3, "crag")}
-    relabelled = [("geocode_precision", "r3-v1"), ("geocode_precision", "r11-v1")]
+    relabelled = [("geocode_precision", "r3-v2"), ("geocode_precision", "r11-v1")]
     fixes, changes, skipped = snapshot_fixes({3: NPS_ROW}, live, INDEX, {3: relabelled})
     assert (fixes, changes, dict(skipped)) == ([], [], {"labelled_elsewhere": 1})
     fixes, _, skipped = snapshot_fixes({3: NPS_ROW}, live, INDEX, {3: relabelled[::-1]})
@@ -593,8 +643,8 @@ def test_the_rule_that_set_the_label_last_decides_whether_r3_may_relabel():
 
 
 def test_snapshot_fixes_re_decide_r3s_own_rows_from_the_snapshot():
-    # v2 after v1: the live point is v1's move, the labels are v1's; the decision comes from raw.
-    history = {1: [("latlon", "r3-v1"), ("geocode_precision", "r3-v1")]}
+    # r3-v3 after r3-v2: the live point is r3-v2's move, the labels are r3-v2's; the decision comes from raw.
+    history = {1: [("latlon", "r3-v2"), ("geocode_precision", "r3-v2")]}
     fixes, changes, _ = snapshot_fixes({1: SEATTLE_RAINIER}, {1: (46.853, -121.76, "area")}, INDEX, history)
     assert [f.method for f in fixes] == ["gnis_summit"]
     assert changes[0].field == LOCATION and changes[0].new_value == (46.853, -121.76)
@@ -633,7 +683,7 @@ def test_owner_decisions_survive_r3_reruns_and_a_v2(tmp_path, monkeypatch):
                 await run_r3_ambiguous_import(conn, argparse.Namespace(review_file=str(path), apply=True))
             async with engine.begin() as conn:
                 again = await run_r3(conn, argparse.Namespace(apply=True))
-            monkeypatch.setattr(geocode, "R3_VERSION", "r3-v2")
+            monkeypatch.setattr(geocode, "R3_VERSION", "r3-v3")
             async with engine.connect() as conn:
                 v2 = await run_r3(conn, argparse.Namespace(apply=False))
                 got = await _rows(
@@ -726,7 +776,10 @@ def test_task13_state_precheck_runs_and_flags_unmapped_values():
                 out = await run_r3_states(conn, argparse.Namespace())
             assert out["unmapped"] == [{"state": "USA", "n": 1, "class": "unmapped"}]
             # Owner confirms every foreign classification before r3 --apply nulls those points.
-            assert out["foreign"] == [{"state": "Alberta, Canada", "n": 1, "class": "foreign:CA"}]
+            assert out["foreign"] == [
+                {"state": "Alberta, Canada", "n": 1, "class": "foreign:CA"},
+                {"state": "Argentina", "n": 1, "class": "foreign:AR"},
+            ]
             assert {"state": "Alaska", "n": 1, "class": "us:AK"} in out["states"]
         finally:
             await engine.dispose()
