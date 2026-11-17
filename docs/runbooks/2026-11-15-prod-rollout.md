@@ -331,7 +331,7 @@ Prod steps:
 3. **AGENT.** Steps 6b/6c (dry runs equal the branch's), 6d (snapshot `pre-2a-1`), 6e (r2r1 twice, then r9, all in the background), 6f/6g (sample ids match; import the owner's filled CSVs), 6i–6k (r1-v2 dry run, apply twice, sample, import) and 6l (clean-up), exactly as plan 2a-1 Task 12 Step 6 writes them.
    - If 6f or 6k reports a sample mismatch, the owner hand-checks the `_prod` files (**OWNER-REVIEW**: `r1_year_check_prod.csv`, `severity_check_prod.csv` or `r1v2_year_check_prod.csv`; the decision is the per-row `within_one_year` or `agree`).
 
-Gates (in order): `prod_at_0004`, `grants`, `dry_runs`, `snapshot`, `r2r1_applied`, `r9_applied`, `sample_ids`, `imported`, `r1v2_dry`, `r1v2_applied`, `r1v2_sample_ids`, `r1v2_imported`. Then the background `VERIFY … -k "r1 or r2 or r9 or every_row"` passes (`logs/verify_prod.log`).
+Gates (in order): `prod_at_0004`, `grants`, `dry_runs`, `snapshot`, `r2r1_applied`, `r9_applied`, `sample_ids`, `imported`, `r1v2_dry`, `r1v2_applied`, `r1v2_sample_ids`, `r1v2_imported`. Then the background `VERIFY … -k "test_r1_ or test_r1v2_ or test_r2_ or test_r9_ or test_every_row_"` (the old `r1 or ...` substring filter also selected the r11 and r12 tests, which fail before their stages) passes (`logs/verify_prod.log`).
 
 Runtime: the r2r1 and r9 applies are estimated at 10–25 minutes each (not measured). The r1-v2 applies took 3 minutes and 40 s on the branch. With the gates, about 1.5–2 hours of agent time, plus any owner hand-check.
 
