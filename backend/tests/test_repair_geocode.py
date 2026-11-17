@@ -137,7 +137,7 @@ def test_source_measured_points_are_never_moved_by_name():
 
 def test_mountain_text_never_makes_a_row_foreign():
     # Synthetic names: foreign words in the mountain field do not decide anything.
-    for mountain, state in [("Alberta Cousin Slide", "CO"), ("Robson Ridge", "Colorado"), ("Alberta Cousin Slide", None),
+    for mountain, state in [("Alberta Gulch Slide 900000001", "CO"), ("Robson Ridge", "Colorado"), ("Alberta Gulch Slide 900000001", None),
                             ("Robson Ridge", None), ("Organ Mountains", "New Mexico"), ("Peru Peak", "VT")]:
         fix = geocode_fix(row(i=900000001, mountain=mountain, state=state, lat=39.6, lon=-105.9), INDEX, set())
         assert fix.method != "foreign_place" and fix.country != "CA", (mountain, state)
@@ -579,6 +579,30 @@ def test_the_summit_exemption_boundary_is_250_m():
     assert find_fallback_points(_cluster(39.003, -105.0), SUMMIT_INDEX) == {(39.003, -105.0)}
 
 
+def test_cluster_summary_lists_each_excluded_point_without_names():
+    out = cluster_summary(_cluster(39.002, -105.0, 7), SUMMIT_INDEX)
+    assert out["summit_excluded"] == [{"lat": 39.002, "lon": -105.0, "rows": 7, "gnis_id": 900000001, "distance_m": 222}]
+    assert "Synthetic" not in str(out)
+
+
+def test_whole_state_values_naming_foreign_places_are_foreign():
+    for value, code in [("Squamish", "CA"), ("Everest", "NP"), ("K2", "PK"), ("Chamonix", "FR"), ("Kilimanjaro", "TZ"),
+                        ("Alberta", "CA"), ("Bugaboos", "CA"), ("Robson", "CA"), ("Potrero Chico", "MX"), ("Orizaba", "MX"),
+                        ("Peru", "PE"), ("Japan", "JP"), ("Scotland", "GB"), ("United Kingdom", "GB"), ("India", "IN")]:
+        assert foreign_state(value) == code, value
+    # A mountain name never counts, whatever the state is.
+    assert foreign_state("CO") is None
+    fix = geocode_fix(row(900000002, mountain="Everest Chamonix Robson", state=None, lat=39.6, lon=-105.9), INDEX, set())
+    assert fix.method != "foreign_place"
+
+
+def test_no_us_state_name_or_code_is_foreign():
+    from app.pipelines.gnis import STATE_CODES
+
+    for value in [*STATE_CODES, *STATE_CODES.values()]:
+        assert foreign_state(value) is None, value
+
+
 def test_cluster_summary_counts_what_the_summit_check_excluded():
     rows = [*_cluster(39.0, -105.0, 7), *_cluster(39.5, -105.5, 6)]
     out = cluster_summary(rows, SUMMIT_INDEX)
@@ -591,6 +615,7 @@ def test_cluster_summary_reports_family_counts_and_no_names():
     out = cluster_summary([*rows, row(50, mountain="Elsewhere", lat=40.0, lon=-105.0)], INDEX)
     assert out == {
         "fallback_points": 1, "rows_at_fallback_points": 6, "summit_excluded_points": 0, "summit_excluded_rows": 0,
+        "summit_excluded": [],
         "points": {"39.739,-104.99": {"rows": 6, "families": {"aac": 4, "nps": 2}}},
     }
     assert "Place" not in str(out)
@@ -618,7 +643,7 @@ def test_the_rule_that_set_the_label_last_decides_whether_r3_may_relabel():
 
 
 def test_snapshot_fixes_re_decide_r3s_own_rows_from_the_snapshot():
-    # v2 after v1: the live point is v1's move, the labels are v1's; the decision comes from raw.
+    # r3-v3 after r3-v2: the live point is r3-v2's move, the labels are r3-v2's; the decision comes from raw.
     history = {1: [("latlon", "r3-v2"), ("geocode_precision", "r3-v2")]}
     fixes, changes, _ = snapshot_fixes({1: SEATTLE_RAINIER}, {1: (46.853, -121.76, "area")}, INDEX, history)
     assert [f.method for f in fixes] == ["gnis_summit"]
@@ -751,7 +776,10 @@ def test_task13_state_precheck_runs_and_flags_unmapped_values():
                 out = await run_r3_states(conn, argparse.Namespace())
             assert out["unmapped"] == [{"state": "USA", "n": 1, "class": "unmapped"}]
             # Owner confirms every foreign classification before r3 --apply nulls those points.
-            assert out["foreign"] == [{"state": "Alberta, Canada", "n": 1, "class": "foreign:CA"}]
+            assert out["foreign"] == [
+                {"state": "Alberta, Canada", "n": 1, "class": "foreign:CA"},
+                {"state": "Argentina", "n": 1, "class": "foreign:AR"},
+            ]
             assert {"state": "Alaska", "n": 1, "class": "us:AK"} in out["states"]
         finally:
             await engine.dispose()

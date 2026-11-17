@@ -8,10 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### R3 rule r3-v2: foreign from state only, summit-exempt fallback clusters - 2026-11-16
 
-- Foreign is decided from the state field alone (owner, option A2). The mountain-text list (`FOREIGN_TERMS`, `foreign_country`) is removed: it marked 154 extra rows foreign, including a Colorado slide path whose name contains "Alberta". A state field holding a province, Mexican state or country name (`_COUNTRY_NAMES`) is still foreign; blank-state rows with foreign-sounding mountain text are not.
-- `find_fallback_points` / `cluster_summary` now take the `SummitIndex`: a candidate point within 250 m (`SUMMIT_EXEMPT_KM`) of a GNIS summit is not a fallback, since popular summits collect many rows under several route names. `r3-clusters` reports `summit_excluded_points` and `summit_excluded_rows`.
+- Foreign is decided from the state field alone (owner, option A2). The mountain-text list (`FOREIGN_TERMS`, `foreign_country`) is removed: it marked 154 extra rows foreign, including a Colorado slide path with "Alberta" in its name. A state field whose whole value is a province, Mexican state, country (`_COUNTRY_NAMES`) or foreign peak/place name (`_PLACE_NAMES`, e.g. Everest, Squamish) is still foreign; blank-state rows with foreign-sounding mountain text are not.
+- `find_fallback_points` / `cluster_summary` now take the `SummitIndex`: a candidate point within about 250 m (`SUMMIT_EXEMPT_KM`, measured from the 3-decimal rounded point) of a GNIS summit is not a fallback, since popular summits collect many rows under several route names. `r3-clusters` reports `summit_excluded_points`, `summit_excluded_rows` and a `summit_excluded` list (lat/lon, row count, nearest summit GNIS id, distance in m; no names) for owner review.
 - `R3_VERSION` r3-v1 -> r3-v2: both changes alter R3 output, so audit rows from either rule are distinguishable. No r3-v1 has been applied to prod; the rehearsal restarts.
-- Tests use synthetic ids >= 900000000.
 
 ### Revision-aware Phase 2 role scripts (rollout K1) - 2026-11-16
 

@@ -64,12 +64,21 @@ _MEXICAN_STATES = (
     "queretaro", "quintana roo", "san luis potosi", "sinaloa", "sonora", "tabasco", "tamaulipas", "tlaxcala",
     "veracruz", "yucatan", "zacatecas",
 )
-# Country names that occur as a whole state value. Mountain text is never matched (owner,
-# 2026-11-16): a slide path named "Alberta's Cousin" in Colorado was marked foreign by it.
+# Country names and foreign peak or place names that occur as a whole state value. Only the
+# entire folded state field is compared, never substrings and never mountain text (owner,
+# 2026-11-16): a Colorado slide path named "Alberta Gulch Slide" was marked foreign by it.
 _COUNTRY_NAMES = {
     "mexico": "MX", "nepal": "NP", "pakistan": "PK", "argentina": "AR", "chile": "CL", "ecuador": "EC",
-    "tibet": "CN", "tanzania": "TZ", "switzerland": "CH", "new zealand": "NZ", "iceland": "IS",
-    "kyrgyzstan": "KG",
+    "tibet": "CN", "china": "CN", "tanzania": "TZ", "switzerland": "CH", "new zealand": "NZ",
+    "iceland": "IS", "kyrgyzstan": "KG", "peru": "PE", "france": "FR", "italy": "IT", "russia": "RU",
+    "austria": "AT", "bolivia": "BO", "india": "IN", "japan": "JP", "united kingdom": "GB",
+    "scotland": "GB", "norway": "NO",
+}
+_PLACE_NAMES = {
+    "robson": "CA", "squamish": "CA", "bugaboos": "CA", "potrero chico": "MX", "orizaba": "MX",
+    "everest": "NP", "ama dablam": "NP", "k2": "PK", "huascaran": "PE", "aconcagua": "AR",
+    "fitz roy": "AR", "chimborazo": "EC", "cotopaxi": "EC", "kilimanjaro": "TZ", "chamonix": "FR",
+    "mont blanc": "FR", "dolomites": "IT", "elbrus": "RU",
 }
 # The whole state field, folded. Canadian two-letter codes never collide with US ones; Mexican
 # abbreviations do (CO, MO ...), so only full Mexican state names are listed.
@@ -79,6 +88,7 @@ STATE_FOREIGN: dict[str, str] = (
     | {"canada": "CA"}
     | {m: "MX" for m in _MEXICAN_STATES}
     | _COUNTRY_NAMES
+    | _PLACE_NAMES
 )
 
 
@@ -113,6 +123,7 @@ class SummitIndex:
     def __init__(self, summits: Sequence[Summit]) -> None:
         self._by_key: dict[str, list[Summit]] = defaultdict(list)
         self.ids: frozenset[int] = frozenset(s.gnis_id for s in summits)
+        self._all: tuple[Summit, ...] = tuple(summits)
         for s in summits:
             self._by_key[s.name_key].append(s)
         for s in summits:
@@ -120,14 +131,17 @@ class SummitIndex:
                 if s not in self._by_key[alias]:
                     self._by_key[alias].append(s)
 
-    def has_summit_within(self, lat: float, lon: float, km: float) -> bool:
+    def nearest_summit_within(self, lat: float, lon: float, km: float) -> tuple[Summit, float] | None:
         # The latitude band is a cheap prefilter; only a handful of candidate points ask.
         band = km / 111.0
-        return any(
-            abs(s.lat - lat) <= band and haversine_km(lat, lon, s.lat, s.lon) <= km
-            for hits in self._by_key.values()
-            for s in hits
-        )
+        best: tuple[Summit, float] | None = None
+        for s in self._all:
+            if abs(s.lat - lat) > band:
+                continue
+            d = haversine_km(lat, lon, s.lat, s.lon)
+            if d <= km and (best is None or d < best[1]):
+                best = (s, d)
+        return best
 
     def lookup(self, key: str, state: str | None) -> list[Summit]:
         hits = self._by_key.get(key, [])
@@ -184,7 +198,7 @@ def split_fallback_points(
         if key:
             names[p].add(key)
     candidates = {p for p, n in counts.items() if n >= min_rows and len(names[p]) >= min_names}
-    on_summit = {p for p in candidates if index.has_summit_within(p[0], p[1], SUMMIT_EXEMPT_KM)}
+    on_summit = {p for p in candidates if index.nearest_summit_within(p[0], p[1], SUMMIT_EXEMPT_KM) is not None}
     return candidates - on_summit, on_summit
 
 
@@ -388,6 +402,15 @@ def cluster_summary(rows: Sequence[GeoRow], index: SummitIndex) -> dict[str, obj
     for r in rows:
         if r.lat is not None and r.lon is not None and _point(r.lat, r.lon) in points:
             families[_point(r.lat, r.lon)][r.family] += 1
+    excluded = []
+    for lat, lon in sorted(on_summit):
+        near = index.nearest_summit_within(lat, lon, SUMMIT_EXEMPT_KM)
+        assert near is not None
+        excluded.append({
+            "lat": lat, "lon": lon,
+            "rows": sum(1 for r in rows if r.lat is not None and r.lon is not None and _point(r.lat, r.lon) == (lat, lon)),
+            "gnis_id": near[0].gnis_id, "distance_m": round(near[1] * 1000),
+        })
     by_point = {
         f"{lat},{lon}": {"rows": sum(families[(lat, lon)].values()), "families": dict(sorted(families[(lat, lon)].items()))}
         for lat, lon in sorted(points)
@@ -399,6 +422,7 @@ def cluster_summary(rows: Sequence[GeoRow], index: SummitIndex) -> dict[str, obj
         "summit_excluded_rows": sum(
             1 for r in rows if r.lat is not None and r.lon is not None and _point(r.lat, r.lon) in on_summit
         ),
+        "summit_excluded": excluded,
         "points": by_point,
     }
 
