@@ -27,7 +27,7 @@ from app.pipelines.gnis import Summit, state_code
 from app.pipelines.textsim import normalize_text, place_key
 from app.pipelines.validate import ValidationReport, in_us
 
-R3_VERSION = "r3-v3"
+R3_VERSION = "r3-v4"
 # Owner decisions. Every r3-review-* revision freezes the row against later R3 runs.
 R3_REVIEW_VERSION = "r3-review-v1"
 R3_PICK_VERSION = "r3-review-pick-v1"
@@ -51,6 +51,12 @@ MP_KEY_MIN_ROWS = 3
 MP_PHRASE_MIN_CHARS = 5
 # Cycle guard on the parent chain, as in the rehearsal analysis.
 MP_TREE_MAX_DEPTH = 20
+# State contradiction (owner, 2026-11-16; r3-v4): a fallback point's state is its nearest GNIS
+# summit's within this radius. On the p2a-2 rehearsal every one of the 42 fallback points has a
+# summit within 23.4 km, and the summit's state matches the place-first hand check's on every point
+# with a stated row. Farther than this, the point's state is undetermined and nothing changes.
+POINT_STATE_KM = 25.0
+STATE_CONTRADICTION = "fallback_state_contradiction"
 ALASKA_MIN_LAT = 55.0
 # The Aleutians and the western Alaska Peninsula lie south of 55N at these longitudes; the
 # 55N rule is for AK-labelled rows geocoded into the lower 48 or Hawaii. The latitude floor
@@ -365,6 +371,17 @@ def find_fallback_points(
     return split_fallback_points(rows, index, mp_index, min_rows=min_rows, min_names=min_names).fallback
 
 
+def fallback_point_states(fallback: Iterable[Point], index: SummitIndex) -> dict[Point, str]:
+    """The state of each fallback point with a GNIS summit within POINT_STATE_KM; undetermined
+    points are absent."""
+    states: dict[Point, str] = {}
+    for p in fallback:
+        near = index.nearest_summit_within(p[0], p[1], POINT_STATE_KM)
+        if near is not None:
+            states[p] = near[0].state_code
+    return states
+
+
 def alaska_point_misplaced(lat: float, lon: float) -> bool:
     """An AK-labelled point that cannot be in Alaska (shared with the acceptance cell)."""
     aleutian = lat >= ALEUTIAN_MIN_LAT and (lon <= ALEUTIAN_MAX_LON or lon >= ALEUTIAN_MIN_LON)
@@ -408,7 +425,9 @@ def _r3a(row: GeoRow, index: SummitIndex, state: str | None) -> GeoFix | None:
     return None
 
 
-def geocode_fix(row: GeoRow, index: SummitIndex, fallback: set[tuple[float, float]]) -> GeoFix:
+def geocode_fix(
+    row: GeoRow, index: SummitIndex, fallback: set[tuple[float, float]], point_states: Mapping[Point, str] | None = None,
+) -> GeoFix:
     state = state_code(row.state)
     # The state field alone decides foreign, matched whole (N3); mountain text never does.
     foreign = None if state else foreign_state(row.state)
@@ -424,6 +443,11 @@ def geocode_fix(row: GeoRow, index: SummitIndex, fallback: set[tuple[float, floa
         hits = index.lookup(place_key(row.mountain), state) if state else []
         if len(hits) == 1 and _moveable(row):
             return GeoFix(row.accident_id, (hits[0].lat, hits[0].lon), "area", "gnis_summit", "US")
+        # Only on fallback points, never every row: a stated row near a state line (a border
+        # accident) is not evidence its point is wrong.
+        point_state = (point_states or {}).get(_point(lat, lon))
+        if state is not None and point_state is not None and state != point_state:
+            return GeoFix(row.accident_id, None, "unknown", STATE_CONTRADICTION, "US")
         # Coordinates stay (D10 principle); the label keeps every spatial rule off them.
         if state is not None:
             return GeoFix(row.accident_id, KEEP, "region_fallback", "fallback_state", "US")
@@ -483,6 +507,7 @@ def snapshot_fixes(
     whose geocode_precision was set by something other than an R3 rule version (curated after
     the snapshot). Rows absent from the snapshot are labelled untrusted and never moved."""
     fallback = find_fallback_points(list(raw.values()), index, mp_index)
+    point_states = fallback_point_states(fallback, index)
     fixes: list[GeoFix] = []
     changes: list[Change] = []
     skipped: Counter[str] = Counter()
@@ -498,7 +523,7 @@ def snapshot_fixes(
         if row is None:
             fix = GeoFix(accident_id, KEEP, "unknown", NOT_IN_SNAPSHOT, None)
         else:
-            fix = geocode_fix(row, index, fallback)
+            fix = geocode_fix(row, index, fallback, point_states)
             if fix.location is KEEP and row.lat is not None and row.lon is not None and (lat, lon) != (row.lat, row.lon):
                 if any(field == LOCATION and not version.startswith("r3-") for field, version in past):
                     # An audited non-R3 rule placed the live point: keep it, but the decision
@@ -592,16 +617,25 @@ async def raw_geo_rows(conn: AsyncConnection) -> dict[int, GeoRow]:
 
 def cluster_summary(rows: Sequence[GeoRow], index: SummitIndex, mp_index: MpAreaIndex) -> dict[str, object]:
     """Coordinates, row counts and source-family counts, plus the GNIS and MP ids (and MP area
-    names) behind each exemption; never accident text. For the owner's review before r3 --apply."""
+    names) behind each exemption, and the fallback points whose stated rows R3 nulls for naming
+    another state (state counts only); never accident text. For the owner's review before r3 --apply."""
     split = split_fallback_points(rows, index, mp_index)
+    point_states = fallback_point_states(split.fallback, index)
     per_point: Counter[Point] = Counter()
     families: dict[Point, Counter[str]] = defaultdict(Counter)
+    row_states: dict[Point, Counter[str]] = defaultdict(Counter)
+    dropped: Counter[Point] = Counter()
     for r in rows:
         if r.lat is not None and r.lon is not None:
             p = _point(r.lat, r.lon)
             per_point[p] += 1
             if p in split.fallback:
                 families[p][r.family] += 1
+                code = state_code(r.state)
+                row_states[p][code or ("blank" if not (r.state or "").strip() else "other")] += 1
+                # The step's own decision per row, so a row R3a moves or nulls first is not counted.
+                if geocode_fix(r, index, split.fallback, point_states).method == STATE_CONTRADICTION:
+                    dropped[p] += 1
     summit_excluded = []
     for lat, lon in sorted(split.on_summit):
         near = index.nearest_summit_within(lat, lon, SUMMIT_EXEMPT_KM)
@@ -617,6 +651,13 @@ def cluster_summary(rows: Sequence[GeoRow], index: SummitIndex, mp_index: MpArea
         }
         for (lat, lon), m in sorted(split.on_crag.items())
     ]
+    state_contradictions = [
+        {
+            "lat": lat, "lon": lon, "point_state": point_states[(lat, lon)], "rows_dropped": dropped[(lat, lon)],
+            "row_states": dict(sorted(row_states[(lat, lon)].items())),
+        }
+        for lat, lon in sorted(dropped)
+    ]
     by_point = {
         f"{lat},{lon}": {"rows": sum(families[(lat, lon)].values()), "families": dict(sorted(families[(lat, lon)].items()))}
         for lat, lon in sorted(split.fallback)
@@ -630,6 +671,10 @@ def cluster_summary(rows: Sequence[GeoRow], index: SummitIndex, mp_index: MpArea
         "crag_excluded_points": len(split.on_crag),
         "crag_excluded_rows": sum(per_point[p] for p in split.on_crag),
         "crag_excluded": crag_excluded,
+        "state_undetermined_points": len(split.fallback) - len(point_states),
+        "state_contradiction_points": len(state_contradictions),
+        "state_contradiction_rows": sum(dropped.values()),
+        "state_contradictions": state_contradictions,
         "points": by_point,
     }
 

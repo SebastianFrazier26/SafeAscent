@@ -291,7 +291,7 @@ def test_r3_labels_moves_and_nulls_with_an_audit_and_a_rerun_changes_nothing():
                 audit = await _rows(
                     conn,
                     "SELECT accident_id, old_value, new_value FROM internal.accident_revisions "
-                    "WHERE field = 'latlon' AND rule_version = 'r3-v3' ORDER BY accident_id",
+                    "WHERE field = 'latlon' AND rule_version = 'r3-v4' ORDER BY accident_id",
                 )
             assert got == [
                 (1, 46.853, -121.76, "area", "gnis_summit", "US", False),
@@ -500,7 +500,7 @@ def test_r3_decides_from_the_snapshot_so_hand_edits_and_v1_output_never_feed_it(
             assert got == [(1, 46.853, -121.76, "gnis_summit"), (3, 36.5, -118.3, "nps_source")]
             assert restored == [("snapshot_point", "36.000000,-118.000000", "36.500000,-118.300000")]
             # A later rule version still sees the pre-repair points, not v1's moves and nulls.
-            monkeypatch.setattr(geocode, "R3_VERSION", "r3-v4")
+            monkeypatch.setattr(geocode, "R3_VERSION", "r3-v5")
             async with engine.connect() as conn:
                 v2 = await run_r3(conn, argparse.Namespace(apply=False))
             assert v2["methods"] == v1["methods"]
@@ -629,6 +629,8 @@ def test_cluster_summary_reports_family_counts_and_no_names():
     assert out == {
         "fallback_points": 1, "rows_at_fallback_points": 6, "summit_excluded_points": 0, "summit_excluded_rows": 0,
         "summit_excluded": [], "crag_excluded_points": 0, "crag_excluded_rows": 0, "crag_excluded": [],
+        "state_undetermined_points": 1, "state_contradiction_points": 0, "state_contradiction_rows": 0,
+        "state_contradictions": [],
         "points": {"39.739,-104.99": {"rows": 6, "families": {"aac": 4, "nps": 2}}},
     }
     assert "Place" not in str(out)
@@ -696,7 +698,7 @@ def test_owner_decisions_survive_r3_reruns_and_a_v2(tmp_path, monkeypatch):
                 await run_r3_ambiguous_import(conn, argparse.Namespace(review_file=str(path), apply=True))
             async with engine.begin() as conn:
                 again = await run_r3(conn, argparse.Namespace(apply=True))
-            monkeypatch.setattr(geocode, "R3_VERSION", "r3-v4")
+            monkeypatch.setattr(geocode, "R3_VERSION", "r3-v5")
             async with engine.connect() as conn:
                 v2 = await run_r3(conn, argparse.Namespace(apply=False))
                 got = await _rows(
@@ -1021,3 +1023,117 @@ def test_accented_names_fold_to_ascii_keys():
     mp = MpAreaIndex([MpArea(900000802, "Zörblat Buttress", 40.5, -106.502, 50)])
     match = mp.crag_match(*CRAG_POINT, ["Zorblat Spur", "Zörblat Gully", "Zorblat Top", "Vexmoor Hill"])
     assert match is not None and (match.key, match.rows) == ("zorblat", 3)
+
+
+# State contradiction (r3-v4). Synthetic summits and accidents only (ids >= 900000000, made-up names).
+STATE_POINT = (38.2, -120.4)
+# About 5.6 km from the point: names the point's state, too far for the summit exemption.
+GLIMMET = Summit(900000401, "Glimmet Dome", "glimmet", "CA", 38.25, -120.4)
+STATE_ROWS = [
+    ("Brackle Spire", "Alaska"), ("Thornel Gap", "AK"), ("Wispen Ridge", "AK"), ("Quorrel Fell", "Oregon"),
+    ("Mallow Crest", "California"), ("Dunnick Hollow", None), ("Pellow Bluff", "  "), ("Sorrel Notch", "Ruritania"),
+]
+
+
+def _state_rows(lat=STATE_POINT[0], lon=STATE_POINT[1]):
+    return {900000500 + i: row(900000500 + i, mountain=m, state=st, lat=lat, lon=lon) for i, (m, st) in enumerate(STATE_ROWS)}
+
+
+def _state_fixes(raw, index):
+    live = {i: (r.lat, r.lon, None) for i, r in raw.items()}
+    fixes, changes, _ = snapshot_fixes(raw, live, index, NO_MP, {})
+    return {f.accident_id: (f.location, f.precision, f.method, f.country) for f in fixes}, changes
+
+
+def test_a_row_naming_another_state_than_its_fallback_point_loses_the_point():
+    fixes, changes = _state_fixes(_state_rows(), SummitIndex([GLIMMET]))
+    for i in (900000500, 900000501, 900000502, 900000503):
+        assert fixes[i] == (None, "unknown", geocode.STATE_CONTRADICTION, "US")
+    assert geocode.STATE_CONTRADICTION not in TRUSTED_POINT_PRECISIONS
+    assert [c.new_value for c in changes if c.accident_id == 900000500 and c.field == LOCATION] == [None]
+
+
+def test_matching_blank_and_unmapped_state_rows_keep_the_fallback_point():
+    fixes, changes = _state_fixes(_state_rows(), SummitIndex([GLIMMET]))
+    assert fixes[900000504] == (KEEP, "region_fallback", "fallback_state", "US")
+    assert fixes[900000505] == fixes[900000506] == (KEEP, "unknown", "fallback_no_state", None)
+    assert fixes[900000507][:3] == (KEEP, "unknown", "fallback_no_state")
+    assert not any(c.field == LOCATION and c.accident_id >= 900000504 for c in changes)
+
+
+def test_an_undetermined_point_state_changes_nothing():
+    # About 33 km away: beyond POINT_STATE_KM, so the point has no state.
+    far = Summit(900000402, "Glimmet Dome", "glimmet", "CA", 38.5, -120.4)
+    assert haversine_km(*STATE_POINT, far.lat, far.lon) > geocode.POINT_STATE_KM
+    fixes, _ = _state_fixes(_state_rows(), SummitIndex([far]))
+    assert fixes[900000500] == (KEEP, "region_fallback", "fallback_state", "US")
+    assert all(f[2] != geocode.STATE_CONTRADICTION for f in fixes.values())
+    out = cluster_summary(list(_state_rows().values()), SummitIndex([far]), NO_MP)
+    assert (out["state_undetermined_points"], out["state_contradiction_points"], out["state_contradictions"]) == (1, 0, [])
+
+
+def test_a_point_that_is_not_a_fallback_keeps_contradicting_rows():
+    # On the summit: the summit exemption makes it no fallback, so no row there is checked.
+    on_summit = SummitIndex([Summit(900000403, "Glimmet Dome", "glimmet", "CA", *STATE_POINT)])
+    fixes, _ = _state_fixes(_state_rows(), on_summit)
+    assert fixes[900000503] == (KEEP, "area", "source_geocode", "US")
+    # Too few rows to be a candidate at all, next to a summit of another state.
+    few = {i: r for i, r in _state_rows().items() if i in (900000503, 900000504)}
+    fixes, _ = _state_fixes(few, SummitIndex([GLIMMET]))
+    assert fixes[900000503] == (KEEP, "area", "source_geocode", "US")
+
+
+def test_state_contradictions_are_reported_as_counts_without_accident_text():
+    out = cluster_summary(list(_state_rows().values()), SummitIndex([GLIMMET]), NO_MP)
+    assert out["state_contradictions"] == [{
+        "lat": 38.2, "lon": -120.4, "point_state": "CA", "rows_dropped": 4,
+        "row_states": {"AK": 3, "CA": 1, "OR": 1, "blank": 2, "other": 1},
+    }]
+    assert (out["state_contradiction_points"], out["state_contradiction_rows"], out["state_undetermined_points"]) == (1, 4, 0)
+    text_out = json.dumps(out)
+    for word in [m for m, _ in STATE_ROWS] + ["Ruritania", "Glimmet"]:
+        assert word not in text_out
+
+
+STATE_SEED = CRAG_SEED + """
+-- About 6.8 km from the fallback point (39.739,-104.99): names its state.
+INSERT INTO gnis_summits (gnis_id, name, name_key, state_code, lat, lon) VALUES
+  (900000404, 'Fixture Dome', 'fixturedome', 'CO', 39.8, -104.99);
+INSERT INTO internal.accidents_raw (accident_id, source, source_id, mountain, state, latitude, longitude) VALUES
+  (900000316, 'AAC', 'f6', 'Quorrel Fell', 'AK', 39.739, -104.99);
+INSERT INTO accidents (accident_id, source, source_id, mountain, state, latitude, longitude) VALUES
+  (900000316, 'AAC', 'f6', 'Quorrel Fell', 'AK', 39.739, -104.99);
+"""
+
+
+@requires_pg
+def test_r3_and_r3_clusters_share_the_state_contradiction():
+    async def scenario(url: str) -> None:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                clusters = await run_r3_clusters(conn, argparse.Namespace())
+            assert clusters["state_contradictions"] == [{
+                "lat": 39.739, "lon": -104.99, "point_state": "CO", "rows_dropped": 1, "row_states": {"AK": 1, "CO": 5},
+            }]
+            assert "Quorrel" not in json.dumps(clusters)
+            async with engine.begin() as conn:
+                applied = await run_r3(conn, argparse.Namespace(apply=True))
+            async with engine.connect() as conn:
+                got = await _rows(
+                    conn, "SELECT accident_id, latitude, longitude, geocode_precision, geocode_method, country, "
+                    "coordinates IS NULL FROM accidents WHERE accident_id >= 900000311 ORDER BY 1",
+                )
+                audit = await _rows(
+                    conn, "SELECT old_value, new_value FROM internal.accident_revisions "
+                    "WHERE accident_id = 900000316 AND field = 'latlon' AND rule_version = 'r3-v4'",
+                )
+            assert applied["methods"]["fallback_state"] == 5 and applied["methods"][geocode.STATE_CONTRADICTION] == 1
+            assert got[-1] == (900000316, None, None, "unknown", geocode.STATE_CONTRADICTION, "US", True)
+            assert {g[4] for g in got[:-1]} == {"fallback_state"}
+            assert audit == [("39.739000,-104.990000", None)]
+        finally:
+            await engine.dispose()
+
+    with migrated_db(seed_sql=STATE_SEED) as name:
+        asyncio.run(scenario(sa_url(name)))
