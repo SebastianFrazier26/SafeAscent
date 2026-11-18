@@ -95,7 +95,8 @@ def test_peak_key_cuts_park_and_range_qualifiers():
     assert peak_key("Fixture Mountain, Sample National Park") == peak_key("Mt. Fixture") == "fixture"
     assert peak_key("Fixture Peak (Sample Range)") == "fixture"
     for blank in (None, "", "  ", "Mt.", "N/A", "Unnamed Peak", "Unknown", "Sample National Park", "Sample Range",
-                  "Sample N.P.", "Sample N. P.", "Sample Range, Sample N.F."):
+                  "Sample N.P.", "Sample N. P.", "Sample Range, Sample N.F.", "Sample Range, CO", "Unknown, CO",
+                  "Colorado", "Unnamed peak, north face", "Sample Range, Fixture Couloir", "Unknown; East Ridge"):
         assert peak_key(blank) == ""
 
 
@@ -114,6 +115,18 @@ def test_a_leading_area_does_not_hide_two_different_peaks():
         assert different_peaks(*pair)
         [(_, _, score)] = candidate_pairs(pair)
         assert decide(*pair, score, "distance") == "review"
+
+
+def test_a_dot_without_a_space_still_separates_words():
+    assert peak_key("Mt.Fixture") == peak_key("Mount Fixture") == "fixture"
+    pair = _peaks("Mt.Fixture", "Mount Fixture")
+    [(_, _, score)] = candidate_pairs(pair)
+    assert not different_peaks(*pair) and decide(*pair, score, "distance") == "merge"
+
+
+def test_a_state_or_a_face_part_is_skipped_for_the_peak_behind_it():
+    assert peak_key("CO, Fixture Peak") == peak_key("Fixture Peak, CO") == "fixture"
+    assert peak_key("North Face, Fixture Peak") == "fixture"
 
 
 def test_a_thousands_comma_is_part_of_the_peak_name():

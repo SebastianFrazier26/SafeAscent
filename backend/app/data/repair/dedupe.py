@@ -77,6 +77,8 @@ _AREA_WORDS = frozenset({
     "region", "backcountry", "zone", "county", "canyon", "valley", "basin", "creek", "pass", "lake", "lakes",
     "trail", "trailhead", "road", "highway", "resort",
 })
+# A part ending in one of these names a feature on a peak, not the peak ("north face").
+_FEATURE_WORDS = frozenset({"face", "couloir", "ridge", "gully", "buttress", "arete", "wall", "route"})
 _NOT_A_PEAK = frozenset({
     "", "mount", "mountain", "peak", "unknown", "unnamed", "none", "n a", "na", "various", "multiple", "unspecified", "not",
 })
@@ -206,15 +208,16 @@ def peak_key(mountain: str | None) -> str:
     if normalize_text(mountain) in _NOT_A_PEAK:
         return ""
     for part in _QUALIFIER_CUT.split(mountain or ""):
-        part = part.replace(".", "")
+        # A space, not "": "Mt.Fixture" must read as "Mt Fixture". The single-letter join
+        # below still turns "N.P." into "np".
+        part = part.replace(".", " ")
         tokens = normalize_text(part).split()
-        if not tokens:
+        if not tokens or state_code(part) is not None:
             continue
         last = tokens[-1]
-        # "N P" written with spaces is the same abbreviation as "NP".
         if len(tokens) >= 2 and len(last) == 1 and len(tokens[-2]) == 1:
             last = tokens[-2] + last
-        if last in _AREA_WORDS:
+        if last in _AREA_WORDS or last in _FEATURE_WORDS:
             continue
         key = place_key(part)
         if key not in _NOT_A_PEAK:
