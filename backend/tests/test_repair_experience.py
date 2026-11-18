@@ -386,6 +386,9 @@ def test_r12_version_is_v2():
         ("It resembled a separate accident where the party was an experienced team.", "unknown"),
         ("It was like the other avalanche on Mt. Hood, where the pair were very experienced.", "unknown"),
         ("Unlike the earlier slide on the 5.10 pitch the pair were very experienced.", "experienced"),
+        ("After another one-inch cam, the experienced climber fell.", "experienced"),
+        ("Another one of the party, an experienced climber, fell.", "experienced"),
+        ("He placed another one and the experienced leader fell.", "experienced"),
         ("Unlike the earlier accident on the 5.10 pitch the pair were very experienced.", "unknown"),
     ],
 )

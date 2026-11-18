@@ -87,7 +87,7 @@ _QUALIFIED_BEFORE = re.compile(
 )
 # A level stated after the sentence has pointed at a different accident describes that party.
 _OTHER_ACCIDENT = re.compile(
-    r"\b(?:another|other|earlier|previous|prior|a\s+separate)\s+(?:accidents?|incidents?|avalanches?|one)\b",
+    r"\b(?:another|other|earlier|previous|prior|a\s+separate)\s+(?:accidents?|incidents?|avalanches?)\b",
     re.I,
 )
 _NEGATED_REFERENCE = re.compile(r"\b(?:no|not|never|any|without)\s+$", re.I)
