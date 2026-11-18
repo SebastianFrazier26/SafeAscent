@@ -245,13 +245,14 @@ async def run_r12_golden_export(conn: AsyncConnection, args: argparse.Namespace)
         if int(str(r["accident_id"])) in fired
     ]
     out = Path(args.out) if args.out else review.REVIEW_DIR / "experience_golden_candidates.csv"
+    opts = review.draw_options(args, 12)
     taken = review.export_stratified(
         locators,
         stratum=lambda r: "fired" if fired[int(str(r["accident_id"]))] else "silent",
-        quotas=GOLDEN_QUOTAS, seed=12, path=out,
+        quotas=GOLDEN_QUOTAS, path=out,
         columns=["accident_id", "source", "source_id", "date", "exp_years_climbing", "exp_stated_level", "exp_first_season"],
         decision_column="guided",
-        overwrite=args.overwrite,
+        overwrite=args.overwrite, seed=opts.seed, exclude=opts.exclude, quota_scale=opts.quota_scale,
     )
     return {
         "strata": taken,

@@ -281,10 +281,11 @@ async def run_r4_golden_export(conn: AsyncConnection, args: argparse.Namespace) 
     if unmapped:
         raise SystemExit(f"unmapped activity values, extend activity.py before drawing the golden set: {dict(unmapped)}")
     out = _out(args, "activity_golden_candidates.csv")
+    opts = review.draw_options(args, 4)
     taken = review.export_stratified(
-        candidates, stratum=golden_stratum, quotas=GOLDEN_QUOTAS, seed=4, path=out,
+        candidates, stratum=golden_stratum, quotas=GOLDEN_QUOTAS, path=out,
         columns=["accident_id", "source", "source_id", "date", "activity"], decision_column="label",
-        overwrite=args.overwrite,
+        overwrite=args.overwrite, seed=opts.seed, exclude=opts.exclude, quota_scale=opts.quota_scale,
     )
     return {
         "strata": taken,

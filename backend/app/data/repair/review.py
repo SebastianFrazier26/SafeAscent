@@ -6,6 +6,7 @@ from __future__ import annotations
 import csv
 import random
 from collections import defaultdict
+from dataclasses import dataclass
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
@@ -82,11 +83,20 @@ def export_stratified(
     columns: Sequence[str],
     decision_column: str,
     overwrite: bool = False,
+    exclude: frozenset[int] = frozenset(),
+    quota_scale: float = 1.0,
 ) -> dict[str, int]:
     """A uniform sample is mostly easy rows, so a >=95% bar would pass without testing
     the rule; quotas pull in the rows where the rule actually fires. A short stratum is
     topped up from the rest so the set keeps its size. The stratum is never written:
-    the labeller must not see what the rule decided."""
+    the labeller must not see what the rule decided. `exclude` removes ids from the pool
+    before stratifying (a top-up draw disjoint from earlier ones); `quota_scale` multiplies
+    each quota, never below 1 for a quota that was positive."""
+    if quota_scale <= 0:
+        raise ValueError("quota_scale must be positive")
+    if exclude:
+        rows = [r for r in rows if int(str(r["accident_id"])) not in exclude]
+    quotas = {k: (max(1, round(v * quota_scale)) if v > 0 else 0) for k, v in quotas.items()}
     rng = random.Random(seed)
     pools: dict[str, list[Mapping[str, object]]] = defaultdict(list)
     for row in rows:
@@ -108,6 +118,38 @@ def export_stratified(
     rng.shuffle(chosen)
     _write(path, chosen, columns, decision_column, overwrite=overwrite)
     return taken
+
+
+def read_excluded_ids(paths: Sequence[str]) -> frozenset[int]:
+    """accident_id column of each CSV (golden labels or a candidates file)."""
+    ids: set[int] = set()
+    for name in paths:
+        with Path(name).open(newline="", encoding="utf-8-sig") as fh:
+            reader = csv.DictReader(fh)
+            if reader.fieldnames is None or "accident_id" not in reader.fieldnames:
+                raise ValueError(f"{name}: no accident_id column")
+            for number, row in enumerate(reader, start=1):
+                raw = (row.get("accident_id") or "").strip()
+                if not raw.isdecimal():
+                    raise ValueError(f"{name} row {number}: invalid accident_id {raw!r}")
+                ids.add(int(raw))
+    return frozenset(ids)
+
+
+@dataclass(frozen=True)
+class DrawOptions:
+    seed: int
+    exclude: frozenset[int]
+    quota_scale: float
+
+
+def draw_options(args: object, default_seed: int) -> DrawOptions:
+    seed = getattr(args, "seed", None)
+    return DrawOptions(
+        seed=default_seed if seed is None else int(seed),
+        exclude=read_excluded_ids(getattr(args, "exclude", None) or []),
+        quota_scale=float(getattr(args, "scale", None) or 1.0),
+    )
 
 
 def read_decisions(path: Path, *, key: str, decision_column: str, allowed: frozenset[str]) -> dict[int, str]:
