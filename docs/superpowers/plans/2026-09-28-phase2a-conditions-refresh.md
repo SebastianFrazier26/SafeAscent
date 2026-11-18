@@ -3260,7 +3260,7 @@ OWNER_PSQL -q -f db/roles/verify_roles_phase2.sql
 Expected, in order:
 - The first `MIG current` prints `0006_accidents_clean` with no `(head)` (this code ships 0007). `0004_phase2a_foundation` means 2a-2 is not on prod: allowed only as the early rehearsal described under Ordering (record it in the PR). Anything else: stop.
 - The second prints `0007_cell_daily_conditions (head)`; then `No new upgrade operations detected.`
-- `phase 2 grants applied`, `ALL ROLE CHECKS PASSED`, `ALL PHASE 2 ROLE CHECKS PASSED`. `grants_phase2.sql` is re-applied after the migration because plan 3 added grants that the verify script now checks: SELECT on the 0007 tables and views, SELECT on `weather` (Task 8), SELECT and `UPDATE (longitude)` on `area_weekly_weather` (Task 9), column-level INSERT on `accidents`, USAGE on `accidents_accident_id_seq` and `UPDATE (mp_route_id)` (Task 10).
+- `phase 2 grants applied`, `ALL ROLE CHECKS PASSED`, `ALL PHASE 2 ROLE CHECKS PASSED`. `grants_phase2.sql` is re-applied after the migration because plan 3 added grants that the verify script now checks: SELECT on the 0007 tables and views, SELECT on `weather` (Task 8), SELECT and `UPDATE (longitude)` on `area_weekly_weather` (Task 9), column-level INSERT on `accidents`, USAGE on `accidents_accident_id_seq` and `UPDATE (mp_route_id)` (Task 10; since R3 r3-v5, 2026-11-17, that grant is block 0005's, so it already holds at 0006).
 
 0007 runs under `lock_timeout = '5s'`; a lock timeout rolls it back and is safe to rerun.
 
@@ -3519,7 +3519,7 @@ OWNER_PSQL -q -f db/roles/verify_roles.sql
 OWNER_PSQL -q -f db/roles/verify_roles_phase2.sql
 ```
 
-Expected: `0007_cell_daily_conditions (head)` (anything else: Task 12 is not on prod, stop), `No new upgrade operations detected.`, `phase 2 grants applied`, `ALL ROLE CHECKS PASSED`, `ALL PHASE 2 ROLE CHECKS PASSED`. The grants are re-applied because the loader needs Task 10's column-level INSERT on `accidents`, USAGE on `accidents_accident_id_seq` and `UPDATE (mp_route_id)`, and the verify script checks them.
+Expected: `0007_cell_daily_conditions (head)` (anything else: Task 12 is not on prod, stop), `No new upgrade operations detected.`, `phase 2 grants applied`, `ALL ROLE CHECKS PASSED`, `ALL PHASE 2 ROLE CHECKS PASSED`. The grants are re-applied because the loader needs Task 10's column-level INSERT on `accidents`, USAGE on `accidents_accident_id_seq` and `UPDATE (mp_route_id)` (block 0005 since R3 r3-v5, 2026-11-17), and the verify script checks them.
 
 Dry runs (read-only; repeat freely while the owner fixes rows):
 

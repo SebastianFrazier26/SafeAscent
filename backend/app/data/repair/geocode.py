@@ -509,6 +509,7 @@ def changes_for(fix: GeoFix) -> list[Change]:
 NOT_IN_SNAPSHOT = "not_in_snapshot"
 SNAPSHOT_POINT = "snapshot_point"
 MOVED_BY_OTHER_RULE = "moved_by_other_rule"
+LINK_RESTORED = "route_link_restored"
 LiveRow = tuple[float | None, float | None, str | None]
 # Per accident, (field, rule_version) in revision order (oldest first).
 History = Mapping[int, Sequence[tuple[str, str]]]
@@ -525,9 +526,13 @@ def _labelled_elsewhere(precision: str | None, history: Sequence[tuple[str, str]
     return precision is not None and (last is None or not last.startswith("r3-v"))
 
 
+def _r3_touched_link(history: Sequence[tuple[str, str]]) -> bool:
+    return any(field == "mp_route_id" and version.startswith("r3-v") for field, version in history)
+
+
 def snapshot_fixes(
     raw: Mapping[int, GeoRow], live: Mapping[int, LiveRow], index: SummitIndex, mp_index: MpAreaIndex,
-    history: History,
+    history: History, live_links: Mapping[int, int | None] | None = None,
 ) -> tuple[list[GeoFix], list[Change], Counter[str]]:
     """Decisions come from the pre-repair snapshot only (G17 principle, as R1): a hand edit to
     a live row, or R3's own earlier moves and nulls, never feed a later run. A kept point is
@@ -536,7 +541,14 @@ def snapshot_fixes(
 
     Never re-decided, only counted: rows an owner decided (any r3-review-* revision), and rows
     whose geocode_precision was set by something other than an R3 rule version (curated after
-    the snapshot). Rows absent from the snapshot are labelled untrusted and never moved."""
+    the snapshot). Rows absent from the snapshot are labelled untrusted and never moved.
+
+    A route link an earlier R3 rule cleared is put back from the snapshot (audited) once the
+    current rule no longer contradicts the row, like every other R3 output. Owner-decided rows are
+    not: an owner placement is labelled area/owner_summit or unknown/gnis_rejected, never
+    route_link/crag, so a cleared link under it is consistent. `live_links` (live mp_route_id)
+    limits the restore to rows whose link is still NULL; without it the writer's unchanged check
+    does that at apply."""
     fallback = find_fallback_points(list(raw.values()), index, mp_index)
     states = point_states(stated_points(raw.values()), index)
     fixes: list[GeoFix] = []
@@ -564,6 +576,11 @@ def snapshot_fixes(
                     changes.append(Change(accident_id, LOCATION, (row.lat, row.lon), SNAPSHOT_POINT))
         fixes.append(fix)
         changes += changes_for(fix)
+        if (
+            row is not None and row.mp_route_id is not None and not fix.clear_route_link and _r3_touched_link(past)
+            and (live_links is None or live_links.get(accident_id) is None)
+        ):
+            changes.append(Change(accident_id, "mp_route_id", row.mp_route_id, LINK_RESTORED))
     return fixes, changes, skipped
 
 
@@ -743,11 +760,12 @@ async def _history(conn: AsyncConnection) -> dict[int, list[tuple[str, str]]]:
 async def run_r3(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
     raw = await raw_geo_rows(conn)
     index = await _index(conn)
+    rows = await fetch_accidents(conn, ["latitude", "longitude", "geocode_precision", "mp_route_id"])
     live: dict[int, LiveRow] = {
-        _id(r): (_float(r["latitude"]), _float(r["longitude"]), _str(r["geocode_precision"]))
-        for r in await fetch_accidents(conn, ["latitude", "longitude", "geocode_precision"])
+        _id(r): (_float(r["latitude"]), _float(r["longitude"]), _str(r["geocode_precision"])) for r in rows
     }
-    fixes, changes, skipped = snapshot_fixes(raw, live, index, await _mp_index(conn), await _history(conn))
+    links = {_id(r): int(str(r["mp_route_id"])) if r["mp_route_id"] is not None else None for r in rows}
+    fixes, changes, skipped = snapshot_fixes(raw, live, index, await _mp_index(conn), await _history(conn), links)
     report = ValidationReport("repair:r3")
     methods: Counter[str] = Counter()
     for fix in fixes:

@@ -170,9 +170,10 @@ GRANT UPDATE (longitude) ON public.area_weekly_weather TO ingest;
 -- elevation_meters). description takes only the loader's own one-line summary (<= 200
 -- characters, enforced by FactRow), never report text. The REVOKE first narrows a stray
 -- table-level INSERT, as for mp_ticks above. --apply-route-ids (the owner's later route link,
--- only where it is NULL on an R11 row) uses block 0005's UPDATE (mp_route_id). No DELETE: incidents are never
--- deleted. The narrowing REVOKEs on tables older than their block (here and for routes/mountains
--- below) run at every revision, so a rerun clears a stray grant even before the block applies.
+-- only where it is NULL on an R11 row) uses block 0005's UPDATE (mp_route_id). No DELETE:
+-- incidents are never deleted. The narrowing REVOKEs on tables older than their block (here and
+-- for routes/mountains below) run at every revision, so a rerun clears a stray grant even before
+-- the block applies.
 REVOKE INSERT ON public.accidents FROM ingest;
 \if :at_0007
 GRANT INSERT (source, source_id, date, year, date_precision, state, mountain, route, mp_route_id, latitude,

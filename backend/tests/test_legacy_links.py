@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import text
 
 from app.data.repair import review
-from app.data.repair.legacy_links import LegacyRow, Link, plan_row, run_r10, run_r10_export, run_r10_import
+from app.data.repair.legacy_links import LegacyRow, Link, plan_row, r3_hold, run_r10, run_r10_export, run_r10_import
 from app.pipelines.mp_catalog import refresh
 from tests.pgtest import fetch, migrated_db, requires_pg, run_on_conn, run_sql
 
@@ -190,17 +190,84 @@ def test_an_mp_route_id_missing_from_the_catalog_is_residue_not_dropped():
             (900000013, "mp_route_id")]
 
 
+def _r3_link_revision(accident_id: int, old: str | None, new: str | None, version: str) -> str:
+    return ("INSERT INTO internal.accident_revisions (accident_id, field, old_value, new_value, method, rule_version, "
+            f"run_id) VALUES ({accident_id}, 'mp_route_id', {_sql(old)}, {_sql(new)}, 'fixture', '{version}', "
+            "gen_random_uuid())")
+
+
+def _sql(value: str | None) -> str:
+    return "NULL" if value is None else f"'{value}'"
+
+
+def _linked_or_listed(name: str) -> list[tuple]:
+    return run_on_conn(name, lambda c: c.execute(text(
+        "(SELECT accident_id, 'link' FROM accident_route_links "
+        "UNION ALL SELECT accident_id, 'unresolved' FROM internal.r10_unresolved) ORDER BY 1, 2")))
+
+
+def test_r3_hold_reads_the_latest_r3_link_revision_and_the_contradiction():
+    base = dict(route_name=None, route_lat=None, route_lon=None, mountain_name=None, mountain_lat=None, mountain_lon=None)
+    same = LegacyRow(2, None, 55, None, "900000012", **base)
+    assert r3_hold(same, {2: "900000012"}, frozenset()) == "r3_unlinked"
+    assert r3_hold(same, {2: "900000011"}, frozenset()) == "r3_unlinked_mismatch"
+    assert r3_hold(same, {}, frozenset({2})) == "r3_contradicted"
+    assert r3_hold(same, {}, frozenset()) is None
+    assert r3_hold(LegacyRow(1, 900000011, 55, None, "900000012", **base), {}, frozenset({1})) is None
+
+
 @requires_pg
 def test_a_link_r3_cleared_is_never_restored_from_the_legacy_route():
-    # Accident 2's legacy route carries a catalog MP id; an r3-v5 revision says R3 cleared its link.
+    # Accident 2's legacy route carries a catalog MP id: the link R3 cleared.
     with migrated_db(PIN, seed_sql=SEED) as name:
         _prepare(name)
-        run_sql(name, "INSERT INTO internal.accident_revisions (accident_id, field, old_value, new_value, method, "
-                "rule_version, run_id) VALUES (2, 'mp_route_id', '900000012', NULL, 'fallback_state_contradiction', "
-                "'r3-v5', gen_random_uuid())")
+        run_sql(name, _r3_link_revision(2, "900000012", None, "r3-v5"))
         out = run_on_conn(name, lambda c: run_r10(c, _ns(apply=True)))
         assert out["links"] == {} and out["r3_unlinked"] == 1
-        rows = run_on_conn(name, lambda c: c.execute(text(
-            "SELECT accident_id FROM accident_route_links UNION ALL SELECT accident_id FROM internal.r10_unresolved "
-            "WHERE accident_id = 2")))
-        assert rows == [(1,)]
+        assert (2, "link") not in _linked_or_listed(name) and (2, "unresolved") not in _linked_or_listed(name)
+
+
+@requires_pg
+def test_r10_deletes_its_own_earlier_link_once_r3_clears_it():
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        _prepare(name)
+        run_on_conn(name, lambda c: run_r10(c, _ns(apply=True)))
+        assert (2, "link") in _linked_or_listed(name)
+        run_sql(name, _r3_link_revision(2, "900000012", None, "r3-v5"))
+        out = run_on_conn(name, lambda c: run_r10(c, _ns(apply=True)))
+        assert out["r3_unlinked"] == 1 and (2, "link") not in _linked_or_listed(name)
+        assert fetch(name, "SELECT count(*) FROM accident_legacy_links WHERE accident_id = 2") == [(0,)]
+
+
+@requires_pg
+def test_a_link_a_later_r3_rule_restored_is_linked_again():
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        _prepare(name)
+        run_sql(name, _r3_link_revision(2, "900000012", None, "r3-v5"))
+        run_sql(name, _r3_link_revision(2, None, "900000012", "r3-v6"))
+        out = run_on_conn(name, lambda c: run_r10(c, _ns(apply=True)))
+        assert out["r3_unlinked"] == 0 and out["links"] == {"legacy_mp_id": 1}
+        assert (2, "link") in _linked_or_listed(name)
+
+
+@requires_pg
+def test_a_cleared_link_whose_legacy_id_differs_is_held_and_counted():
+    # Accident 6's legacy route names a different MP id than the one R3 cleared.
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        _prepare(name)
+        run_sql(name, _r3_link_revision(6, "900000011", None, "r3-v5"))
+        out = run_on_conn(name, lambda c: run_r10(c, _ns(apply=True)))
+        assert (out["r3_unlinked"], out["r3_unlinked_mismatch"]) == (0, 1)
+        assert not any(a == 6 for a, _ in _linked_or_listed(name))
+
+
+@requires_pg
+def test_a_row_r3_contradicts_gets_no_link_from_its_legacy_route():
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        _prepare(name)
+        run_sql(name, "UPDATE accidents SET geocode_method = 'fallback_state_contradiction' WHERE accident_id IN (1, 2, 3)")
+        out = run_on_conn(name, lambda c: run_r10(c, _ns(apply=True)))
+        # 1 keeps its own mp_route_id identity link; 2 and 3 are held.
+        assert out["r3_contradicted"] == 2 and out["links"] == {}
+        assert _linked_or_listed(name)[:1] == [(1, "link")]
+        assert not any(a in (2, 3) for a, _ in _linked_or_listed(name))

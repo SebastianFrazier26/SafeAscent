@@ -1262,11 +1262,27 @@ def test_point_states_list_every_state_in_range_and_the_nearest():
 def test_the_lat_band_index_finds_the_same_nearest_summit_as_a_full_scan():
     summits = [Summit(900000700 + i, f"Fixture {i}", f"fixture {i}", "CO", 39.0 + i * 0.05, -105.0 + (i % 3) * 0.05)
                for i in range(40)]
+    # Either side of the antimeridian, in the Aleutian band.
+    summits += [Summit(900000750, "Fixture West", "fixture west", "AK", 52.0, 179.95),
+                Summit(900000751, "Fixture East", "fixture east", "AK", 52.02, -179.97)]
     index = SummitIndex(summits)
-    for lat, lon in [(39.0, -105.0), (39.73, -104.97), (40.9, -105.1), (41.5, -105.0)]:
+    for lat, lon in [(39.0, -105.0), (39.73, -104.97), (40.9, -105.1), (41.5, -105.0), (52.01, -179.99), (52.0, 179.99)]:
         full = [(s, haversine_km(lat, lon, s.lat, s.lon)) for s in summits]
         expected = min(((s, d) for s, d in full if d <= 10.0), key=lambda sd: sd[1], default=None)
         assert index.nearest_summit_within(lat, lon, 10.0) == expected
+    near = index.nearest_summit_within(52.01, -179.99, 10.0)
+    assert near is not None and near[0].gnis_id == 900000751 and near[1] < 3.0
+    assert {s.gnis_id for s, _ in index.summits_within(52.0, 179.99, 10.0)} == {900000750, 900000751}
+
+
+def test_a_summit_due_north_just_inside_the_radius_is_found_and_one_just_outside_is_not():
+    # The latitude band is km / 111 degrees; a degree of latitude is a little over 111 km, so the band
+    # always reaches a summit due north at the radius.
+    lat, lon, km = 47.0, -121.0, geocode.POINT_STATE_KM
+    inside = Summit(900000760, "Fixture Edge", "fixture edge", "WA", lat + (km - 0.02) / 111.195, lon)
+    outside = Summit(900000761, "Fixture Over", "fixture over", "WA", lat + (km + 0.02) / 111.195, lon)
+    assert haversine_km(lat, lon, inside.lat, inside.lon) < km < haversine_km(lat, lon, outside.lat, outside.lon)
+    assert [s.gnis_id for s, _ in SummitIndex([inside, outside]).summits_within(lat, lon, km)] == [900000760]
 
 
 def test_a_contradiction_rerun_from_the_snapshot_proposes_the_same_link_clear():
@@ -1277,6 +1293,44 @@ def test_a_contradiction_rerun_from_the_snapshot_proposes_the_same_link_clear():
     history = {900000600: [(LOCATION, "r3-v5"), ("geocode_precision", "r3-v5"), ("mp_route_id", "r3-v5")]}
     again = snapshot_fixes(raw, {900000600: (None, None, "unknown")}, V5_INDEX, NO_MP, history)
     assert first[:2] == again[:2]
+
+
+CLEARED = {900000600: [(LOCATION, "r3-v5"), ("geocode_precision", "r3-v5"), ("mp_route_id", "r3-v5")]}
+
+
+def test_a_link_an_earlier_rule_cleared_is_restored_once_the_row_is_not_contradicted():
+    linked = row(900000600, mountain="Vellum Dome", state="Alaska", lat=OR_POINT[0], lon=OR_POINT[1], mp=900000650)
+    raw, live = {900000600: linked}, {900000600: (None, None, "unknown")}
+    # A changed rule (here: no summit near the point any more) no longer contradicts the row.
+    fixes, changes, _ = snapshot_fixes(raw, live, SummitIndex([VELLUM_AK]), NO_MP, CLEARED, {900000600: None})
+    assert fixes[0].method == "fallback_state"
+    assert [(c.field, c.new_value, c.method) for c in changes if c.field in ("mp_route_id", LOCATION)] == [
+        (LOCATION, OR_POINT, geocode.SNAPSHOT_POINT), ("mp_route_id", 900000650, geocode.LINK_RESTORED)]
+    # Already linked again: nothing to restore.
+    _, changes, _ = snapshot_fixes(raw, live, SummitIndex([VELLUM_AK]), NO_MP, CLEARED, {900000600: 900000650})
+    assert not any(c.field == "mp_route_id" for c in changes)
+    # Still contradicted: the clear is proposed again, never a restore.
+    _, changes, _ = snapshot_fixes(raw, live, V5_INDEX, NO_MP, CLEARED, {900000600: None})
+    assert [(c.field, c.new_value) for c in changes if c.field == "mp_route_id"] == [("mp_route_id", None)]
+    # No R3 link revision: the link was never R3's to restore.
+    _, changes, _ = snapshot_fixes(raw, live, SummitIndex([VELLUM_AK]), NO_MP, {}, {900000600: None})
+    assert not any(c.field == "mp_route_id" for c in changes)
+
+
+def test_an_owner_decision_after_a_clear_keeps_a_label_that_claims_no_link():
+    linked = row(900000600, mountain="Vellum Dome", state="Alaska", lat=OR_POINT[0], lon=OR_POINT[1], mp=900000650)
+    history = {900000600: [*CLEARED[900000600], (LOCATION, geocode.R3_PICK_VERSION)]}
+    fixes, changes, skipped = snapshot_fixes(
+        {900000600: linked}, {900000600: (63.0, -150.0, "area")}, SummitIndex([VELLUM_AK]), NO_MP, history,
+        {900000600: None},
+    )
+    assert (fixes, changes, skipped["owner_decided"]) == ([], [], 1)
+    placed = owner_review_changes(900000600, "900000602", [VELLUM_AK])
+    assert {c.field: c.new_value for c in placed}["geocode_precision"] == "area"
+    assert {c.new_value for c in placed if c.field == "geocode_method"} == {"owner_summit"}
+    # A contradicted row is never in an owner review pool.
+    assert geocode.STATE_CONTRADICTION not in geocode.REVIEW_METHODS
+
 
 
 V5_SEED = GEO_SEED + """
@@ -1321,6 +1375,37 @@ def test_r3_clears_a_contradicted_route_link_with_an_audit_and_a_rerun_changes_n
             assert audit == [(900000600, "900000650", None, geocode.STATE_CONTRADICTION)]
             assert first["proposed_by_field"]["mp_route_id"] == 1
             assert again["applied"] == 0 and again["already_recorded"] == first["applied"]
+        finally:
+            await engine.dispose()
+
+    with migrated_db(seed_sql=V5_SEED) as name:
+        asyncio.run(scenario(sa_url(name)))
+
+
+@requires_pg
+def test_a_changed_rule_restores_the_cleared_link_and_point_with_an_audit(monkeypatch):
+    async def scenario(url: str) -> None:
+        engine = create_async_engine(url)
+        try:
+            async with engine.begin() as conn:
+                await run_r3(conn, argparse.Namespace(apply=True))
+            # r3-v6 stand-in: the summit that put the point in another state is gone.
+            monkeypatch.setattr(geocode, "R3_VERSION", "r3-v6")
+            async with engine.begin() as conn:
+                await conn.execute(text("DELETE FROM gnis_summits WHERE gnis_id = 900000601"))
+                restored = await run_r3(conn, argparse.Namespace(apply=True))
+            async with engine.begin() as conn:
+                again = await run_r3(conn, argparse.Namespace(apply=True))
+            async with engine.connect() as conn:
+                got = await _rows(conn, "SELECT latitude, longitude, geocode_method, mp_route_id FROM accidents "
+                                  "WHERE accident_id = 900000600")
+                audit = await _rows(conn, "SELECT rule_version, old_value, new_value, method FROM internal.accident_revisions "
+                                    "WHERE accident_id = 900000600 AND field = 'mp_route_id' ORDER BY id")
+            assert got == [(44.0, -121.0, "fallback_state", 900000650)]
+            assert audit == [("r3-v5", "900000650", None, geocode.STATE_CONTRADICTION),
+                             ("r3-v6", None, "900000650", geocode.LINK_RESTORED)]
+            assert restored["proposed_by_field"]["mp_route_id"] == 1
+            assert "mp_route_id" not in again["proposed_by_field"] and again["applied"] == 0
         finally:
             await engine.dispose()
 

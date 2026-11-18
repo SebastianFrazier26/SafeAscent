@@ -38,12 +38,13 @@ LEGACY_SQL = text(
     "ORDER BY a.accident_id"
 )
 CATALOG_IDS_SQL = text("SELECT route_id FROM canonical_routes")
-# R3 (r3-v5) cleared these links because the linked point contradicts the row's state (owner,
-# 2026-11-17). Their legacy route ids carried the same link, so R10 must not restore it.
-R3_UNLINKED_SQL = text(
-    "SELECT DISTINCT accident_id FROM internal.accident_revisions WHERE field = 'mp_route_id' "
-    "AND rule_version LIKE 'r3-v%' AND new_value IS NULL"
+# R3 (r3-v5, owner 2026-11-17) clears a link whose point contradicts the row's state, and a later
+# R3 rule may restore it, so only each accident's latest R3 link revision counts.
+R3_LINK_SQL = text(
+    "SELECT DISTINCT ON (accident_id) accident_id, old_value, new_value FROM internal.accident_revisions "
+    "WHERE field = 'mp_route_id' AND rule_version LIKE 'r3-v%' ORDER BY accident_id, id DESC"
 )
+R3_CONTRADICTED_SQL = text("SELECT accident_id FROM accidents WHERE geocode_method = 'fallback_state_contradiction'")
 ROUTE_BOX_SQL = text(
     "SELECT r.route_id, m.name, a.lat, a.lon, a.coord_precision FROM canonical_routes r JOIN canonical_areas a ON a.area_id = r.area_id "
     "JOIN mp_routes m ON m.mp_route_id = r.route_id WHERE NOT r.is_boulder AND a.lat BETWEEN :la0 AND :la1 "
@@ -94,6 +95,19 @@ class Unresolved:
 def _legacy_id(raw: str | None) -> int | None:
     m = _DIGITS.match(raw or "")
     return int(m.group(1)) if m else None
+
+
+def r3_hold(row: LegacyRow, cleared: dict[int, str | None], contradicted: frozenset[int]) -> str | None:
+    """Why R10 must not link this accident now, or None. `cleared` maps an accident whose latest R3
+    link revision cleared its link to the cleared id. A legacy route carrying the same id is the
+    link R3 dropped; a different one is not R3's call either, so it is held and counted on its own.
+    A row R3 contradicts (its point names another state) gets no link from a legacy route."""
+    if row.accident_id in cleared:
+        same = _legacy_id(row.legacy_mp_id) == _legacy_id(cleared[row.accident_id])
+        return "r3_unlinked" if same else "r3_unlinked_mismatch"
+    if row.mp_route_id is None and row.accident_id in contradicted:
+        return "r3_contradicted"
+    return None
 
 
 def plan_row(row: LegacyRow, catalog_ids: frozenset[int]) -> Link | Unresolved | None:
@@ -161,14 +175,20 @@ async def run_r10(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, 
     llm_linked = {int(a) for (a,) in (await conn.execute(text(
         "SELECT accident_id FROM accident_legacy_links WHERE method = 'llm'"))).all()}
     decided = owner_decided | llm_linked
-    r3_unlinked = {int(a) for (a,) in (await conn.execute(R3_UNLINKED_SQL)).all()}
+    cleared = {int(a): old for a, old, new in (await conn.execute(R3_LINK_SQL)).all() if new is None}
+    contradicted = frozenset(int(a) for (a,) in (await conn.execute(R3_CONTRADICTED_SQL)).all())
+    held: Counter[str] = Counter()
     links: list[Link] = []
     unresolved: list[Unresolved] = []
     conflicts = 0
     for row in rows:
         if row.mp_route_id is not None and _legacy_id(row.legacy_mp_id) not in (None, row.mp_route_id):
             conflicts += 1
-        if row.accident_id in decided or row.accident_id in r3_unlinked:
+        if row.accident_id in decided:
+            continue
+        hold = r3_hold(row, cleared, contradicted)
+        if hold is not None:
+            held[hold] += 1
             continue
         planned = plan_row(row, catalog)
         if isinstance(planned, Link):
@@ -177,7 +197,7 @@ async def run_r10(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, 
             unresolved.append(await _with_candidates(conn, planned, row))
     summary: dict[str, object] = {
         "legacy_accidents": len(rows), "owner_decided": len(owner_decided), "llm_linked": len(llm_linked - owner_decided), "legacy_conflict": conflicts,
-        "r3_unlinked": len(r3_unlinked - decided),
+        **{k: held[k] for k in ("r3_unlinked", "r3_unlinked_mismatch", "r3_contradicted")},
         "links": dict(Counter(link.method for link in links)),
         "unresolved": dict(sorted(Counter(u.reason for u in unresolved).items())),
         "applied": bool(args.apply),
