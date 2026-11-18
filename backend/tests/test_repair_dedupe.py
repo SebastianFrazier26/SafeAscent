@@ -94,8 +94,31 @@ def test_a_shared_generic_route_name_does_not_join_two_mountains():
 def test_peak_key_cuts_park_and_range_qualifiers():
     assert peak_key("Fixture Mountain, Sample National Park") == peak_key("Mt. Fixture") == "fixture"
     assert peak_key("Fixture Peak (Sample Range)") == "fixture"
-    for blank in (None, "", "  ", "Mt.", "Unnamed Peak", "Unknown", "Sample National Park", "Sample Range"):
+    for blank in (None, "", "  ", "Mt.", "N/A", "Unnamed Peak", "Unknown", "Sample National Park", "Sample Range",
+                  "Sample N.P.", "Sample N. P.", "Sample Range, Sample N.F."):
         assert peak_key(blank) == ""
+
+
+@pytest.mark.parametrize("mountain", [
+    "Sample Range, Fixture Peak", "Sample NP - Fixture Peak", "Sample N.P., Fixture Peak", "Sample S.P.; Fixture Peak",
+    "Sample Range/Fixture Peak", "Fixture Peak; Sample Range", "Fixture Peak - Sample N.F.",
+])
+def test_peak_key_finds_the_peak_after_or_before_an_area_part(mountain):
+    assert peak_key(mountain) == "fixture"
+
+
+def test_a_leading_area_does_not_hide_two_different_peaks():
+    for a, b in (("Sample Range, Fixture Peak", "Sample Range, Other Peak"),
+                 ("Sample NP - Fixture Peak", "Sample NP - Other Peak")):
+        pair = _peaks(a, b)
+        assert different_peaks(*pair)
+        [(_, _, score)] = candidate_pairs(pair)
+        assert decide(*pair, score, "distance") == "review"
+
+
+def test_a_thousands_comma_is_part_of_the_peak_name():
+    assert peak_key("Peak 13,200") != peak_key("Peak 13,400")
+    assert different_peaks(*_peaks("Peak 13,200", "Peak 13,400"))
 
 
 def _peaks(a, b, **kw):
@@ -230,8 +253,12 @@ def test_new_owner_decision_produces_a_new_rule_version():
     assert a != b and a.startswith("r5-v2+") and rule_version({(1, 2): "merge"}) == a
 
 
-def test_the_different_peak_guard_is_a_new_rule_version():
-    assert dedupe.R5_BASE == "r5-v2" and not rule_version({(1, 2): "merge"}).startswith("r5-v1")
+def test_the_different_peak_guard_starts_a_fresh_r5_v2_version_after_r5_v1_runs():
+    version = rule_version({(1, 2): "merge"})
+    assert version.startswith("r5-v2+")
+    # A different base never shares a generation with r5-v1, so nothing is skipped as recorded.
+    assert next_version(version, ["r5-v1+x"]) == version
+    assert next_version(version, ["r5-v1+x", version, "r5-v1+y"]) == version + ".2"
 
 
 def test_rule_version_follows_the_group_heads_too():

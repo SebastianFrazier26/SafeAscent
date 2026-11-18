@@ -69,16 +69,19 @@ _GENERIC_WORDS = frozenset({
     "accident", "climb", "climbed", "climber", "climbers", "climbing", "fall", "fell", "falling", "feet",
     "injured", "injuries", "injury", "party", "partner", "rope", "route", "summit", "team",
 })
-# A mountain field whose first part ends in one of these names an area, not a peak, so the
-# different-peak guard stays off for it (the guard only ever fires on two named peaks).
+# A part of a mountain field ending in one of these names an area, not a peak; peak_key moves
+# on to the next part, and a field with no peak part leaves the different-peak guard off.
+# Dotted abbreviations (N.P., N.F., S.P.) reach this check with their dots removed.
 _AREA_WORDS = frozenset({
-    "park", "np", "rmnp", "forest", "nf", "monument", "wilderness", "range", "mountains", "area", "region",
-    "backcountry", "zone", "county", "canyon", "valley", "basin", "creek", "pass", "lake", "lakes",
+    "park", "np", "nf", "nm", "sp", "nra", "forest", "monument", "wilderness", "range", "mountains", "area",
+    "region", "backcountry", "zone", "county", "canyon", "valley", "basin", "creek", "pass", "lake", "lakes",
+    "trail", "trailhead", "road", "highway", "resort",
 })
 _NOT_A_PEAK = frozenset({
     "", "mount", "mountain", "peak", "unknown", "unnamed", "none", "n a", "na", "various", "multiple", "unspecified", "not",
 })
-_QUALIFIER_CUT = re.compile(r"[,;(/]| - ")
+# A comma between digits is a thousands separator ("Peak 13,200"), not a qualifier.
+_QUALIFIER_CUT = re.compile(r"(?<!\d),|,(?!\d)|[;()/]| - ")
 Basis = Literal["distance", "place_name", "place_mention", "narrative", "conflict"]
 
 
@@ -198,12 +201,25 @@ def places_agree(a: DupRow, b: DupRow) -> bool:
 
 
 def peak_key(mountain: str | None) -> str:
-    head = _QUALIFIER_CUT.split(mountain or "", maxsplit=1)[0]
-    tokens = normalize_text(head).split()
-    if not tokens or tokens[-1] in _AREA_WORDS:
+    """The first part of the field that names a peak, so a leading park or range ("Sample
+    Range, Fixture Peak") does not hide the peak behind it."""
+    if normalize_text(mountain) in _NOT_A_PEAK:
         return ""
-    key = place_key(head)
-    return "" if key in _NOT_A_PEAK else key
+    for part in _QUALIFIER_CUT.split(mountain or ""):
+        part = part.replace(".", "")
+        tokens = normalize_text(part).split()
+        if not tokens:
+            continue
+        last = tokens[-1]
+        # "N P" written with spaces is the same abbreviation as "NP".
+        if len(tokens) >= 2 and len(last) == 1 and len(tokens[-2]) == 1:
+            last = tokens[-2] + last
+        if last in _AREA_WORDS:
+            continue
+        key = place_key(part)
+        if key not in _NOT_A_PEAK:
+            return key
+    return ""
 
 
 def different_peaks(a: DupRow, b: DupRow) -> bool:
