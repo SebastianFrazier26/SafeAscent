@@ -370,3 +370,64 @@ def test_r12_v2_g4_a_belayers_inexperience_is_not_the_victims_level(narrative, l
 
 def test_r12_version_is_v2():
     assert experience.R12_VERSION == "r12-v2"
+
+
+@pytest.mark.parametrize(
+    ("narrative", "level"),
+    [
+        ("In the avalanche on Saturday, the party was an experienced team.", "experienced"),
+        ("In the accident near the hut the pair were very experienced.", "experienced"),
+        ("There was another accident; the party was an experienced team.", "experienced"),
+        ("There was another accident\n\nThe party was an experienced team.", "experienced"),
+        ("There was another accident! The party was an experienced team.", "experienced"),
+        ("Was there another accident? The party was an experienced team.", "experienced"),
+        ("No other accidents were reported and the party was an experienced team.", "experienced"),
+        ("A prior incident was reported, and the party was an experienced team.", "unknown"),
+        ("It resembled a separate accident where the party was an experienced team.", "unknown"),
+        ("It was like the other avalanche on Mt. Hood, where the pair were very experienced.", "unknown"),
+        ("Unlike the earlier slide on the 5.10 pitch the pair were very experienced.", "experienced"),
+        ("Unlike the earlier accident on the 5.10 pitch the pair were very experienced.", "unknown"),
+    ],
+)
+def test_r12_v2_g3_scope_and_own_event_references(narrative, level):
+    assert extract_experience(narrative).level == level
+
+
+@pytest.mark.parametrize(
+    ("narrative", "level"),
+    [
+        ("The leader fell; the belayer was very inexperienced.", "unknown"),
+        ("The leader fell; the belayer was a novice.", "unknown"),
+        ("The leader fell; the novice belayer lost grip.", "unknown"),
+        ("The leader fell; the inexperienced belayer\u2019s hand slipped.", "unknown"),
+        ("The leader fell; the inexperienced belayers\u2019 rope slipped.", "unknown"),
+        ("The leader was a novice; the belayer was a veteran.", "novice"),
+    ],
+)
+def test_r12_v2_g4_belayer_forms(narrative, level):
+    assert extract_experience(narrative).level == level
+
+
+@pytest.mark.parametrize(
+    ("narrative", "guided"),
+    [
+        ("The client\u2019s property was buried.", "unknown"),
+        ("The client's harness was checked by the guide.", "guided"),
+        ("The client's harness failed.", "guided"),
+    ],
+)
+def test_r12_v2_g1_curly_apostrophe_and_other_possessives(narrative, guided):
+    assert extract_experience(narrative).guided == guided
+
+
+@pytest.mark.parametrize(
+    ("narrative", "level"),
+    [
+        ("He had skied for years, nor was he a novice.", "unknown"),
+        ("They were friends, nor a novice among them.", "unknown"),
+        ("They climbed, nor were they novices.", "unknown"),
+        ("They climbed and were novices.", "novice"),
+    ],
+)
+def test_r12_v2_g2_nor_forms(narrative, level):
+    assert extract_experience(narrative).level == level

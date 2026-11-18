@@ -63,9 +63,10 @@ _PEOPLE = (
 # run-5 golden diagnosis 2026-11-18): the narrowest reading is that the level is the victim's.
 LEVELS = {
     "novice": re.compile(
-        r"(?<!belayer\swas\s)\b(?:novices?|beginners?|inexperienced)\b"
+        r"(?<!belayer\swas\s)(?<!belayer\swas\sa\s)(?<!belayer\swas\svery\s)(?<!belayer\swas\squite\s)"
+        r"\b(?:novices?|beginners?|inexperienced)\b"
         r"(?!\s+(?:routes?|slopes?|terrain|areas?|runs?|trails?|climbs?|walls?|crags?|lessons?|class(?:es)?|courses?)\b)"
-        r"(?!\s+(?:belayer(?:'?s)?\b|belayers'))",
+        r"(?!\s+belayer(?:['\u2019]?s)?\b)",
         re.I,
     ),
     "expert": re.compile(r"\bexperts?\s+(?:\w+\s+)?" + _PEOPLE + r"\b|\b(?:was|were|is|are)\s+an?\s+expert\b", re.I),
@@ -86,10 +87,13 @@ _QUALIFIED_BEFORE = re.compile(
 )
 # A level stated after the sentence has pointed at a different accident describes that party.
 _OTHER_ACCIDENT = re.compile(
-    r"\b(?:another|other|earlier|previous|similar)\s+(?:accidents?|incidents?|avalanches?)\b"
-    r"|\bin\s+the\s+(?:accident|incident|avalanche)\s+(?:outside|near|at|on|in)\b",
+    r"\b(?:another|other|earlier|previous|prior|a\s+separate)\s+(?:accidents?|incidents?|avalanches?|one)\b",
     re.I,
 )
+_NEGATED_REFERENCE = re.compile(r"\b(?:no|not|never|any|without)\s+$", re.I)
+# A "." inside a number (5.10) is not followed by whitespace; the abbreviations are the common
+# place-name ones. Missing a boundary only keeps a fill, so the list stays short.
+_SENTENCE_END = re.compile(r"[;!?\n]|(?<!\bMt)(?<!\bMts)(?<!\bSt)(?<!\bFt)(?<!\bDr)(?<!\bMr)(?<!\bMrs)(?<!\bMs)\.(?=\s|$)")
 FIRST = re.compile(
     r"\bfirst\s+(?:season|year)\s+(?:of\s+)?" + _DISCIPLINE + r"(?:climbing|mountaineering)\b"
     r"|\bfirst\s+(?:season|year)\s+as\s+an?\s+(?:\w+\s+)?(?:climber|mountaineer|alpinist)\b",
@@ -138,8 +142,11 @@ def _about_guide(text: str, start: int) -> bool:
 
 
 def _about_other_accident(text: str, start: int) -> bool:
-    sentence_start = max(text.rfind(c, 0, start) for c in ".!?") + 1
-    return _OTHER_ACCIDENT.search(text[sentence_start:start]) is not None
+    sentence_start = max((m.end() for m in _SENTENCE_END.finditer(text, 0, start)), default=0)
+    return any(
+        not _NEGATED_REFERENCE.search(text[sentence_start:m.start()])
+        for m in _OTHER_ACCIDENT.finditer(text, sentence_start, start)
+    )
 
 
 def _stated(
