@@ -195,7 +195,7 @@ def test_r12_fills_stated_facts_skips_rows_decided_elsewhere_and_is_idempotent()
                 got = await _all(conn, EXP_SQL)
                 revisions = await _all(
                     conn,
-                    "SELECT count(*) FROM internal.accident_revisions WHERE rule_version = 'r12-v1'",
+                    "SELECT count(*) FROM internal.accident_revisions WHERE rule_version = 'r12-v2'",
                 )
                 logged = await _all(
                     conn,
@@ -203,13 +203,13 @@ def test_r12_fills_stated_facts_skips_rows_decided_elsewhere_and_is_idempotent()
                     "WHERE source = 'repair:r12' ORDER BY started_at",
                 )
             assert got == [
-                (1, 12, "experienced", None, "unknown", "r12-v1"),
-                (2, None, "unknown", True, "guided", "r12-v1"),
-                (3, None, "unknown", None, "unknown", "r12-v1"),
+                (1, 12, "experienced", None, "unknown", "r12-v2"),
+                (2, None, "unknown", True, "guided", "r12-v2"),
+                (3, None, "unknown", None, "unknown", "r12-v2"),
                 (4, None, "expert", None, "unknown", None),
                 (5, None, "unknown", None, "guided", None),
                 (6, None, "unknown", None, "unknown", None),
-                (7, None, "unknown", None, "unknown", "r12-v1"),
+                (7, None, "unknown", None, "unknown", "r12-v2"),
             ]
             assert first["skipped"] == {"labelled_elsewhere": 1, "decided_elsewhere": 1, "not_in_snapshot": 1}
             assert first["filled"] == {"exp_first_season": 1, "exp_stated_level": 1, "exp_years_climbing": 1, "guided": 1}
@@ -217,7 +217,7 @@ def test_r12_fills_stated_facts_skips_rows_decided_elsewhere_and_is_idempotent()
             # first season, guided, version; rows 3 and 7 = version only.
             assert first["applied"] == 8 and first["unchanged"] == 0 and revisions == [(8,)]
             assert again["applied"] == 0 and again["proposed"] == {}
-            assert logged == [(4, 2, "r12-v1"), (4, 2, "r12-v1")]
+            assert logged == [(4, 2, "r12-v2"), (4, 2, "r12-v2")]
             assert "description" not in json.dumps(first) and "climbing fell" not in json.dumps(first)
         finally:
             await engine.dispose()
@@ -313,3 +313,60 @@ def test_a_guide_dog_is_not_a_guide():
 def test_a_guides_first_season_is_not_the_partys():
     assert extract_experience("The guide was in her first season of climbing in the range.").first_season is None
     assert extract_experience("Their guide fixed the rope. It was the client's first season of climbing.").first_season is True
+
+
+@pytest.mark.parametrize(
+    ("narrative", "guided"),
+    [
+        ("The client's property needed a new roof and he was hit by a slide.", "unknown"),
+        ("The clients' houses were cleared of snow that day.", "unknown"),
+        ("The guide and his client were roped together.", "guided"),
+        ("She was a client of the climbing school.", "guided"),
+    ],
+)
+def test_r12_v2_g1_possessive_customer_context_is_not_guided(narrative, guided):
+    assert extract_experience(narrative).guided == guided
+
+
+@pytest.mark.parametrize(
+    ("narrative", "level"),
+    [
+        ("I was not an experienced skier, nor was I an inexperienced one.", "unknown"),
+        ("He was neither lucky nor was he a novice.", "unknown"),
+        ("She was a novice.", "novice"),
+        ("He was inexperienced and tired.", "novice"),
+    ],
+)
+def test_r12_v2_g2_nor_and_inverted_copula_negate_a_level(narrative, level):
+    assert extract_experience(narrative).level == level
+
+
+@pytest.mark.parametrize(
+    ("narrative", "level"),
+    [
+        ("In another accident last year the party was an experienced team.", "unknown"),
+        ("Unlike the earlier avalanche, here the pair were very experienced.", "unknown"),
+        ("The pair were very experienced. They had skied the slope before.", "experienced"),
+        ("In another accident the slope slid. This party was an experienced team.", "experienced"),
+    ],
+)
+def test_r12_v2_g3_level_after_another_accident_in_the_sentence_is_skipped(narrative, level):
+    assert extract_experience(narrative).level == level
+
+
+@pytest.mark.parametrize(
+    ("narrative", "level"),
+    [
+        ("The leader fell while his inexperienced belayer watched.", "unknown"),
+        ("The leader fell; the belayer was inexperienced.", "unknown"),
+        ("The leader fell; the inexperienced belayer's hand slipped.", "unknown"),
+        ("The leader was inexperienced and fell.", "novice"),
+        ("The leader was a novice; the belayer was careful.", "novice"),
+    ],
+)
+def test_r12_v2_g4_a_belayers_inexperience_is_not_the_victims_level(narrative, level):
+    assert extract_experience(narrative).level == level
+
+
+def test_r12_version_is_v2():
+    assert experience.R12_VERSION == "r12-v2"
