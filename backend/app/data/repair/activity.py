@@ -264,6 +264,7 @@ async def run_r4_golden_export(conn: AsyncConnection, args: argparse.Namespace) 
     """Drawn only from rows the rule decides, after the vocabulary is complete: needs_review
     rows are the owner's, and a golden set drawn before the vocabulary settles would describe
     a different pool."""
+    opts = review.draw_options(args, 4)
     inputs = await _rows(conn)
     locators = {_id(r): r for r in await fetch_accidents(conn, ["source", "source_id", "date"])}
     candidates: list[dict[str, object]] = []
@@ -281,7 +282,6 @@ async def run_r4_golden_export(conn: AsyncConnection, args: argparse.Namespace) 
     if unmapped:
         raise SystemExit(f"unmapped activity values, extend activity.py before drawing the golden set: {dict(unmapped)}")
     out = _out(args, "activity_golden_candidates.csv")
-    opts = review.draw_options(args, 4)
     taken = review.export_stratified(
         candidates, stratum=golden_stratum, quotas=GOLDEN_QUOTAS, path=out,
         columns=["accident_id", "source", "source_id", "date", "activity"], decision_column="label",

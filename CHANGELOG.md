@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Golden-set exports can draw a disjoint top-up - 2026-11-18
 
-- `r4-golden-export` and `r12-golden-export` take `--exclude PATH` (repeatable; a CSV with an `accident_id` column, removed from the pool before stratifying), `--seed INT` and `--scale FLOAT` (multiplies each stratum quota, rounded, at least 1). Defaults (seed 4 / 12, scale 1, no exclude) reproduce the previous draw exactly; the output still carries no rule decision or stratum. Purpose: unanimous-consensus labelling dropped rows, and the `-m db` bars need 60 / 80 labelled rows. Procedure in the prod-rollout runbook (K18).
+- `r4-golden-export` and `r12-golden-export` take `--exclude PATH` (repeatable; a CSV with an `accident_id` column, removed from the pool before stratifying), `--seed INT` and `--scale FLOAT` (multiplies each stratum quota, Python `round` (half to even), at least 1; `--scale` must be finite and > 0). Defaults (seed 4 / 12, scale 1, no exclude) reproduce the previous draw exactly; the output still carries no rule decision or stratum. Purpose: unanimous-consensus labelling dropped rows, and the `-m db` bars need 60 / 80 labelled rows. Procedure in the prod-rollout runbook (K18).
 - No ORDER BY change: the export's fetch (`fetch_accidents`) already orders by `accident_id`, so the draw is reproducible.
 
 ### R3 rule r3-v5: state contradictions on every point, and the wrong route link goes too - 2026-11-17

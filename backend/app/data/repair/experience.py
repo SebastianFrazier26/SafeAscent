@@ -237,6 +237,7 @@ async def run_r12(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, 
 async def run_r12_golden_export(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
     """Stratified toward rows where a rule fires, so the precision bar tests the rule; the
     silent rows measure recall. Only locators go out: no narrative, no rule decision."""
+    opts = review.draw_options(args, 12)
     rows, _ = await _rows(conn)
     fired = {row.accident_id: row.extracted != NOTHING for row in rows}
     locators = [
@@ -245,7 +246,6 @@ async def run_r12_golden_export(conn: AsyncConnection, args: argparse.Namespace)
         if int(str(r["accident_id"])) in fired
     ]
     out = Path(args.out) if args.out else review.REVIEW_DIR / "experience_golden_candidates.csv"
-    opts = review.draw_options(args, 12)
     taken = review.export_stratified(
         locators,
         stratum=lambda r: "fired" if fired[int(str(r["accident_id"]))] else "silent",

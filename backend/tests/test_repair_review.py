@@ -229,3 +229,11 @@ def test_cli_parses_the_topup_flags():
     assert (a.exclude, a.seed, a.scale) == (["a.csv", "b.csv"], 7, 1.5)
     d = build_parser().parse_args(["r12-golden-export"])
     assert (d.exclude, d.seed, d.scale) == ([], None, 1.0)
+
+
+@pytest.mark.parametrize("bad", [0, 0.0, -1.0, float("nan"), float("inf")])
+def test_draw_options_rejects_unusable_scale(bad):
+    import argparse
+
+    with pytest.raises(SystemExit, match="--scale"):
+        review.draw_options(argparse.Namespace(scale=bad), 4)

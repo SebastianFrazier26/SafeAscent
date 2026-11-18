@@ -4,10 +4,11 @@ decisions come back through the same file. Blank or unknown decisions fail loudl
 from __future__ import annotations
 
 import csv
+import math
 import random
 from collections import defaultdict
-from dataclasses import dataclass
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 # The one gitignored place review CSVs may land; anything else could end up committed.
@@ -145,10 +146,14 @@ class DrawOptions:
 
 def draw_options(args: object, default_seed: int) -> DrawOptions:
     seed = getattr(args, "seed", None)
+    scale = getattr(args, "scale", None)
+    scale = 1.0 if scale is None else float(scale)
+    if not math.isfinite(scale) or scale <= 0:
+        raise SystemExit(f"--scale must be a finite number > 0, got {scale}")
     return DrawOptions(
         seed=default_seed if seed is None else int(seed),
         exclude=read_excluded_ids(getattr(args, "exclude", None) or []),
-        quota_scale=float(getattr(args, "scale", None) or 1.0),
+        quota_scale=scale,
     )
 
 
