@@ -133,3 +133,107 @@ def test_read_decisions_accepts_an_excel_utf8_bom(tmp_path):
     assert read_decisions(path, key="accident_id", decision_column="agree", allowed=frozenset({"yes", "no"})) == {
         7: "yes"
     }
+
+
+def _legacy_stratified_ids(rows, stratum, quotas, seed):
+    # Frozen copy of the pre-top-up algorithm: the default draw must not move.
+    import random
+    from collections import defaultdict
+
+    rng = random.Random(seed)
+    pools = defaultdict(list)
+    for row in rows:
+        pools[stratum(row)].append(row)
+    chosen = []
+    for name in sorted(quotas):
+        pool = pools.get(name, [])
+        chosen += rng.sample(pool, min(quotas[name], len(pool)))
+    shortfall = sum(quotas.values()) - len(chosen)
+    if shortfall > 0:
+        picked = {id(r) for r in chosen}
+        rest = [r for r in rows if id(r) not in picked]
+        chosen += rng.sample(rest, min(shortfall, len(rest)))
+    rng.shuffle(chosen)
+    return [r["accident_id"] for r in chosen]
+
+
+def _draw(rows, tmp_path, name, **kw):
+    path = tmp_path / name
+    taken = export_stratified(
+        rows, stratum=lambda r: str(r["kind"]), quotas={"rare": 10, "common": 6}, path=path,
+        columns=["accident_id"], decision_column="label", **kw,
+    )
+    ids = [int(line.split(",")[0]) for line in path.read_text().splitlines()[1:]]
+    return taken, ids
+
+
+ROWS = [{"accident_id": 900000000 + i, "kind": "rare" if i % 7 == 0 else "common"} for i in range(300)]
+
+
+def test_default_draw_matches_the_pre_topup_algorithm(tmp_path):
+    _, ids = _draw(ROWS, tmp_path, "d.csv", seed=4)
+    assert ids == _legacy_stratified_ids(ROWS, lambda r: str(r["kind"]), {"rare": 10, "common": 6}, 4)
+    _, again = _draw(ROWS, tmp_path, "e.csv", seed=4, exclude=frozenset(), quota_scale=1.0)
+    assert again == ids
+
+
+def test_exclude_removes_ids_before_stratifying(tmp_path):
+    _, first = _draw(ROWS, tmp_path, "a.csv", seed=4)
+    taken, second = _draw(ROWS, tmp_path, "b.csv", seed=4, exclude=frozenset(first))
+    assert not set(first) & set(second)
+    assert taken == {"common": 6, "rare": 10}
+
+
+def test_exclude_can_empty_a_stratum_and_topup_fills_it(tmp_path):
+    rare = frozenset(r["accident_id"] for r in ROWS if r["kind"] == "rare")
+    taken, ids = _draw(ROWS, tmp_path, "c.csv", seed=4, exclude=rare)
+    assert taken == {"common": 6, "rare": 0, "_topup": 10}
+    assert len(ids) == 16 and not set(ids) & rare
+
+
+def test_scale_changes_quota_sizes_with_a_floor_of_one(tmp_path):
+    taken, ids = _draw(ROWS, tmp_path, "s.csv", seed=4, quota_scale=2.0)
+    assert taken == {"common": 12, "rare": 20} and len(ids) == 32
+    taken, _ = _draw(ROWS, tmp_path, "t.csv", seed=4, quota_scale=0.05)
+    assert taken == {"common": 1, "rare": 1}
+
+
+def test_a_different_seed_gives_a_different_draw(tmp_path):
+    _, a = _draw(ROWS, tmp_path, "x.csv", seed=4)
+    _, b = _draw(ROWS, tmp_path, "y.csv", seed=5)
+    assert sorted(a) != sorted(b)
+
+
+def test_read_excluded_ids_and_draw_options(tmp_path):
+    import argparse
+
+    f = tmp_path / "g.csv"
+    f.write_text("accident_id,label\n900000001,climbing\n900000002,non_climbing\n")
+    g = tmp_path / "h.csv"
+    g.write_text("accident_id,source\n900000002,x\n900000003,y\n")
+    assert review.read_excluded_ids([str(f), str(g)]) == frozenset({900000001, 900000002, 900000003})
+    bad = tmp_path / "bad.csv"
+    bad.write_text("id\n1\n")
+    with pytest.raises(ValueError, match="no accident_id"):
+        review.read_excluded_ids([str(bad)])
+    opts = review.draw_options(argparse.Namespace(), 4)
+    assert opts == review.DrawOptions(4, frozenset(), 1.0)
+    opts = review.draw_options(argparse.Namespace(seed=9, exclude=[str(f)], scale=1.5), 4)
+    assert opts == review.DrawOptions(9, frozenset({900000001, 900000002}), 1.5)
+
+
+def test_cli_parses_the_topup_flags():
+    from app.data.repair.__main__ import build_parser
+
+    a = build_parser().parse_args(["r4-golden-export", "--exclude", "a.csv", "--exclude", "b.csv", "--seed", "7", "--scale", "1.5"])
+    assert (a.exclude, a.seed, a.scale) == (["a.csv", "b.csv"], 7, 1.5)
+    d = build_parser().parse_args(["r12-golden-export"])
+    assert (d.exclude, d.seed, d.scale) == ([], None, 1.0)
+
+
+@pytest.mark.parametrize("bad", [0, 0.0, -1.0, float("nan"), float("inf")])
+def test_draw_options_rejects_unusable_scale(bad):
+    import argparse
+
+    with pytest.raises(SystemExit, match="--scale"):
+        review.draw_options(argparse.Namespace(scale=bad), 4)

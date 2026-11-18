@@ -56,6 +56,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--overwrite", action="store_true", help="*-export (and r5 --apply): replace an existing file (it may hold filled decisions); r5-import: replace earlier owner decisions"
     )
+    parser.add_argument(
+        "--exclude", action="append", default=[], metavar="PATH",
+        help="r4-golden-export / r12-golden-export, repeatable: CSV with an accident_id column whose ids are left out of the draw",
+    )
+    parser.add_argument("--seed", type=int, help="golden exports: draw seed (default 4 for r4, 12 for r12)")
+    parser.add_argument("--scale", type=float, default=1.0, help="golden exports: multiply every stratum quota (default 1.0)")
     return parser
 
 
