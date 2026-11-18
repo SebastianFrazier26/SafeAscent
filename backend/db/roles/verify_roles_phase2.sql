@@ -265,10 +265,12 @@ SELECT 'ingest mp_ticks column privileges match the expected set: ' || attname,
 FROM cols;
 
 -- ingest's column grants from plan 2: UPDATE on accidents exactly the repair columns (never
--- description, source, source_id or accident_id), plus plan 3's tz and R11's mp_route_id; SELECT
--- on accidents_raw only the R1-R4 inputs. INSERT (R11) is exactly accident_facts.INSERT_COLUMNS:
--- never accident_id, location, tags or elevation_meters. tz, mp_route_id and INSERT are block 0007's.
-WITH at7 AS (SELECT active FROM blocks WHERE rev = '0007'),
+-- description, source, source_id or accident_id), plus mp_route_id (R3's link clear, then R11's
+-- fills) and plan 3's tz; SELECT on accidents_raw only the R1-R4 inputs. INSERT (R11) is exactly
+-- accident_facts.INSERT_COLUMNS: never accident_id, location, tags or elevation_meters.
+-- mp_route_id is block 0005's; tz and INSERT are block 0007's.
+WITH at5 AS (SELECT active FROM blocks WHERE rev = '0005'),
+at7 AS (SELECT active FROM blocks WHERE rev = '0007'),
 cols AS (
   SELECT a.attnum, a.attname,
          a.attname IN ('date', 'year', 'latitude', 'longitude', 'coordinates', 'country', 'date_precision',
@@ -276,7 +278,8 @@ cols AS (
                        'activity_class', 'activity_rule_version', 'inclusion_flag', 'incident_group_id',
                        'is_canonical', 'severity_scale', 'excluded_reason', 'source_url', 'updated_at',
                        'exp_years_climbing', 'exp_stated_level', 'exp_first_season', 'guided', 'exp_rule_version')
-           OR ((SELECT active FROM at7) AND a.attname IN ('tz', 'mp_route_id'))
+           OR ((SELECT active FROM at5) AND a.attname = 'mp_route_id')
+           OR ((SELECT active FROM at7) AND a.attname = 'tz')
            AS may_update,
          (SELECT active FROM at7) AND a.attname IN ('source', 'source_id', 'date', 'year', 'date_precision', 'state', 'mountain', 'route',
                        'mp_route_id', 'latitude', 'longitude', 'geocode_precision', 'geocode_method', 'country',

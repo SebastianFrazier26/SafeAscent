@@ -122,6 +122,9 @@ GRANT SELECT, INSERT, UPDATE ON internal.duplicate_decisions TO ingest;
 -- R3's MP crag exemption (r3-v3, 2026-11-16) reads area names and the area tree (routes under each
 -- area). R3 needs GNIS, so this block, and it runs at 0006 (Stage B), before 0008's catalog. Never url.
 GRANT SELECT (parent_id, name) ON public.mp_locations TO ingest;
+-- R3 (r3-v5, 2026-11-17) clears a route link whose point contradicts the row's state, at 0006
+-- (Stage B), so the column R11 later fills (block 0007) is granted here, one block earlier.
+GRANT UPDATE (mp_route_id) ON public.accidents TO ingest;
 \endif
 
 -- Plan 2 (0006): no grant here. app and analyst read accidents_clean[_daily] through
@@ -166,8 +169,8 @@ GRANT UPDATE (longitude) ON public.area_weekly_weather TO ingest;
 -- the columns accident_facts.INSERT_COLUMNS names (never accident_id, location, tags or
 -- elevation_meters). description takes only the loader's own one-line summary (<= 200
 -- characters, enforced by FactRow), never report text. The REVOKE first narrows a stray
--- table-level INSERT, as for mp_ticks above. UPDATE (mp_route_id) is --apply-route-ids: the
--- owner's later route link, only where it is NULL on an R11 row. No DELETE: incidents are never
+-- table-level INSERT, as for mp_ticks above. --apply-route-ids (the owner's later route link,
+-- only where it is NULL on an R11 row) uses block 0005's UPDATE (mp_route_id). No DELETE: incidents are never
 -- deleted. The narrowing REVOKEs on tables older than their block (here and for routes/mountains
 -- below) run at every revision, so a rerun clears a stray grant even before the block applies.
 REVOKE INSERT ON public.accidents FROM ingest;
@@ -178,7 +181,6 @@ GRANT INSERT (source, source_id, date, year, date_precision, state, mountain, ro
               exp_years_climbing, exp_stated_level, exp_first_season, guided, exp_rule_version, source_url,
               description, updated_at)
   ON public.accidents TO ingest;
-GRANT UPDATE (mp_route_id) ON public.accidents TO ingest;
 -- accident_id comes from its column default; nextval() there needs USAGE (verified: the INSERT
 -- fails "permission denied for sequence" without it). USAGE only: no SELECT/UPDATE (setval).
 GRANT USAGE ON SEQUENCE public.accidents_accident_id_seq TO ingest;

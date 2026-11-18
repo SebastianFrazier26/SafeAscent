@@ -188,3 +188,19 @@ def test_an_mp_route_id_missing_from_the_catalog_is_residue_not_dropped():
         assert fetch(name, "SELECT count(*) FROM internal.r10_unresolved WHERE accident_id = 10") == [(0,)]
         assert fetch(name, "SELECT route_id, method FROM accident_route_links WHERE accident_id = 10") == [
             (900000013, "mp_route_id")]
+
+
+@requires_pg
+def test_a_link_r3_cleared_is_never_restored_from_the_legacy_route():
+    # Accident 2's legacy route carries a catalog MP id; an r3-v5 revision says R3 cleared its link.
+    with migrated_db(PIN, seed_sql=SEED) as name:
+        _prepare(name)
+        run_sql(name, "INSERT INTO internal.accident_revisions (accident_id, field, old_value, new_value, method, "
+                "rule_version, run_id) VALUES (2, 'mp_route_id', '900000012', NULL, 'fallback_state_contradiction', "
+                "'r3-v5', gen_random_uuid())")
+        out = run_on_conn(name, lambda c: run_r10(c, _ns(apply=True)))
+        assert out["links"] == {} and out["r3_unlinked"] == 1
+        rows = run_on_conn(name, lambda c: c.execute(text(
+            "SELECT accident_id FROM accident_route_links UNION ALL SELECT accident_id FROM internal.r10_unresolved "
+            "WHERE accident_id = 2")))
+        assert rows == [(1,)]

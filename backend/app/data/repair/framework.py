@@ -24,6 +24,8 @@ REPAIRABLE_FIELDS = frozenset(
         "inclusion_flag", "incident_group_id", "is_canonical", "severity_scale", "excluded_reason",
         "source_url", "exp_years_climbing", "exp_stated_level", "exp_first_season", "guided",
         "exp_rule_version",
+        # R3 (r3-v5) clears a link whose point contradicts the row's state; no repair ever sets one.
+        "mp_route_id",
     }
 )
 READABLE_COLUMNS = REPAIRABLE_FIELDS | {
