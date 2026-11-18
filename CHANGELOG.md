@@ -11,6 +11,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `data/golden/activity_v1.csv` (46 of 60 rows) and `experience_v1.csv` (76 of 80) added from Haiku/Sonnet/Opus consensus (owner ruling 2026-11-17); rows without unanimous, confident agreement are dropped and flagged for the owner. `unknown` is written as blank. README updated; the R4 `non_climbing` stratum drew 0 rows.
 - Top-up 1 (2026-11-18, PR #32 `--exclude/--seed/--scale`): activity +22 of 24 (68 total), experience +10 of 12 (86 total), same three-model consensus.
 
+### Golden-set exports can draw a disjoint top-up - 2026-11-18
+
+- `r4-golden-export` and `r12-golden-export` take `--exclude PATH` (repeatable; a CSV with an `accident_id` column, removed from the pool before stratifying), `--seed INT` and `--scale FLOAT` (multiplies each stratum quota, Python `round` (half to even), at least 1; `--scale` must be finite and > 0). Defaults (seed 4 / 12, scale 1, no exclude) reproduce the previous draw exactly; the output still carries no rule decision or stratum. Purpose: unanimous-consensus labelling dropped rows, and the `-m db` bars need 60 / 80 labelled rows. Procedure in the prod-rollout runbook (K18).
+- No ORDER BY change: the export's fetch (`fetch_accidents`) already orders by `accident_id`, so the draw is reproducible.
+
 ### R3 rule r3-v5: state contradictions on every point, and the wrong route link goes too - 2026-11-17
 
 - Owner-approved ("Drop point + link"). The state contradiction (r3-v4) now checks every row with a US state and a point, not only fallback-cluster points: rows whose route link carried in another state's point (e.g. `Alaska` rows at a point in OR, CA, ID, WA, UT or WY, which r3-v4 only labelled `region_fallback` through the AK-below-55N branch) are nulled as `unknown`/`fallback_state_contradiction`, country `US`, and stay in `accidents_clean`. The point's state is still its nearest GNIS summit's within 25 km; no summit in range, no contradiction.
