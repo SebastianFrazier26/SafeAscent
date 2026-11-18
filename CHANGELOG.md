@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Golden sets v1: three-model consensus labels - 2026-11-18
+
+- `data/golden/activity_v1.csv` (46 of 60 rows) and `experience_v1.csv` (76 of 80) added from Haiku/Sonnet/Opus consensus (owner ruling 2026-11-17); rows without unanimous, confident agreement are dropped and flagged for the owner. `unknown` is written as blank. README updated; the R4 `non_climbing` stratum drew 0 rows.
+
 ### R3 rule r3-v5: state contradictions on every point, and the wrong route link goes too - 2026-11-17
 
 - Owner-approved ("Drop point + link"). The state contradiction (r3-v4) now checks every row with a US state and a point, not only fallback-cluster points: rows whose route link carried in another state's point (e.g. `Alaska` rows at a point in OR, CA, ID, WA, UT or WY, which r3-v4 only labelled `region_fallback` through the AK-below-55N branch) are nulled as `unknown`/`fallback_state_contradiction`, country `US`, and stay in `accidents_clean`. The point's state is still its nearest GNIS summit's within 25 km; no summit in range, no contradiction.
