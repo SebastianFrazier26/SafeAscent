@@ -1,10 +1,12 @@
 """R3a (city/park-centroid misgeocodes against GNIS summits) then R3 (fallback clusters,
-foreign places, Alaska text below 55°N, per-source precision labels). Also the R3a and R3
-hand checks, and the owner review of names that match more than one summit."""
+foreign places, Alaska text below 55°N, points in another state than the row's, per-source
+precision labels). Also the R3a and R3 hand checks, and the owner review of names that match
+more than one summit."""
 
 from __future__ import annotations
 
 import argparse
+import bisect
 import csv
 import json
 import re
@@ -27,7 +29,7 @@ from app.pipelines.gnis import Summit, state_code
 from app.pipelines.textsim import normalize_text, place_key
 from app.pipelines.validate import ValidationReport, in_us
 
-R3_VERSION = "r3-v4"
+R3_VERSION = "r3-v5"
 # Owner decisions. Every r3-review-* revision freezes the row against later R3 runs.
 R3_REVIEW_VERSION = "r3-review-v1"
 R3_PICK_VERSION = "r3-review-pick-v1"
@@ -51,10 +53,14 @@ MP_KEY_MIN_ROWS = 3
 MP_PHRASE_MIN_CHARS = 5
 # Cycle guard on the parent chain, as in the rehearsal analysis.
 MP_TREE_MAX_DEPTH = 20
-# State contradiction (owner, 2026-11-16; r3-v4): a fallback point's state is its nearest GNIS
-# summit's within this radius. On the p2a-2 rehearsal every one of the 42 fallback points has a
-# summit within 23.4 km, and the summit's state matches the place-first hand check's on every point
-# with a stated row. Farther than this, the point's state is undetermined and nothing changes.
+# State contradiction (owner, 2026-11-16; r3-v4): a point's state is its nearest GNIS summit's
+# within this radius. On the p2a-2 rehearsal every one of the 42 fallback points has a summit
+# within 23.4 km, and the summit's state matches the place-first hand check's on every point with a
+# stated row. Farther than this, the point's state is undetermined and nothing changes. r3-v5
+# (owner, 2026-11-17) checks every stated row's point, not only fallback points, with a border
+# guard: a row whose own state also has a summit within this radius is not contradicted. On the
+# rehearsal the wider check adds 150 rows; the guard keeps 13 of them, each with a summit of the
+# other state 1-8 km away and one of its own 1.5-23 km away.
 POINT_STATE_KM = 25.0
 STATE_CONTRADICTION = "fallback_state_contradiction"
 ALASKA_MIN_LAT = 55.0
@@ -140,13 +146,18 @@ class GeoFix:
     precision: str
     method: str
     country: str | None
+    # r3-v5: a contradicted route-linked row's point came in through the link, so the link goes too.
+    clear_route_link: bool = False
 
 
 class SummitIndex:
     def __init__(self, summits: Sequence[Summit]) -> None:
         self._by_key: dict[str, list[Summit]] = defaultdict(list)
         self.ids: frozenset[int] = frozenset(s.gnis_id for s in summits)
-        self._all: tuple[Summit, ...] = tuple(summits)
+        # Sorted by latitude once, so a radius query scans one latitude band, not every summit:
+        # r3-v5 asks for every stated row's point, not a handful of candidates.
+        self._by_lat: tuple[Summit, ...] = tuple(sorted(summits, key=lambda s: s.lat))
+        self._lats: tuple[float, ...] = tuple(s.lat for s in self._by_lat)
         for s in summits:
             self._by_key[s.name_key].append(s)
         for s in summits:
@@ -154,17 +165,14 @@ class SummitIndex:
                 if s not in self._by_key[alias]:
                     self._by_key[alias].append(s)
 
-    def nearest_summit_within(self, lat: float, lon: float, km: float) -> tuple[Summit, float] | None:
-        # The latitude band is a cheap prefilter; only a handful of candidate points ask.
+    def summits_within(self, lat: float, lon: float, km: float) -> list[tuple[Summit, float]]:
         band = km / 111.0
-        best: tuple[Summit, float] | None = None
-        for s in self._all:
-            if abs(s.lat - lat) > band:
-                continue
-            d = haversine_km(lat, lon, s.lat, s.lon)
-            if d <= km and (best is None or d < best[1]):
-                best = (s, d)
-        return best
+        lo, hi = bisect.bisect_left(self._lats, lat - band), bisect.bisect_right(self._lats, lat + band)
+        near = ((s, haversine_km(lat, lon, s.lat, s.lon)) for s in self._by_lat[lo:hi])
+        return [(s, d) for s, d in near if d <= km]
+
+    def nearest_summit_within(self, lat: float, lon: float, km: float) -> tuple[Summit, float] | None:
+        return min(self.summits_within(lat, lon, km), key=lambda sd: (sd[1], sd[0].gnis_id), default=None)
 
     def lookup(self, key: str, state: str | None) -> list[Summit]:
         hits = self._by_key.get(key, [])
@@ -371,15 +379,30 @@ def find_fallback_points(
     return split_fallback_points(rows, index, mp_index, min_rows=min_rows, min_names=min_names).fallback
 
 
-def fallback_point_states(fallback: Iterable[Point], index: SummitIndex) -> dict[Point, str]:
-    """The state of each fallback point with a GNIS summit within POINT_STATE_KM; undetermined
-    points are absent."""
-    states: dict[Point, str] = {}
-    for p in fallback:
-        near = index.nearest_summit_within(p[0], p[1], POINT_STATE_KM)
-        if near is not None:
-            states[p] = near[0].state_code
+@dataclass(frozen=True)
+class PointState:
+    # The nearest summit's state, and every state with a summit within POINT_STATE_KM.
+    nearest: str
+    states: frozenset[str]
+
+    def contradicts(self, state: str | None) -> bool:
+        return state is not None and state not in self.states
+
+
+def point_states(points: Iterable[Point], index: SummitIndex) -> dict[Point, PointState]:
+    """The state of each point with a GNIS summit within POINT_STATE_KM; undetermined points are absent."""
+    states: dict[Point, PointState] = {}
+    for p in set(points):
+        near = index.summits_within(p[0], p[1], POINT_STATE_KM)
+        if near:
+            nearest = min(near, key=lambda sd: (sd[1], sd[0].gnis_id))[0]
+            states[p] = PointState(nearest.state_code, frozenset(s.state_code for s, _ in near))
     return states
+
+
+def stated_points(rows: Iterable[GeoRow]) -> set[Point]:
+    """The points r3-v5 checks: every row with coordinates and a US state."""
+    return {_point(r.lat, r.lon) for r in rows if r.lat is not None and r.lon is not None and state_code(r.state)}
 
 
 def alaska_point_misplaced(lat: float, lon: float) -> bool:
@@ -426,7 +449,8 @@ def _r3a(row: GeoRow, index: SummitIndex, state: str | None) -> GeoFix | None:
 
 
 def geocode_fix(
-    row: GeoRow, index: SummitIndex, fallback: set[tuple[float, float]], point_states: Mapping[Point, str] | None = None,
+    row: GeoRow, index: SummitIndex, fallback: set[tuple[float, float]],
+    states: Mapping[Point, PointState] | None = None,
 ) -> GeoFix:
     state = state_code(row.state)
     # The state field alone decides foreign, matched whole (N3); mountain text never does.
@@ -434,11 +458,10 @@ def geocode_fix(
     if foreign is not None:
         return GeoFix(row.accident_id, None, "unknown", "foreign_place", foreign)
     lat, lon = row.lat, row.lon
-    # Only on fallback points, never every row: a stated row near a state line (a border
-    # accident) is not evidence its point is wrong. The rule is about the point, so a route-linked
-    # or avalanche row is no exception.
-    point_state = (point_states or {}).get(_point(lat, lon)) if lat is not None and lon is not None else None
-    contradicted = state is not None and point_state is not None and state != point_state
+    # Every stated row's point (r3-v5). The rule is about the point, so a route-linked or avalanche
+    # row is no exception; PointState's border guard keeps a point near a state line.
+    point_state = (states or {}).get(_point(lat, lon)) if lat is not None and lon is not None else None
+    contradicted = point_state is not None and point_state.contradicts(state)
     moved = _r3a(row, index, state)
     # A contradiction outranks R3a's kept-point labels (owner, 2026-11-16): they vouch for no point.
     # An R3a move goes to a summit in the row's own state, so it stands.
@@ -446,12 +469,14 @@ def geocode_fix(
         return moved
     if lat is None or lon is None:
         return GeoFix(row.accident_id, KEEP, "unknown", "no_coords", "US" if state else None)
-    if _point(lat, lon) in fallback or (state == "AK" and alaska_point_misplaced(lat, lon)):
+    misplaced = _point(lat, lon) in fallback or (state == "AK" and alaska_point_misplaced(lat, lon))
+    if misplaced or contradicted:
         hits = index.lookup(place_key(row.mountain), state) if state else []
         if len(hits) == 1 and _moveable(row):
             return GeoFix(row.accident_id, (hits[0].lat, hits[0].lon), "area", "gnis_summit", "US")
-        if contradicted:
-            return GeoFix(row.accident_id, None, "unknown", STATE_CONTRADICTION, "US")
+    if contradicted:
+        return GeoFix(row.accident_id, None, "unknown", STATE_CONTRADICTION, "US", row.mp_route_id is not None)
+    if misplaced:
         # Coordinates stay (D10 principle); the label keeps every spatial rule off them.
         if state is not None:
             return GeoFix(row.accident_id, KEEP, "region_fallback", "fallback_state", "US")
@@ -476,12 +501,15 @@ def changes_for(fix: GeoFix) -> list[Change]:
         Change(fix.accident_id, "geocode_method", fix.method, fix.method),
         Change(fix.accident_id, "country", fix.country, fix.method),
     ]
+    if fix.clear_route_link:
+        changes.append(Change(fix.accident_id, "mp_route_id", None, fix.method))
     return changes
 
 
 NOT_IN_SNAPSHOT = "not_in_snapshot"
 SNAPSHOT_POINT = "snapshot_point"
 MOVED_BY_OTHER_RULE = "moved_by_other_rule"
+LINK_RESTORED = "route_link_restored"
 LiveRow = tuple[float | None, float | None, str | None]
 # Per accident, (field, rule_version) in revision order (oldest first).
 History = Mapping[int, Sequence[tuple[str, str]]]
@@ -498,9 +526,13 @@ def _labelled_elsewhere(precision: str | None, history: Sequence[tuple[str, str]
     return precision is not None and (last is None or not last.startswith("r3-v"))
 
 
+def _r3_touched_link(history: Sequence[tuple[str, str]]) -> bool:
+    return any(field == "mp_route_id" and version.startswith("r3-v") for field, version in history)
+
+
 def snapshot_fixes(
     raw: Mapping[int, GeoRow], live: Mapping[int, LiveRow], index: SummitIndex, mp_index: MpAreaIndex,
-    history: History,
+    history: History, live_links: Mapping[int, int | None] | None = None,
 ) -> tuple[list[GeoFix], list[Change], Counter[str]]:
     """Decisions come from the pre-repair snapshot only (G17 principle, as R1): a hand edit to
     a live row, or R3's own earlier moves and nulls, never feed a later run. A kept point is
@@ -509,9 +541,16 @@ def snapshot_fixes(
 
     Never re-decided, only counted: rows an owner decided (any r3-review-* revision), and rows
     whose geocode_precision was set by something other than an R3 rule version (curated after
-    the snapshot). Rows absent from the snapshot are labelled untrusted and never moved."""
+    the snapshot). Rows absent from the snapshot are labelled untrusted and never moved.
+
+    A route link an earlier R3 rule cleared is put back from the snapshot (audited) once the
+    current rule no longer contradicts the row, like every other R3 output. Owner-decided rows are
+    not: an owner placement is labelled area/owner_summit or unknown/gnis_rejected, never
+    route_link/crag, so a cleared link under it is consistent. `live_links` (live mp_route_id)
+    limits the restore to rows whose link is still NULL; without it the writer's unchanged check
+    does that at apply."""
     fallback = find_fallback_points(list(raw.values()), index, mp_index)
-    point_states = fallback_point_states(fallback, index)
+    states = point_states(stated_points(raw.values()), index)
     fixes: list[GeoFix] = []
     changes: list[Change] = []
     skipped: Counter[str] = Counter()
@@ -527,7 +566,7 @@ def snapshot_fixes(
         if row is None:
             fix = GeoFix(accident_id, KEEP, "unknown", NOT_IN_SNAPSHOT, None)
         else:
-            fix = geocode_fix(row, index, fallback, point_states)
+            fix = geocode_fix(row, index, fallback, states)
             if fix.location is KEEP and row.lat is not None and row.lon is not None and (lat, lon) != (row.lat, row.lon):
                 if any(field == LOCATION and not version.startswith("r3-") for field, version in past):
                     # An audited non-R3 rule placed the live point: keep it, but the decision
@@ -537,6 +576,11 @@ def snapshot_fixes(
                     changes.append(Change(accident_id, LOCATION, (row.lat, row.lon), SNAPSHOT_POINT))
         fixes.append(fix)
         changes += changes_for(fix)
+        if (
+            row is not None and row.mp_route_id is not None and not fix.clear_route_link and _r3_touched_link(past)
+            and (live_links is None or live_links.get(accident_id) is None)
+        ):
+            changes.append(Change(accident_id, "mp_route_id", row.mp_route_id, LINK_RESTORED))
     return fixes, changes, skipped
 
 
@@ -621,25 +665,28 @@ async def raw_geo_rows(conn: AsyncConnection) -> dict[int, GeoRow]:
 
 def cluster_summary(rows: Sequence[GeoRow], index: SummitIndex, mp_index: MpAreaIndex) -> dict[str, object]:
     """Coordinates, row counts and source-family counts, plus the GNIS and MP ids (and MP area
-    names) behind each exemption, and the fallback points whose stated rows R3 nulls for naming
-    another state (state counts only); never accident text. For the owner's review before r3 --apply."""
+    names) behind each exemption, and the points whose stated rows R3 nulls for naming another
+    state (state counts only); never accident text. For the owner's review before r3 --apply."""
     split = split_fallback_points(rows, index, mp_index)
-    point_states = fallback_point_states(split.fallback, index)
+    states = point_states(stated_points(rows) | split.fallback, index)
     per_point: Counter[Point] = Counter()
     families: dict[Point, Counter[str]] = defaultdict(Counter)
     row_states: dict[Point, Counter[str]] = defaultdict(Counter)
     dropped: Counter[Point] = Counter()
+    unlinked: Counter[Point] = Counter()
     for r in rows:
         if r.lat is not None and r.lon is not None:
             p = _point(r.lat, r.lon)
             per_point[p] += 1
+            code = state_code(r.state)
+            row_states[p][code or ("blank" if not (r.state or "").strip() else "other")] += 1
             if p in split.fallback:
                 families[p][r.family] += 1
-                code = state_code(r.state)
-                row_states[p][code or ("blank" if not (r.state or "").strip() else "other")] += 1
-                # The step's own decision per row, so a row R3a moves first is not counted.
-                if geocode_fix(r, index, split.fallback, point_states).method == STATE_CONTRADICTION:
-                    dropped[p] += 1
+            # The step's own decision per row, so a row R3a moves first is not counted.
+            fix = geocode_fix(r, index, split.fallback, states)
+            if fix.method == STATE_CONTRADICTION:
+                dropped[p] += 1
+                unlinked[p] += fix.clear_route_link
     summit_excluded = []
     for lat, lon in sorted(split.on_summit):
         near = index.nearest_summit_within(lat, lon, SUMMIT_EXEMPT_KM)
@@ -657,7 +704,8 @@ def cluster_summary(rows: Sequence[GeoRow], index: SummitIndex, mp_index: MpArea
     ]
     state_contradictions = [
         {
-            "lat": lat, "lon": lon, "point_state": point_states[(lat, lon)], "rows_dropped": dropped[(lat, lon)],
+            "lat": lat, "lon": lon, "point_state": states[(lat, lon)].nearest, "fallback": (lat, lon) in split.fallback,
+            "rows_dropped": dropped[(lat, lon)], "links_cleared": unlinked[(lat, lon)],
             "row_states": dict(sorted(row_states[(lat, lon)].items())),
         }
         for lat, lon in sorted(dropped)
@@ -675,9 +723,11 @@ def cluster_summary(rows: Sequence[GeoRow], index: SummitIndex, mp_index: MpArea
         "crag_excluded_points": len(split.on_crag),
         "crag_excluded_rows": sum(per_point[p] for p in split.on_crag),
         "crag_excluded": crag_excluded,
-        "state_undetermined_points": len(split.fallback) - len(point_states),
+        "state_undetermined_points": len(split.fallback - set(states)),
         "state_contradiction_points": len(state_contradictions),
         "state_contradiction_rows": sum(dropped.values()),
+        "state_contradiction_fallback_rows": sum(n for p, n in dropped.items() if p in split.fallback),
+        "state_contradiction_links": sum(unlinked.values()),
         "state_contradictions": state_contradictions,
         "points": by_point,
     }
@@ -710,11 +760,12 @@ async def _history(conn: AsyncConnection) -> dict[int, list[tuple[str, str]]]:
 async def run_r3(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
     raw = await raw_geo_rows(conn)
     index = await _index(conn)
+    rows = await fetch_accidents(conn, ["latitude", "longitude", "geocode_precision", "mp_route_id"])
     live: dict[int, LiveRow] = {
-        _id(r): (_float(r["latitude"]), _float(r["longitude"]), _str(r["geocode_precision"]))
-        for r in await fetch_accidents(conn, ["latitude", "longitude", "geocode_precision"])
+        _id(r): (_float(r["latitude"]), _float(r["longitude"]), _str(r["geocode_precision"])) for r in rows
     }
-    fixes, changes, skipped = snapshot_fixes(raw, live, index, await _mp_index(conn), await _history(conn))
+    links = {_id(r): int(str(r["mp_route_id"])) if r["mp_route_id"] is not None else None for r in rows}
+    fixes, changes, skipped = snapshot_fixes(raw, live, index, await _mp_index(conn), await _history(conn), links)
     report = ValidationReport("repair:r3")
     methods: Counter[str] = Counter()
     for fix in fixes:
@@ -749,8 +800,9 @@ def plot_stratum(row: Mapping[str, object]) -> str:
 
 
 PLOT_QUOTAS = {"gnis_move": 10, "region_fallback": 10, "unknown": 5, "area": 10, "crag": 5, "exact": 5, "park_centroid": 5}
-# The precision label is shown on purpose: the plot check judges whether the label fits the
-# point (a region_fallback point should NOT sit on the named place), not the point alone.
+# The precision label is shown on purpose: the plot check judges whether the label fits the point,
+# not the point alone. A fallback label is a property of the cluster, so a region_fallback point
+# that sits at the named place is plausible too (owner, 2026-11-17).
 CHECK_COLUMNS = ["accident_id", "source_id", "location", "mountain", "state", "latitude", "longitude", "geocode_precision"]
 
 
@@ -872,7 +924,7 @@ async def run_r3_plot_export(conn: AsyncConnection, args: argparse.Namespace) ->
         "instructions": (
             "open the GeoJSON in a local GIS (QGIS), never an online viewer; plausible=yes if the point fits its "
             "precision label (exact/crag/area/park_centroid: at or near the named place; region_fallback/unknown: "
-            "a centroid that is not the place), else no"
+            "a centroid, or a shared point that is at the named place), else no"
         ),
     }
 
