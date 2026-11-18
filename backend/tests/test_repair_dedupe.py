@@ -19,6 +19,7 @@ from app.data.repair.dedupe import (
     date_interval,
     decide,
     decide_all,
+    different_peaks,
     exact_groups,
     group_changes,
     groups,
@@ -26,6 +27,7 @@ from app.data.repair.dedupe import (
     next_version,
     owned_by_r5,
     pair_score,
+    peak_key,
     places_agree,
     resolve_merges,
     row_interval,
@@ -87,6 +89,54 @@ def test_a_shared_generic_route_name_does_not_join_two_mountains():
     # A blank mountain on one side does not conflict, so the shared route counts.
     unnamed_mountain = r(4, place="standard route", route_key="standard route")
     assert places_agree(whitney, unnamed_mountain)
+
+
+def test_peak_key_cuts_park_and_range_qualifiers():
+    assert peak_key("Fixture Mountain, Sample National Park") == peak_key("Mt. Fixture") == "fixture"
+    assert peak_key("Fixture Peak (Sample Range)") == "fixture"
+    for blank in (None, "", "  ", "Mt.", "Unnamed Peak", "Unknown", "Sample National Park", "Sample Range"):
+        assert peak_key(blank) == ""
+
+
+def _peaks(a, b, **kw):
+    return (_raw(accident_id=900000001, mountain=a, route=None, **kw),
+            _raw(accident_id=900000002, mountain=b, route=None, **kw))
+
+
+def test_same_peak_with_a_qualifier_still_auto_merges():
+    pair = _peaks("Fixture Peak, Sample NP", "Fixture Peak")
+    [(_, _, score)] = candidate_pairs(pair)
+    assert not different_peaks(*pair) and decide(*pair, score, "distance") == "merge"
+    assert not different_peaks(*_peaks("Fixture Mountain, Sample National Park", "Fixture Mountain"))
+    # A peak named inside the other's name is the same peak, not a neighbour.
+    assert not different_peaks(*_peaks("North Fixture", "Fixture Peak"))
+
+
+def test_different_peaks_go_to_review_not_merge_or_distinct():
+    # Close enough spellings to pass places_agree: the r5-v1 gap the guard closes.
+    pair = _peaks("Fixtur Peak", "Fixture Peak", source="avalanche")
+    [(lo, hi, score)] = candidate_pairs(pair)
+    assert places_agree(*pair) and band(score) == "merge"
+    assert different_peaks(*pair) and decide(*pair, score, "distance") == "review"
+    plan = decide_all({row.accident_id: row for row in pair}, {})
+    assert (lo, hi) not in plan.decided and [(p[0], p[1], p[3]) for p in plan.review] == [(lo, hi, "distance")]
+    assert plan.merges == []
+
+
+def test_an_owner_decision_still_outranks_the_peak_guard():
+    pair = _peaks("Fixtur Peak", "Fixture Peak")
+    plan = decide_all({row.accident_id: row for row in pair}, {(900000001, 900000002): "merge"})
+    assert plan.merges == [(900000001, 900000002)] and plan.review == []
+
+
+def test_blank_or_generic_peak_names_leave_the_rule_unchanged():
+    for a, b in ((None, None), ("Fixture Peak", None), ("Mt.", "Fixture Peak"), ("Unnamed Peak", "Sample Peak")):
+        pair = _peaks(a, b)
+        assert not different_peaks(*pair)
+    with_route = (_raw(accident_id=900000001, mountain=None, route="Fixture Couloir"),
+                  _raw(accident_id=900000002, mountain="Fixture Peak", route="Fixture Couloir"))
+    [(_, _, score)] = candidate_pairs(with_route)
+    assert decide(*with_route, score, "distance") == "merge"
 
 
 def _raw(**kw):
@@ -177,7 +227,11 @@ def test_canonical_head_is_a_row_accidents_clean_keeps_when_any_member_is():
 def test_new_owner_decision_produces_a_new_rule_version():
     a = rule_version({(1, 2): "merge"})
     b = rule_version({(1, 2): "distinct"})
-    assert a != b and a.startswith("r5-v1+") and rule_version({(1, 2): "merge"}) == a
+    assert a != b and a.startswith("r5-v2+") and rule_version({(1, 2): "merge"}) == a
+
+
+def test_the_different_peak_guard_is_a_new_rule_version():
+    assert dedupe.R5_BASE == "r5-v2" and not rule_version({(1, 2): "merge"}).startswith("r5-v1")
 
 
 def test_rule_version_follows_the_group_heads_too():

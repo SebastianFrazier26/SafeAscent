@@ -1,9 +1,10 @@
 """R5: exact duplicates merge automatically; fuzzy pairs (±2 days, ≤5 km) are scored and
-auto-decided at ≥0.90 (merge, and only when the place names agree) and ≤0.40 (distinct);
-only the band between goes to the owner. A row whose point is untrusted cannot use the distance rule, so it is compared on
-date, state and text evidence instead, and every such pair goes to the owner (owner
-decision O2: never auto-merged). Duplicates are only ever marked (incident_group_id,
-is_canonical), never deleted, and a row that leaves a group is restored.
+auto-decided at ≥0.90 (merge, and only when the place names agree and the two rows do not
+name different peaks) and ≤0.40 (distinct); only the band between goes to the owner. A row
+whose point is untrusted cannot use the distance rule, so it is compared on date, state and
+text evidence instead, and every such pair goes to the owner (owner decision O2: never
+auto-merged). Duplicates are only ever marked (incident_group_id, is_canonical), never
+deleted, and a row that leaves a group is restored.
 
 The rule version carries a hash of the decision set and the group heads, so a changed
 outcome is re-applied instead of being skipped as already recorded."""
@@ -34,7 +35,8 @@ from app.pipelines.gnis import state_code
 from app.pipelines.textsim import jaro_winkler, normalize_text, place_key
 from app.pipelines.validate import ValidationReport
 
-R5_BASE = "r5-v1"
+# r5-v2 (owner, 2026-11-17): two rows naming different peaks never auto-merge (different_peaks).
+R5_BASE = "r5-v2"
 MERGE_AT, DISTINCT_AT = 0.90, 0.40
 MAX_DAYS, MAX_KM = 2, 5.0
 # An interval overlap is weaker evidence than the same day; scaling the date component
@@ -67,6 +69,16 @@ _GENERIC_WORDS = frozenset({
     "accident", "climb", "climbed", "climber", "climbers", "climbing", "fall", "fell", "falling", "feet",
     "injured", "injuries", "injury", "party", "partner", "rope", "route", "summit", "team",
 })
+# A mountain field whose first part ends in one of these names an area, not a peak, so the
+# different-peak guard stays off for it (the guard only ever fires on two named peaks).
+_AREA_WORDS = frozenset({
+    "park", "np", "rmnp", "forest", "nf", "monument", "wilderness", "range", "mountains", "area", "region",
+    "backcountry", "zone", "county", "canyon", "valley", "basin", "creek", "pass", "lake", "lakes",
+})
+_NOT_A_PEAK = frozenset({
+    "", "mount", "mountain", "peak", "unknown", "unnamed", "none", "n a", "na", "various", "multiple", "unspecified", "not",
+})
+_QUALIFIER_CUT = re.compile(r"[,;(/]| - ")
 Basis = Literal["distance", "place_name", "place_mention", "narrative", "conflict"]
 
 
@@ -94,6 +106,8 @@ class DupRow:
     # place_key of mountain and of route, each on its own, for places_agree.
     mountain_key: str = ""
     route_key: str = ""
+    # The named peak with park/range qualifiers cut off; "" when the row names no single peak.
+    peak_key: str = ""
     # Would accidents_clean keep this row (activity class, country, no exclusion)?
     clean: bool = True
 
@@ -183,14 +197,37 @@ def places_agree(a: DupRow, b: DupRow) -> bool:
     return bool(a.place and b.place and jaro_winkler(a.place, b.place) >= PLACE_MATCH_AT)
 
 
+def peak_key(mountain: str | None) -> str:
+    head = _QUALIFIER_CUT.split(mountain or "", maxsplit=1)[0]
+    tokens = normalize_text(head).split()
+    if not tokens or tokens[-1] in _AREA_WORDS:
+        return ""
+    key = place_key(head)
+    return "" if key in _NOT_A_PEAK else key
+
+
+def different_peaks(a: DupRow, b: DupRow) -> bool:
+    """r5-v2 (owner, 2026-11-17): rows naming two different peaks are not one accident by the
+    distance rule alone. Deliberately narrow, so a spelling variant or a qualifier is not a
+    different peak: both rows name one, the keys differ, and neither contains the other as a
+    whole-word run. No Jaro-Winkler tolerance here: a close spelling of a different peak is
+    what places_agree let through."""
+    ka, kb = a.peak_key, b.peak_key
+    if not ka or not kb or ka == kb:
+        return False
+    return f" {ka} " not in f" {kb} " and f" {kb} " not in f" {ka} "
+
+
 def decide(a: DupRow, b: DupRow, score: float, basis: Basis) -> Literal["merge", "distinct", "review"]:
     """The auto decision for a scored pair that has no owner decision. Only the distance rule
     auto-decides (O2: an untrusted-point pair always goes to the owner), and an auto merge also
-    needs the place names to agree (I2): same day and place-level point alone is not enough."""
+    needs the place names to agree (I2): same day and place-level point alone is not enough.
+    A different-peak pair goes to review, never to distinct: victims of one slide can be
+    reported under neighbouring peak names."""
     if basis != "distance":
         return "review"
     verdict = band(score)
-    if verdict == "merge" and not places_agree(a, b):
+    if verdict == "merge" and (not places_agree(a, b) or different_peaks(a, b)):
         return "review"
     return verdict
 
@@ -439,6 +476,7 @@ def _dup_row(r: Mapping[str, object]) -> DupRow:
         narrative=normalize_text(_str(r["description"])),
         mountain_key=place_key(_str(r["mountain"])),
         route_key=place_key(_str(r["route"])),
+        peak_key=peak_key(_str(r["mountain"])),
         clean=(
             _str(r["activity_class"]) in CLEAN_ACTIVITY
             and _str(r["country"]) in (None, "US")

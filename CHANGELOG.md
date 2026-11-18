@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### R5 rule r5-v2: different named peaks never auto-merge - 2026-11-17
+
+- Owner-approved ("Raise the bar, those are likely not the same accident if they were on different peaks"). A fuzzy pair in the auto-merge band whose two rows name different peaks goes to the owner review instead (basis `distance`), never to auto distinct. `dedupe.peak_key` keys a row's `mountain` up to the first `,`/`;`/`(`/`/`/` - ` with `place_key`; a first part ending in an area word (park, range, wilderness, forest, …) or a blank/generic name gives no peak, so the guard does not fire. `dedupe.different_peaks`: both rows name a peak, the keys differ, and neither contains the other as whole words (no Jaro-Winkler tolerance: a close spelling of another peak is what passed `places_agree` under r5-v1). All source pairs; owner decisions still outrank it. GNIS summit ids are not stored per accident, so names are compared.
+- `R5_BASE` r5-v1 -> r5-v2. Measured read-only on the p2a-2 rehearsal branch: of the 43 auto merges (199 auto decisions, 37 groups) one moves to review, pair 282/283 (same source); 0 cross-source pairs were in the merge band, so none moves. Round-1 review pairs 1,591 -> 1,592; groups 37 -> 36. Plan 2a decision 7b and the spec's R5 row state the rule.
+
 ### Runbook: Stage A VERIFY filter no longer selects r11/r12 tests - 2026-11-17
 
 - `docs/runbooks/2026-11-15-prod-rollout.md` (Stage A background `VERIFY`): `-k "r1 or r2 or r9 or every_row"` matched by substring, so it also selected `test_r11_refresh_window_has_incidents`, `test_r11_backtest_inputs_exist` and `test_r12_golden_precision_on_filled_values_and_recall_reported`, which fail before those stages. It is now `-k "test_r1_ or test_r1v2_ or test_r2_ or test_r9_ or test_every_row_"`, which selects exactly the 9 intended tests (12 before). It is the only `-k` filter in `docs/runbooks/`.
