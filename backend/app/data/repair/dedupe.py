@@ -251,6 +251,20 @@ def nps_label_only(r: DupRow) -> bool:
     return r.family == "nps" and len(r.narrative.split()) < NPS_NARRATIVE_MIN_WORDS
 
 
+def nps_label_only_sql(source: str = "source", description: str = "description") -> str:
+    """nps_label_only as a SQL boolean over two column expressions, for the acceptance cells.
+    It follows source_family's order (aac and avalanche are matched before nps) and counts
+    words as normalize_text does (lowercase, then runs of a-z0-9; _ABBREV maps one token to
+    one). A NULL source is not label-only, so such a row stays in every check (fail closed);
+    source_family refuses it outright. tests/test_repair_dedupe.py checks the two agree."""
+    key = f"lower(regexp_replace({source}, '^[[:space:]]+|[[:space:]]+$', '', 'g'))"
+    words = f"(SELECT count(*) FROM regexp_matches(lower(coalesce({description}, '')), '[a-z0-9]+', 'g'))"
+    return (
+        f"({source} IS NOT NULL AND {key} NOT LIKE 'aac%' AND {key} NOT IN ('caic', 'avalanche', 'avalanche.org') "
+        f"AND strpos({key}, 'avalanche') = 0 AND {key} LIKE 'nps%' AND {words} < {NPS_NARRATIVE_MIN_WORDS})"
+    )
+
+
 def decide(a: DupRow, b: DupRow, score: float, basis: Basis) -> Literal["merge", "distinct", "review"]:
     """The auto decision for a scored pair that has no owner decision. Only the distance rule
     auto-decides (O2: an untrusted-point pair always goes to the owner), and an auto merge also
@@ -606,7 +620,10 @@ def decide_all(rows: dict[int, DupRow], owner: dict[Pair, str]) -> Plan:
             scored.add(pair)
             if pair in owner:
                 continue
-            if nps_label_only(rows[group[0]]) or nps_label_only(rows[other]):
+            # exact_key carries the family and the description's md5, so one exact group is
+            # label-only throughout or not at all.
+            assert nps_label_only(rows[group[0]]) == nps_label_only(rows[other])
+            if nps_label_only(rows[group[0]]):
                 review.append((*pair, 1.0, "exact"))
             else:
                 decided[pair] = ("merge", 1.0, "auto")

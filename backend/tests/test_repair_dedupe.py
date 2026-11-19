@@ -23,6 +23,7 @@ from app.data.repair.dedupe import (
     exact_groups,
     group_changes,
     nps_label_only,
+    nps_label_only_sql,
     groups,
     interval_gap_days,
     next_version,
@@ -36,7 +37,8 @@ from app.data.repair.dedupe import (
     untrusted_pairs,
 )
 from app.data.repair.framework import apply_changes
-from tests.pgtest import migrated_db, requires_pg, sa_url
+from tests.pgtest import ADMIN_URL, fetch, migrated_db, requires_pg, run_sql, sa_url
+from tests.verify.test_phase2a_repair import R5_EXACT_DUPLICATES_SQL
 
 
 def r(i, d=date(2010, 7, 1), lat=40.0, lon=-105.0, typ="fall", sev="serious", place="Fixture Peak",
@@ -694,3 +696,67 @@ def test_a_fuzzy_merge_band_pair_with_a_label_only_nps_row_goes_to_review():
         assert band(score) == "merge" and places_agree(aac, nps)
         assert decide(aac, nps, score, "distance") == verdict
         assert decide(nps, aac, score, "distance") == verdict
+
+
+@pytest.fixture(scope="module")
+def r5_pg():
+    if not ADMIN_URL:
+        pytest.skip("MIGRATIONS_TEST_ADMIN_URL not set")
+    with migrated_db() as name:
+        yield name
+
+
+def _sql_text(value):
+    return "NULL" if value is None else "'" + value.replace("'", "''") + "'"
+
+
+def _words(n, word="fixtureword"):
+    return " ".join([word] * n)
+
+
+@requires_pg
+@pytest.mark.parametrize(("source", "description"), [
+    ("NPS", None), ("NPS", ""), ("NPS", NPS_LABEL), ("  nps_mortality ", NPS_LABEL), (" NPS\t", "Fixture"),
+    ("NPS", _words(14)), ("NPS", _words(15)),
+    ("NPS", "--- ;;; Hiking/Medical!!! (fall) ... "), ("NPS", ".".join("abcdefghijklmno")),
+    ("NPS", _words(7, "naïve")), ("NPS", _words(8, "naïve")), ("NPS", "ÉTÉ Über café"),
+    (None, NPS_LABEL), ("AAC", NPS_LABEL), ("nps avalanche", NPS_LABEL), ("Avalanche.org", None), ("caic", ""),
+])
+def test_the_sql_label_only_predicate_matches_nps_label_only(r5_pg, source, description):
+    try:
+        expected = nps_label_only(_raw(accident_id=900000001, source=source, description=description))
+    except ValueError:
+        expected = False  # source_family refuses it; the SQL keeps the row in the check
+    sql = (f"SELECT {nps_label_only_sql('s', 'd')} "
+           f"FROM (VALUES ({_sql_text(source)}::text, {_sql_text(description)}::text)) AS t(s, d)")
+    assert fetch(r5_pg, sql) == [(expected,)]
+
+
+# One date per group; every row is canonical (the column default).
+_GATE_GROUPS = [
+    ((900000001, 900000002), "NPS", NPS_LABEL, [(900000001, 900000002, "distinct", "owner")]),
+    ((900000003, 900000004), "NPS", NPS_LABEL, [(900000003, 900000004, "merge", "owner")]),
+    ((900000005, 900000006), "NPS", NPS_LABEL, [(900000005, 900000006, "distinct", "auto")]),
+    ((900000007, 900000008), "NPS", NPS_LABEL, []),
+    ((900000009, 900000010), "AAC", NPS_LABEL, [(900000009, 900000010, "distinct", "owner")]),
+    ((900000011, 900000012, 900000013), "NPS", None,
+     [(900000011, 900000012, "distinct", "owner"), (900000011, 900000013, "distinct", "owner")]),
+    ((900000014, 900000015, 900000016), "NPS", None, [(900000014, 900000015, "distinct", "owner")]),
+]
+
+
+@requires_pg
+def test_the_exact_duplicate_gate_excuses_only_owner_distinct_label_only_nps_groups(r5_pg):
+    rows, decisions = [], []
+    for n, (ids, source, description, decided) in enumerate(_GATE_GROUPS):
+        rows += [f"({i}, '{source}', DATE '2010-07-01' + {n}, 40.0, -105.0, {_sql_text(description)})" for i in ids]
+        decisions += [f"({lo}, {hi}, 1.0, '{d}', '{by}', 'r5-v3')" for lo, hi, d, by in decided]
+    run_sql(r5_pg, (
+        "INSERT INTO accidents (accident_id, source, date, latitude, longitude, description) VALUES "
+        + ", ".join(rows) + "; "
+        "INSERT INTO internal.duplicate_decisions (low_id, high_id, score, decision, decided_by, rule_version) VALUES "
+        + ", ".join(decisions) + ";"
+    ))
+    # Counted: an owner merge left unapplied, an auto distinct, no decision, a non-NPS group, and
+    # a three with one member lacking an owner distinct. Excused: the owner-distinct pair and three.
+    assert fetch(r5_pg, R5_EXACT_DUPLICATES_SQL) == [(5,)]
