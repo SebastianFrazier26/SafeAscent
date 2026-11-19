@@ -22,6 +22,8 @@ from app.data.repair.dedupe import (
     different_peaks,
     exact_groups,
     group_changes,
+    nps_label_only,
+    nps_label_only_sql,
     groups,
     interval_gap_days,
     next_version,
@@ -35,7 +37,8 @@ from app.data.repair.dedupe import (
     untrusted_pairs,
 )
 from app.data.repair.framework import apply_changes
-from tests.pgtest import migrated_db, requires_pg, sa_url
+from tests.pgtest import ADMIN_URL, fetch, migrated_db, requires_pg, run_sql, sa_url
+from tests.verify.test_phase2a_repair import R5_EXACT_DUPLICATES_SQL
 
 
 def r(i, d=date(2010, 7, 1), lat=40.0, lon=-105.0, typ="fall", sev="serious", place="Fixture Peak",
@@ -67,7 +70,7 @@ def test_area_and_centroid_points_get_half_distance_credit():
 
 def test_auto_merge_needs_matching_place_names():
     same_crag = (r(1, place="longs kieners", mountain_key="longs", route_key="kieners"),
-                 r(2, fam="nps", place="longs", mountain_key="longs"))
+                 r(2, fam="nps", place="longs", mountain_key="longs", narrative=NPS_NARRATIVE))
     assert decide(*same_crag, pair_score(*same_crag), "distance") == "merge"
     unnamed = (r(1, place=""), r(2, fam="nps", place=""))
     assert pair_score(*unnamed) >= 0.90 and decide(*unnamed, pair_score(*unnamed), "distance") == "review"
@@ -263,15 +266,15 @@ def test_canonical_head_is_a_row_accidents_clean_keeps_when_any_member_is():
 def test_new_owner_decision_produces_a_new_rule_version():
     a = rule_version({(1, 2): "merge"})
     b = rule_version({(1, 2): "distinct"})
-    assert a != b and a.startswith("r5-v2+") and rule_version({(1, 2): "merge"}) == a
+    assert a != b and a.startswith("r5-v3+") and rule_version({(1, 2): "merge"}) == a
 
 
-def test_the_different_peak_guard_starts_a_fresh_r5_v2_version_after_r5_v1_runs():
+def test_the_nps_guard_starts_a_fresh_r5_v3_version_after_earlier_runs():
     version = rule_version({(1, 2): "merge"})
-    assert version.startswith("r5-v2+")
-    # A different base never shares a generation with r5-v1, so nothing is skipped as recorded.
-    assert next_version(version, ["r5-v1+x"]) == version
-    assert next_version(version, ["r5-v1+x", version, "r5-v1+y"]) == version + ".2"
+    assert version.startswith("r5-v3+")
+    # A different base never shares a generation with r5-v1/v2, so nothing is skipped as recorded.
+    assert next_version(version, ["r5-v1+x", "r5-v2+y"]) == version
+    assert next_version(version, ["r5-v2+x", version, "r5-v2+y"]) == version + ".2"
 
 
 def test_rule_version_follows_the_group_heads_too():
@@ -447,7 +450,8 @@ def test_flip_to_distinct_restores_canonical_rows():
         asyncio.run(scenario(sa_url(name)))
 
 
-# 1/2 exact duplicates; 3/4 a same-day cross-source auto merge; 5/6 a month row against a day
+# 1/2 exact duplicates; 3/4 a same-day cross-source auto merge (4's description is long enough to
+# count as an NPS narrative, r5-v3); 5/6 a month row against a day
 # record (review band); 7/8 an untrusted AAC point and an NPS record of the same summit and
 # state (O2: review); 10 and 11 share the window with 7/8 but lack the evidence or the state;
 # 9 was marked non-canonical outside R5.
@@ -457,7 +461,7 @@ INSERT INTO accidents (accident_id, source, source_id, date, latitude, longitude
   (1, 'AAC', '1', '2010-07-02', 40.0, -105.0, 'fall', 'serious', 'Fixture Peak', NULL, 'CO', 'same words', 'day', 'area', 'rock_climbing'),
   (2, 'AAC', '1b', '2010-07-02', 40.0, -105.0, 'fall', 'serious', 'Fixture Peak', NULL, 'CO', 'same words', 'day', 'area', 'rock_climbing'),
   (3, 'AAC', '3', '2011-08-10', 41.0, -106.0, 'fall', 'fatal', 'Longs Peak', NULL, 'CO', 'alpha text', 'day', 'crag', 'mountaineering'),
-  (4, 'NPS', NULL, '2011-08-10', 41.001, -106.0, 'fall', 'fatal', 'Longs Peak', NULL, 'CO', 'bravo text', 'day', 'crag', 'hiking'),
+  (4, 'NPS', NULL, '2011-08-10', 41.001, -106.0, 'fall', 'fatal', 'Longs Peak', NULL, 'CO', 'bravo text one two three four five six seven eight nine ten eleven twelve thirteen', 'day', 'crag', 'hiking'),
   (5, 'AAC', '5', '2012-06-15', 42.0, -107.0, 'fall', 'serious', 'Fixture Spire', NULL, 'WY', 'charlie text', 'month', 'area', 'rock_climbing'),
   (6, 'NPS', NULL, '2012-06-03', 42.0, -107.0, 'fall', 'serious', 'Fixture Spire', NULL, 'WY', 'delta text', 'day', 'park_centroid', 'rock_climbing'),
   (7, 'AAC', '7', '2013-05-04', 39.7, -105.0, 'fall', 'serious', 'Mount Sneffels', NULL, 'Colorado', 'echo text', 'day', 'region_fallback', 'mountaineering'),
@@ -622,3 +626,137 @@ def test_r5_refuses_before_r3_and_import_refuses_blank_or_unscored_pairs(tmp_pat
 
     with migrated_db(seed_sql=R5_SEED) as name:
         asyncio.run(scenario(sa_url(name)))
+
+
+NPS_LABEL = "Hiking - Medical"
+NPS_NARRATIVE = " ".join(f"fixtureword{n}" for n in range(15))
+
+
+def _nps(i, description, **kw):
+    base = {"source": "NPS", "activity": "Hiking", "mountain": "Sample National Park", "route": None,
+            "geocode_precision": "park_centroid", "injury_severity": "fatal", "accident_type": "medical",
+            "activity_class": "non_climbing", "description": description}
+    return _raw(**(base | {"accident_id": i} | kw))
+
+
+@pytest.mark.parametrize(("description", "label_only"), [
+    (None, True), ("", True), (NPS_LABEL, True), ("nan", True), ("Rock Climbing - Fall", True),
+    (" ".join(NPS_NARRATIVE.split()[:14]), True), (NPS_NARRATIVE, False),
+])
+def test_nps_label_only_is_an_empty_or_category_description(description, label_only):
+    assert nps_label_only(_nps(900000001, description)) is label_only
+
+
+def test_the_nps_rule_never_touches_other_sources():
+    assert not nps_label_only(_raw(accident_id=900000001, description=NPS_LABEL))
+    assert not nps_label_only(_raw(accident_id=900000001, source="avalanche", description=None))
+
+
+def test_an_exact_nps_pair_with_no_narrative_goes_to_review_not_merge():
+    pair = (_nps(900000001, NPS_LABEL), _nps(900000002, NPS_LABEL))
+    rows = {row.accident_id: row for row in pair}
+    assert exact_groups(list(pair)) == [[900000001, 900000002]]
+    plan = decide_all(rows, {})
+    assert plan.decided == {} and plan.merges == []
+    assert [(lo, hi, basis) for lo, hi, _, basis in plan.review] == [(900000001, 900000002, "exact")]
+    assert (900000001, 900000002) in plan.scored
+    assert all(c.new_value is None or c.new_value is True for c in group_changes(rows, plan.merges))
+
+
+def test_an_exact_nps_group_of_three_sends_every_scored_pair_to_review():
+    rows = {i: _nps(i, None) for i in (900000001, 900000002, 900000003)}
+    plan = decide_all(rows, {})
+    assert plan.merges == [] and sorted((lo, hi) for lo, hi, _, _ in plan.review) == [
+        (900000001, 900000002), (900000001, 900000003)
+    ]
+
+
+def test_an_exact_nps_pair_with_a_narrative_still_auto_merges():
+    rows = {i: _nps(i, NPS_NARRATIVE) for i in (900000001, 900000002)}
+    plan = decide_all(rows, {})
+    assert plan.decided == {(900000001, 900000002): ("merge", 1.0, "auto")} and plan.review == []
+    assert plan.merges == [(900000001, 900000002)]
+
+
+def test_an_owner_decision_outranks_the_nps_guard():
+    rows = {i: _nps(i, NPS_LABEL) for i in (900000001, 900000002)}
+    plan = decide_all(rows, {(900000001, 900000002): "merge"})
+    assert plan.merges == [(900000001, 900000002)] and plan.review == []
+    plan = decide_all(rows, {(900000001, 900000002): "distinct"})
+    assert plan.merges == [] and plan.review == []
+
+
+def test_a_fuzzy_merge_band_pair_with_a_label_only_nps_row_goes_to_review():
+    # Same day, same exact point, same facts and place: the merge band, but the NPS side has no narrative.
+    aac = _raw(accident_id=900000001, mountain="Fixture Peak", route=None, injury_severity="fatal",
+               accident_type="medical", description="fixture text")
+    for description, verdict in ((NPS_LABEL, "review"), (NPS_NARRATIVE, "merge")):
+        nps = _nps(900000002, description, mountain="Fixture Peak", geocode_precision="exact")
+        [(_, _, score)] = candidate_pairs([aac, nps])
+        assert band(score) == "merge" and places_agree(aac, nps)
+        assert decide(aac, nps, score, "distance") == verdict
+        assert decide(nps, aac, score, "distance") == verdict
+
+
+@pytest.fixture(scope="module")
+def r5_pg():
+    if not ADMIN_URL:
+        pytest.skip("MIGRATIONS_TEST_ADMIN_URL not set")
+    with migrated_db() as name:
+        yield name
+
+
+def _sql_text(value):
+    return "NULL" if value is None else "'" + value.replace("'", "''") + "'"
+
+
+def _words(n, word="fixtureword"):
+    return " ".join([word] * n)
+
+
+@requires_pg
+@pytest.mark.parametrize(("source", "description"), [
+    ("NPS", None), ("NPS", ""), ("NPS", NPS_LABEL), ("  nps_mortality ", NPS_LABEL), (" NPS\t", "Fixture"),
+    ("NPS", _words(14)), ("NPS", _words(15)),
+    ("NPS", "--- ;;; Hiking/Medical!!! (fall) ... "), ("NPS", ".".join("abcdefghijklmno")),
+    ("NPS", _words(7, "naïve")), ("NPS", _words(8, "naïve")), ("NPS", "ÉTÉ Über café"),
+    (None, NPS_LABEL), ("AAC", NPS_LABEL), ("nps avalanche", NPS_LABEL), ("Avalanche.org", None), ("caic", ""),
+])
+def test_the_sql_label_only_predicate_matches_nps_label_only(r5_pg, source, description):
+    try:
+        expected = nps_label_only(_raw(accident_id=900000001, source=source, description=description))
+    except ValueError:
+        expected = False  # source_family refuses it; the SQL keeps the row in the check
+    sql = (f"SELECT {nps_label_only_sql('s', 'd')} "
+           f"FROM (VALUES ({_sql_text(source)}::text, {_sql_text(description)}::text)) AS t(s, d)")
+    assert fetch(r5_pg, sql) == [(expected,)]
+
+
+# One date per group; every row is canonical (the column default).
+_GATE_GROUPS = [
+    ((900000001, 900000002), "NPS", NPS_LABEL, [(900000001, 900000002, "distinct", "owner")]),
+    ((900000003, 900000004), "NPS", NPS_LABEL, [(900000003, 900000004, "merge", "owner")]),
+    ((900000005, 900000006), "NPS", NPS_LABEL, [(900000005, 900000006, "distinct", "auto")]),
+    ((900000007, 900000008), "NPS", NPS_LABEL, []),
+    ((900000009, 900000010), "AAC", NPS_LABEL, [(900000009, 900000010, "distinct", "owner")]),
+    ((900000011, 900000012, 900000013), "NPS", None,
+     [(900000011, 900000012, "distinct", "owner"), (900000011, 900000013, "distinct", "owner")]),
+    ((900000014, 900000015, 900000016), "NPS", None, [(900000014, 900000015, "distinct", "owner")]),
+]
+
+
+@requires_pg
+def test_the_exact_duplicate_gate_excuses_only_owner_distinct_label_only_nps_groups(r5_pg):
+    rows, decisions = [], []
+    for n, (ids, source, description, decided) in enumerate(_GATE_GROUPS):
+        rows += [f"({i}, '{source}', DATE '2010-07-01' + {n}, 40.0, -105.0, {_sql_text(description)})" for i in ids]
+        decisions += [f"({lo}, {hi}, 1.0, '{d}', '{by}', 'r5-v3')" for lo, hi, d, by in decided]
+    run_sql(r5_pg, (
+        "INSERT INTO accidents (accident_id, source, date, latitude, longitude, description) VALUES "
+        + ", ".join(rows) + "; "
+        "INSERT INTO internal.duplicate_decisions (low_id, high_id, score, decision, decided_by, rule_version) VALUES "
+        + ", ".join(decisions) + ";"
+    ))
+    # Counted: an owner merge left unapplied, an auto distinct, no decision, a non-NPS group, and
+    # a three with one member lacking an owner distinct. Excused: the owner-distinct pair and three.
+    assert fetch(r5_pg, R5_EXACT_DUPLICATES_SQL) == [(5,)]

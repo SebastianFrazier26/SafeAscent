@@ -3,6 +3,7 @@ through plan 1's tests/verify/_db.fetch (connect_args_for, verify-full), never a
 
 import pytest
 
+from app.data.repair.dedupe import nps_label_only_sql
 from tests.verify._db import fetch
 
 pytestmark = pytest.mark.db
@@ -280,15 +281,28 @@ def test_r4_rows_pending_owner_review_are_reported():
     assert bad["n"] == 0
 
 
+# A group of canonical rows with identical facts. r5-v3 (owner, 2026-11-18): a label-only NPS
+# group is excused only when the owner decided every other member distinct from its lowest id
+# (the pair R5 put in review); an auto decision or a merge never excuses it.
+R5_EXACT_DUPLICATES_SQL = (
+    "WITH k AS (SELECT accident_id, " + nps_label_only_sql() + " AS label_only, source, date, latitude, longitude, "
+    "accident_type, activity, injury_severity, mountain, route, md5(coalesce(description, '')) AS digest "
+    "FROM accidents WHERE is_canonical "
+    # M2 (owner): rows with neither a date nor any narrative are not exact duplicates;
+    # this mirrors normalize_text (lowercase, then any a-z0-9 left).
+    "AND (date IS NOT NULL OR lower(coalesce(description, '')) ~ '[a-z0-9]')), "
+    "g AS (SELECT min(accident_id) AS head, array_agg(accident_id) AS ids, bool_and(label_only) AS label_only FROM k "
+    "GROUP BY source, date, latitude, longitude, accident_type, activity, injury_severity, mountain, route, digest "
+    "HAVING count(*) > 1) "
+    "SELECT count(*) AS n FROM g WHERE NOT (g.label_only AND NOT EXISTS ("
+    "SELECT 1 FROM unnest(g.ids) AS m(id) WHERE m.id <> g.head AND NOT EXISTS ("
+    "SELECT 1 FROM internal.duplicate_decisions d WHERE d.low_id = g.head AND d.high_id = m.id "
+    "AND d.decision = 'distinct' AND d.decided_by = 'owner')))"
+)
+
+
 def test_r5_no_exact_duplicates_among_canonical_rows():
-    [row] = fetch(
-        "SELECT count(*) AS n FROM (SELECT source, date, latitude, longitude, accident_type, activity, injury_severity, "
-        "mountain, route, md5(coalesce(description, '')) FROM accidents WHERE is_canonical "
-        # M2 (owner): rows with neither a date nor any narrative are not exact duplicates;
-        # this mirrors normalize_text (lowercase, then any a-z0-9 left).
-        "AND (date IS NOT NULL OR lower(coalesce(description, '')) ~ '[a-z0-9]') "
-        "GROUP BY 1,2,3,4,5,6,7,8,9,10 HAVING count(*) > 1) d"
-    )
+    [row] = fetch(R5_EXACT_DUPLICATES_SQL)
     assert row["n"] == 0
 
 
