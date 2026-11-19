@@ -816,6 +816,7 @@ PLOT_QUOTAS = {"gnis_move": 10, "region_fallback": 10, "unknown": 5, "area": 10,
 # not the point alone. Plausibility follows what the model uses (owner, 2026-11-18; app/ml/incidents.py,
 # TRUSTED_FOR_CELLS): an untrusted label (unknown, region_fallback, park_centroid) without a route link is
 # used at state level only, so it is plausible if the state is right, or blank (the row is dropped).
+# park_centroid is in TRUSTED_POINT_PRECISIONS for R3's other consumers, but not in TRUSTED_FOR_CELLS.
 CHECK_COLUMNS = ["accident_id", "source_id", "location", "mountain", "state", "latitude", "longitude", "geocode_precision"]
 PLOT_COLUMNS = [*CHECK_COLUMNS, "route_linked"]
 
@@ -944,7 +945,7 @@ async def run_r3_plot_export(conn: AsyncConnection, args: argparse.Namespace) ->
         "instructions": (
             "open the GeoJSON in a local GIS (QGIS), never an online viewer; plausible=yes if the point fits what "
             "the model uses: a trusted label (exact/crag/area) or a route-linked row, at or near the named place; an "
-            "untrusted label (unknown/region_fallback/park_centroid) with no route link, the state is right or "
+            "label the model does not place by (unknown/region_fallback/park_centroid) with no route link, the state is right or "
             "blank (owner, 2026-11-18); else no"
         ),
     }

@@ -1469,3 +1469,92 @@ def test_a_cleared_link_is_restored_only_while_the_latest_link_revision_is_r3s()
     again = {900000600: [*later[900000600], ("mp_route_id", "r3-v5")]}
     _, changes, _ = snapshot_fixes(raw, live, SummitIndex([VELLUM_AK]), NO_MP, again, {900000600: None})
     assert [(c.new_value, c.method) for c in changes if c.field == "mp_route_id"] == [(900000650, geocode.LINK_RESTORED)]
+
+
+def _v5_geocode_fix(row, index, fallback, states=None):
+    # r3-v5 stand-in: the tail labels a blank-state row as a stated one.
+    fix = _REAL_GEOCODE_FIX(row, index, fallback, states)
+    if fix.method != geocode.NO_STATE_UNVERIFIED:
+        return fix
+    precision, method = ("crag", "route_link") if row.mp_route_id is not None else (
+        ("exact", "source_coords") if row.family == "avalanche" else ("area", "source_geocode"))
+    return GeoFix(row.accident_id, KEEP, precision, method, "US")
+
+
+_REAL_GEOCODE_FIX = geocode.geocode_fix
+
+
+V6_SEED = GEO_SEED + """
+INSERT INTO mp_routes (mp_route_id, name, location_id, type) VALUES (900000750, 'Fixture Line Four', 900000900, 'Trad');
+INSERT INTO internal.accidents_raw (accident_id, source, source_id, mountain, state, latitude, longitude, mp_route_id)
+VALUES (900000700, 'AAC', 'q1', 'Quillet Crag', NULL, 40.0, -81.0, NULL),
+       (900000701, 'AAC', 'q2', 'Quillet Crag', '', 40.0, -81.0, 900000750);
+INSERT INTO accidents (accident_id, source, source_id, mountain, state, latitude, longitude, mp_route_id)
+  SELECT accident_id, source, source_id, mountain, state, latitude, longitude, mp_route_id FROM internal.accidents_raw
+  WHERE accident_id >= 900000700;
+"""
+
+
+@requires_pg
+def test_r3v6_relabels_trusted_blank_state_rows_from_r3v5_keeping_point_and_link(monkeypatch):
+    async def scenario(url: str) -> None:
+        engine = create_async_engine(url)
+        current = geocode.R3_VERSION
+        try:
+            monkeypatch.setattr(geocode, "R3_VERSION", "r3-v5")
+            monkeypatch.setattr(geocode, "geocode_fix", _v5_geocode_fix)
+            async with engine.begin() as conn:
+                await run_r3(conn, argparse.Namespace(apply=True))
+            async with engine.connect() as conn:
+                before = await _rows(conn, "SELECT accident_id, geocode_precision, geocode_method, country FROM accidents "
+                                     "WHERE accident_id >= 900000700 ORDER BY 1")
+            assert before == [(900000700, "area", "source_geocode", "US"), (900000701, "crag", "route_link", "US")]
+            monkeypatch.undo()
+            async with engine.begin() as conn:
+                await run_r3(conn, argparse.Namespace(apply=True))
+            async with engine.begin() as conn:
+                again = await run_r3(conn, argparse.Namespace(apply=True))
+            async with engine.connect() as conn:
+                got = await _rows(conn, "SELECT accident_id, latitude, longitude, geocode_precision, geocode_method, country, "
+                                  "mp_route_id FROM accidents WHERE accident_id >= 900000700 ORDER BY 1")
+                audit = await _rows(conn, "SELECT accident_id, field, old_value, new_value, method FROM internal.accident_revisions "
+                                    f"WHERE accident_id >= 900000700 AND rule_version = '{current}' ORDER BY 1, 2")
+            unverified = geocode.NO_STATE_UNVERIFIED
+            assert got == [(900000700, 40.0, -81.0, "unknown", unverified, None, None),
+                           (900000701, 40.0, -81.0, "unknown", unverified, None, 900000750)]
+            for a, old_precision, old_method in ((900000700, "area", "source_geocode"), (900000701, "crag", "route_link")):
+                assert [r[1:] for r in audit if r[0] == a] == [
+                    ("country", "US", None, unverified),
+                    ("geocode_method", old_method, unverified, unverified),
+                    ("geocode_precision", old_precision, "unknown", unverified),
+                ]
+            assert again["applied"] == 0
+        finally:
+            await engine.dispose()
+
+    with migrated_db(seed_sql=V6_SEED) as name:
+        asyncio.run(scenario(sa_url(name)))
+
+
+@requires_pg
+def test_r3_plot_export_flags_route_linked_rows(tmp_path, monkeypatch):
+    monkeypatch.setattr(review, "REVIEW_DIR", tmp_path)
+
+    async def scenario(url: str) -> None:
+        engine = create_async_engine(url)
+        try:
+            async with engine.begin() as conn:
+                await run_r3(conn, argparse.Namespace(apply=True))
+            async with engine.connect() as conn:
+                await run_r3_plot_export(conn, argparse.Namespace(out=None, overwrite=False))
+            with (tmp_path / "r3_spot_check.csv").open(newline="", encoding="utf-8") as fh:
+                linked = {r["accident_id"]: r["route_linked"] for r in csv.DictReader(fh)}
+            assert linked["900000701"] == "yes" and linked["900000700"] == "no"
+            features = json.loads((tmp_path / "r3_spot_check.geojson").read_text())["features"]
+            assert {f["properties"]["accident_id"]: f["properties"]["route_linked"] for f in features}[900000701] == "yes"
+            assert "900000750" not in (tmp_path / "r3_spot_check.csv").read_text()
+        finally:
+            await engine.dispose()
+
+    with migrated_db(seed_sql=V6_SEED) as name:
+        asyncio.run(scenario(sa_url(name)))
