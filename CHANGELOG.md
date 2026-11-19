@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### R5 rule r5-v3: NPS pairs with no narrative never auto-merge - 2026-11-18
+
+- Owner-approved, option (a) of the run-5 R5 spot-check gate (26/30): the 4 failed auto merges were exact NPS pairs (same day, same park, consecutive source ids, identical fields) whose description is only a category. A pair in which either row is an NPS row with no narrative now goes to the owner review instead of auto-merging, exact duplicates (new basis `exact`, score 1.0) and fuzzy merge-band pairs (basis `distance`) alike; the conservative review default is distinct. An owner decision still outranks it.
+- "No narrative" (`dedupe.nps_label_only`): source family `nps` and fewer than 15 words (`NPS_NARRATIVE_MIN_WORDS`) in the `normalize_text`ed description, empty included. The NPS mortality loader wrote `"<activity> - <cause of death>"` (or the bare cause) into `description`, so every row it loaded is label-only; a longer NPS description (an R11 summary, say) keeps the earlier rules.
+- `R5_BASE` r5-v2 -> r5-v3. Acceptance cell `test_r5_no_exact_duplicates_among_canonical_rows` leaves label-only NPS rows out (same definition in SQL); `test_r5_latest_applied_run_left_no_pair_undecided` still requires each such pair to be decided. Not yet measured on the rehearsal branch: the next rehearsal's `duplicates.csv` gains every label-only NPS exact pair (2076/2077, 2089/2090, 2187/2188 and 2210/2211 among them, none in run 5's labelled set), and the Step 9d auto-merge pool shrinks by the same number. Plan 2a decision 7c and the spec's R5 row state the rule.
+
 ### R12 rule r12-v2: four over-firing fixes from the run-5 golden diagnosis - 2026-11-18
 
 - Source: the run-5 golden diagnosis (56/63 = 0.889 against the 0.95 bar). Four precision fixes in `app/data/repair/experience.py`; over the 4,790-accident rehearsal replay they change 8 rows, all toward unknown (level fills 115 -> 108, guided fills 36 -> 35).

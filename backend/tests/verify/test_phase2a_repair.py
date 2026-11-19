@@ -3,6 +3,7 @@ through plan 1's tests/verify/_db.fetch (connect_args_for, verify-full), never a
 
 import pytest
 
+from app.data.repair.dedupe import NPS_NARRATIVE_MIN_WORDS
 from tests.verify._db import fetch
 
 pytestmark = pytest.mark.db
@@ -287,6 +288,11 @@ def test_r5_no_exact_duplicates_among_canonical_rows():
         # M2 (owner): rows with neither a date nor any narrative are not exact duplicates;
         # this mirrors normalize_text (lowercase, then any a-z0-9 left).
         "AND (date IS NOT NULL OR lower(coalesce(description, '')) ~ '[a-z0-9]') "
+        # r5-v3 (owner, 2026-11-18): label-only NPS rows never auto-merge, so an exact pair of
+        # them is the owner's (distinct by default) and the pending check covers it. Mirrors
+        # dedupe.nps_label_only: source family nps, fewer than NPS_NARRATIVE_MIN_WORDS words.
+        "AND NOT (lower(trim(source)) LIKE 'nps%' "
+        f"AND (SELECT count(*) FROM regexp_matches(lower(coalesce(description, '')), '[a-z0-9]+', 'g')) < {NPS_NARRATIVE_MIN_WORDS}) "
         "GROUP BY 1,2,3,4,5,6,7,8,9,10 HAVING count(*) > 1) d"
     )
     assert row["n"] == 0

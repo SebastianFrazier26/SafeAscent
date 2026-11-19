@@ -3,7 +3,8 @@ auto-decided at ≥0.90 (merge, and only when the place names agree and the two 
 name different peaks) and ≤0.40 (distinct); only the band between goes to the owner. A row
 whose point is untrusted cannot use the distance rule, so it is compared on date, state and
 text evidence instead, and every such pair goes to the owner (owner decision O2: never
-auto-merged). Duplicates are only ever marked (incident_group_id, is_canonical), never
+auto-merged). A pair with an NPS row that carries no narrative never auto-merges either, exact
+duplicates included (r5-v3). Duplicates are only ever marked (incident_group_id, is_canonical), never
 deleted, and a row that leaves a group is restored.
 
 The rule version carries a hash of the decision set and the group heads, so a changed
@@ -36,7 +37,8 @@ from app.pipelines.textsim import jaro_winkler, normalize_text, place_key
 from app.pipelines.validate import ValidationReport
 
 # r5-v2 (owner, 2026-11-17): two rows naming different peaks never auto-merge (different_peaks).
-R5_BASE = "r5-v2"
+# r5-v3 (owner, 2026-11-18): a pair with an NPS row that has no narrative never auto-merges (nps_label_only).
+R5_BASE = "r5-v3"
 MERGE_AT, DISTINCT_AT = 0.90, 0.40
 MAX_DAYS, MAX_KM = 2, 5.0
 # An interval overlap is weaker evidence than the same day; scaling the date component
@@ -84,7 +86,12 @@ _NOT_A_PEAK = frozenset({
 })
 # A comma between digits is a thousands separator ("Peak 13,200"), not a qualifier.
 _QUALIFIER_CUT = re.compile(r"(?<!\d),|,(?!\d)|[;()/]| - ")
-Basis = Literal["distance", "place_name", "place_mention", "narrative", "conflict"]
+# NPS rows come from the park service mortality dataset, which has no narrative: the loader
+# wrote "<activity> - <cause of death>" (or the bare cause) into description, a category
+# label of a few words. A real description (an R11 summary, say) is held to this many words;
+# a terse one under it only costs a review row, never a wrong merge.
+NPS_NARRATIVE_MIN_WORDS = 15
+Basis = Literal["distance", "place_name", "place_mention", "narrative", "conflict", "exact"]
 
 
 @dataclass(frozen=True)
@@ -237,16 +244,26 @@ def different_peaks(a: DupRow, b: DupRow) -> bool:
     return f" {ka} " not in f" {kb} " and f" {kb} " not in f" {ka} "
 
 
+def nps_label_only(r: DupRow) -> bool:
+    """r5-v3 (owner, 2026-11-18): an NPS row whose description is empty or only a category
+    label. Two such rows on one day in one park (consecutive source ids, identical fields) are
+    as likely two visitors as one incident, and nothing in the record can tell them apart."""
+    return r.family == "nps" and len(r.narrative.split()) < NPS_NARRATIVE_MIN_WORDS
+
+
 def decide(a: DupRow, b: DupRow, score: float, basis: Basis) -> Literal["merge", "distinct", "review"]:
     """The auto decision for a scored pair that has no owner decision. Only the distance rule
     auto-decides (O2: an untrusted-point pair always goes to the owner), and an auto merge also
     needs the place names to agree (I2): same day and place-level point alone is not enough.
     A different-peak pair goes to review, never to distinct: victims of one slide can be
-    reported under neighbouring peak names."""
+    reported under neighbouring peak names. A pair with a label-only NPS row goes to review too
+    (r5-v3), where the conservative default is distinct."""
     if basis != "distance":
         return "review"
     verdict = band(score)
-    if verdict == "merge" and (not places_agree(a, b) or different_peaks(a, b)):
+    if verdict == "merge" and (
+        not places_agree(a, b) or different_peaks(a, b) or nps_label_only(a) or nps_label_only(b)
+    ):
         return "review"
     return verdict
 
@@ -578,15 +595,21 @@ async def _plan(conn: AsyncConnection) -> Plan:
 
 def decide_all(rows: dict[int, DupRow], owner: dict[Pair, str]) -> Plan:
     """Every pair R5 scores among rows it owns, decided: owner first, then the exact and
-    distance rules, O2 pairs to review, then the transitive-merge guard."""
+    distance rules (label-only NPS exact pairs to review, r5-v3), O2 pairs to review, then the transitive-merge guard."""
     decided: dict[Pair, tuple[str, float, str]] = {p: (d, 1.0, "owner") for p, d in owner.items()}
     review: list[tuple[int, int, float, Basis]] = []
     scored: set[Pair] = set()
     row_list = list(rows.values())
     for group in exact_groups(row_list):
         for other in group[1:]:
-            scored.add((group[0], other))
-            decided.setdefault((group[0], other), ("merge", 1.0, "auto"))
+            pair = (group[0], other)
+            scored.add(pair)
+            if pair in owner:
+                continue
+            if nps_label_only(rows[group[0]]) or nps_label_only(rows[other]):
+                review.append((*pair, 1.0, "exact"))
+            else:
+                decided[pair] = ("merge", 1.0, "auto")
     for lo, hi, score in candidate_pairs(row_list):
         scored.add((lo, hi))
         if (lo, hi) in owner:
