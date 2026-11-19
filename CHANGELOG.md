@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### R12 rule r12-v2: four over-firing fixes from the run-5 golden diagnosis - 2026-11-18
+
+- Source: the run-5 golden diagnosis (56/63 = 0.889 against the 0.95 bar). Four precision fixes in `app/data/repair/experience.py`; over the 4,790-accident rehearsal replay they change 8 rows, all toward unknown (level fills 115 -> 108, guided fills 36 -> 35).
+- G1: `GUIDED`'s bare `client` no longer fires on a possessive plus a property noun ("the client's property"); no global "guide word" requirement (it would flip correct heliski/instructor rows). G2: `nor`, and a copula-subject inversion before the article ("nor was he a ..."), negate a level. G3: a level is skipped when earlier in the same sentence the text names another/earlier/previous/similar accident, incident or avalanche. G4: the novice class skips an adjective on the belayer (attributive, possessive, and "belayer was ..."); **awaits an owner ruling** on whose level `exp_stated_level` records (narrowest reading: the victim's).
+- Tuned on the golden rows, so the golden score is not an independent measure of the fixes; a held-out top-up draw is proposed. `R12_VERSION` is now `r12-v2`; rerun `r12` to apply.
+
 ### Golden sets v1: three-model consensus labels - 2026-11-18
 
 - `data/golden/activity_v1.csv` (46 of 60 rows) and `experience_v1.csv` (76 of 80) added from Haiku/Sonnet/Opus consensus (owner ruling 2026-11-17); rows without unanimous, confident agreement are dropped and flagged for the owner. `unknown` is written as blank. README updated; the R4 `non_climbing` stratum drew 0 rows.

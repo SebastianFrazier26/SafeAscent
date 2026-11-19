@@ -23,7 +23,7 @@ from app.data.repair import review
 from app.data.repair.framework import Change, Value, fetch_accidents, run_step
 from app.pipelines.validate import ValidationReport
 
-R12_VERSION = "r12-v1"
+R12_VERSION = "r12-v2"
 FACT_COLUMNS = ("exp_years_climbing", "exp_stated_level", "exp_first_season", "guided")
 FIELDS = (*FACT_COLUMNS, "exp_rule_version")
 DEFAULTS: dict[str, Value] = {
@@ -59,10 +59,14 @@ _GUIDE_BEFORE = re.compile(
 _PEOPLE = (
     r"(?:climbers?|leaders?|mountaineers?|alpinists?|partners?|part(?:y|ies)|teams?|pairs?|groups?|skiers?)"
 )
+# The novice class skips a belayer's adjective (owner ruling on whose level is recorded pending,
+# run-5 golden diagnosis 2026-11-18): the narrowest reading is that the level is the victim's.
 LEVELS = {
     "novice": re.compile(
+        r"(?<!belayer\swas\s)(?<!belayer\swas\sa\s)(?<!belayer\swas\svery\s)(?<!belayer\swas\squite\s)"
         r"\b(?:novices?|beginners?|inexperienced)\b"
-        r"(?!\s+(?:routes?|slopes?|terrain|areas?|runs?|trails?|climbs?|walls?|crags?|lessons?|class(?:es)?|courses?)\b)",
+        r"(?!\s+(?:routes?|slopes?|terrain|areas?|runs?|trails?|climbs?|walls?|crags?|lessons?|class(?:es)?|courses?)\b)"
+        r"(?!\s+belayer(?:['\u2019]?s)?\b)",
         re.I,
     ),
     "expert": re.compile(r"\bexperts?\s+(?:\w+\s+)?" + _PEOPLE + r"\b|\b(?:was|were|is|are)\s+an?\s+expert\b", re.I),
@@ -76,9 +80,20 @@ LEVELS = {
 # Applied to the text just before a match: negations, and comparisons that rank two
 # people without stating either one's level ("the less experienced partner").
 _QUALIFIED_BEFORE = re.compile(
-    r"(?:\bnot|\bnever|n't|\bno|\bnon-?|\bless|\bmore|\bmost|\bleast)\s*(?:(?:his|her|their|the|a|an|its|very|so)\s+)?$",
+    r"(?:\bnot|\bnever|\bnor|n't|\bno|\bnon-?|\bless|\bmore|\bmost|\bleast)\s*"
+    r"(?:(?:am|is|are|was|were)\s+(?:i|he|she|we|they|it)\s+)?"
+    r"(?:(?:his|her|their|the|a|an|its|very|so)\s+)?$",
     re.I,
 )
+# A level stated after the sentence has pointed at a different accident describes that party.
+_OTHER_ACCIDENT = re.compile(
+    r"\b(?:another|other|earlier|previous|prior|a\s+separate)\s+(?:accidents?|incidents?|avalanches?)\b",
+    re.I,
+)
+_NEGATED_REFERENCE = re.compile(r"\b(?:no|not|never|any|without)\s+$", re.I)
+# A "." inside a number (5.10) is not followed by whitespace; the abbreviations are the common
+# place-name ones. Missing a boundary only keeps a fill, so the list stays short.
+_SENTENCE_END = re.compile(r"[;!?\n]|(?<!\bMt)(?<!\bMts)(?<!\bSt)(?<!\bFt)(?<!\bDr)(?<!\bMr)(?<!\bMrs)(?<!\bMs)\.(?=\s|$)")
 FIRST = re.compile(
     r"\bfirst\s+(?:season|year)\s+(?:of\s+)?" + _DISCIPLINE + r"(?:climbing|mountaineering)\b"
     r"|\bfirst\s+(?:season|year)\s+as\s+an?\s+(?:\w+\s+)?(?:climber|mountaineer|alpinist)\b",
@@ -92,7 +107,7 @@ UNGUIDED = re.compile(
 # Bare "the guide" is left out: it is as often a guidebook or another party's guide.
 GUIDED = re.compile(
     r"(?<![\w-])guided\s+(?:\w+\s+)?(?:part(?:y|ies)|climbs?|trips?|ascents?|groups?|expeditions?|clients?|tours?|teams?)\b"
-    r"|\bclients?\b"
+    r"|\bclients?\b(?!['\u2019]s?\s+(?:propert(?:y|ies)|houses?|homes?|roofs?|buildings?|business|driveways?|yards?|cabins?|condos?|residences?)\b)"
     r"|\b(?:their|his|her|with\s+(?:a|their|his|her)|hired\s+an?)\s+(?:(?:mountain|ice|rock|alpine)\s+)?guides?\b(?!\s*(?:book|dog))",
     re.I,
 )
@@ -126,10 +141,21 @@ def _about_guide(text: str, start: int) -> bool:
     return _GUIDE_BEFORE.search(text[max(0, start - 60):start]) is not None
 
 
-def _stated(pattern: re.Pattern[str], text: str, *, skip_guide: bool = False) -> bool:
+def _about_other_accident(text: str, start: int) -> bool:
+    sentence_start = max((m.end() for m in _SENTENCE_END.finditer(text, 0, start)), default=0)
+    return any(
+        not _NEGATED_REFERENCE.search(text[sentence_start:m.start()])
+        for m in _OTHER_ACCIDENT.finditer(text, sentence_start, start)
+    )
+
+
+def _stated(
+    pattern: re.Pattern[str], text: str, *, skip_guide: bool = False, skip_other_accident: bool = False
+) -> bool:
     return any(
         not _QUALIFIED_BEFORE.search(text[max(0, m.start() - 30):m.start()])
         and not (skip_guide and _about_guide(text, m.start()))
+        and not (skip_other_accident and _about_other_accident(text, m.start()))
         for m in pattern.finditer(text)
     )
 
@@ -150,7 +176,7 @@ def _years(text: str) -> int | None:
 def extract_experience(text: str | None) -> Experience:
     if not text:
         return NOTHING
-    levels = {name for name, pattern in LEVELS.items() if _stated(pattern, text, skip_guide=True)}
+    levels = {name for name, pattern in LEVELS.items() if _stated(pattern, text, skip_guide=True, skip_other_accident=True)}
     level = levels.pop() if len(levels) == 1 else "unknown"
     first = True if _stated(FIRST, text, skip_guide=True) else None
     unguided, guided = _stated(UNGUIDED, text), _stated(GUIDED, text)
