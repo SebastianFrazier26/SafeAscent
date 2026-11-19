@@ -101,9 +101,11 @@ def r3_hold(row: LegacyRow, cleared: dict[int, str | None], contradicted: frozen
     """Why R10 must not link this accident now, or None. `cleared` maps an accident whose latest R3
     link revision cleared its link to the cleared id. A legacy route carrying the same id is the
     link R3 dropped; a different one is not R3's call either, so it is held and counted on its own.
+    A legacy route with no MP id offers no other link, so it is not a mismatch.
     A row R3 contradicts (its point names another state) gets no link from a legacy route."""
     if row.accident_id in cleared:
-        same = _legacy_id(row.legacy_mp_id) == _legacy_id(cleared[row.accident_id])
+        legacy = _legacy_id(row.legacy_mp_id)
+        same = legacy is None or legacy == _legacy_id(cleared[row.accident_id])
         return "r3_unlinked" if same else "r3_unlinked_mismatch"
     if row.mp_route_id is None and row.accident_id in contradicted:
         return "r3_contradicted"

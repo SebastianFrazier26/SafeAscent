@@ -216,6 +216,13 @@ def test_r3_hold_reads_the_latest_r3_link_revision_and_the_contradiction():
     assert r3_hold(LegacyRow(1, 900000011, 55, None, "900000012", **base), {}, frozenset({1})) is None
 
 
+def test_r3_hold_counts_a_legacy_route_without_an_mp_id_as_unlinked_not_mismatch():
+    base = dict(route_name=None, route_lat=None, route_lon=None, mountain_name=None, mountain_lat=None, mountain_lon=None)
+    for legacy in (None, "", "no digits"):
+        row = LegacyRow(900000020, None, 55, None, legacy, **base)
+        assert r3_hold(row, {900000020: "900000012"}, frozenset()) == "r3_unlinked"
+
+
 @requires_pg
 def test_a_link_r3_cleared_is_never_restored_from_the_legacy_route():
     # Accident 2's legacy route carries a catalog MP id: the link R3 cleared.

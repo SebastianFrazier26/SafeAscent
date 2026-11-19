@@ -4548,7 +4548,7 @@ ING r3-plot-export --out ../data/review/r3_spot_check.csv
 
 Writes the CSV and `r3_spot_check.geojson`, stratified (GNIS moves, `region_fallback`, `unknown`, `area`, `crag`, `exact`, `park_centroid`). If the branch export was empty, STOP and ask the owner.
 
-- [ ] **Step 7b (owner): Fill `plausible`** — open the GeoJSON in QGIS (local; never paste accident places into an online map) beside the CSV; `yes` when the point fits its label (a fallback label on a city centroid is plausible; an `area` label on a city centroid is not; a fallback label on a point at the named place is plausible too, owner 2026-11-17).
+- [ ] **Step 7b (owner): Fill `plausible`** — open the GeoJSON in QGIS (local; never paste accident places into an online map) beside the CSV; `yes` when the point fits its label (a fallback label on a city centroid is plausible; an `area` label on a city centroid is not; a fallback label on a point at the named place is plausible too, owner 2026-11-17). Superseded by the owner-approved rule of 2026-11-18 (runbook `docs/runbooks/2026-11-15-prod-rollout.md` Step 7b): a trusted label or a route-linked row is judged on the point; an untrusted label (`unknown`, `region_fallback`, `park_centroid`) without a route link is plausible if its state is right or blank.
 
 - [ ] **Step 7c (owner/agent): Import and R3 acceptance**
 

@@ -165,7 +165,9 @@ def _run_real_jobs_as_ingest(ingest_url: str, owner_url: str, tmp_path, monkeypa
     _as(owner_url, "DELETE FROM mp_routes WHERE mp_route_id = 900000960; DELETE FROM mp_locations WHERE mp_id = 900000960")
     # The fixture repair above moved both points under an audited rule, so R3 keeps them but
     # cannot vouch for them: labels only, both untrusted.
-    assert r3_out["applied"] == 6 and r3_out["methods"] == {"moved_by_other_rule": 2}
+    # 5, not 6, since r3-v6: 900000001 (AAC, blank state) carries the no_state_unverified country, NULL,
+    # which the live row already holds, so its country write is unchanged. 900000002 is NPS (country US).
+    assert r3_out["applied"] == 5 and r3_out["methods"] == {"moved_by_other_rule": 2}
     assert (r3a["exported"], plot["strata"]["unknown"], ambiguous["exported"]) == (0, 1, 0)
 
     # R4 and its exports as ingest: snapshot activity, the MP terrain columns, the class writes.
