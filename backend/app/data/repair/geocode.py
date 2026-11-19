@@ -29,7 +29,10 @@ from app.pipelines.gnis import Summit, state_code
 from app.pipelines.textsim import normalize_text, place_key
 from app.pipelines.validate import ValidationReport, in_us
 
-R3_VERSION = "r3-v5"
+# Bump after any gnis_summits or mp_locations reload, not only on a code change: a revision is
+# recorded once per (accident, field, rule_version), so a rerun under the same version skips every
+# row the reloaded data would change.
+R3_VERSION = "r3-v6"
 # Owner decisions. Every r3-review-* revision freezes the row against later R3 runs.
 R3_REVIEW_VERSION = "r3-review-v1"
 R3_PICK_VERSION = "r3-review-pick-v1"
@@ -63,6 +66,9 @@ MP_TREE_MAX_DEPTH = 20
 # other state 1-8 km away and one of its own 1.5-23 km away.
 POINT_STATE_KM = 25.0
 STATE_CONTRADICTION = "fallback_state_contradiction"
+# r3-v6 (owner, 2026-11-18, option 4): with a blank state field nothing confirms the point is in the
+# US or at the named place, so a source or link point never gets a trusted label. The point stays.
+NO_STATE_UNVERIFIED = "no_state_unverified"
 ALASKA_MIN_LAT = 55.0
 # The Aleutians and the western Alaska Peninsula lie south of 55N at these longitudes; the
 # 55N rule is for AK-labelled rows geocoded into the lower 48 or Hawaii. The latitude floor
@@ -485,6 +491,10 @@ def geocode_fix(
         return GeoFix(row.accident_id, None, "unknown", "outside_us", None)
     if row.family == "nps":
         return GeoFix(row.accident_id, KEEP, "park_centroid", "nps_source", "US")
+    if not (row.state or "").strip():
+        # An R3a move above is kept: a nationally unique summit name is evidence, and Step 5b reviews it.
+        # No foreign flag from place text either (N3): the state field alone decides foreign.
+        return GeoFix(row.accident_id, KEEP, "unknown", NO_STATE_UNVERIFIED, None)
     if row.mp_route_id is not None:
         return GeoFix(row.accident_id, KEEP, "crag", "route_link", "US")
     if row.family == "avalanche":
@@ -526,8 +536,10 @@ def _labelled_elsewhere(precision: str | None, history: Sequence[tuple[str, str]
     return precision is not None and (last is None or not last.startswith("r3-v"))
 
 
-def _r3_touched_link(history: Sequence[tuple[str, str]]) -> bool:
-    return any(field == "mp_route_id" and version.startswith("r3-v") for field, version in history)
+def _r3_owns_link(history: Sequence[tuple[str, str]]) -> bool:
+    # Only the latest link revision counts: a link another rule wrote after R3's clear is that rule's.
+    last = next((version for field, version in reversed(history) if field == "mp_route_id"), None)
+    return last is not None and last.startswith("r3-v")
 
 
 def snapshot_fixes(
@@ -543,12 +555,12 @@ def snapshot_fixes(
     whose geocode_precision was set by something other than an R3 rule version (curated after
     the snapshot). Rows absent from the snapshot are labelled untrusted and never moved.
 
-    A route link an earlier R3 rule cleared is put back from the snapshot (audited) once the
-    current rule no longer contradicts the row, like every other R3 output. Owner-decided rows are
-    not: an owner placement is labelled area/owner_summit or unknown/gnis_rejected, never
-    route_link/crag, so a cleared link under it is consistent. `live_links` (live mp_route_id)
-    limits the restore to rows whose link is still NULL; without it the writer's unchanged check
-    does that at apply."""
+    A route link an earlier R3 rule version cleared is put back from the snapshot (audited) once
+    the current rule no longer contradicts the row, and only while the latest mp_route_id revision
+    is an R3 one. Owner-decided rows are skipped before that: an owner placement is labelled
+    area/owner_summit or unknown/gnis_rejected, never route_link/crag, so a cleared link under it
+    is consistent. `live_links` (live mp_route_id) limits the restore to rows whose link is still
+    NULL; without it the writer's unchanged check does that at apply."""
     fallback = find_fallback_points(list(raw.values()), index, mp_index)
     states = point_states(stated_points(raw.values()), index)
     fixes: list[GeoFix] = []
@@ -577,7 +589,7 @@ def snapshot_fixes(
         fixes.append(fix)
         changes += changes_for(fix)
         if (
-            row is not None and row.mp_route_id is not None and not fix.clear_route_link and _r3_touched_link(past)
+            row is not None and row.mp_route_id is not None and not fix.clear_route_link and _r3_owns_link(past)
             and (live_links is None or live_links.get(accident_id) is None)
         ):
             changes.append(Change(accident_id, "mp_route_id", row.mp_route_id, LINK_RESTORED))
@@ -801,9 +813,11 @@ def plot_stratum(row: Mapping[str, object]) -> str:
 
 PLOT_QUOTAS = {"gnis_move": 10, "region_fallback": 10, "unknown": 5, "area": 10, "crag": 5, "exact": 5, "park_centroid": 5}
 # The precision label is shown on purpose: the plot check judges whether the label fits the point,
-# not the point alone. A fallback label is a property of the cluster, so a region_fallback point
-# that sits at the named place is plausible too (owner, 2026-11-17).
+# not the point alone. Plausibility follows what the model uses (owner, 2026-11-18; app/ml/incidents.py,
+# TRUSTED_FOR_CELLS): an untrusted label (unknown, region_fallback, park_centroid) without a route link is
+# used at state level only, so it is plausible if the state is right, or blank (the row is dropped).
 CHECK_COLUMNS = ["accident_id", "source_id", "location", "mountain", "state", "latitude", "longitude", "geocode_precision"]
+PLOT_COLUMNS = [*CHECK_COLUMNS, "route_linked"]
 
 
 def _out(args: argparse.Namespace, name: str) -> Path:
@@ -891,7 +905,13 @@ async def run_r3a_import(conn: AsyncConnection, args: argparse.Namespace) -> dic
 
 
 async def r3_plot_pool(conn: AsyncConnection) -> list[dict[str, object]]:
-    return [r for r in await _checked_rows(conn) if r["latitude"] is not None and r["longitude"] is not None]
+    rows = await fetch_accidents(conn, [*CHECK_COLUMNS[1:], "geocode_method", "mp_route_id"])
+    # The guide judges a route-linked row on its point whatever its label, so the labeller needs the flag
+    # (yes/no only; the MP id stays out of the export).
+    return [
+        {k: v for k, v in r.items() if k != "mp_route_id"} | {"route_linked": "yes" if r["mp_route_id"] is not None else "no"}
+        for r in rows if r["latitude"] is not None and r["longitude"] is not None
+    ]
 
 
 async def run_r3_plot_export(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, object]:
@@ -902,7 +922,7 @@ async def run_r3_plot_export(conn: AsyncConnection, args: argparse.Namespace) ->
     if geojson.exists() and not args.overwrite:
         raise FileExistsError(f"{geojson.name} already exists; pass --overwrite to replace it")
     taken = review.export_stratified(
-        rows, stratum=plot_stratum, quotas=PLOT_QUOTAS, seed=3, path=out, columns=CHECK_COLUMNS,
+        rows, stratum=plot_stratum, quotas=PLOT_QUOTAS, seed=3, path=out, columns=PLOT_COLUMNS,
         decision_column="plausible", overwrite=args.overwrite,
     )
     by_id = {_id(r): r for r in rows}
@@ -912,7 +932,7 @@ async def run_r3_plot_export(conn: AsyncConnection, args: argparse.Namespace) ->
         {
             "type": "Feature",
             "geometry": {"type": "Point", "coordinates": [_float(r["longitude"]), _float(r["latitude"])]},
-            "properties": {k: r[k] for k in ("accident_id", "source_id", "mountain", "state", "geocode_precision")},
+            "properties": {k: r[k] for k in ("accident_id", "source_id", "mountain", "state", "geocode_precision", "route_linked")},
         }
         for r in chosen
     ]
@@ -922,9 +942,10 @@ async def run_r3_plot_export(conn: AsyncConnection, args: argparse.Namespace) ->
         "csv": str(out),
         "geojson": str(geojson),
         "instructions": (
-            "open the GeoJSON in a local GIS (QGIS), never an online viewer; plausible=yes if the point fits its "
-            "precision label (exact/crag/area/park_centroid: at or near the named place; region_fallback/unknown: "
-            "a centroid, or a shared point that is at the named place), else no"
+            "open the GeoJSON in a local GIS (QGIS), never an online viewer; plausible=yes if the point fits what "
+            "the model uses: a trusted label (exact/crag/area) or a route-linked row, at or near the named place; an "
+            "untrusted label (unknown/region_fallback/park_centroid) with no route link, the state is right or "
+            "blank (owner, 2026-11-18); else no"
         ),
     }
 

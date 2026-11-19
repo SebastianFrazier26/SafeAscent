@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### R3 rule r3-v6: a blank state keeps no trusted label; plot-check guide follows the model - 2026-11-18
+
+- Owner-approved (option 4, 2026-11-18), after the run-5 plot check scored 0.78. A row whose state field is blank (empty or whitespace) no longer gets a trusted label from its source or link point: what would have been `area`/`source_geocode`, `crag`/`route_link` or `exact`/`source_coords` is now `unknown`/`no_state_unverified`, country NULL. The point and `mp_route_id` stay. The change is written as ordinary R3 revisions (`geocode_precision`, `geocode_method`, `country`, rule `r3-v6`), so a later rule can re-derive it from the snapshot. The diagnosis expects about 207 rows on the rehearsal (73 `source_geocode` + 134 `route_link`), not yet measured under r3-v6. Not changed: NPS rows (`park_centroid`), an R3a move on a nationally unique summit name (reviewed in Step 5b), and an unmapped non-blank state (the Step 3 owner list). Ruling N3 stands: place text never makes a row foreign. Route-link quality (option C) goes to D3.
+- Plot check (Step 7b, owner-approved change 2026-11-18): plausibility follows what the model uses (`app/ml/incidents.py`, `TRUSTED_FOR_CELLS`). A trusted label (`exact`/`crag`/`area`) or a route-linked row is judged on the point. An untrusted label (`unknown`/`region_fallback`/`park_centroid`) without a route link is plausible if its state is right or blank (the row is dropped from training). `r3-plot-export` adds a `route_linked` yes/no column (the MP id itself is not exported) and states the rule; the runbook and plan 2a say the same.
+- PR #30 follow-ups: a cleared link is restored only while the accident's latest `mp_route_id` revision is an R3 one, so a link another rule wrote after the clear is never overwritten. In `r10`, a legacy route with no MP id under an R3 clear counts as `r3_unlinked`, not `r3_unlinked_mismatch`. The `snapshot_fixes` docstring now matches. A comment at `R3_VERSION` says to bump it after any `gnis_summits` or `mp_locations` reload, because revisions are recorded once per (accident, field, rule version).
+- `R3_VERSION` r3-v5 -> r3-v6. The rehearsal reruns R3 and the plot check.
+
 ### R12 rule r12-v2: four over-firing fixes from the run-5 golden diagnosis - 2026-11-18
 
 - Source: the run-5 golden diagnosis (56/63 = 0.889 against the 0.95 bar). Four precision fixes in `app/data/repair/experience.py`; over the 4,790-accident rehearsal replay they change 8 rows, all toward unknown (level fills 115 -> 108, guided fills 36 -> 35).
