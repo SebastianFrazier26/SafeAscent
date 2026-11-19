@@ -14,6 +14,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - PR #30 follow-ups: a cleared link is restored only while the accident's latest `mp_route_id` revision is an R3 one, so a link another rule wrote after the clear is never overwritten. In `r10`, a legacy route with no MP id under an R3 clear counts as `r3_unlinked`, not `r3_unlinked_mismatch`. The `snapshot_fixes` docstring now matches. A comment at `R3_VERSION` says to bump it after any `gnis_summits` or `mp_locations` reload, because revisions are recorded once per (accident, field, rule version).
 - `R3_VERSION` r3-v5 -> r3-v6. The rehearsal reruns R3 and the plot check.
 
+### R5 rule r5-v3: NPS pairs with no narrative never auto-merge - 2026-11-18
+
+- Owner-approved, option (a) of the run-5 R5 spot-check gate (26/30): the 4 failed auto merges were exact NPS pairs (same day, same park, consecutive source ids, identical fields) whose description is only a category. A pair in which either row is an NPS row with no narrative now goes to the owner review instead of auto-merging, exact duplicates (new basis `exact`, score 1.0) and fuzzy merge-band pairs (basis `distance`) alike; the conservative review default is distinct. An owner decision still outranks it.
+- "No narrative" (`dedupe.nps_label_only`): source family `nps` and fewer than 15 words (`NPS_NARRATIVE_MIN_WORDS`) in the `normalize_text`ed description, empty included. The NPS mortality loader wrote `"<activity> - <cause of death>"` (or the bare cause) into `description`, so every row it loaded is label-only; a longer NPS description (an R11 summary, say) keeps the earlier rules.
+- `R5_BASE` r5-v2 -> r5-v3. Acceptance cell `test_r5_no_exact_duplicates_among_canonical_rows` excuses a label-only NPS group only when the owner (`decided_by = 'owner'`) decided each member `distinct` from its lowest id, so a merge decision left unapplied, or an auto decision, still fails it; the SQL predicate is `dedupe.nps_label_only_sql`, which follows `source_family`'s order, keeps a NULL-source row in the check, and is held to `nps_label_only` by a Postgres parity test. `test_r5_latest_applied_run_left_no_pair_undecided` still requires each such pair to be decided. Not yet measured on the rehearsal branch: the next rehearsal's `duplicates.csv` gains every label-only NPS exact pair (2076/2077, 2089/2090, 2187/2188 and 2210/2211 among them, none in run 5's labelled set), and the Step 9d auto-merge pool shrinks by the same number. Plan 2a decision 7c and the spec's R5 row state the rule.
+
 ### R12 rule r12-v2: four over-firing fixes from the run-5 golden diagnosis - 2026-11-18
 
 - Source: the run-5 golden diagnosis (56/63 = 0.889 against the 0.95 bar). Four precision fixes in `app/data/repair/experience.py`; over the 4,790-accident rehearsal replay they change 8 rows, all toward unknown (level fills 115 -> 108, guided fills 36 -> 35).
@@ -24,6 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `data/golden/activity_v1.csv` (46 of 60 rows) and `experience_v1.csv` (76 of 80) added from Haiku/Sonnet/Opus consensus (owner ruling 2026-11-17); rows without unanimous, confident agreement are dropped and flagged for the owner. `unknown` is written as blank. README updated; the R4 `non_climbing` stratum drew 0 rows.
 - Top-up 1 (2026-11-18, PR #32 `--exclude/--seed/--scale`): activity +22 of 24 (68 total), experience +10 of 12 (86 total), same three-model consensus.
+- Top-up 2 (2026-11-18): experience +17 of 20 (103 total), same three-model consensus; held-out rows (not used to tune r12-v2) for an independent R12 score. Owner ruling G4: experience is the victim's only (row 2347 golden value is blank, not novice).
 
 ### Golden-set exports can draw a disjoint top-up - 2026-11-18
 
