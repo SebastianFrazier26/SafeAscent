@@ -13,7 +13,7 @@ import re
 import unicodedata
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 
@@ -24,6 +24,7 @@ from app.data.repair import review
 from app.data.repair.checks import YES_NO, agreement, record_check, refuse_ineligible
 from app.data.repair.framework import LOCATION, Change, fetch_accidents, run_step
 from app.data.repair.sources import SourceFamily, source_family
+from app.pipelines.area_tree import root_state
 from app.pipelines.geo import haversine_km
 from app.pipelines.gnis import Summit, state_code
 from app.pipelines.textsim import normalize_text, place_key
@@ -32,7 +33,7 @@ from app.pipelines.validate import ValidationReport, in_us
 # Bump after any gnis_summits or mp_locations reload, not only on a code change: a revision is
 # recorded once per (accident, field, rule_version), so a rerun under the same version skips every
 # row the reloaded data would change.
-R3_VERSION = "r3-v6"
+R3_VERSION = "r3-v7"
 # Owner decisions. Every r3-review-* revision freezes the row against later R3 runs.
 R3_REVIEW_VERSION = "r3-review-v1"
 R3_PICK_VERSION = "r3-review-pick-v1"
@@ -69,6 +70,10 @@ STATE_CONTRADICTION = "fallback_state_contradiction"
 # r3-v6 (owner, 2026-11-18, option 4): with a blank state field nothing confirms the point is in the
 # US or at the named place, so a source or link point never gets a trusted label. The point stays.
 NO_STATE_UNVERIFIED = "no_state_unverified"
+# r3-v7 d2 (owner, 2026-11-21): a route filed directly under an MP state root (a parentless
+# mp_locations row whose name is a US state, as mp_catalog/area_tree read roots) sits at the state
+# centroid, so its link places the row there. The link is cleared and the label is untrusted.
+STATE_ROOT_ROUTE = "state_root_route"
 ALASKA_MIN_LAT = 55.0
 # The Aleutians and the western Alaska Peninsula lie south of 55N at these longitudes; the
 # 55N rule is for AK-labelled rows geocoded into the lower 48 or Hawaii. The latitude floor
@@ -456,7 +461,19 @@ def _r3a(row: GeoRow, index: SummitIndex, state: str | None) -> GeoFix | None:
 
 def geocode_fix(
     row: GeoRow, index: SummitIndex, fallback: set[tuple[float, float]],
-    states: Mapping[Point, PointState] | None = None,
+    states: Mapping[Point, PointState] | None = None, state_root_routes: frozenset[int] = frozenset(),
+) -> GeoFix:
+    fix = _decide(row, index, fallback, states, state_root_routes)
+    if row.mp_route_id is not None and not (row.state or "").strip() and not fix.clear_route_link:
+        # r3-v7 d1 (owner, 2026-11-21): rule A for placement. The model places a linked row by its
+        # link whatever the label (app/ml/incidents.py), so a blank-state row keeps no link, on every path.
+        return replace(fix, clear_route_link=True)
+    return fix
+
+
+def _decide(
+    row: GeoRow, index: SummitIndex, fallback: set[tuple[float, float]],
+    states: Mapping[Point, PointState] | None, state_root_routes: frozenset[int],
 ) -> GeoFix:
     state = state_code(row.state)
     # The state field alone decides foreign, matched whole (N3); mountain text never does.
@@ -473,6 +490,11 @@ def geocode_fix(
     # An R3a move goes to a summit in the row's own state, so it stands.
     if moved is not None and not (contradicted and moved.location is KEEP):
         return moved
+    if row.mp_route_id in state_root_routes and not contradicted:
+        # Explicit, or the tail below would trust the state-centroid point as area/source_geocode.
+        if state is not None:
+            return GeoFix(row.accident_id, KEEP, "region_fallback", STATE_ROOT_ROUTE, "US", True)
+        return GeoFix(row.accident_id, KEEP, "unknown", STATE_ROOT_ROUTE, None, True)
     if lat is None or lon is None:
         return GeoFix(row.accident_id, KEEP, "unknown", "no_coords", "US" if state else None)
     misplaced = _point(lat, lon) in fallback or (state == "AK" and alaska_point_misplaced(lat, lon))
@@ -545,6 +567,7 @@ def _r3_owns_link(history: Sequence[tuple[str, str]]) -> bool:
 def snapshot_fixes(
     raw: Mapping[int, GeoRow], live: Mapping[int, LiveRow], index: SummitIndex, mp_index: MpAreaIndex,
     history: History, live_links: Mapping[int, int | None] | None = None,
+    state_root_routes: frozenset[int] = frozenset(),
 ) -> tuple[list[GeoFix], list[Change], Counter[str]]:
     """Decisions come from the pre-repair snapshot only (G17 principle, as R1): a hand edit to
     a live row, or R3's own earlier moves and nulls, never feed a later run. A kept point is
@@ -578,12 +601,13 @@ def snapshot_fixes(
         if row is None:
             fix = GeoFix(accident_id, KEEP, "unknown", NOT_IN_SNAPSHOT, None)
         else:
-            fix = geocode_fix(row, index, fallback, states)
+            fix = geocode_fix(row, index, fallback, states, state_root_routes)
             if fix.location is KEEP and row.lat is not None and row.lon is not None and (lat, lon) != (row.lat, row.lon):
                 if any(field == LOCATION and not version.startswith("r3-") for field, version in past):
                     # An audited non-R3 rule placed the live point: keep it, but the decision
                     # was about the snapshot point, so it cannot vouch for this one.
-                    fix = GeoFix(accident_id, KEEP, "unknown", MOVED_BY_OTHER_RULE, fix.country)
+                    # The link decision is about the row, not the point, so it carries over.
+                    fix = GeoFix(accident_id, KEEP, "unknown", MOVED_BY_OTHER_RULE, fix.country, fix.clear_route_link)
                 else:
                     changes.append(Change(accident_id, LOCATION, (row.lat, row.lon), SNAPSHOT_POINT))
         fixes.append(fix)
@@ -620,6 +644,9 @@ GNIS_SQL = "SELECT gnis_id, name, name_key, state_code, lat, lon FROM gnis_summi
 # Only the columns ingest's grant covers at 0006 (when Stage B runs R3): never url.
 MP_LOCATIONS_SQL = "SELECT mp_id, name, parent_id, latitude, longitude FROM mp_locations"
 MP_ROUTE_COUNTS_SQL = "SELECT location_id, count(*) FROM mp_routes WHERE location_id IS NOT NULL GROUP BY location_id"
+STATE_ROOT_ROUTES_SQL = (
+    "SELECT r.mp_route_id, l.name FROM mp_routes r JOIN mp_locations l ON l.mp_id = r.location_id WHERE l.parent_id IS NULL"
+)
 
 
 def summit_index_from_rows(rows: Iterable[Sequence[object]]) -> SummitIndex:
@@ -654,6 +681,15 @@ def require_crag_areas(index: MpAreaIndex) -> MpAreaIndex:
             "no MP area has coordinates and 1-400 routes: R3's crag exemption needs mp_locations and mp_routes loaded"
         )
     return index
+
+
+def state_root_routes_from_rows(rows: Iterable[Sequence[object]]) -> frozenset[int]:
+    """MP routes whose location is a root that names a US state (root_state, as the catalog reads it)."""
+    return frozenset(int(str(route_id)) for route_id, name in rows if root_state(_str(name)) is not None)
+
+
+async def _state_root_routes(conn: AsyncConnection) -> frozenset[int]:
+    return state_root_routes_from_rows((await conn.execute(text(STATE_ROOT_ROUTES_SQL))).all())
 
 
 async def _mp_index(conn: AsyncConnection) -> MpAreaIndex:
@@ -777,11 +813,16 @@ async def run_r3(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, o
         _id(r): (_float(r["latitude"]), _float(r["longitude"]), _str(r["geocode_precision"])) for r in rows
     }
     links = {_id(r): int(str(r["mp_route_id"])) if r["mp_route_id"] is not None else None for r in rows}
-    fixes, changes, skipped = snapshot_fixes(raw, live, index, await _mp_index(conn), await _history(conn), links)
+    fixes, changes, skipped = snapshot_fixes(
+        raw, live, index, await _mp_index(conn), await _history(conn), links, await _state_root_routes(conn)
+    )
     report = ValidationReport("repair:r3")
     methods: Counter[str] = Counter()
+    links_cleared: Counter[str] = Counter()
     for fix in fixes:
         methods[fix.method] += 1
+        if fix.clear_route_link:
+            links_cleared[fix.method] += 1
         if fix.precision in TRUSTED_POINT_PRECISIONS:
             report.accept()
         else:
@@ -791,6 +832,8 @@ async def run_r3(conn: AsyncConnection, args: argparse.Namespace) -> dict[str, o
     missing = sorted(set(GNIS_ALIASES) - index.ids)
     return summary | {
         "methods": dict(sorted(methods.items())), "skipped": dict(sorted(skipped.items())), "missing_alias_ids": missing,
+        # Proposed link clears by method (d1 under the row's own method, d2 as state_root_route).
+        "links_cleared": dict(sorted(links_cleared.items())),
     }
 
 

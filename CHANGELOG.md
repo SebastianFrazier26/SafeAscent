@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### R3 rule r3-v7: blank-state rows and state-root route links keep no route link - 2026-11-21
+
+- Owner-approved (2026-11-21), after the run-6 plot check scored 42/50 = 0.84. Seven of the eight misses were route-linked rows, and the model places a linked row by its link whatever its label (`app/ml/incidents.py:175-184`).
+- d1: a blank-state row keeps no route link on any R3 path: `mp_route_id` is set to NULL, audited under the row's own R3 method. This extends r3-v6 rule A from the label to placement. About 138 rows in `accidents_clean` on the run-6 rehearsal (not measured under r3-v7).
+- d2: a link to an MP route whose `location_id` is a state root is cleared. A state root is a `mp_locations` row with no parent whose name `area_tree.root_state` maps to a US state, the same roots `mp_catalog` reads. The row is labelled `region_fallback`/`state_root_route` (country `US`) when stated, or `unknown`/`state_root_route` (country NULL) when blank, so the tail cannot give it `area`/`source_geocode`. A state contradiction still wins. About 129 linked rows on 493 such routes. R3 reads the route ids with `STATE_ROOT_ROUTES_SQL` (`mp_routes` join `mp_locations` name and parent, through existing grants).
+- Both keep the point and write the clear as an `mp_route_id` revision. They are reversible: R3's restore puts the snapshot link back only once the current rule no longer clears it (for example after a catalog repair moves the route off the state root), and only while the latest `mp_route_id` revision is R3's. A point moved by another rule (`moved_by_other_rule`) now keeps the link clear too, which it previously dropped. `r10` holds every cleared row through the latest-R3-revision read (`r3_unlinked` / `r3_unlinked_mismatch`), so run R10 after R3, and R4/R5 after R3 as before.
+- `r3` output adds `links_cleared` (proposed clears by method).
+- Out of scope: the stated-row link name-key test (C, goes to D3), repairing the state-root routes' locations (d4, goes to D1), and fallback cluster size (d3).
+- `R3_VERSION` r3-v6 -> r3-v7.
+
 ### R3 rule r3-v6: a blank state keeps no trusted label; plot-check guide follows the model - 2026-11-18
 
 - Owner-approved (option 4, 2026-11-18), after the run-5 plot check scored 0.78. A row whose state field is blank (empty or whitespace) no longer gets a trusted label from its source or link point: what would have been `area`/`source_geocode`, `crag`/`route_link` or `exact`/`source_coords` is now `unknown`/`no_state_unverified`, country NULL. The point and `mp_route_id` stay. The change is written as ordinary R3 revisions (`geocode_precision`, `geocode_method`, `country`, rule `r3-v6`), so a later rule can re-derive it from the snapshot. The diagnosis expects about 207 rows on the rehearsal (73 `source_geocode` + 134 `route_link`), not yet measured under r3-v6. Not changed: NPS rows (`park_centroid`), an R3a move on a nationally unique summit name (reviewed in Step 5b), and an unmapped non-blank state (the Step 3 owner list). Ruling N3 stands: place text never makes a row foreign. Route-link quality (option C) goes to D3.

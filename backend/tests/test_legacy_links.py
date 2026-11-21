@@ -224,11 +224,12 @@ def test_r3_hold_counts_a_legacy_route_without_an_mp_id_as_unlinked_not_mismatch
 
 
 @requires_pg
-def test_a_link_r3_cleared_is_never_restored_from_the_legacy_route():
+@pytest.mark.parametrize("version", ["r3-v5", "r3-v7"])  # r3-v7: the d1/d2 clears are the same revision shape
+def test_a_link_r3_cleared_is_never_restored_from_the_legacy_route(version):
     # Accident 2's legacy route carries a catalog MP id: the link R3 cleared.
     with migrated_db(PIN, seed_sql=SEED) as name:
         _prepare(name)
-        run_sql(name, _r3_link_revision(2, "900000012", None, "r3-v5"))
+        run_sql(name, _r3_link_revision(2, "900000012", None, version))
         out = run_on_conn(name, lambda c: run_r10(c, _ns(apply=True)))
         assert out["links"] == {} and out["r3_unlinked"] == 1
         assert (2, "link") not in _linked_or_listed(name) and (2, "unresolved") not in _linked_or_listed(name)
