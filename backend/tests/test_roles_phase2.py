@@ -915,7 +915,7 @@ def test_role_scripts_at_each_rollout_revision(role_cleanup, fresh_db):  # noqa:
             # R3 runs here (Stage B), before 0008: its exact MP reads, and still never url.
             _as(ingest, geocode.MP_LOCATIONS_SQL)
             _as(ingest, geocode.MP_ROUTE_COUNTS_SQL)
-            _as(ingest, geocode.STATE_ROOT_ROUTES_SQL)
+            _as(ingest, geocode.STATE_LEVEL_ROUTES_SQL.replace(":ids", "'{}'"))
             _denied(ingest, "SELECT url FROM mp_locations")
             # R3's link clear (r3-v5) runs here too, before R11's block 0007.
             _as(ingest, "UPDATE accidents SET mp_route_id = NULL WHERE false")
