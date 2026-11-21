@@ -1427,8 +1427,9 @@ def test_a_blank_state_row_never_keeps_a_trusted_label_and_keeps_its_point():
             row(900000702, family="avalanche", mountain="Quillet Bowl", state=state, lat=40.0, lon=-81.0),
         ):
             fix = geocode_fix(r, INDEX, set())
+            # r3-v7 d1: the linked row loses its link too.
             assert (fix.location, fix.precision, fix.method, fix.country, fix.clear_route_link) == (
-                KEEP, "unknown", geocode.NO_STATE_UNVERIFIED, None, False), (r, state)
+                KEEP, "unknown", geocode.NO_STATE_UNVERIFIED, None, r.mp_route_id is not None), (r, state)
     assert "unknown" not in TRUSTED_POINT_PRECISIONS
 
 
@@ -1445,7 +1446,7 @@ def test_the_blank_state_rule_leaves_stated_nps_moved_and_unmapped_rows_alone():
     assert (unmapped.precision, unmapped.method) == ("area", "source_geocode")
 
 
-def test_a_blank_state_relabel_from_r3v5_is_audited_and_keeps_the_point_and_link():
+def test_a_blank_state_relabel_from_r3v5_is_audited_keeps_the_point_and_clears_the_link():
     linked = row(900000701, mountain="Quillet Crag", lat=40.0, lon=-81.0, mp=900000750)
     history = {900000701: [("geocode_precision", "r3-v5"), ("geocode_method", "r3-v5"), ("country", "r3-v5")]}
     fixes, changes, skipped = snapshot_fixes(
@@ -1456,6 +1457,7 @@ def test_a_blank_state_relabel_from_r3v5_is_audited_and_keeps_the_point_and_link
         ("geocode_precision", "unknown", geocode.NO_STATE_UNVERIFIED),
         ("geocode_method", geocode.NO_STATE_UNVERIFIED, geocode.NO_STATE_UNVERIFIED),
         ("country", None, geocode.NO_STATE_UNVERIFIED),
+        ("mp_route_id", None, geocode.NO_STATE_UNVERIFIED),
     ]
 
 
@@ -1471,9 +1473,9 @@ def test_a_cleared_link_is_restored_only_while_the_latest_link_revision_is_r3s()
     assert [(c.new_value, c.method) for c in changes if c.field == "mp_route_id"] == [(900000650, geocode.LINK_RESTORED)]
 
 
-def _v5_geocode_fix(row, index, fallback, states=None):
-    # r3-v5 stand-in: the tail labels a blank-state row as a stated one.
-    fix = _REAL_GEOCODE_FIX(row, index, fallback, states)
+def _v5_geocode_fix(row, *args):
+    # r3-v5 stand-in: the tail labels a blank-state row as a stated one, and keeps its link.
+    fix = _REAL_GEOCODE_FIX(row, *args)
     if fix.method != geocode.NO_STATE_UNVERIFIED:
         return fix
     precision, method = ("crag", "route_link") if row.mp_route_id is not None else (
@@ -1488,7 +1490,8 @@ V6_SEED = GEO_SEED + """
 INSERT INTO mp_routes (mp_route_id, name, location_id, type) VALUES (900000750, 'Fixture Line Four', 900000900, 'Trad');
 INSERT INTO internal.accidents_raw (accident_id, source, source_id, mountain, state, latitude, longitude, mp_route_id)
 VALUES (900000700, 'AAC', 'q1', 'Quillet Crag', NULL, 40.0, -81.0, NULL),
-       (900000701, 'AAC', 'q2', 'Quillet Crag', '', 40.0, -81.0, 900000750);
+       (900000701, 'AAC', 'q2', 'Quillet Crag', '', 40.0, -81.0, 900000750),
+       (900000702, 'AAC', 'q3', 'Quillet Crag', 'OH', 40.0, -81.0, 900000750);
 INSERT INTO accidents (accident_id, source, source_id, mountain, state, latitude, longitude, mp_route_id)
   SELECT accident_id, source, source_id, mountain, state, latitude, longitude, mp_route_id FROM internal.accidents_raw
   WHERE accident_id >= 900000700;
@@ -1496,7 +1499,7 @@ INSERT INTO accidents (accident_id, source, source_id, mountain, state, latitude
 
 
 @requires_pg
-def test_r3v6_relabels_trusted_blank_state_rows_from_r3v5_keeping_point_and_link(monkeypatch):
+def test_r3_relabels_trusted_blank_state_rows_from_r3v5_keeping_the_point_and_clearing_the_link(monkeypatch):
     async def scenario(url: str) -> None:
         engine = create_async_engine(url)
         current = geocode.R3_VERSION
@@ -1508,10 +1511,11 @@ def test_r3v6_relabels_trusted_blank_state_rows_from_r3v5_keeping_point_and_link
             async with engine.connect() as conn:
                 before = await _rows(conn, "SELECT accident_id, geocode_precision, geocode_method, country FROM accidents "
                                      "WHERE accident_id >= 900000700 ORDER BY 1")
-            assert before == [(900000700, "area", "source_geocode", "US"), (900000701, "crag", "route_link", "US")]
+            assert before == [(900000700, "area", "source_geocode", "US"), (900000701, "crag", "route_link", "US"),
+                              (900000702, "crag", "route_link", "US")]
             monkeypatch.undo()
             async with engine.begin() as conn:
-                await run_r3(conn, argparse.Namespace(apply=True))
+                first = await run_r3(conn, argparse.Namespace(apply=True))
             async with engine.begin() as conn:
                 again = await run_r3(conn, argparse.Namespace(apply=True))
             async with engine.connect() as conn:
@@ -1521,13 +1525,17 @@ def test_r3v6_relabels_trusted_blank_state_rows_from_r3v5_keeping_point_and_link
                                     f"WHERE accident_id >= 900000700 AND rule_version = '{current}' ORDER BY 1, 2")
             unverified = geocode.NO_STATE_UNVERIFIED
             assert got == [(900000700, 40.0, -81.0, "unknown", unverified, None, None),
-                           (900000701, 40.0, -81.0, "unknown", unverified, None, 900000750)]
-            for a, old_precision, old_method in ((900000700, "area", "source_geocode"), (900000701, "crag", "route_link")):
-                assert [r[1:] for r in audit if r[0] == a] == [
-                    ("country", "US", None, unverified),
-                    ("geocode_method", old_method, unverified, unverified),
-                    ("geocode_precision", old_precision, "unknown", unverified),
-                ]
+                           (900000701, 40.0, -81.0, "unknown", unverified, None, None),
+                           (900000702, 40.0, -81.0, "crag", "route_link", "US", 900000750)]
+            label = [("country", "US", None, unverified), ("geocode_method", "source_geocode", unverified, unverified),
+                     ("geocode_precision", "area", "unknown", unverified)]
+            assert [r[1:] for r in audit if r[0] == 900000700] == label
+            # r3-v7 d1: the blank-state linked row also loses its link, audited.
+            assert [r[1:] for r in audit if r[0] == 900000701] == [
+                ("country", "US", None, unverified), ("geocode_method", "route_link", unverified, unverified),
+                ("geocode_precision", "crag", "unknown", unverified), ("mp_route_id", "900000750", None, unverified)]
+            assert not [r for r in audit if r[0] == 900000702]
+            assert first["links_cleared"] == {unverified: 1}
             assert again["applied"] == 0
         finally:
             await engine.dispose()
@@ -1549,12 +1557,163 @@ def test_r3_plot_export_flags_route_linked_rows(tmp_path, monkeypatch):
                 await run_r3_plot_export(conn, argparse.Namespace(out=None, overwrite=False))
             with (tmp_path / "r3_spot_check.csv").open(newline="", encoding="utf-8") as fh:
                 linked = {r["accident_id"]: r["route_linked"] for r in csv.DictReader(fh)}
-            assert linked["900000701"] == "yes" and linked["900000700"] == "no"
+            # 900000701's link is cleared (blank state, d1); the stated 900000702 keeps its link.
+            assert (linked["900000700"], linked["900000701"], linked["900000702"]) == ("no", "no", "yes")
             features = json.loads((tmp_path / "r3_spot_check.geojson").read_text())["features"]
-            assert {f["properties"]["accident_id"]: f["properties"]["route_linked"] for f in features}[900000701] == "yes"
+            assert {f["properties"]["accident_id"]: f["properties"]["route_linked"] for f in features}[900000702] == "yes"
             assert "900000750" not in (tmp_path / "r3_spot_check.csv").read_text()
         finally:
             await engine.dispose()
 
     with migrated_db(seed_sql=V6_SEED) as name:
         asyncio.run(scenario(sa_url(name)))
+
+
+# r3-v7 d2: a made-up state root (parentless, named for a US state) holding a route directly, a child
+# that only inherits the root's point (state level too) and a child with its own point (not).
+V7_SEED = GEO_SEED + """
+INSERT INTO mp_locations (mp_id, name, parent_id, latitude, longitude) VALUES
+  (900000961, 'Colorado', NULL, 39.0, -105.5),
+  (900000962, 'Fixture Inherit', 900000961, 39.0, -105.5),
+  (900000963, 'Fixture Own', 900000961, 39.4, -105.2);
+INSERT INTO mp_routes (mp_route_id, name, location_id, type) VALUES
+  (900000751, 'Fixture Line Five', 900000961, 'Trad'),
+  (900000752, 'Fixture Line Six', 900000962, 'Trad'),
+  (900000753, 'Fixture Line Seven', 900000963, 'Trad');
+INSERT INTO internal.accidents_raw (accident_id, source, source_id, mountain, state, latitude, longitude, mp_route_id)
+VALUES (900000710, 'AAC', 's1', 'Pellock Wall', 'CO', 39.0, -105.5, 900000751),
+       (900000711, 'AAC', 's2', 'Pellock Wall', NULL, 39.0, -105.5, 900000751),
+       (900000712, 'AAC', 's3', 'Pellock Wall', 'CO', 39.0, -105.5, 900000752),
+       (900000713, 'AAC', 's4', 'Pellock Wall', 'CO', 39.4, -105.2, 900000753);
+INSERT INTO accidents (accident_id, source, source_id, mountain, state, latitude, longitude, mp_route_id)
+  SELECT accident_id, source, source_id, mountain, state, latitude, longitude, mp_route_id FROM internal.accidents_raw
+  WHERE accident_id >= 900000710;
+"""
+
+
+@requires_pg
+def test_r3_clears_state_level_route_links_with_an_untrusted_label_and_never_restores_them(monkeypatch):
+    async def scenario(url: str) -> None:
+        engine = create_async_engine(url)
+        current = geocode.R3_VERSION
+        try:
+            async with engine.begin() as conn:
+                first = await run_r3(conn, argparse.Namespace(apply=True))
+            async with engine.begin() as conn:
+                again = await run_r3(conn, argparse.Namespace(apply=True))
+            # A later rule version while the route is still on the state root: no restore.
+            monkeypatch.setattr(geocode, "R3_VERSION", "r3-v99")
+            async with engine.begin() as conn:
+                later = await run_r3(conn, argparse.Namespace(apply=True))
+            async with engine.connect() as conn:
+                got = await _rows(conn, "SELECT accident_id, latitude, longitude, geocode_precision, geocode_method, country, "
+                                  "mp_route_id FROM accidents WHERE accident_id >= 900000710 ORDER BY 1")
+                links = await _rows(conn, "SELECT accident_id, rule_version, old_value, new_value, method "
+                                    "FROM internal.accident_revisions WHERE accident_id >= 900000710 "
+                                    "AND field = 'mp_route_id' ORDER BY 1, id")
+            root = geocode.STATE_LEVEL_ROUTE
+            assert got == [(900000710, 39.0, -105.5, "region_fallback", root, "US", None),
+                           (900000711, 39.0, -105.5, "unknown", root, None, None),
+                           (900000712, 39.0, -105.5, "region_fallback", root, "US", None),
+                           (900000713, 39.4, -105.2, "crag", "route_link", "US", 900000753)]
+            # Only the first clear: the r3-v99 run proposes the clear again (unchanged), never a restore.
+            assert links == [(900000710, current, "900000751", None, root), (900000711, current, "900000751", None, root),
+                             (900000712, current, "900000752", None, root)]
+            assert first["links_cleared"] == {root: 3} and first["methods"][root] == 3
+            assert again["applied"] == 0
+            assert later["applied"] == 0
+        finally:
+            await engine.dispose()
+
+    with migrated_db(seed_sql=V7_SEED) as name:
+        asyncio.run(scenario(sa_url(name)))
+
+
+# r3-v7 (owner, 2026-11-21): d1 blank-state rows keep no link; d2 links to state-level routes are cleared.
+# Synthetic ids (>= 900000000) and made-up names only.
+LEVEL_ROUTES = frozenset({900000751})
+
+
+def test_state_level_areas_follow_the_catalogs_state_level_rule():
+    # (mp_id, name, parent_id, lat, lon) as MP_LOCATIONS_SQL reads them; made-up names under real state roots.
+    rows = [
+        (900000961, "Colorado", None, 39.0, -105.5),
+        (900000962, "Fixture Inherit", 900000961, 39.0, -105.5),
+        (900000964, "Fixture Inherit Deeper", 900000962, 39.0, -105.5),
+        (900000963, "Fixture Own", 900000961, 39.4, -105.2),
+        (900000965, "Fixture Below Own", 900000963, 39.4, -105.2),
+        (900000969, "Fixture No Point", 900000961, None, None),
+        (900000968, "Wyoming", None, None, None),
+        (900000966, "British Columbia", None, 50.0, -120.0),
+        (900000967, "Fixture Abroad", 900000966, 50.0, -120.0),
+    ]
+    # The root, and any depth of descendants that only copy its point; never an area with its own
+    # point (or below one), an area with no point, or a foreign tree.
+    assert geocode.state_level_areas(rows) == frozenset({900000961, 900000962, 900000964, 900000968})
+
+
+def test_a_state_level_route_link_is_cleared_with_an_untrusted_label_and_the_point_kept():
+    stated = geocode_fix(row(900000710, mountain="Pellock Wall", state="CO", lat=39.0, lon=-105.5, mp=900000751),
+                         INDEX, set(), None, LEVEL_ROUTES)
+    assert (stated.location, stated.precision, stated.method, stated.country, stated.clear_route_link) == (
+        KEEP, "region_fallback", geocode.STATE_LEVEL_ROUTE, "US", True)
+    blank = geocode_fix(row(900000711, mountain="Pellock Wall", lat=39.0, lon=-105.5, mp=900000751),
+                        INDEX, set(), None, LEVEL_ROUTES)
+    assert (blank.location, blank.precision, blank.method, blank.country, blank.clear_route_link) == (
+        KEEP, "unknown", geocode.STATE_LEVEL_ROUTE, None, True)
+    # A route under a real area keeps its link and trusted label.
+    other = geocode_fix(row(900000712, mountain="Pellock Wall", state="CO", lat=39.0, lon=-105.5, mp=900000750),
+                        INDEX, set(), None, LEVEL_ROUTES)
+    assert (other.precision, other.method, other.clear_route_link) == ("crag", "route_link", False)
+    # No coordinates: the link still goes.
+    bare = geocode_fix(row(900000713, state="CO", mp=900000751), INDEX, set(), None, LEVEL_ROUTES)
+    assert (bare.location, bare.method, bare.clear_route_link) == (KEEP, geocode.STATE_LEVEL_ROUTE, True)
+
+
+def test_a_contradiction_outranks_the_state_level_rule():
+    linked = row(900000600, mountain="Vellum Dome", state="Alaska", lat=OR_POINT[0], lon=OR_POINT[1], mp=900000751)
+    fixes, changes = _state_fixes({900000600: linked}, V5_INDEX)
+    assert fixes[900000600] == (None, "unknown", geocode.STATE_CONTRADICTION, "US")
+    live = {900000600: (OR_POINT[0], OR_POINT[1], None)}
+    fixes, _, _ = snapshot_fixes({900000600: linked}, live, V5_INDEX, NO_MP, {}, None, LEVEL_ROUTES)
+    assert (fixes[0].method, fixes[0].clear_route_link) == (geocode.STATE_CONTRADICTION, True)
+
+
+def test_a_blank_state_row_loses_its_link_on_every_path():
+    cluster = [row(900000720 + i, mountain=f"Place {i}", lat=39.739, lon=-104.990, mp=900000750 if i == 0 else None)
+               for i in range(6)]
+    fix = geocode_fix(cluster[0], INDEX, find_fallback_points(cluster, INDEX, NO_MP))
+    assert (fix.location, fix.method, fix.clear_route_link) == (KEEP, "fallback_no_state", True)
+    assert [c.method for c in changes_for(fix) if c.field == "mp_route_id"] == ["fallback_no_state"]
+    bare = geocode_fix(row(900000730, mp=900000750), INDEX, set())
+    assert (bare.method, bare.clear_route_link) == ("no_coords", True)
+    unlinked = geocode_fix(row(900000731, lat=40.0, lon=-81.0), INDEX, set())
+    assert not unlinked.clear_route_link
+
+
+R3_CLEARED_LINK = [("geocode_precision", "r3-v7"), ("mp_route_id", "r3-v7")]
+
+
+def test_a_d1_or_d2_cleared_link_is_never_restored_while_the_condition_holds():
+    blank = row(900000701, mountain="Quillet Crag", lat=40.0, lon=-81.0, mp=900000750)
+    rooted = row(900000710, mountain="Pellock Wall", state="CO", lat=39.0, lon=-105.5, mp=900000751)
+    raw = {r.accident_id: r for r in (blank, rooted)}
+    live = {900000701: (40.0, -81.0, "unknown"), 900000710: (39.0, -105.5, "region_fallback")}
+    history = {900000701: R3_CLEARED_LINK, 900000710: R3_CLEARED_LINK}
+    links = {900000701: None, 900000710: None}
+    _, changes, _ = snapshot_fixes(raw, live, INDEX, NO_MP, history, links, LEVEL_ROUTES)
+    assert sorted((c.accident_id, c.new_value) for c in changes if c.field == "mp_route_id") == [
+        (900000701, None), (900000710, None)]
+    # Once the route leaves the state root (a catalog repair), the d2 clear is undone from the snapshot.
+    _, changes, _ = snapshot_fixes(raw, live, INDEX, NO_MP, history, links, frozenset())
+    assert [(c.accident_id, c.new_value, c.method) for c in changes if c.field == "mp_route_id"] == [
+        (900000701, None, geocode.NO_STATE_UNVERIFIED), (900000710, 900000751, geocode.LINK_RESTORED)]
+
+
+def test_a_point_moved_by_another_rule_keeps_the_link_clear():
+    blank = row(900000701, mountain="Quillet Crag", lat=40.0, lon=-81.0, mp=900000750)
+    history = {900000701: [(LOCATION, "fixture")]}
+    fixes, changes, _ = snapshot_fixes({900000701: blank}, {900000701: (41.0, -82.0, None)}, INDEX, NO_MP, history,
+                                       {900000701: 900000750})
+    assert (fixes[0].method, fixes[0].clear_route_link) == (geocode.MOVED_BY_OTHER_RULE, True)
+    assert [(c.field, c.new_value) for c in changes if c.field == "mp_route_id"] == [("mp_route_id", None)]
