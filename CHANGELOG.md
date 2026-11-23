@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### R7 rule r7-v2: guard on the one flipped point, not one row - 2026-11-23
+
+- Found on the Stage C1 rehearsal (2026-11-23, a fresh copy of prod): r7-v1's dry run refused with 52 positive rows. `area_weekly_weather` holds one row per point per week (the legacy collector wrote 52 weeks per point; 959 of the 969 points have exactly 52 rows), and all 52 are the one point (37.10, +113.20), weeks 2025-02-03 to 2026-01-26: the single dropped minus sign the audit found.
+- r7-v2 refuses unless exactly one distinct point has a positive longitude and it is (37.1, 113.2), and refuses if any row already sits at (37.1, -113.2), since the flip would merge two series. It updates exactly the rows the guard counted, and the rowcount must match. The dry run now reports `latitude` and `would_update_rows`, and the apply reports `{"updated": N}`. The run log records `r7-v2` and the row count.
+- Default ruling, for the owner's review (the owner's standing rule while away). The plan's Step 4 and 6f gates now check the point and compare the apply count with the dry run's `would_update_rows` instead of expecting 1.
+
 ### Register: a non-US timezone is quarantined; plan no longer counts quarantined points - 2026-11-23
 
 - Found on the Stage C1 rehearsal (2026-11-23): four route series registered under `America/Matamoros` (2), `America/Vancouver` and `America/Winnipeg`. The US boxes (`validate.US_BOXES`) take in strips of Canada and Mexico, and the timezone finder puts some border points across the line.

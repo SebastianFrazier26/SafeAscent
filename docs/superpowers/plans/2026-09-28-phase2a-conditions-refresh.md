@@ -3308,7 +3308,7 @@ ING r7
 VERIFY tests/verify/test_phase2a_conditions.py -q -k "test_r7_ or test_no_visibility_"
 ```
 
-Expected: the dry run is exactly `{"mode": "dry_run", "would_update_longitude": 113.2}`; the apply prints `{"updated": 1}`; the rerun prints `"note": "no positive longitudes"`; both cells pass. If the dry run refuses (`expected exactly one positive longitude`), stop: the data is not what R7 was written for.
+Expected (r7-v2, 2026-11-23): the dry run is `{"mode": "dry_run", "latitude": 37.1, "would_update_longitude": 113.2, "would_update_rows": N}`, N = that point's weekly rows (52 on the 2026-11-23 copy of prod); the apply prints `{"updated": N}`, the same N; the rerun prints `"note": "no positive longitudes"`; both cells pass. If the dry run refuses (`expected exactly one positive point` or `already holds rows`), stop: the data is not what R7 was written for. r7-v1 expected one row and refused on the 52 weekly rows of the one point.
 
 - [ ] **Step 5 (owner): Sign-off (blocks prod)** — the PR carries the Step 1 revisions, the register counts and quarantine summary, the plan numbers and the owner's "plan ok", and the R7 result. The `accident_conditions` query plan (Task 2 M6) cannot be read yet, because no conditions rows exist; Task 14 Step 3 takes it on the branch after the first paid slice.
 
@@ -3419,7 +3419,7 @@ PY
 
 Expected: seven `branch … prod …` lines, then `GATE OK: plan_ok`. The unit figures may differ slightly from the branch's when the two plans ran on different days (history and normals periods move with `today`); the gate is the 4.5M stop, not equality. Record both in the PR.
 
-**6f. R7.** Gate: the prod dry run shows exactly one positive longitude, `113.2`.
+**6f. R7.** Gate: the prod dry run shows exactly one positive point, (37.1, 113.2), with the same row count as the branch (r7-v2).
 
 ```bash
 ( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
@@ -3427,7 +3427,7 @@ Expected: seven `branch … prod …` lines, then `GATE OK: plan_ok`. The unit f
   gate_require plan_ok || exit 1
   R=../data/review
   [ -e $R/p2a3_r7_dry_prod.json ] || save_once $R/p2a3_r7_dry_prod.json ING r7 >/dev/null || exit 1
-  python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d); sys.exit(0 if d == {"mode": "dry_run", "would_update_longitude": 113.2} else "r7 dry run is not exactly one longitude 113.2: STOP")' $R/p2a3_r7_dry_prod.json || exit 1
+  python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d); sys.exit(0 if set(d) == {"mode", "latitude", "would_update_longitude", "would_update_rows"} and (d["mode"], d["latitude"], d["would_update_longitude"]) == ("dry_run", 37.1, 113.2) and d["would_update_rows"] >= 1 else "r7 dry run is not exactly one point (37.1, 113.2): STOP")' $R/p2a3_r7_dry_prod.json || exit 1
   cmp $R/p2a3_r7_dry_branch.json $R/p2a3_r7_dry_prod.json || { echo "r7 dry run differs from the branch: STOP" >&2; exit 1; }
   gate_pass r7_dry )
 ```
@@ -3438,13 +3438,14 @@ Only after `GATE OK: r7_dry`:
 ( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a3_prod || exit 1
   # PRODUCTION
   gate_require r7_dry || exit 1
+  n="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["would_update_rows"])' ../data/review/p2a3_r7_dry_prod.json)" || exit 1
   out="$(ING r7 --apply)" || exit 1
   printf '%s\n' "$out"
-  [ "$out" = '{"updated": 1}' ] || { echo "r7 apply did not update exactly 1 row: STOP" >&2; exit 1; }
+  [ "$out" = "{\"updated\": $n}" ] || { echo "r7 apply did not update exactly the $n rows the dry run counted: STOP" >&2; exit 1; }
   gate_pass r7_applied )
 ```
 
-Expected: `{"updated": 1}` and `GATE OK: r7_applied`. Never re-run this block after a successful apply: the `r7_dry` marker still lets it start, and R7 then prints `"note": "no positive longitudes"` with `updated: 0`, which fails the equality: that is a STOP to report, not a data problem.
+Expected: `{"updated": N}` (the dry run's `would_update_rows`) and `GATE OK: r7_applied`. Never re-run this block after a successful apply: the `r7_dry` marker still lets it start, and R7 then prints `"note": "no positive longitudes"` with `updated: 0`, which fails the equality: that is a STOP to report, not a data problem.
 
 **6g. Acceptance (read-only).**
 
