@@ -11,14 +11,16 @@ from app.pipelines import localday
 from app.pipelines.grid import grid_bucket
 from app.pipelines.localday import (
     INCIDENT_START,
+    US_ZONES,
     assign_accident_tz,
     local_date,
     register_all,
     register_logged,
     register_series,
+    registrable,
     tz_for_point,
 )
-from app.pipelines.validate import ValidationReport
+from app.pipelines.validate import ValidationReport, in_us
 from tests.pgtest import migrated_db, requires_pg, sa_url
 
 
@@ -39,6 +41,30 @@ def test_known_zones(lat, lon, zone):
 
 def test_open_ocean_has_no_civil_zone():
     assert tz_for_point(35.0, -140.0) is None
+
+
+@pytest.mark.parametrize("lat,lon", [(49.25, -123.1), (43.65, -79.38), (49.3, -105.25)])
+def test_a_point_in_the_us_boxes_whose_zone_is_not_a_us_zone_gets_none(lat, lon):
+    # The US boxes take in strips of Canada and Mexico; a zone across the border keeps another
+    # country's civil day, so it is never stored or requested.
+    assert in_us(lat, lon)
+    assert tz_for_point(lat, lon) is None
+    assert localday._zone(lat, lon) == (None, "non_us_timezone")
+    assert not registrable(lat, lon)
+
+
+def test_registrable_is_registers_own_rule():
+    assert registrable(40.0, -105.3)
+    assert not registrable(50.0, -115.5)  # outside the US boxes
+    assert not registrable(35.0, -140.0)  # open ocean
+
+
+def test_us_zones_are_the_tz_database_us_rows():
+    from importlib import resources
+
+    tab = resources.files("tzdata.zoneinfo").joinpath("zone.tab").read_text(encoding="utf-8")
+    us = {line.split("\t")[2] for line in tab.splitlines() if line.startswith("US\t")}
+    assert US_ZONES == us
 
 
 def test_evening_storm_is_the_previous_local_day():
@@ -67,7 +93,10 @@ class _NoConn:
 
 
 @pytest.mark.parametrize("name,reason", [("Mars/Olympus_Mons", "unknown_timezone"), ("Etc/UTC", "no_timezone"),
-                                         ("", "unknown_timezone"), (None, "no_timezone")])
+                                         ("", "unknown_timezone"), (None, "no_timezone"),
+                                         ("America/Vancouver", "non_us_timezone"),
+                                         ("America/Matamoros", "non_us_timezone"),
+                                         ("America/Winnipeg", "non_us_timezone")])
 def test_unusable_zone_names_are_quarantined_before_any_write(monkeypatch, name, reason):
     # The DB only checks tz <> '': a zone the tz database cannot resolve must never reach a row.
     monkeypatch.setattr(localday, "_finder", lambda: _FakeFinder(name))

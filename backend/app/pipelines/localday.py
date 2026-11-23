@@ -32,6 +32,22 @@ SOURCE = "series_register"
 # conditions_missing, so a point whose only incidents predate this buys no incident series.
 # era5_fill's incident keys must use the same date.
 INCIDENT_START = date(1990, 1, 1)
+# validate.US_BOXES take in strips of Canada and Mexico, and the finder puts some border points
+# across the line (2026-11-23 rehearsal: 4 route cells in America/Matamoros, Vancouver, Winnipeg).
+# Such a zone keeps another country's civil day, which can differ from the US side's (Vancouver
+# vs Juneau), so the point is quarantined, never mapped to a guessed US zone. These are the tz
+# database's US rows (zone.tab); test_localday pins the set to tzdata.
+US_ZONES = frozenset({
+    "America/Adak", "America/Anchorage", "America/Boise", "America/Chicago", "America/Denver",
+    "America/Detroit", "America/Indiana/Indianapolis", "America/Indiana/Knox",
+    "America/Indiana/Marengo", "America/Indiana/Petersburg", "America/Indiana/Tell_City",
+    "America/Indiana/Vevay", "America/Indiana/Vincennes", "America/Indiana/Winamac",
+    "America/Juneau", "America/Kentucky/Louisville", "America/Kentucky/Monticello",
+    "America/Los_Angeles", "America/Menominee", "America/Metlakatla", "America/New_York",
+    "America/Nome", "America/North_Dakota/Beulah", "America/North_Dakota/Center",
+    "America/North_Dakota/New_Salem", "America/Phoenix", "America/Sitka", "America/Yakutat",
+    "Pacific/Honolulu",
+})
 
 # accidents.tz is the zone the incident series was registered under (the view joins on it), so
 # only incidents that got a zone register one. A year range (R1) is not a known day: no window.
@@ -86,11 +102,19 @@ def _zone(lat: float, lon: float) -> tuple[str | None, str | None]:
     # tzdata, say) would make Open-Meteo requests and local_date fail later, so it stops here.
     if name not in _known_zones():
         return None, "unknown_timezone"
+    if name not in US_ZONES:
+        return None, "non_us_timezone"
     return str(name), None
 
 
 def tz_for_point(lat: float, lon: float) -> str | None:
     return _zone(lat, lon)[0]
+
+
+def registrable(lat: float, lon: float) -> bool:
+    """Whether register_series would accept the point; era5_window's plan uses it so a point
+    register quarantines is never counted as a bucket still to register."""
+    return in_us(lat, lon) and _zone(lat, lon)[0] is not None
 
 
 def local_date(ts_utc: datetime, tz: str) -> date:

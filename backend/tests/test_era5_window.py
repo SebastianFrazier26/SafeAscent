@@ -476,6 +476,20 @@ def test_plan_counts_unregistered_points_and_warns():
     assert "warning" not in after
 
 
+@requires_pg
+def test_plan_never_counts_points_register_quarantines():
+    # 49.3 is in the US boxes but in a Canadian zone; 50.0 is outside the boxes. Register
+    # quarantines both, so neither is a bucket still to register, before or after it runs.
+    with migrated_db(seed_sql=_routes_seed([40.15, 49.3, 50.0])) as name:
+        url = sa_url(name)
+        before = asyncio.run(_plan_report(url, today=TODAY))
+        asyncio.run(run_window(lambda: create_async_engine(url), _Recorder().client(), **_kwargs()))  # type: ignore[arg-type]
+        after = asyncio.run(_plan_report(url, today=TODAY))
+    assert before["unregistered_route_buckets"] == 1
+    assert (after["unregistered_incident_buckets"], after["unregistered_route_buckets"]) == (0, 0)
+    assert after["unregistered_units_estimate"] == 0 and "warning" not in after
+
+
 def test_a_bad_incident_start_is_a_clean_exit(monkeypatch):
     from app.pipelines import era5_window
 
