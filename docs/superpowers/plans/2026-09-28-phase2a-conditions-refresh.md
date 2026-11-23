@@ -3280,7 +3280,7 @@ bg_wait ../data/review/logs/register_2a3_branch.log
 save_once ../data/review/p2a3_register_branch.json grep '^{' ../data/review/logs/register_2a3_branch.log
 ```
 
-Expected: `finished ok`, then one JSON line with `accident_tz_assigned` (close to the clean accidents with a trusted point from 1990 on, plus earlier ones: every trusted clean point gets a zone), `incident_series` in the hundreds, `route_series` in the thousands (OQ4: every route point registers), `series_total`, and a quarantine summary (counts only; `no_timezone` a handful of coastal points, `outside_us` small).
+Expected: `finished ok`, then one JSON line with `accident_tz_assigned` (close to the clean accidents with a trusted point from 1990 on, plus earlier ones: every trusted clean point gets a zone), `incident_series` in the hundreds, `route_series` in the thousands (OQ4: every route point registers), `series_total`, and a quarantine summary (counts only; `no_timezone` a handful of coastal points, `outside_us` small, `non_us_timezone` a handful of border points whose zone is Canadian or Mexican: quarantined since 2026-11-23, so Step 3's tz query prints no rows).
 
 - [ ] **Step 3 (owner/agent, then STOP for the owner): Plan the first window on the branch** (free; read-only)
 

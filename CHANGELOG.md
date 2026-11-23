@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Register: a non-US timezone is quarantined; plan no longer counts quarantined points - 2026-11-23
+
+- Found on the Stage C1 rehearsal (2026-11-23): four route series registered under `America/Matamoros` (2), `America/Vancouver` and `America/Winnipeg`. The US boxes (`validate.US_BOXES`) take in strips of Canada and Mexico, and the timezone finder puts some border points across the line.
+- `localday._zone` now returns `non_us_timezone` for any zone outside `localday.US_ZONES` (the tz database's US rows; a test pins the set to `tzdata`'s `zone.tab`). Every consumer agrees: `register` (series and `accidents.tz`), `static_features points` (`tz_for_point` returns None, counted as `no_timezone`) and R11's zone at insert. Such a point gets no series, so its conditions read missing, never 0.
+- Default ruling, for the owner's review: quarantine, not a mapping to the nearest US zone. A mapping needs a rule for which US zone (Vancouver's zone borders both Alaska and Washington). Cost: routes on those border cells have no weather history until a mapping rule exists. A zone already stored in `feature_points` or `grid_bucket_series` is not removed by this change.
+- `era5_window plan`: `unregistered_incident_buckets`/`unregistered_route_buckets` count only buckets holding a point `register` would accept (`localday.registrable`). Before, the 8 points `register` quarantines left `unregistered_route_buckets: 8`, a warning and a 2,904-unit estimate that no register run could clear.
+
 ### R3 rule r3-v7: blank-state rows and state-level route links keep no route link - 2026-11-21
 
 - Owner-approved (2026-11-21), after the run-6 plot check scored 42/50 = 0.84. Seven of the eight misses were route-linked rows. The model places a linked row by its link whatever its label (`app/ml/incidents.py:175-184`).

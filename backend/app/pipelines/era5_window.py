@@ -38,7 +38,7 @@ from app.pipelines.era5_fill import (
     series_gaps,
 )
 from app.pipelines.grid import grid_bucket_sql
-from app.pipelines.localday import INCIDENT_FROM_WHERE_SQL, ROUTE_POINTS_SQL, register_logged
+from app.pipelines.localday import INCIDENT_FROM_WHERE_SQL, ROUTE_POINTS_SQL, register_logged, registrable
 from app.pipelines.open_meteo import DAILY_VARS, ArchiveClient, cost_units
 from app.pipelines.pro_window import (
     PLAN_STOP_UNITS,
@@ -165,20 +165,26 @@ async def plan_report(
 
 
 async def _unregistered_buckets(conn: AsyncConnection) -> tuple[int, int]:
-    """(incident, route-only) buckets with no series yet. Counted before register has assigned
-    accident zones, so the incident side drops the tz condition; points register will quarantine
-    (no zone, outside the US) are counted too. This is an estimate (run `register` first for an
-    exact plan), not a bound: a new incident in a route-only bucket, or a bucket that straddles a
-    timezone, is undercounted."""
+    """(incident, route-only) buckets with no series yet that hold a point register would accept.
+    Counted before register has assigned accident zones, so the incident side drops the tz
+    condition. Points register quarantines (outside the US, no US zone) are left out: they never
+    get a series, so counting them left a warning no register run could clear. This is an
+    estimate (run `register` first for an exact plan), not a bound: a new incident in a
+    route-only bucket, or a bucket that straddles a timezone, is undercounted."""
     grid = grid_bucket_sql("p.lat", "p.lon")
-    row = (await conn.execute(text(
-        f"WITH inc AS (SELECT DISTINCT {grid} AS b FROM ({_INCIDENT_POINTS_ANY_TZ_SQL}) p(lat, lon)), "
-        f"rte AS (SELECT DISTINCT {grid} AS b FROM ({ROUTE_POINTS_SQL}) p(lat, lon)), "
+    rows = (await conn.execute(text(
+        f"WITH inc AS (SELECT DISTINCT p.lat, p.lon, {grid} AS b FROM ({_INCIDENT_POINTS_ANY_TZ_SQL}) p(lat, lon)), "
+        f"rte AS (SELECT DISTINCT p.lat, p.lon, {grid} AS b FROM ({ROUTE_POINTS_SQL}) p(lat, lon)), "
         "reg AS (SELECT DISTINCT grid_bucket AS b FROM grid_bucket_series) "
-        "SELECT (SELECT count(*) FROM inc WHERE b NOT IN (SELECT b FROM reg)), "
-        "(SELECT count(*) FROM rte WHERE b NOT IN (SELECT b FROM reg) AND b NOT IN (SELECT b FROM inc))"
-    ))).one()
-    return int(row[0]), int(row[1])
+        "SELECT true AS incident, lat, lon, b FROM inc WHERE b NOT IN (SELECT b FROM reg) "
+        "UNION ALL SELECT false, lat, lon, b FROM rte WHERE b NOT IN (SELECT b FROM reg)"
+    ))).all()
+    incident: set[int] = set()
+    route: set[int] = set()
+    for is_incident, lat, lon, bucket in rows:
+        if registrable(float(lat), float(lon)):
+            (incident if is_incident else route).add(int(bucket))
+    return len(incident), len(route - incident)
 
 
 def _check_incident_start(incident_start: date) -> None:
