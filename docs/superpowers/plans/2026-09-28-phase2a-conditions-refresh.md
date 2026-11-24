@@ -3556,6 +3556,14 @@ save_once ../data/review/p2a4_r2r1_pre_branch.json ING r2r1
 
 Expected: the JSON, and `no stale review file`. If the file exists, stop and ask the owner (an earlier run wrote it).
 
+**ID sequence reset (owner ruling 2026-11-23).** Every legacy accident was loaded with an explicit `accident_id`, so `accidents_accident_id_seq` never moved and R11's first INSERT collides (`duplicate key ... (accident_id)=(1)`, found on this rehearsal; the load rolled back whole). Run once on the branch before the loads, as `migrator` (the sequence owner). The same line runs on prod in 10b2.
+
+```bash
+OWNER_PSQL -v ON_ERROR_STOP=1 -At -c "SET ROLE migrator" -c "SELECT setval('accidents_accident_id_seq', (SELECT max(accident_id) FROM accidents));"
+```
+
+Expected: one number, the table's current `max(accident_id)` (4990 on the 2026-11 copy of prod). Rerunning it is harmless.
+
 Each load is one transaction under the loader's advisory lock. The first writes `data/review/r11_route_matches.csv` if any R11 climbing row is unlinked. The second and third pass `--overwrite`: the file is rebuilt from the database each time and lists **every** unresolved R11 row, and people only read it, so replacing it loses nothing.
 
 ```bash
@@ -3723,12 +3731,26 @@ Do not repeat Steps 1–9. Run only the blocks below, one at a time, in order, w
 
 Record the id and `created_at` in the PR.
 
-**10c. Grants (re-applied), then gate: the baseline and the dry runs equal the branch's.**
+**10b2. ID sequence reset (owner ruling 2026-11-23), right after the snapshot.** As the branch's Step 3 reset.
 
 ```bash
 ( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
   # PRODUCTION
   gate_require snapshot || exit 1
+  n="$(OWNER_PSQL -v ON_ERROR_STOP=1 -At -c "SET ROLE migrator" -c "SELECT setval('accidents_accident_id_seq', (SELECT max(accident_id) FROM accidents));")" || exit 1
+  printf 'sequence set to %s\n' "$n"
+  case "$n" in ''|*[!0-9]*) echo "sequence reset printed no number: STOP" >&2; exit 1 ;; esac
+  gate_pass id_seq )
+```
+
+Expected: `sequence set to <max(accident_id)>`, then `GATE OK: id_seq`.
+
+**10c. Grants (re-applied), then gate: the baseline and the dry runs equal the branch's.**
+
+```bash
+( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
+  # PRODUCTION
+  gate_require id_seq || exit 1
   OWNER_PSQL -q -f db/roles/grants_phase2.sql || exit 1
   OWNER_PSQL -q -f db/roles/verify_roles.sql || exit 1
   OWNER_PSQL -q -f db/roles/verify_roles_phase2.sql || exit 1

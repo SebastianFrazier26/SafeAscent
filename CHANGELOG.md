@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### R11 runbook: reset the accidents id sequence before the facts loads - 2026-11-23
+
+- Found on the Stage C2 rehearsal (2026-11-23): every legacy accident was loaded with an explicit `accident_id`, so `accidents_accident_id_seq` still started near 1. The first R11 INSERT collided (`duplicate key ... (accident_id)=(1)`), and the load rolled back whole.
+- Owner ruling 2026-11-23: fix it with a runbook step, not a migration. `accident_facts.ID_SEQUENCE_RESET_SQL` (`setval` to `max(accident_id)`) runs as `migrator` before the loads: on the branch in plan 2a-4 Task 13 Step 3, and on prod in the new 10b2 right after the `pre-2a-4` snapshot (gate `id_seq`, which 10c now requires). The plan quotes the constant verbatim, and a test checks that.
+- New pg test: with legacy rows at explicit ids, the load collides; after the reset it inserts at `max + 1`.
+
 ### R11 acceptance window moves to 2025-07..12; sparse NPS accepted - 2026-11-23
 
 - Owner rule change 2026-11-23: `test_r11_refresh_window_has_incidents` counts clean incidents from 2025-07-01 to 2025-12-31 instead of 2026-02-05 to 2026-07-02. No permitted source covers spring 2026 yet: the ANAC 2026 reports end in 2025-12, CAIC is hand-downloaded, and the NPS workbook ends in 2026-02. That half-year is the latest one the AAC refresh covers, with 26 day-precision rows. `accidents_clean` had no rows there before the refresh, so a pass shows the refresh landed. Its print key is now `r11_window_2025h2_clean_incidents`.
