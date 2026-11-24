@@ -64,6 +64,16 @@ def test_r11_refresh_window_has_incidents():
     assert latest["d"] is not None and latest["d"].year >= 2025
 
 
+# Owner ruling 2026-11-23: skipped until spring-2026 incidents can be loaded. historical_predictions
+# exists only for 2026-02-05..2026-07-02 and no permitted source covers that span yet (ANAC 2026
+# ends 2025-12). The 2026 window below is kept on purpose: re-enabling is removing this mark.
+R11_BACKTEST_SKIP = (
+    "OWNER RULING 2026-11-23: skipped until spring-2026 incidents can be loaded; "
+    "historical_predictions exists only for 2026-02-05..2026-07-02"
+)
+
+
+@pytest.mark.skip(reason=R11_BACKTEST_SKIP)
 def test_r11_backtest_inputs_exist():
     [row] = fetch(
         "SELECT count(*) AS incidents, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM historical_predictions h "
