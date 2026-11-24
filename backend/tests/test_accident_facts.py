@@ -1,10 +1,12 @@
 import asyncio
 import csv
 import uuid
+from pathlib import Path
 from datetime import date
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.data.repair import review
@@ -255,6 +257,42 @@ def test_insert_is_new_rows_only(tmp_path):
         ("climbing", "full", "US", True, "day", "America/Denver", None, "Leader fell on the crux pitch.",
          "facts_csv", "unknown")
     ]
+
+
+@requires_pg
+def test_load_after_explicit_legacy_ids_needs_the_sequence_reset(tmp_path):
+    # Legacy rows carry explicit ids, as on prod: the sequence never moved, so its next value is taken.
+    seed = ("INSERT INTO accidents (accident_id, source, source_id, date) VALUES "
+            "(1, 'AAC', 'LEGACY-A', '2020-01-01'), (900000500, 'AAC', 'LEGACY-B', '2020-01-02');")
+
+    async def scenario(engine):
+        report = ValidationReport("t")
+        rows = parse_facts(_csv(tmp_path, BASE), today=TODAY, report=report)
+        try:
+            async with engine.begin() as conn:
+                await insert_new(conn, rows, report=report)
+            collided = False
+        except IntegrityError:
+            collided = True
+        async with engine.begin() as conn:
+            await conn.execute(text(accident_facts.ID_SEQUENCE_RESET_SQL))
+        report2 = ValidationReport("t")
+        rows2 = parse_facts(_csv(tmp_path, BASE), today=TODAY, report=report2)
+        async with engine.begin() as conn:
+            n = await insert_new(conn, rows2, report=report2)
+            new_id = (await conn.execute(text(
+                "SELECT accident_id FROM accidents WHERE source_id = 'ANAC-2025-001'"))).scalar_one()
+        return collided, n, new_id
+
+    with migrated_db(seed_sql=seed) as name:
+        collided, n, new_id = asyncio.run(_with_engine(sa_url(name), scenario))
+    assert collided
+    assert (n, new_id) == (1, 900000501)
+
+
+def test_runbook_quotes_the_sequence_reset_verbatim():
+    plan = (Path(__file__).resolve().parents[2] / "docs/superpowers/plans/2026-09-28-phase2a-conditions-refresh.md").read_text()
+    assert plan.count(accident_facts.ID_SEQUENCE_RESET_SQL) == 2
 
 
 @requires_pg

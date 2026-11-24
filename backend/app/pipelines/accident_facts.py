@@ -75,6 +75,11 @@ ROUTE_REVISION_VERSION = "r11-route-v1"
 # Concurrent loads would each see a key as new and both insert it; there is no unique index
 # (the owner's call), so every write transaction takes this lock first.
 LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext('accident_facts'))"
+# Every legacy accident was loaded with an explicit accident_id, so the id sequence still starts
+# near 1 and R11's first INSERT collides (found on the C2 rehearsal, 2026-11-23). The runbook runs
+# this once as migrator (the sequence owner) before the loads, on the branch and on prod. Owner
+# ruling 2026-11-23: a runbook step, not a migration. The plan quotes this string verbatim.
+ID_SEQUENCE_RESET_SQL = "SELECT setval('accidents_accident_id_seq', (SELECT max(accident_id) FROM accidents));"
 REVIEW_COLUMNS = [
     "source", "source_id", "date", "state", "mountain", "route", "latitude", "longitude", "reason",
     "candidate_ids", "candidate_names", "candidate_distances_m",
