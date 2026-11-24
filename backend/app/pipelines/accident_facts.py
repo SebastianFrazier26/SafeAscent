@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Literal
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -49,6 +49,11 @@ COLUMNS: tuple[str, ...] = (
 )
 EARLIEST = dt.date(1970, 1, 1)
 REFRESH_SINCE = dt.date(2024, 8, 1)
+# Spec R11: an empty post-2024 month in these families means the private export is incomplete.
+# Owner ruling 2026-11-23: avalanche incidents are seasonal, so July-October may be empty;
+# every other empty month still stops the run.
+GAP_GATE_FAMILIES: tuple[str, ...] = ("avalanche", "nps")
+ALLOWED_EMPTY_MONTHS: dict[str, frozenset[int]] = {"avalanche": frozenset({7, 8, 9, 10})}
 # Derived from gnis.STATE_CODES (the one US list geocode.classify_state uses), never a second copy.
 US_STATES: frozenset[str] = frozenset({*(name.lower() for name in STATE_CODES), *(c.lower() for c in STATE_CODES.values())})
 METHOD = "facts_csv"
@@ -95,6 +100,13 @@ class FactRow(BaseModel):
     guided: Literal["guided", "unguided", "unknown"] = "unknown"
     source_url: str = Field(pattern=r"^https://\S+$")
     summary: str = Field(min_length=1, max_length=200)
+    # The CSV line the row came from, so a database-time refusal (keyed by source:source_id)
+    # can still be reported by line number.
+    _line: int | None = PrivateAttr(default=None)
+
+    @property
+    def line(self) -> int | None:
+        return self._line
 
     @property
     def ref(self) -> str:
@@ -184,6 +196,7 @@ def parse_facts(path: Path, *, today: dt.date, report: ValidationReport) -> list
                 report.quarantine(ref, problem)
                 continue
             seen.add(row.key)
+            row._line = number
             report.accept()
             rows.append(row)
     return rows
@@ -491,7 +504,22 @@ async def apply_route_ids(
     return updated
 
 
-async def _gap_log(conn: AsyncConnection, families: set[str], *, today: dt.date) -> list[str]:
+def gap_stops(gaps: Mapping[str, Sequence[str]]) -> list[str]:
+    """The gate on the gap log: one STOP line per gated family with an empty month the owner's
+    rule does not allow. A gated family missing from `gaps` was never checked, which also stops."""
+    stops: list[str] = []
+    for family in GAP_GATE_FAMILIES:
+        if family not in gaps:
+            stops.append(f"post-2024 gap STOP {family}: not checked")
+            continue
+        allowed = ALLOWED_EMPTY_MONTHS.get(family, frozenset())
+        bad = [m for m in gaps[family] if int(m[5:7]) not in allowed]
+        if bad:
+            stops.append(f"post-2024 gap STOP {family}: {','.join(bad)}")
+    return stops
+
+
+async def _gaps(conn: AsyncConnection, families: set[str], *, today: dt.date) -> dict[str, list[str]]:
     # A year-precision date says nothing about its month, so it cannot fill a month.
     dated = (await conn.execute(text("SELECT source, date FROM accidents WHERE date >= :since "
                                      "AND date_precision IN ('day', 'month')"),
@@ -504,11 +532,29 @@ async def _gap_log(conn: AsyncConnection, families: set[str], *, today: dt.date)
             continue
         if family in by_family:
             by_family[family].append(day)
-    lines: list[str] = []
-    for name in sorted(families):
-        gaps = month_gaps(by_family[name], since=REFRESH_SINCE, today=today)
-        lines.append(f"post-2024 gap {name}: {','.join(gaps) if gaps else 'none'}")
-    return lines
+    return {name: month_gaps(by_family[name], since=REFRESH_SINCE, today=today) for name in sorted(families)}
+
+
+def gap_lines(gaps: Mapping[str, Sequence[str]]) -> list[str]:
+    return [f"post-2024 gap {name}: {','.join(months) if months else 'none'}" for name, months in gaps.items()]
+
+
+def rejected_rows(report: ValidationReport, rows: Iterable[FactRow]) -> list[dict[str, object]]:
+    """Every refused row as its CSV line, reason and field names (never cell content), in line
+    order. Parse-time refs are already "<file>:<line>"; database-time refs are source:source_id,
+    mapped back through the rows parse_facts accepted."""
+    lines = {r.ref: r.line for r in rows}
+    keyed: list[tuple[int, str, dict[str, object]]] = []
+    for issue in report.issues:
+        line = lines.get(issue.row_ref)
+        if line is None:
+            tail = issue.row_ref.rsplit(":", 1)[-1]
+            line = int(tail) if tail.isdigit() else None
+        entry: dict[str, object] = {"line": line, "reason": issue.reason}
+        if fields := issue.detail.get("fields"):
+            entry["fields"] = fields
+        keyed.append((line if line is not None else 1 << 62, issue.reason, entry))
+    return [entry for _, _, entry in sorted(keyed, key=lambda k: (k[0], k[1]))]
 
 
 def _families(rows: Iterable[FactRow]) -> set[str]:
@@ -527,7 +573,7 @@ async def _read_only(engine: AsyncEngine, rows: list[FactRow], report: Validatio
             new = sum(1 for p in planned if p.match is not None and p.match.mp_route_id is None)
             out = {"would_insert": len(planned), "review_pending": len(await unresolved_review_rows(conn)) + new}
         await conn.rollback()
-    return {"mode": "dry_run", **out, "report": report.summary()}
+    return {"mode": "dry_run", **out, "rejected": rejected_rows(report, rows), "report": report.summary()}
 
 
 async def main(path: Path, *, today: dt.date, dry_run: bool, overwrite: bool = False,
@@ -549,9 +595,11 @@ async def main(path: Path, *, today: dt.date, dry_run: bool, overwrite: bool = F
                 return {"updated": n, "report": report.summary()}
             n = await insert_new(conn, rows, report=report)
             pending = await unresolved_review_rows(conn)
-            gaps = await _gap_log(conn, _families(rows), today=today)
+            # The gated families are always checked, so an empty CAIC or NPS file still shows its gaps.
+            found = await _gaps(conn, _families(rows) | set(GAP_GATE_FAMILIES), today=today)
+            gaps, stops = gap_lines(found), gap_stops(found)
             await write_quarantine(conn, run_id, report)
-            await finish_run(conn, run_id, status="ok", report=report, rows_upserted=n, problems=gaps,
+            await finish_run(conn, run_id, status="ok", report=report, rows_upserted=n, problems=gaps + stops,
                              metrics={"review_pending": len(pending)})
             out = review.REVIEW_DIR / REVIEW_NAME
             if pending:
@@ -559,7 +607,7 @@ async def main(path: Path, *, today: dt.date, dry_run: bool, overwrite: bool = F
                 review._write(out, pending, REVIEW_COLUMNS, REVIEW_NOTE_COLUMN, overwrite=overwrite, encoding="utf-8-sig")
     finally:
         await engine.dispose()
-    return {"inserted": n, "gaps": gaps, "review_pending": len(pending),
+    return {"inserted": n, "gaps": gaps, "gap_stop": stops, "review_pending": len(pending),
             "review_path": str(out) if pending else None, "report": report.summary()}
 
 

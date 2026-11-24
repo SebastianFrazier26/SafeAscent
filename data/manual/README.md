@@ -44,11 +44,17 @@ uv run python -m app.pipelines.accident_facts --file ~/Developer/safeascent-priv
 ```
 
 `--dry-run` opens a read-only transaction and reports what would be inserted, what is
-`already_present`, and how many rows would need a route decision. It writes nothing.
+`already_present`, and how many rows would need a route decision. It writes nothing. Its
+`rejected` list names every refused row by CSV line number and reason (`invalid` rows also
+name the fields), including the database-time reasons `already_present` and `unknown_route`;
+it never prints cell content.
 
 The run log (`source_ingest_log`, source `accident_facts`) lists post-2024-08 months with no
-incident for each source family in the file, under `problems`. Only day- and month-precision
-dates count: a year-precision date does not fill a month.
+incident for each source family in the file, plus `avalanche` and `nps` always, under
+`problems`. Only day- and month-precision dates count: a year-precision date does not fill a
+month. The load's `gap_stop` lists the gaps that stop the run (owner ruling 2026-11-23):
+`avalanche` may have empty July-October months, every other empty `avalanche` or `nps` month
+is a STOP.
 
 ## Linking rows to Mountain Project routes
 
