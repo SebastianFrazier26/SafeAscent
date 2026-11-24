@@ -457,8 +457,9 @@ def test_gap_gate_lets_avalanche_skip_july_to_october_only():
     assert gap_stops(gaps) == ["post-2024 gap STOP avalanche: 2025-06,2025-11"]
 
 
-def test_gap_gate_stops_on_any_empty_nps_month_and_on_an_unchecked_family():
-    assert gap_stops({"avalanche": [], "nps": ["2025-08"]}) == ["post-2024 gap STOP nps: 2025-08"]
+def test_gap_gate_accepts_sparse_nps_and_stops_on_an_unchecked_avalanche_family():
+    # Owner ruling 2026-11-23: NPS gaps are logged, not gated, for this refresh.
+    assert gap_stops({"avalanche": [], "nps": ["2024-11", "2025-08"]}) == []
     assert gap_stops({"nps": []}) == ["post-2024 gap STOP avalanche: not checked"]
 
 

@@ -49,10 +49,13 @@ COLUMNS: tuple[str, ...] = (
 )
 EARLIEST = dt.date(1970, 1, 1)
 REFRESH_SINCE = dt.date(2024, 8, 1)
-# Spec R11: an empty post-2024 month in these families means the private export is incomplete.
-# Owner ruling 2026-11-23: avalanche incidents are seasonal, so July-October may be empty;
-# every other empty month still stops the run.
-GAP_GATE_FAMILIES: tuple[str, ...] = ("avalanche", "nps")
+# Spec R11: an empty post-2024 month means the private export is incomplete. Both families are
+# always logged; only the gated ones stop. Owner rulings 2026-11-23: avalanche incidents are
+# seasonal, so July-October may be empty and any other empty month stops; NPS is accepted
+# sparse for the 2026-11 refresh (the public workbook ends 2026-02 and most 2025 rows carry no
+# activity), so its gaps are logged, not gated. Revisit NPS before the next refresh.
+GAP_LOGGED_FAMILIES: tuple[str, ...] = ("avalanche", "nps")
+GAP_GATE_FAMILIES: tuple[str, ...] = ("avalanche",)
 ALLOWED_EMPTY_MONTHS: dict[str, frozenset[int]] = {"avalanche": frozenset({7, 8, 9, 10})}
 # Derived from gnis.STATE_CODES (the one US list geocode.classify_state uses), never a second copy.
 US_STATES: frozenset[str] = frozenset({*(name.lower() for name in STATE_CODES), *(c.lower() for c in STATE_CODES.values())})
@@ -595,8 +598,8 @@ async def main(path: Path, *, today: dt.date, dry_run: bool, overwrite: bool = F
                 return {"updated": n, "report": report.summary()}
             n = await insert_new(conn, rows, report=report)
             pending = await unresolved_review_rows(conn)
-            # The gated families are always checked, so an empty CAIC or NPS file still shows its gaps.
-            found = await _gaps(conn, _families(rows) | set(GAP_GATE_FAMILIES), today=today)
+            # Logged families are always checked, so an empty CAIC or NPS file still shows its gaps.
+            found = await _gaps(conn, _families(rows) | set(GAP_LOGGED_FAMILIES), today=today)
             gaps, stops = gap_lines(found), gap_stops(found)
             await write_quarantine(conn, run_id, report)
             await finish_run(conn, run_id, status="ok", report=report, rows_upserted=n, problems=gaps + stops,
