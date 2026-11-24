@@ -3132,9 +3132,9 @@ Append `"app.pipelines.accident_facts"` to strict mypy.
 ```python
 def test_r11_refresh_window_has_incidents():
     [row] = fetch(
-        "SELECT count(*) AS n FROM accidents_clean WHERE date BETWEEN DATE '2026-02-05' AND DATE '2026-07-02'"
+        "SELECT count(*) AS n FROM accidents_clean WHERE date BETWEEN DATE '2025-07-01' AND DATE '2025-12-31'"
     )
-    print({"feb5_jul2_2026_clean_incidents": row["n"]})
+    print({"r11_window_2025h2_clean_incidents": row["n"]})
     assert row["n"] > 0
     [latest] = fetch("SELECT max(date) AS d FROM accidents WHERE date <= (now() AT TIME ZONE 'UTC')::date")
     assert latest["d"] is not None and latest["d"].year >= 2025
@@ -3151,7 +3151,7 @@ def test_r11_backtest_inputs_exist():
     assert row["incidents"] > 0 and row["with_prediction"] > 0
 ```
 
-The Feb 5–Jul 2 2026 window is the spec's backtest window, a historical span, not a "future" cutoff. The spec's 2a-4 acceptance says the `historical_predictions` backtest runs; the backtest code itself is Phase 3's `ml/backtest.py`, so Phase 2 proves its inputs exist: refreshed incidents in the window that have a stored prediction for their route and day. The live writer purges `historical_predictions` after one year and plan 8 folds rows older than 7 days into its archive, so the runbook records these numbers now. Review item A2 (R1/R2 re-dating R11 rows) is fixed in plan 2, which restricts R1/R2 to ids present in `internal.accidents_raw`; Task 13 Step 3 checks it with a dry run.
+**Owner rule change 2026-11-23:** `test_r11_refresh_window_has_incidents` now counts 2025-07-01..2025-12-31, the latest half-year the permitted sources cover (ANAC 2026 reports end 2025-12; CAIC is hand-downloaded; the NPS workbook ends 2026-02 with almost no activity labels). `accidents_clean` held no rows in that span before the refresh, so a pass shows the refresh landed. `test_r11_backtest_inputs_exist` is **SKIPPED** (owner ruling 2026-11-23) until spring-2026 incidents can be loaded: `historical_predictions` exists only for 2026-02-05..2026-07-02, which no permitted source covers yet. Its code keeps the 2026 window, so re-enabling it means removing the `@pytest.mark.skip`. `tests/verify/conftest.py` prints every skipped acceptance cell with its reason under a `SKIPPED acceptance cells` banner, so VERIFY never shows it as a silent pass. The Feb 5–Jul 2 2026 window is the spec's backtest window, a historical span, not a "future" cutoff. The spec's 2a-4 acceptance says the `historical_predictions` backtest runs; the backtest code itself is Phase 3's `ml/backtest.py`, so Phase 2 proves its inputs exist: refreshed incidents in the window that have a stored prediction for their route and day. The live writer purges `historical_predictions` after one year and plan 8 folds rows older than 7 days into its archive, so the runbook records these numbers now. Review item A2 (R1/R2 re-dating R11 rows) is fixed in plan 2, which restricts R1/R2 to ids present in `internal.accidents_raw`; Task 13 Step 3 checks it with a dry run.
 
 - [ ] **Step 2: Docs** — `CHANGELOG.md` "Phase 2a accident refresh (PR 2a-4)": facts CSV loader, template, private-dir rule, `country` from the data (`unknown_country` quarantine), `tz` at insert, post-2024 gap log, `ingest` gains INSERT on `accidents`. `CLAUDE.md` Commands: `uv run python -m app.pipelines.accident_facts --file PATH [--dry-run]`.
 - [ ] **Step 3: Run** — `cd backend && uv run pytest -q && uv run mypy && uv run ruff check . ../scripts/` → green.
@@ -3567,7 +3567,7 @@ P=~/Developer/safeascent-private/manual; R=../data/review
 { [ ! -e $R/r11_route_matches.csv ] || mv -n $R/r11_route_matches.csv $R/r11_route_matches_branch.csv; } && echo "loads done"
 ```
 
-Expected: no `STOP` line; three JSON lines with `inserted` equal to each dry run's `would_insert`, `gaps` (the post-2024 months with no incident per source family) and `review_pending`; then `loads done`. Record the gaps in the PR (spec R11). A gap in NPS or CAIC means the private export is incomplete: stop, re-pull, and restart from a new branch. Every load reports `avalanche` and `nps` gaps even when its file has no such rows, and `gap_stop` applies the owner's rule (2026-11-23): `avalanche` may have empty July–October months; any other empty `avalanche` month, and any empty `nps` month, is a STOP line. Gate, after `loads done`:
+Expected: no `STOP` line; three JSON lines with `inserted` equal to each dry run's `would_insert`, `gaps` (the post-2024 months with no incident per source family) and `review_pending`; then `loads done`. Record the gaps in the PR (spec R11). A gap in NPS or CAIC means the private export is incomplete: stop, re-pull, and restart from a new branch. Every load reports `avalanche` and `nps` gaps even when its file has no such rows, and `gap_stop` applies the owner's rule (2026-11-23): `avalanche` may have empty July–October months; any other empty `avalanche` month through 2026-01 is a STOP line. **Owner ruling 2026-11-23:** CAIC added no rows to this refresh (the hand-downloaded workbook has no ids and ends 2025-10), so empty `avalanche` months after prod's last avalanche row (2026-01-11) are logged, not gated (`GATED_THROUGH_MONTH`); revisit before the next refresh. `nps` gaps are logged but not gated (owner ruling 2026-11-23: sparse NPS accepted for the 2026-11 refresh). Gate, after `loads done`:
 
 ```bash
 python3 - ../data/review <<'PY'
@@ -3681,7 +3681,7 @@ VERIFY tests/verify/test_phase2a_conditions.py -q -s -k "test_r11_ or test_r7_ o
 VERIFY tests/verify/test_phase2a_repair.py -q -s -k test_r5_
 ```
 
-Expected: every cell passes. Record `feb5_jul2_2026_clean_incidents`, `backtest_incidents` and `backtest_with_prediction` in the PR now (spec 2a-4 acceptance): `historical_predictions` rows older than a year are purged, and plan 8 folds rows older than 7 days. The backtest cell needs Step 5's route links; a zero there with links applied is a STOP for the owner.
+Expected: every cell passes except `test_r11_backtest_inputs_exist`, which prints SKIPPED. Record the SKIPPED line for `test_r11_backtest_inputs_exist` (owner ruling 2026-11-23) and `r11_window_2025h2_clean_incidents`, `backtest_incidents` and `backtest_with_prediction` in the PR now (spec 2a-4 acceptance): `historical_predictions` rows older than a year are purged, and plan 8 folds rows older than 7 days. The backtest cell needs Step 5's route links; a zero there with links applied is a STOP for the owner.
 
 - [ ] **Step 9 (owner): Sign-off (blocks prod)** — the PR carries the quarantine exclusions, gaps, `inserted` counts, route-id counts, the G20 result, R5 review sizes and rounds, the register counts and the Step 8 numbers.
 

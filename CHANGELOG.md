@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### R11 acceptance window moves to 2025-07..12; sparse NPS accepted - 2026-11-23
+
+- Owner rule change 2026-11-23: `test_r11_refresh_window_has_incidents` counts clean incidents from 2025-07-01 to 2025-12-31 instead of 2026-02-05 to 2026-07-02. No permitted source covers spring 2026 yet: the ANAC 2026 reports end in 2025-12, CAIC is hand-downloaded, and the NPS workbook ends in 2026-02. That half-year is the latest one the AAC refresh covers, with 26 day-precision rows. `accidents_clean` had no rows there before the refresh, so a pass shows the refresh landed. Its print key is now `r11_window_2025h2_clean_incidents`.
+- `test_r11_backtest_inputs_exist` is skipped (owner ruling 2026-11-23) until spring-2026 incidents can be loaded. `historical_predictions` exists only for 2026-02-05 to 2026-07-02, so no 2025 incident can have a stored prediction. The cell keeps its 2026 window, so re-enabling it means removing the skip mark. A new `tests/verify/conftest.py` prints every skipped acceptance cell with its reason, so VERIFY never shows a skip as a silent pass.
+- Owner ruling 2026-11-23: NPS is accepted sparse for this refresh. `nps` gaps are still logged on every load but no longer produce `gap_stop` (`GAP_GATE_FAMILIES` is `avalanche` only, `GAP_LOGGED_FAMILIES` is `avalanche` and `nps`). The avalanche Jul-Oct rule is unchanged.
+- Owner ruling 2026-11-23: CAIC added no rows to this refresh (the hand-downloaded workbook has no ids and ends 2025-10). So empty avalanche months after prod's last avalanche row (2026-01-11) are logged, not gated (`GATED_THROUGH_MONTH = {"avalanche": "2026-01"}`). Months through 2026-01 stay gated, with the Jul-Oct allowance.
+
 ### R11 facts loader: dry run lists refused rows by line; CAIC/NPS gap gate - 2026-11-23
 
 - `accident_facts --dry-run` (and `--apply-route-ids --dry-run`) now print `rejected`: each refused row's CSV line number, reason and, for `invalid`, the field names, never cell content. Database-time reasons (`already_present`, `unknown_route`, `not_loaded`, ...) are mapped back from `source:source_id` to the line. Before, the dry run printed counts only (found on the Stage C2 prep, 2026-11-23).

@@ -51,15 +51,29 @@ def test_no_visibility_in_new_conditions():
 
 
 def test_r11_refresh_window_has_incidents():
+    # Owner rule change 2026-11-23: the window was 2026-02-05..07-02, which no permitted source
+    # covers yet (ANAC 2026 ends 2025-12). 2025-07-01..12-31 is the latest half-year the AAC
+    # refresh covers, and accidents_clean held no rows there before the refresh, so a pass
+    # shows the refresh landed (Jan-Jun 2025 already had legacy avalanche rows).
     [row] = fetch(
-        "SELECT count(*) AS n FROM accidents_clean WHERE date BETWEEN DATE '2026-02-05' AND DATE '2026-07-02'"
+        "SELECT count(*) AS n FROM accidents_clean WHERE date BETWEEN DATE '2025-07-01' AND DATE '2025-12-31'"
     )
-    print({"feb5_jul2_2026_clean_incidents": row["n"]})
+    print({"r11_window_2025h2_clean_incidents": row["n"]})
     assert row["n"] > 0
     [latest] = fetch("SELECT max(date) AS d FROM accidents WHERE date <= (now() AT TIME ZONE 'UTC')::date")
     assert latest["d"] is not None and latest["d"].year >= 2025
 
 
+# Owner ruling 2026-11-23: skipped until spring-2026 incidents can be loaded. historical_predictions
+# exists only for 2026-02-05..2026-07-02 and no permitted source covers that span yet (ANAC 2026
+# ends 2025-12). The 2026 window below is kept on purpose: re-enabling is removing this mark.
+R11_BACKTEST_SKIP = (
+    "OWNER RULING 2026-11-23: skipped until spring-2026 incidents can be loaded; "
+    "historical_predictions exists only for 2026-02-05..2026-07-02"
+)
+
+
+@pytest.mark.skip(reason=R11_BACKTEST_SKIP)
 def test_r11_backtest_inputs_exist():
     [row] = fetch(
         "SELECT count(*) AS incidents, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM historical_predictions h "
