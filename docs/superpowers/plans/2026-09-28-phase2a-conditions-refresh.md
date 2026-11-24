@@ -3562,7 +3562,7 @@ Expected: the JSON, and `no stale review file`. If the file exists, stop and ask
 OWNER_PSQL -v ON_ERROR_STOP=1 -At -c "SET ROLE migrator" -c "SELECT setval('accidents_accident_id_seq', (SELECT max(accident_id) FROM accidents));"
 ```
 
-Expected: one number, the table's current `max(accident_id)` (4990 on the 2026-11 copy of prod). Rerunning it is harmless.
+Expected: `SET` (psql's tag for the `SET ROLE`), then one number, the table's current `max(accident_id)` (4990 on the 2026-11 copy of prod). Rerunning it is harmless.
 
 Each load is one transaction under the loader's advisory lock. The first writes `data/review/r11_route_matches.csv` if any R11 climbing row is unlinked. The second and third pass `--overwrite`: the file is rebuilt from the database each time and lists **every** unresolved R11 row, and people only read it, so replacing it loses nothing.
 
@@ -3737,13 +3737,14 @@ Record the id and `created_at` in the PR.
 ( cd <repo-root>/backend && . scripts/runbook_helpers.sh && export TARGET_HOST=production GATE_DIR=../data/review/gates_2a4_prod || exit 1
   # PRODUCTION
   gate_require snapshot || exit 1
-  n="$(OWNER_PSQL -v ON_ERROR_STOP=1 -At -c "SET ROLE migrator" -c "SELECT setval('accidents_accident_id_seq', (SELECT max(accident_id) FROM accidents));")" || exit 1
+  out="$(OWNER_PSQL -v ON_ERROR_STOP=1 -At -c "SET ROLE migrator" -c "SELECT setval('accidents_accident_id_seq', (SELECT max(accident_id) FROM accidents));")" || exit 1
+  n="$(printf '%s\n' "$out" | tail -n 1)"
   printf 'sequence set to %s\n' "$n"
   case "$n" in ''|*[!0-9]*) echo "sequence reset printed no number: STOP" >&2; exit 1 ;; esac
   gate_pass id_seq )
 ```
 
-Expected: `sequence set to <max(accident_id)>`, then `GATE OK: id_seq`.
+Expected: `sequence set to <max(accident_id)>`, then `GATE OK: id_seq`. psql prints `SET` for the `SET ROLE` before the `setval` result, so the gate reads only the last line (fix 2026-11-24: on the prod run the two-line capture failed the number check although the reset had succeeded). The output is captured whole first so a psql failure still stops the block; piping psql straight into `tail` would hide its exit status.
 
 **10c. Grants (re-applied), then gate: the baseline and the dry runs equal the branch's.**
 

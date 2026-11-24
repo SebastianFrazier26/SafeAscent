@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Runbook 10b2: read only the `setval` line - 2026-11-24
+
+- Found on the Stage C2 prod run (2026-11-24): 10b2 captured psql's whole output, `SET` (the tag for `SET ROLE migrator`) and then the number, so the numeric check stopped the block although the reset had succeeded. Owner approved the fix. 10b2 now captures the output, then takes its last line (`tail -n 1`) as a separate step so a psql failure still stops the block. Step 3's branch reset has no capture; its expected output now lists the `SET` line.
+- New test `test_runbook_10b2_reads_only_the_setval_line` runs the plan's own 10b2 lines against a stub `OWNER_PSQL` (`SET` then `4990`, a psql failure, and no number).
+
 ### R11 runbook: reset the accidents id sequence before the facts loads - 2026-11-23
 
 - Found on the Stage C2 rehearsal (2026-11-23): every legacy accident was loaded with an explicit `accident_id`, so `accidents_accident_id_seq` still started near 1. The first R11 INSERT collided (`duplicate key ... (accident_id)=(1)`), and the load rolled back whole.
