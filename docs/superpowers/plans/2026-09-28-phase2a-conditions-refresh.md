@@ -3531,7 +3531,7 @@ for f in aac_refresh caic_refresh nps_refresh; do
 done
 ```
 
-Expected per file: `mode: dry_run`, `would_insert`, `review_pending`, and a `report` with counts only. The report names row numbers and reasons, never content. The owner fixes every quarantined row in the private CSV (`unmapped_severity`, `activity_needs_review`, `unknown_country`, `outside_us`, `invalid`, `already_present`, …) until `quarantined` is empty or each remaining entry is a deliberate exclusion, recorded in the PR.
+Expected per file: `mode: dry_run`, `would_insert`, `review_pending`, a `report` with counts, and `rejected`: one entry per refused row with its CSV `line`, `reason` and (for `invalid`) the field names, never content. Database-time reasons (`already_present`, `unknown_route`) are listed by line too. The owner fixes every quarantined row in the private CSV (`unmapped_severity`, `activity_needs_review`, `unknown_country`, `outside_us`, `invalid`, `already_present`, …) until `quarantined` is empty or each remaining entry is a deliberate exclusion, recorded in the PR.
 
 When the owner says the files are final, freeze them and save the evidence (once):
 
@@ -3567,7 +3567,19 @@ P=~/Developer/safeascent-private/manual; R=../data/review
 { [ ! -e $R/r11_route_matches.csv ] || mv -n $R/r11_route_matches.csv $R/r11_route_matches_branch.csv; } && echo "loads done"
 ```
 
-Expected: no `STOP` line; three JSON lines with `inserted` equal to each dry run's `would_insert`, `gaps` (the post-2024 months with no incident per source family) and `review_pending`; then `loads done`. Record the gaps in the PR (spec R11). A gap in NPS or CAIC means the private export is incomplete: stop, re-pull, and restart from a new branch. The sha check now actually stops the chain (`&&` into every load, not an unchecked `echo`) instead of letting the loads run after a changed-file warning. **Per-file resume:** if this STOPs partway (one file loaded, the next failed), rerunning the same block is safe and resumes correctly: `[ -e ] ||` skips the file(s) already loaded (their evidence JSON exists), and even loading a file a second time would only quarantine its already-inserted rows as `already_present` rather than duplicate them — never load a file whose `save_once` already succeeded on purpose, but doing so by accident is not destructive. The review file is renamed to `r11_route_matches_branch.csv` so the prod load can write its own.
+Expected: no `STOP` line; three JSON lines with `inserted` equal to each dry run's `would_insert`, `gaps` (the post-2024 months with no incident per source family) and `review_pending`; then `loads done`. Record the gaps in the PR (spec R11). A gap in NPS or CAIC means the private export is incomplete: stop, re-pull, and restart from a new branch. Every load reports `avalanche` and `nps` gaps even when its file has no such rows, and `gap_stop` applies the owner's rule (2026-11-23): `avalanche` may have empty July–October months; any other empty `avalanche` month, and any empty `nps` month, is a STOP line. Gate, after `loads done`:
+
+```bash
+python3 - ../data/review <<'PY'
+import json, sys
+stops = [s for f in ("aac_refresh", "caic_refresh", "nps_refresh")
+         for s in json.load(open(f"{sys.argv[1]}/p2a4_load_{f}_branch.json", encoding="utf-8"))["gap_stop"]]
+print("\n".join(stops) or "no gap stops")
+sys.exit("gap rule: STOP (re-pull the export, restart from a new branch)" if stops else 0)
+PY
+```
+
+The sha check now actually stops the chain (`&&` into every load, not an unchecked `echo`) instead of letting the loads run after a changed-file warning. **Per-file resume:** if this STOPs partway (one file loaded, the next failed), rerunning the same block is safe and resumes correctly: `[ -e ] ||` skips the file(s) already loaded (their evidence JSON exists), and even loading a file a second time would only quarantine its already-inserted rows as `already_present` rather than duplicate them — never load a file whose `save_once` already succeeded on purpose, but doing so by accident is not destructive. The review file is renamed to `r11_route_matches_branch.csv` so the prod load can write its own.
 
 - [ ] **Step 4 (owner/agent): G20 — R2/R1 ignore the new rows**
 
@@ -3769,6 +3781,8 @@ for f in ("aac_refresh", "caic_refresh", "nps_refresh"):
         if b[k] != p[k]:
             sys.exit(f"{f}: {k} differs (branch {b[k]!r}, prod {p[k]!r}): STOP")
     print(f, "inserted", p["inserted"], "review_pending", p["review_pending"], "gaps", p["gaps"])
+    if p["gap_stop"]:
+        sys.exit(f"{f}: gap rule {p['gap_stop']}: STOP")
 PY
   if [ -e $R/r11_route_matches_branch.csv ] || [ -e $R/r11_route_matches_prod.csv ]; then
     same_ids $R/r11_route_matches_branch.csv $R/r11_route_matches_prod.csv source source_id || exit 1

@@ -15,10 +15,12 @@ from app.pipelines.accident_facts import (
     US_STATES,
     Candidate,
     apply_route_ids,
+    gap_stops,
     insert_new,
     match_route,
     month_gaps,
     parse_facts,
+    rejected_rows,
     unresolved_review_rows,
 )
 from app.pipelines.validate import ValidationReport
@@ -175,6 +177,20 @@ def test_duplicate_and_overlong_rows_are_quarantined(tmp_path):
     assert report.quarantined == {"duplicate_in_file": 1, "invalid": 1}
 
 
+def test_rejected_rows_name_line_reason_and_fields_never_content(tmp_path):
+    rows, report = _parse(tmp_path, _row(source_id="OK1"), _row(source_id="BAD", summary="x" * 201),
+                          _row(source_id="OK1"), _row(source_id="OK2"))
+    assert [r.line for r in rows] == [2, 5]
+    # A database-time refusal is keyed source:source_id; it must still come back as its line.
+    accident_facts._demote(report, rows[1].ref, "unknown_route")
+    assert rejected_rows(report, rows) == [
+        {"line": 3, "reason": "invalid", "fields": ["summary"]},
+        {"line": 4, "reason": "duplicate_in_file"},
+        {"line": 5, "reason": "unknown_route"},
+    ]
+    assert "BAD" not in repr(rejected_rows(report, rows))
+
+
 def test_month_gaps_list_only_closed_empty_months():
     dates = [date(2024, 8, 3), date(2024, 10, 1), date(2024, 12, 2)]
     assert month_gaps(dates, since=REFRESH_SINCE, today=date(2024, 12, 15)) == ["2024-09", "2024-11"]
@@ -305,8 +321,13 @@ def test_main_logs_gaps_writes_the_review_file_and_dry_run_is_read_only(tmp_path
     assert loaded["inserted"] == 2 and loaded["review_pending"] == 1
     assert again_dry["would_insert"] == 0
     assert again_dry["report"]["quarantined"] == {"already_present": 2}
+    assert dry["rejected"] == []
+    assert again_dry["rejected"] == [{"line": 2, "reason": "already_present"}, {"line": 3, "reason": "already_present"}]
     [(summary, upserted)] = logs
     assert upserted == 2 and summary["review_pending"] == 1
+    assert any(p.startswith("post-2024 gap avalanche:") for p in loaded["gaps"])
+    assert any(p.startswith("post-2024 gap nps:") for p in loaded["gaps"])
+    assert loaded["gap_stop"] and all(p in summary["problems"] for p in loaded["gap_stop"])
     gap_line = next(p for p in summary["problems"] if p.startswith("post-2024 gap aac"))
     assert "2024-08" in gap_line and "2024-09" not in gap_line and "2025-02" not in gap_line
     review_file = tmp_path / "review" / accident_facts.REVIEW_NAME
@@ -422,11 +443,23 @@ def test_gap_log_ignores_year_precision_dates():
 
     async def scenario(engine):
         async with engine.connect() as conn:
-            return await accident_facts._gap_log(conn, {"aac"}, today=date(2025, 1, 15))
+            return await accident_facts._gaps(conn, {"aac"}, today=date(2025, 1, 15))
 
     with migrated_db(seed_sql=seed) as name:
-        lines = asyncio.run(_with_engine(sa_url(name), scenario))
-    assert lines == ["post-2024 gap aac: 2024-08,2024-09,2024-11"]
+        gaps = asyncio.run(_with_engine(sa_url(name), scenario))
+    assert accident_facts.gap_lines(gaps) == ["post-2024 gap aac: 2024-08,2024-09,2024-11"]
+
+
+def test_gap_gate_lets_avalanche_skip_july_to_october_only():
+    gaps = {"aac": ["2025-03"], "avalanche": ["2025-07", "2025-08", "2025-09", "2025-10"], "nps": []}
+    assert gap_stops(gaps) == []
+    gaps["avalanche"] += ["2025-06", "2025-11"]
+    assert gap_stops(gaps) == ["post-2024 gap STOP avalanche: 2025-06,2025-11"]
+
+
+def test_gap_gate_stops_on_any_empty_nps_month_and_on_an_unchecked_family():
+    assert gap_stops({"avalanche": [], "nps": ["2025-08"]}) == ["post-2024 gap STOP nps: 2025-08"]
+    assert gap_stops({"nps": []}) == ["post-2024 gap STOP avalanche: not checked"]
 
 
 @requires_pg
@@ -495,3 +528,18 @@ def test_only_a_trusted_point_gets_a_timezone(tmp_path, precision, tz):
 
     with migrated_db() as name:
         assert asyncio.run(_with_engine(sa_url(name), scenario)) == tz
+
+
+@requires_pg
+def test_dry_run_lists_unknown_route_and_parse_refusals_by_line(tmp_path, monkeypatch):
+    facts = _csv(tmp_path, _row(source_id="U1", mp_route_id="999999999"), _row(source_id="U2", date="2099-01-01"),
+                 _row(source_id="U3"))
+
+    async def scenario(url):
+        monkeypatch.setattr(accident_facts, "ingest_engine", lambda: create_async_engine(url))
+        return await accident_facts.main(facts, today=TODAY, dry_run=True)
+
+    with migrated_db(seed_sql=ROUTES_SEED) as name:
+        dry = asyncio.run(scenario(sa_url(name)))
+    assert dry["would_insert"] == 1
+    assert dry["rejected"] == [{"line": 2, "reason": "unknown_route"}, {"line": 3, "reason": "future"}]

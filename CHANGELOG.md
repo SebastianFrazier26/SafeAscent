@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### R11 facts loader: dry run lists refused rows by line; CAIC/NPS gap gate - 2026-11-23
+
+- `accident_facts --dry-run` (and `--apply-route-ids --dry-run`) now print `rejected`: each refused row's CSV line number, reason and, for `invalid`, the field names, never cell content. Database-time reasons (`already_present`, `unknown_route`, `not_loaded`, ...) are mapped back from `source:source_id` to the line. Before, the dry run printed counts only (found on the Stage C2 prep, 2026-11-23).
+- Loads always report `avalanche` and `nps` gaps, even for a file without such rows, and add `gap_stop`. Owner ruling 2026-11-23: `avalanche` may have empty July-October months (avalanche incidents are seasonal); any other empty `avalanche` month, and any empty `nps` month, is a STOP. The plan 2a-4 Task 13 runbook gates on it (a STOP check after the branch loads, and in the prod `load_counts` gate).
+
 ### R7 rule r7-v2: guard on the one flipped point, not one row - 2026-11-23
 
 - Found on the Stage C1 rehearsal (2026-11-23, a fresh copy of prod): r7-v1's dry run refused with 52 positive rows. `area_weekly_weather` holds one row per point per week (the legacy collector wrote 52 weeks per point; 959 of the 969 points have exactly 52 rows), and all 52 are the one point (37.10, +113.20), weeks 2025-02-03 to 2026-01-26: the single dropped minus sign the audit found.
