@@ -53,8 +53,9 @@ The run log (`source_ingest_log`, source `accident_facts`) lists post-2024-08 mo
 incident for each source family in the file, plus `avalanche` and `nps` always, under
 `problems`. Only day- and month-precision dates count: a year-precision date does not fill a
 month. The load's `gap_stop` lists the gaps that stop the run (owner ruling 2026-11-23):
-`avalanche` may have empty July-October months and every other empty `avalanche` month is a
-STOP. `nps` gaps are logged but do not stop (owner ruling 2026-11-23, sparse NPS accepted for
+`avalanche` may have empty July-October months and every other empty `avalanche` month through
+2026-01 is a STOP; later avalanche months are logged, not gated (owner ruling 2026-11-23: CAIC
+added no rows to the 2026-11 refresh). `nps` gaps are logged but do not stop (owner ruling 2026-11-23, sparse NPS accepted for
 the 2026-11 refresh).
 
 ## Linking rows to Mountain Project routes

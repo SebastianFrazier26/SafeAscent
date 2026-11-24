@@ -457,6 +457,14 @@ def test_gap_gate_lets_avalanche_skip_july_to_october_only():
     assert gap_stops(gaps) == ["post-2024 gap STOP avalanche: 2025-06,2025-11"]
 
 
+def test_avalanche_months_after_the_2026_01_cutoff_are_logged_not_gated():
+    # Owner ruling 2026-11-23: CAIC added nothing this refresh; prod's last avalanche row is 2026-01-11.
+    later = ["2026-02", "2026-03", "2026-04", "2026-05", "2026-06", "2026-11"]
+    assert gap_stops({"avalanche": later, "nps": []}) == []
+    assert gap_stops({"avalanche": ["2026-01", *later], "nps": []}) == ["post-2024 gap STOP avalanche: 2026-01"]
+    assert gap_stops({"avalanche": ["2025-12", "2026-02"], "nps": []}) == ["post-2024 gap STOP avalanche: 2025-12"]
+
+
 def test_gap_gate_accepts_sparse_nps_and_stops_on_an_unchecked_avalanche_family():
     # Owner ruling 2026-11-23: NPS gaps are logged, not gated, for this refresh.
     assert gap_stops({"avalanche": [], "nps": ["2024-11", "2025-08"]}) == []

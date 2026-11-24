@@ -57,6 +57,11 @@ REFRESH_SINCE = dt.date(2024, 8, 1)
 GAP_LOGGED_FAMILIES: tuple[str, ...] = ("avalanche", "nps")
 GAP_GATE_FAMILIES: tuple[str, ...] = ("avalanche",)
 ALLOWED_EMPTY_MONTHS: dict[str, frozenset[int]] = {"avalanche": frozenset({7, 8, 9, 10})}
+# Owner ruling 2026-11-23: CAIC added no rows to the 2026-11 refresh (the hand-downloaded
+# workbook has no ids and ends 2025-10), so avalanche months after prod's last avalanche row
+# (2026-01-11) are logged, not gated. Months through 2026-01 stay gated. Revisit before the
+# next refresh.
+GATED_THROUGH_MONTH: dict[str, str] = {"avalanche": "2026-01"}
 # Derived from gnis.STATE_CODES (the one US list geocode.classify_state uses), never a second copy.
 US_STATES: frozenset[str] = frozenset({*(name.lower() for name in STATE_CODES), *(c.lower() for c in STATE_CODES.values())})
 METHOD = "facts_csv"
@@ -516,7 +521,8 @@ def gap_stops(gaps: Mapping[str, Sequence[str]]) -> list[str]:
             stops.append(f"post-2024 gap STOP {family}: not checked")
             continue
         allowed = ALLOWED_EMPTY_MONTHS.get(family, frozenset())
-        bad = [m for m in gaps[family] if int(m[5:7]) not in allowed]
+        through = GATED_THROUGH_MONTH.get(family)
+        bad = [m for m in gaps[family] if int(m[5:7]) not in allowed and (through is None or m <= through)]
         if bad:
             stops.append(f"post-2024 gap STOP {family}: {','.join(bad)}")
     return stops
