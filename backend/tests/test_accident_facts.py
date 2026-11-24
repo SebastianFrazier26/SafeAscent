@@ -1,5 +1,7 @@
 import asyncio
 import csv
+import shlex
+import subprocess
 import uuid
 from pathlib import Path
 from datetime import date
@@ -293,6 +295,31 @@ def test_load_after_explicit_legacy_ids_needs_the_sequence_reset(tmp_path):
 def test_runbook_quotes_the_sequence_reset_verbatim():
     plan = (Path(__file__).resolve().parents[2] / "docs/superpowers/plans/2026-09-28-phase2a-conditions-refresh.md").read_text()
     assert plan.count(accident_facts.ID_SEQUENCE_RESET_SQL) == 2
+
+
+def _run_10b2_parse(psql_stdout: str, psql_status: int) -> subprocess.CompletedProcess:
+    # Runs the plan's own 10b2 capture-and-check lines with a stub OWNER_PSQL, so the
+    # test breaks if the runbook text drifts back to a parse that trips on psql's "SET" tag.
+    plan = (Path(__file__).resolve().parents[2] / "docs/superpowers/plans/2026-09-28-phase2a-conditions-refresh.md").read_text()
+    block = plan.split("**10b2.", 1)[1].split("```bash\n", 1)[1].split("```", 1)[0]
+    lines = block.splitlines()
+    start = next(i for i, ln in enumerate(lines) if "OWNER_PSQL" in ln)
+    end = next(i for i, ln in enumerate(lines) if ln.lstrip().startswith("case \"$n\""))
+    body = "\n".join(lines[start:end + 1])
+    script = f"OWNER_PSQL() {{ printf %s {shlex.quote(psql_stdout)}; return {psql_status}; }}\n( {body}\n  echo PARSED_OK )\n"
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+
+
+def test_runbook_10b2_reads_only_the_setval_line():
+    ok = _run_10b2_parse("SET\n4990\n", 0)
+    assert ok.returncode == 0, ok.stderr
+    assert "sequence set to 4990\n" in ok.stdout and "PARSED_OK" in ok.stdout
+
+    failed = _run_10b2_parse("SET\n", 3)
+    assert failed.returncode != 0 and "PARSED_OK" not in failed.stdout
+
+    no_number = _run_10b2_parse("SET\n", 0)
+    assert no_number.returncode != 0 and "printed no number" in no_number.stderr
 
 
 @requires_pg
