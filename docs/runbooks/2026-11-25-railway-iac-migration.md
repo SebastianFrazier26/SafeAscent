@@ -1,5 +1,7 @@
 # Railway IaC migration runbook: Config as Code to `.railway/railway.ts` (2026-11-25)
 
+**Status (2026-11-25, end of day): applied; the toml files are deleted, so the 12-01 cutoff no longer matters (section 4). The open item is the owner's builder proof deploy in section 4.**
+
 Railway stops reading `railway.toml`/`railway.json` on **2026-12-01** (hard cutoff, docs.railway.com/infrastructure-as-code, read 2026-11-25). After that date, any setting that lives only in `backend/railway.toml`, `backend/railway-worker.toml` or `frontend/railway.toml` falls back to the dashboard value, and several dashboard values are wrong (section 1). This runbook moves the effective settings into `.railway/railway.ts` and applies them before the cutoff. The owner decided on the migration on 2026-11-25. **The owner runs every apply step; agents only plan.**
 
 ## 1. What the plan changes, and why
@@ -87,16 +89,41 @@ There is no running app service to health-check until the relaunch. At the relau
 - `frontend`: the build log shows `frontend/Dockerfile`, and `curl -fsS https://safeascent.us/health` returns 200.
 - `celery-worker`: the deploy log shows the worker `ready` line and **no** `beat: Starting...` line, and `GET /health/worker` returns 200 once beat is up.
 
-## 4. catalog-cycle check after 2026-12-01 (AGENT may run it; no cron run)
+## 4. No toml files: the 2026-12-01 step is no longer needed
 
-Until Railway stops reading `backend/railway.toml`, `catalog-cycle` keeps building the API image whatever the dashboard says. On or after 2026-12-01, rebuild it (the cron next fires 2027-01-02 09:00 UTC):
+**Update 2026-11-25, later the same day.** A read-only debugger found three problems:
+- With no Config File path, Railway auto-read `backend/railway.toml` into **every** `/backend` service. It did this to celery-worker after its path was cleared, and to beat and catalog-cycle.
+- That file's `/health` check failed the worker at 16:48Z, even though Celery logged `ready`.
+- The instance `builder` reads `RAILPACK` on every service even after the IaC `builder: "DOCKERFILE"` applied. The API's `Builder` enum has no DOCKERFILE value.
+
+So all five `railway*.toml` files are deleted (PR #46), and `.railway/railway.ts` is the only definition. Worker, beat and catalog-cycle declare `healthcheckPath: null`. `scripts/check_compose_matches_railway.py` refuses any `railway.toml`, `railway.json` or `railway-*.toml`. The plan for the updated `railway.ts` read "already up to date": the null healthchecks were already the live values. So once `main` has no toml, the cutoff changes nothing, and there is no 12-01 step.
+
+**Builder, still to prove.** Railway's docs say a Dockerfile in the source is used automatically, and each service has a `dockerfilePath`. Docker should therefore be picked at build time whatever the instance field says. That is inferred, not yet seen. The proof is one deploy per service from a commit with no toml (`main` after the merge, or `ceddcf0` on the branch). The agent's deploy was refused by the permission system, so this is an **OWNER** step:
 
 ```bash
-railway service redeploy --service catalog-cycle --from-source --yes
-railway logs --build <new deployment id> --lines 400 | grep -E "build definition|uv sync"
+for s in backend celery-worker beat frontend catalog-cycle; do railway service redeploy --service "$s" --from-source --yes; done
 ```
 
-Expect `load build definition from backend/Dockerfile.jobs` and `RUN uv sync --frozen --no-dev --no-install-project`, with no `--no-group pipelines`. Also expect the deployment's `propertyFileMapping` to be empty, which means no file config and no inherited healthcheck (`railway api` on `serviceInstance.resolvedFileConfig`). If the log says `Dockerfile.jobs` was not found, the root-relative inference in section 1 was wrong. Set `dockerfilePath` to `/backend/Dockerfile.jobs` in `railway.ts`, then plan, apply, and rebuild.
+For each new deployment, once it is terminal:
+
+```bash
+railway logs --build <id> --lines 400 | grep -E "build definition|uv sync|Using detected Dockerfile|railpack"
+railway api 'query { deployment(id:"<id>") { status meta } }'   # read only meta.serviceManifest.build.builder, meta.configFile, meta.propertyFileMapping
+```
+
+Expect:
+
+| Service | Build log | Manifest / health |
+|---|---|---|
+| backend | `load build definition from backend/Dockerfile` (no Railpack) | builder DOCKERFILE; `/health` passes |
+| celery-worker | `backend/Dockerfile` | no healthcheck; deploy log `celery@… ready` |
+| beat | `backend/Dockerfile` | no healthcheck; `beat: Starting...` |
+| frontend | `frontend/Dockerfile` | `/health` passes |
+| catalog-cycle | `load build definition from backend/Dockerfile.jobs`, `RUN uv sync --frozen --no-dev --no-install-project` (no `--no-group pipelines`) | no healthcheck. A cron deploy does not run the job; never `railway cron run` |
+
+For every service, `configFile` must be null and `propertyFileMapping` empty. Then run `railway down --service <s> --yes` for backend, celery-worker, beat and frontend. catalog-cycle's deployment stays: it sleeps until its cron.
+
+If a build log shows Railpack, the builder inference was wrong. Set `RAILWAY_DOCKERFILE_PATH` (the documented Dockerfile selector, docs.railway.com/builds/dockerfiles) in `railway.ts` for that service, re-plan and apply. If `Dockerfile.jobs` is not found, use `/backend/Dockerfile.jobs`.
 
 ## 5. Rollback
 
@@ -108,6 +135,7 @@ Expect `load build definition from backend/Dockerfile.jobs` and `RUN uv sync --f
    railway variable set RAILWAY_DOCKERFILE_PATH=backend/Dockerfile.jobs --service catalog-cycle --skip-deploys
    ```
    `preserve()` cannot recreate a deleted variable, hence the last line. The baseline has no `beat`, so this apply **deletes `beat`**. To keep it, add the `beat` block from `.railway/railway.ts` to a copy of the baseline first.
+   The baseline predates the toml removal. A rollback that also wants the old file behaviour must restore the five `railway*.toml` files (`git revert` of the removal commit), and the guard then fails CI until it is reverted too.
    Like any apply, this one starts deployments: run `railway down` for the app services right after (section 2).
 3. Rollback before 12-01 is fully equivalent, because the toml files still override. After 12-01, the rollback brings back the wrong dashboard values from section 1 (Railpack builder, worker with embedded beat).
 
