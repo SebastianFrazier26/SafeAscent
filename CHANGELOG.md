@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Stage D2 acceptance: points without a US timezone are bounded, not forbidden - 2026-11-25
+
+- Found on the Stage D1/D2 rehearsal (2026-11-25, branch `mpc-1-rehearsal`): `static_features points` stores a point with no US zone as NULL `tz` and quarantines it `no_timezone` (by design: missing, never a guessed zone, the same rule register follows since PR #38). The cell `test_every_point_has_a_timezone` required zero such points, so it could never pass once any existed. The rehearsal had 12 (offshore islands, coastal Maine/NH, the Minnesota border, Skagway), under 83 of 163,364 scorable routes.
+- Default ruling, owner to confirm: the cell becomes `test_every_point_without_a_timezone_is_quarantined_and_bounded`. Every NULL-tz point must be one the latest `points` run quarantined, and their scorable routes must stay at or below 0.1%. Those routes read missing daily conditions.
+- Runbook Stage D2 gains a "D corrections" list (plan expectations that drifted: area count, the `unknown` share, the quarantine count; the D2 rehearsal branch; normals).
+
 ### Runbook 10b2: read only the `setval` line - 2026-11-24
 
 - Found on the Stage C2 prod run (2026-11-24): 10b2 captured psql's whole output, `SET` (the tag for `SET ROLE migrator`) and then the number, so the numeric check stopped the block although the reset had succeeded. Owner approved the fix. 10b2 now captures the output, then takes its last line (`tail -n 1`) as a separate step so a psql failure still stops the block. Step 3's branch reset has no capture; its expected output now lists the `SET` line.
