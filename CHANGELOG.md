@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Railway: Config as Code to Infrastructure as Code (`.railway/railway.ts`) - 2026-11-25
+
+- Railway stops reading `railway*.toml` on 2026-12-01. `.railway/railway.ts` declares the whole production project (backend, celery-worker, frontend, catalog-cycle, both Redis services and their volumes), with the toml values that override the dashboard today. The owner applies it; runbook `docs/runbooks/2026-11-25-railway-iac-migration.md`, saved plan `…-iac-plan.txt`.
+- Fixes `catalog-cycle` building the API image: root `backend` made Railway auto-read `backend/railway.toml` (Dockerfile, `/health`). The cron now builds root-relative `Dockerfile.jobs` and its `RAILWAY_DOCKERFILE_PATH` variable is deleted. The build takes effect once Railway stops reading the toml (on or after 2026-12-01).
+- Found: the dashboard still runs the worker with embedded `--beat` (the toml hid it), and the `beat` service DEPLOYMENT.md calls for does not exist yet. The IaC file pins the worker's toml command; beat stays an owner relaunch step.
+
 ### Stage D2 acceptance: points without a US timezone are bounded, not forbidden - 2026-11-25
 
 - Found on the Stage D1/D2 rehearsal (2026-11-25, branch `mpc-1-rehearsal`): `static_features points` stores a point with no US zone as NULL `tz` and quarantines it `no_timezone` (by design: missing, never a guessed zone, the same rule register follows since PR #38). The cell `test_every_point_has_a_timezone` required zero such points, so it could never pass once any existed. The rehearsal had 12 (offshore islands, coastal Maine/NH, the Minnesota border, Skagway), under 83 of 163,364 scorable routes.

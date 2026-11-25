@@ -1,0 +1,34 @@
+
+Railway configuration
+Using .railway/railway.ts
+Project safeascent
+Environment production
+Project ID 8350c50d-4233-45fd-adce-f970c935d404
+
+Plan: 0 to add, 7 to change, 1 to destroy
+  - Delete variable catalog-cycle.RAILWAY_DOCKERFILE_PATH
+  ~ Update catalog-cycle build.dockerfilePath
+    └ build.dockerfilePath ("backend/Dockerfile.jobs" → "Dockerfile.jobs")
+  ~ Update frontend build.builder
+    └ build.builder (null → "DOCKERFILE")
+  ~ Update frontend deploy.healthcheckPath, deploy.healthcheckTimeout, deploy.restartPolicyMaxRetries and 1 more
+    └ deploy.healthcheckPath (null → "/health")
+    └ deploy.healthcheckTimeout (null → 10)
+    └ deploy.restartPolicyMaxRetries (null → 3)
+    └ deploy.restartPolicyType (null → "ON_FAILURE")
+  ~ Update celery-worker build.builder
+    └ build.builder (null → "DOCKERFILE")
+  ~ Update celery-worker deploy.restartPolicyMaxRetries, deploy.restartPolicyType, deploy.startCommand
+    └ deploy.restartPolicyMaxRetries (null → 10)
+    └ deploy.restartPolicyType (null → "ON_FAILURE")
+    └ deploy.startCommand ("celery -A app.celery_app worker --beat --loglevel=info" → "celery -A app.celery_app worker --loglevel=info --concurrency=2 -E")
+  ~ Update backend build.builder
+    └ build.builder (null → "DOCKERFILE")
+  ~ Update backend deploy.restartPolicyMaxRetries, deploy.restartPolicyType
+    └ deploy.restartPolicyMaxRetries (null → 3)
+    └ deploy.restartPolicyType (null → "ON_FAILURE")
+
+! 1 destructive change(s) will remove Railway resources or variables.
+
+Next
+  • Run railway config apply to apply these changes.

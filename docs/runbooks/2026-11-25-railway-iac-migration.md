@@ -1,0 +1,106 @@
+# Railway IaC migration runbook: Config as Code to `.railway/railway.ts` (2026-11-25)
+
+Railway stops reading `railway.toml`/`railway.json` on **2026-12-01** (hard cutoff, docs.railway.com/infrastructure-as-code, read 2026-11-25). After that date, any setting that lives only in `backend/railway.toml`, `backend/railway-worker.toml` or `frontend/railway.toml` falls back to the dashboard value, and several dashboard values are wrong (section 1). This runbook moves the effective settings into `.railway/railway.ts` and applies them before the cutoff. The owner decided on the migration on 2026-11-25. **The owner runs every apply step; agents only plan.**
+
+## 1. What the plan changes, and why
+
+The saved plan is `docs/runbooks/2026-11-25-railway-iac-plan.txt` (`railway config plan --verbose`, production, 2026-11-25; variables redacted, none printed). Its baseline is `docs/runbooks/2026-11-25-railway-iac-baseline.ts`, the raw `railway config pull` output. Planned on its own, that file reads "already up to date", so it equals the dashboard.
+
+`backend`, `celery-worker` and `frontend` have had **no running deployment since 2026-09-28T01:53Z** (all three `REMOVED` at once). So "no behaviour change" here means that their next deploy builds and runs exactly what the current `main` toml files would give it. Every line for those three services copies a value that the toml file already forces over the dashboard today, so their behaviour does not change:
+
+| Plan line | Plain meaning |
+|---|---|
+| `frontend`/`celery-worker`/`backend` `build.builder (null → "DOCKERFILE")` | The dashboard builder is Railpack. The toml files force the Dockerfile. Without this line, the first deploy after 12-01 would try to build with Railpack. |
+| `frontend` healthcheck `/health`, timeout 10, `ON_FAILURE` ×3 | Copies `frontend/railway.toml`. The dashboard has no healthcheck. |
+| `celery-worker` restart `ON_FAILURE` ×10 | Copies `backend/railway-worker.toml`. |
+| `celery-worker` `startCommand ("… worker --beat --loglevel=info" → "… worker --loglevel=info --concurrency=2 -E")` | The dashboard still holds the old command with **embedded beat**. The toml has overridden it since beat was split out (`a1ff4c8`). Without this line, after 12-01 the worker would run its own scheduler, and the separate `beat` service would double-schedule every task once it exists. |
+| `backend` restart `ON_FAILURE` ×3 | Copies `backend/railway.toml`. The healthcheck `/health` (30 s) is already on the dashboard, so it shows no diff. |
+
+The only behaviour change is `catalog-cycle`:
+
+| Plan line | Plain meaning |
+|---|---|
+| `catalog-cycle build.dockerfilePath ("backend/Dockerfile.jobs" → "Dockerfile.jobs")` | The path is relative to the service root directory (`backend`), the same form as backend's `Dockerfile`, which builds `backend/Dockerfile`. The old value would point at `backend/backend/Dockerfile.jobs`. This is inferred from that working backend form; Railway's docs do not spell out the dashboard field. Section 4's check confirms it. |
+| `- Delete variable catalog-cycle.RAILWAY_DOCKERFILE_PATH` (the one destructive line) | It held the same repo-relative path, which also resolves wrong, and it would compete with the field. The value was not a secret: `backend/Dockerfile.jobs`. |
+| (no line) API healthcheck | `catalog-cycle` has root `backend`, so Railway auto-reads `backend/railway.toml`, the API's file. That is why it built `backend/Dockerfile` with `--no-group pipelines` and inherited `/health`. The dashboard holds no healthcheck for it, so there is nothing to delete. The inheritance stops when Railway stops reading that file (section 4). |
+
+Not in the plan, and why:
+
+- **Redis and Redis-mxVE** are declared unchanged, with their volumes. This is a whole-project file with no named partials (`railway config partials list`: "No named partial ownership"), so **any resource missing from the file is deleted on apply**. Never apply a version of the file that drops them.
+- **`beat`** does not exist on Railway. `backend/railway-beat.toml` is not dead config: it is a missing service, the owner's relaunch step (DEPLOYMENT.md, "owner creates it"). Declare it in `railway.ts` at relaunch, not here.
+
+## 2. Apply (OWNER, before 2026-12-01)
+
+The plan was made with Railway CLI 5.62.1, which has no `config migrate cutover`/`undo` subcommands, although the docs describe them. 5.75.0 is current (Homebrew, 2026-11-25). Upgrade first with `brew upgrade railway`. If the newer CLI formats the plan differently, the `diff` below fails on layout alone. In that case, compare the change list with section 1 line by line instead.
+
+From a checkout of `chore/railway-iac` (the PR branch, before merge), at the repo root:
+
+```bash
+railway --version
+npm ci
+railway link --project 8350c50d-4233-45fd-adce-f970c935d404 --environment production
+railway config plan --verbose | diff - docs/runbooks/2026-11-25-railway-iac-plan.txt && echo PLAN_IDENTICAL
+```
+
+STOP unless it prints `PLAN_IDENTICAL`. A difference means someone changed the dashboard since 2026-11-25: re-plan and re-review.
+
+`celery-worker` still has a stored Config File path (`/backend/railway-worker.toml`). The docs say plan refuses such a service. On 2026-11-25 the plan did not refuse it, but clear the path anyway so the IaC values are the only source:
+
+If `cutover` is missing even after the upgrade, clear the path in the dashboard instead (celery-worker → Settings → Config-as-code → Railway Config File → empty).
+
+```bash
+railway config migrate cutover   # clears celery-worker's path only; no deployment; snapshot in .railway/.cac-migration.json
+railway config plan --verbose | diff - docs/runbooks/2026-11-25-railway-iac-plan.txt && echo PLAN_IDENTICAL
+railway config apply             # interactive: confirm only if the change list is section 1's, with one destructive line
+```
+
+Then merge the PR. `.railway/` is not read during deploys, so the merge only records the file.
+
+**Open question.** The docs do not say whether `apply` starts deployments for services whose settings change. Right after apply, run the check in section 3. If `backend`, `celery-worker` or `frontend` got a new deployment, it is an unplanned relaunch: remove it from the dashboard (Deployments → ⋯ → Remove) and report it. A new `catalog-cycle` deployment is harmless: a cron deploy does not run the job.
+
+## 3. Verify after apply (OWNER or AGENT, read-only)
+
+```bash
+railway config plan --detailed-exit-code; echo "exit=$?"   # expect 0 and "already up to date"
+```
+
+Deployments since the apply. Expect none for the three app services:
+
+```bash
+for s in backend celery-worker frontend catalog-cycle; do echo "== $s"; railway deployment list --service "$s" 2>&1 | head -3; done
+```
+
+There is no running app service to health-check until the relaunch. At the relaunch, check each service:
+
+- `backend`: the build log shows `load build definition from backend/Dockerfile`, and `curl -fsS https://api.safeascent.us/health` returns 200.
+- `frontend`: the build log shows `frontend/Dockerfile`, and `curl -fsS https://safeascent.us/health` returns 200.
+- `celery-worker`: the deploy log shows the worker `ready` line and **no** `beat: Starting...` line, and `GET /health/worker` returns 200 once beat is up.
+
+## 4. catalog-cycle check after 2026-12-01 (AGENT may run it; no cron run)
+
+Until Railway stops reading `backend/railway.toml`, `catalog-cycle` keeps building the API image whatever the dashboard says. On or after 2026-12-01, rebuild it (the cron next fires 2027-01-02 09:00 UTC):
+
+```bash
+railway service redeploy --service catalog-cycle --from-source --yes
+railway logs --build <new deployment id> --lines 400 | grep -E "build definition|uv sync"
+```
+
+Expect `load build definition from backend/Dockerfile.jobs` and `RUN uv sync --frozen --no-dev --no-install-project`, with no `--no-group pipelines`. Also expect the deployment's `propertyFileMapping` to be empty, which means no file config and no inherited healthcheck (`railway api` on `serviceInstance.resolvedFileConfig`). If the log says `Dockerfile.jobs` was not found, the root-relative inference in section 1 was wrong. Set `dockerfilePath` to `/backend/Dockerfile.jobs` in `railway.ts`, then plan, apply, and rebuild.
+
+## 5. Rollback
+
+1. `railway config migrate undo` puts celery-worker's Config File path back (from `.railway/.cac-migration.json`). It starts no deployment. If the path was cleared in the dashboard, set it back there to `/backend/railway-worker.toml`.
+2. Restore the pre-migration settings from `docs/runbooks/2026-11-25-railway-iac-baseline.ts`, the raw `railway config pull` of 2026-11-25. Before the apply, its plan reads "already up to date":
+   ```bash
+   railway config plan --file docs/runbooks/2026-11-25-railway-iac-baseline.ts    # the saved plan, reversed, minus the variable
+   railway config apply --file docs/runbooks/2026-11-25-railway-iac-baseline.ts
+   railway variable set RAILWAY_DOCKERFILE_PATH=backend/Dockerfile.jobs --service catalog-cycle --skip-deploys
+   ```
+   `preserve()` cannot recreate a deleted variable, hence the last line.
+3. Rollback before 12-01 is fully equivalent, because the toml files still override. After 12-01, the rollback brings back the wrong dashboard values from section 1 (Railpack builder, worker with embedded beat).
+
+## 6. Follow-ups (owner decisions, not in this PR)
+
+- **Retire the toml files** after the apply and the cutoff. `scripts/check_compose_matches_railway.py` (CI `guards`) reads `backend/railway*.toml`, so it would first need to compare against `.railway/railway.ts`. Until then, change a setting in both places.
+- **Drift gate in CI**: the `railwayapp/config` action, or `railway config plan --detailed-exit-code`. It needs a production-scoped `RAILWAY_TOKEN` repository secret.
+- **`beat`**: declare it in `railway.ts` at the relaunch (one replica, `celery -A app.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule`, `backend/Dockerfile`).
