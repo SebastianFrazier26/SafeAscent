@@ -56,3 +56,35 @@ def test_an_unlisted_railway_config_is_reported(tmp_path):
 def test_every_exempt_config_exists():
     for path in guard.NO_COMPOSE_COUNTERPART.values():
         assert (REPO_ROOT / path).is_file(), path
+
+
+def test_repo_railway_ts_matches_toml_start_commands():
+    assert guard.iac_mismatches(REPO_ROOT) == []
+
+
+def _iac_root(tmp_path, railway_ts: str):
+    for config in guard.IAC_SERVICES:
+        target = tmp_path / config
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text((REPO_ROOT / config).read_text())
+    (tmp_path / ".railway").mkdir()
+    (tmp_path / ".railway" / "railway.ts").write_text(railway_ts)
+    return tmp_path
+
+
+def test_drifted_iac_start_is_reported(tmp_path):
+    source = (REPO_ROOT / guard.IAC_FILE).read_text().replace(
+        "worker --loglevel=info --concurrency=2 -E", "worker --beat --loglevel=info"
+    )
+    problems = guard.iac_mismatches(_iac_root(tmp_path, source))
+    assert len(problems) == 1 and "celery-worker" in problems[0]
+
+
+def test_service_missing_from_iac_is_reported(tmp_path):
+    source = 'const x = service("celery-worker", { start: "celery -A app.celery_app worker --loglevel=info --concurrency=2 -E" });'
+    problems = guard.iac_mismatches(_iac_root(tmp_path, source))
+    assert {p.split("'")[1] for p in problems} == {"beat", "catalog-cycle"}
+
+
+def test_missing_iac_file_is_reported(tmp_path):
+    assert guard.iac_mismatches(tmp_path) == [f"{guard.IAC_FILE} is missing"]

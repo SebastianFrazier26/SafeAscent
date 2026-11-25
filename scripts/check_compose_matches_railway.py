@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """Fail CI if a docker-compose service's command drifts from its Railway startCommand.
 
+Railway applies settings from `.railway/railway.ts` (IaC, since 2026-11-25), not the toml files,
+so each toml startCommand must also match that service's `start:` there.
+
 Stdlib only, so the guard job needs no dependency install: compose is read via
-`docker compose config --format json` rather than parsed as YAML.
+`docker compose config --format json` rather than parsed as YAML, and railway.ts by a narrow
+regex rather than a TypeScript toolchain.
 """
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import subprocess
 import sys
@@ -27,10 +32,33 @@ NO_COMPOSE_COUNTERPART = {
     "catalog-cycle": "backend/railway-catalog-cycle.toml",
 }
 
+IAC_FILE = ".railway/railway.ts"
+# toml file -> Railway service name in railway.ts.
+IAC_SERVICES = {
+    "backend/railway-worker.toml": "celery-worker",
+    "backend/railway-beat.toml": "beat",
+    "backend/railway-catalog-cycle.toml": "catalog-cycle",
+}
+
 
 def start_command(root: Path, service: str) -> list[str]:
-    deploy = tomllib.loads((root / RAILWAY_CONFIGS[service]).read_text())["deploy"]
+    return toml_start_command(root, RAILWAY_CONFIGS[service])
+
+
+def toml_start_command(root: Path, config: str) -> list[str]:
+    deploy = tomllib.loads((root / config).read_text())["deploy"]
     return shlex.split(deploy["startCommand"])
+
+
+def iac_start_commands(source: str) -> dict[str, list[str]]:
+    starts: dict[str, list[str]] = {}
+    blocks = re.split(r'\bservice\(\s*(?=")', source)[1:]
+    for block in blocks:
+        name = re.match(r'"([^"]+)"', block)
+        start = re.search(r'\bstart:\s*("(?:[^"\\]|\\.)*")', block)
+        if name and start:
+            starts[name.group(1)] = shlex.split(json.loads(start.group(1)))
+    return starts
 
 
 def _argv(command: Any) -> list[str] | None:
@@ -53,6 +81,22 @@ def mismatches(services: dict[str, Any], root: Path) -> list[str]:
     return problems
 
 
+def iac_mismatches(root: Path) -> list[str]:
+    iac = root / IAC_FILE
+    if not iac.is_file():
+        return [f"{IAC_FILE} is missing"]
+    starts = iac_start_commands(iac.read_text())
+    problems = []
+    for config, service in IAC_SERVICES.items():
+        expected = toml_start_command(root, config)
+        actual = starts.get(service)
+        if actual != expected:
+            problems.append(
+                f"{IAC_FILE} service {service!r} start {actual} != {config} startCommand {expected}"
+            )
+    return problems
+
+
 def unlisted_configs(root: Path) -> list[str]:
     known = set(RAILWAY_CONFIGS.values()) | set(NO_COMPOSE_COUNTERPART.values())
     return sorted(
@@ -70,6 +114,7 @@ def main() -> int:
         text=True,
     ).stdout
     problems = mismatches(json.loads(rendered)["services"], REPO_ROOT)
+    problems += iac_mismatches(REPO_ROOT)
     problems += [
         f"{c} is neither compared with compose nor listed in NO_COMPOSE_COUNTERPART"
         for c in unlisted_configs(REPO_ROOT)

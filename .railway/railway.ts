@@ -4,8 +4,7 @@ import { defineRailway, github, preserve, project, redis, service, volume } from
 // their volumes stay declared even though nothing in this repo builds them.
 // backend, celery-worker and frontend copy their backend/*.toml and frontend/railway.toml values
 // (which overrode the dashboard until Config as Code's 2026-12-01 cutoff); keep the two in step
-// until those files are retired. The `beat` service (backend/railway-beat.toml) does not exist
-// on Railway yet; it is the owner's relaunch step (DEPLOYMENT.md) and gets declared here then.
+// until those files are retired.
 export default defineRailway(() => {
   const SafeAscent = github("SebastianFrazier26/SafeAscent", { rootDirectory: "/backend" });
 
@@ -50,6 +49,23 @@ export default defineRailway(() => {
     deploy: { restartPolicyType: "ON_FAILURE", restartPolicyMaxRetries: 10 },
     env: { CACHE_REDIS_URL: preserve(), CELERY_BROKER_URL: preserve(), CELERY_RESULT_BACKEND: preserve(), CORS_ORIGINS: preserve(), DATABASE_URL: preserve(), DEBUG: preserve(), ENABLE_ADMIN_ROUTES: preserve(), ENVIRONMENT: preserve(), OPEN_METEO_API_KEY: preserve(), REDIS_URL: preserve(), SKIP_WEATHER_STATISTICS: preserve(), USE_VECTORIZED_ALGORITHM: preserve() },
   });
+  // backend/railway-beat.toml. Exactly one replica: a second scheduler double-schedules every
+  // task. Broker and result backend reference the worker's own variables so the two can never
+  // point at different Redis instances; DATABASE_URL only because Settings requires it.
+  const beat = service("beat", {
+    source: SafeAscent,
+    build: { builder: "DOCKERFILE", dockerfilePath: "Dockerfile" },
+    start: "celery -A app.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule",
+    replicas: { "us-east4-eqdc4a": 1 },
+    deploy: { restartPolicyType: "ON_FAILURE", restartPolicyMaxRetries: 10 },
+    env: {
+      DATABASE_URL: celeryWorker.env.DATABASE_URL,
+      REDIS_URL: celeryWorker.env.REDIS_URL,
+      CELERY_BROKER_URL: celeryWorker.env.CELERY_BROKER_URL,
+      CELERY_RESULT_BACKEND: celeryWorker.env.CELERY_RESULT_BACKEND,
+      ENVIRONMENT: celeryWorker.env.ENVIRONMENT,
+    },
+  });
   const backend = service("backend", {
     source: SafeAscent,
     build: { builder: "DOCKERFILE", dockerfilePath: "Dockerfile" },
@@ -62,6 +78,6 @@ export default defineRailway(() => {
   });
 
   return project("safeascent", {
-    resources: [catalogCycle, RedisMxVE, frontend, celeryWorker, Redis, backend, redisMxveVolume, redisVolume],
+    resources: [catalogCycle, RedisMxVE, frontend, celeryWorker, beat, Redis, backend, redisMxveVolume, redisVolume],
   });
 });

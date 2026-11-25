@@ -27,36 +27,47 @@ The only behaviour change is `catalog-cycle`:
 Not in the plan, and why:
 
 - **Redis and Redis-mxVE** are declared unchanged, with their volumes. This is a whole-project file with no named partials (`railway config partials list`: "No named partial ownership"), so **any resource missing from the file is deleted on apply**. Never apply a version of the file that drops them.
-- **`beat`** does not exist on Railway. `backend/railway-beat.toml` is not dead config: it is a missing service, the owner's relaunch step (DEPLOYMENT.md, "owner creates it"). Declare it in `railway.ts` at relaunch, not here.
+- **`beat`** did not exist on Railway on 2026-11-25. `backend/railway-beat.toml` was not dead config but a missing service (DEPLOYMENT.md, "owner creates it"). The owner asked for it to be created now: section 2b.
 
-## 2. Apply (OWNER, before 2026-12-01)
+## 2. Apply: done 2026-11-25 (the record, and what to do next time)
 
-The plan was made with Railway CLI 5.62.1, which has no `config migrate cutover`/`undo` subcommands, although the docs describe them. 5.75.0 is current (Homebrew, 2026-11-25). Upgrade first with `brew upgrade railway`. If the newer CLI formats the plan differently, the `diff` below fails on layout alone. In that case, compare the change list with section 1 line by line instead.
+The owner approved, and the main session ran this section on 2026-11-25. This record comes from that session's report, not from this document's author. It differed from the plan in four ways. **Every future `railway config apply` should follow the corrected steps.**
 
-From a checkout of `chore/railway-iac` (the PR branch, before merge), at the repo root:
+1. **CLI.** 5.62.1 lacks `config migrate cutover`/`undo`, so the owner upgraded to 5.75.0 (`brew upgrade railway`). The 5.75.0 plan matched `…-iac-plan.txt` except that it dropped the `restartPolicyType (null → "ON_FAILURE")` lines, which it treats as the default. The same 7 changes and 1 destroy remained. So the byte `diff` against a plan saved by an older CLI fails on that alone: compare the change list instead.
+2. **`cutover` does not clear the path.** `railway config migrate cutover --yes` printed "Nothing to do", although celery-worker's `railwayConfigFile` was still `/backend/railway-worker.toml`. It was cleared through the API with an **empty string** (`null` is a silent no-op):
+   ```bash
+   railway api 'mutation { serviceInstanceUpdate(serviceId:"8659519d-3fe3-4c1b-a3cb-0f16740cfba1", environmentId:"78e7c28e-e2f7-4994-a59e-7ed561e400ce", input:{railwayConfigFile:""}) }'
+   ```
+3. `railway config apply --yes --confirm-destructive` applied 5 changes. `railway config plan` then read "already up to date".
+4. **Apply starts deployments.** It deployed `backend`, `celery-worker`, `frontend` and `catalog-cycle`. These services stay down until the relaunch, so **right after any apply, remove every new app deployment**:
+   ```bash
+   railway down --service backend      # likewise frontend and celery-worker, plus beat once it exists
+   ```
+   On 2026-11-25, backend and frontend were removed this way; celery-worker's build failed on its own (cause not investigated here). A new `catalog-cycle` deployment can stay: a cron deploy does not run the job.
+
+Then merge the PR. Railway does not read `.railway/` during deploys, so the merge only records the file.
+
+## 2b. Create `beat` (OWNER, after section 2)
+
+`.railway/railway.ts` now declares `beat` as a copy of `backend/railway-beat.toml`:
+- `backend/Dockerfile`, root `/backend`, `celery -A app.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule`;
+- `ON_FAILURE` ×10 restarts and exactly one replica.
+
+Its variables are references to celery-worker's own (`${{celery-worker.NAME}}`): `DATABASE_URL` (required by `Settings`), `REDIS_URL`, `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND` and `ENVIRONMENT`. That way beat always publishes to the broker the worker consumes. Beat gets no `INGEST_DATABASE_URL`, `OPEN_METEO_API_KEY`, healthcheck URLs (the worker pings those) or API flags. The saved plan is `docs/runbooks/2026-11-25-railway-iac-plan-beat.txt`: `1 to add, 0 to change, 0 to destroy` / `+ Create service beat`.
 
 ```bash
-railway --version
-npm ci
-railway link --project 8350c50d-4233-45fd-adce-f970c935d404 --environment production
-railway config plan --verbose | diff - docs/runbooks/2026-11-25-railway-iac-plan.txt && echo PLAN_IDENTICAL
+railway config plan --verbose     # expect exactly the saved beat plan
+railway config apply --yes        # nothing destructive, so no --confirm-destructive
+railway down --service beat       # apply deploys it; beat stays down with the worker until the relaunch
 ```
 
-STOP unless it prints `PLAN_IDENTICAL`. A difference means someone changed the dashboard since 2026-11-25: re-plan and re-review.
-
-`celery-worker` still has a stored Config File path (`/backend/railway-worker.toml`). The docs say plan refuses such a service. On 2026-11-25 the plan did not refuse it, but clear the path anyway so the IaC values are the only source:
-
-If `cutover` is missing even after the upgrade, clear the path in the dashboard instead (celery-worker → Settings → Config-as-code → Railway Config File → empty).
+**Auto-deploy.** IaC has no deploy-trigger field, and the plan fills beat's source branch with `main`. So creating the service may add an auto-deploy trigger, which the other services do not have (0 triggers each, read 2026-11-25). Check it, and delete any trigger in the dashboard (beat → Settings → Source → disable automatic deploys):
 
 ```bash
-railway config migrate cutover   # clears celery-worker's path only; no deployment; snapshot in .railway/.cac-migration.json
-railway config plan --verbose | diff - docs/runbooks/2026-11-25-railway-iac-plan.txt && echo PLAN_IDENTICAL
-railway config apply             # interactive: confirm only if the change list is section 1's, with one destructive line
+railway api 'query { deploymentTriggers(projectId:"8350c50d-4233-45fd-adce-f970c935d404", environmentId:"78e7c28e-e2f7-4994-a59e-7ed561e400ce", serviceId:"<beat service id>", first:5) { edges { node { id branch } } } }'   # expect no edges
 ```
 
-Then merge the PR. `.railway/` is not read during deploys, so the merge only records the file.
-
-**Open question.** The docs do not say whether `apply` starts deployments for services whose settings change. Right after apply, run the check in section 3. If `backend`, `celery-worker` or `frontend` got a new deployment, it is an unplanned relaunch: remove it from the dashboard (Deployments → ⋯ → Remove) and report it. A new `catalog-cycle` deployment is harmless: a cron deploy does not run the job.
+At the relaunch, beat starts together with the worker (DEPLOYMENT.md: they ship together). Expect beat's log to show `beat: Starting...`. Within 15 minutes, the `safeascent-beat` healthchecks.io check should get its first ping, sent by the worker.
 
 ## 3. Verify after apply (OWNER or AGENT, read-only)
 
@@ -89,18 +100,20 @@ Expect `load build definition from backend/Dockerfile.jobs` and `RUN uv sync --f
 
 ## 5. Rollback
 
-1. `railway config migrate undo` puts celery-worker's Config File path back (from `.railway/.cac-migration.json`). It starts no deployment. If the path was cleared in the dashboard, set it back there to `/backend/railway-worker.toml`.
+1. Put celery-worker's Config File path back with the section 2 mutation and `railwayConfigFile:"/backend/railway-worker.toml"`. (`migrate undo` has nothing to restore: `cutover` made no snapshot.)
 2. Restore the pre-migration settings from `docs/runbooks/2026-11-25-railway-iac-baseline.ts`, the raw `railway config pull` of 2026-11-25. Before the apply, its plan reads "already up to date":
    ```bash
    railway config plan --file docs/runbooks/2026-11-25-railway-iac-baseline.ts    # the saved plan, reversed, minus the variable
    railway config apply --file docs/runbooks/2026-11-25-railway-iac-baseline.ts
    railway variable set RAILWAY_DOCKERFILE_PATH=backend/Dockerfile.jobs --service catalog-cycle --skip-deploys
    ```
-   `preserve()` cannot recreate a deleted variable, hence the last line.
+   `preserve()` cannot recreate a deleted variable, hence the last line. The baseline has no `beat`, so this apply **deletes `beat`**. To keep it, add the `beat` block from `.railway/railway.ts` to a copy of the baseline first.
+   Like any apply, this one starts deployments: run `railway down` for the app services right after (section 2).
 3. Rollback before 12-01 is fully equivalent, because the toml files still override. After 12-01, the rollback brings back the wrong dashboard values from section 1 (Railpack builder, worker with embedded beat).
 
 ## 6. Follow-ups (owner decisions, not in this PR)
 
 - **Retire the toml files** after the apply and the cutoff. `scripts/check_compose_matches_railway.py` (CI `guards`) reads `backend/railway*.toml`, so it would first need to compare against `.railway/railway.ts`. Until then, change a setting in both places.
 - **Drift gate in CI**: the `railwayapp/config` action, or `railway config plan --detailed-exit-code`. It needs a production-scoped `RAILWAY_TOKEN` repository secret.
-- **`beat`**: declare it in `railway.ts` at the relaunch (one replica, `celery -A app.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule`, `backend/Dockerfile`).
+- **Guard**: `scripts/check_compose_matches_railway.py` now also requires each toml `startCommand` (worker, beat, catalog-cycle) to equal that service's `start:` in `.railway/railway.ts`, so compose, the toml files and IaC cannot drift apart while all three exist.
+- **celery-worker's failed build** from the 2026-11-25 apply: look at it before the relaunch.
