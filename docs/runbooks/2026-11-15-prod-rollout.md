@@ -512,6 +512,37 @@ Runtime: multi-hour slices. `bg_wait` returns 2 many times; call it again each t
 
 Rollback: `pre-era5-w1`. The paid rows are additive; units already bought are not refunded.
 
+#### C3 corrections (prep pass 2026-11-24; owner reviews this PR before any paid run)
+
+The steps above predate the owner decisions of 2026-11-16 ("no purchase; the current Railway key is the paid one, shell only, never a file"). Where plan 2a-3 Task 14 and this list disagree, this list wins.
+
+**C3-1. The key comes from Railway into the block's shell, never a file.** There is no `backend/.env.openmeteo`. Skip Step 1's editor and `chmod` lines. In Step 2, drop the three `.env.openmeteo` checks (0600, ignored, present). In Step 3's slice, 4a, 4d, 4e and 4f, replace `set -a; . ./.env.openmeteo || exit 1; set +a` with the line below. In 4a, drop the `stat`/`check-ignore` line. The line prints nothing, and the key lives only in that block's subshell. Checked 2026-11-24: `railway variable list --service backend --json` is a JSON object that holds a non-empty `OPEN_METEO_API_KEY`, and so does `celery-worker`'s. Only key names and presence were read; the value was never printed.
+
+```bash
+OPEN_METEO_API_KEY="$(railway variable list --service backend --json | python3 -c 'import json,sys; print(json.load(sys.stdin).get("OPEN_METEO_API_KEY", ""))')" || exit 1
+```
+
+The blocks' own `[ -n "${OPEN_METEO_API_KEY:-}" ] || ... ; export OPEN_METEO_API_KEY` lines stay. `era5_window` reads the key only from the process environment (B8), so a key left in `backend/.env` cannot start a run.
+
+**C3-2. "Purchase" means confirming the plan, and the window start is a date the owner picks.** The owner checks the Open-Meteo customer portal and confirms two things: the subscription is Professional (the archive API refuses lower plans), and the date the current billing month began or renews. The 30-day `--window-start` window should sit inside one billing month, so the at most 4.5M units land in one month's 5M. The owner still writes `era5w1_window_start.txt` and passes `owner_purchase_confirmed`, as in Step 1. The text "purchase confirmed" now reads "Professional confirmed, window starts YYYY-MM-DD".
+
+**C3-3. There is no usage dashboard to compare against.** The pricing page, read 2026-11-24, says: "A usage dashboard is in development — until it is live, no hard cutoffs are enforced." It also says email alerts go out at 80%, 90% and 100% of the monthly budget. That changes the owner checks after the branch slice and after 4d (`owner_units_confirmed_branch`, `owner_units_confirmed_prod`). **OWNER-REVIEW decision.** The proposed default: our own ledger is the record. That is `units_spent_window` in the run JSON, the `cost_units` sum in `source_ingest_log`, and `era5w1_branch_spent.txt`. It uses the ceiling formula, which over-counts. The owner passes each gate after confirming that no Open-Meteo usage alert email has arrived. Any alert is a STOP, because the plan stays under 40% of 5M (C3-6), so an alert would mean the formula under-counts. Option rejected: asking Open-Meteo support for usage numbers, which is slow and not needed at this margin.
+
+**C3-4. 4a's revision gate (K3 and K19).** Prod is at `0010_accident_route_links` once D1 is done. Replace 4a's two `cur=` lines with the following, and record the owner's confirmation of the changed revision:
+
+```bash
+cur="$(MIG current)" || exit 1; printf '%s\n' "$cur"
+case "$cur" in 0010_accident_route_links | "0010_accident_route_links (head)") ;; *) echo "prod is not at 0010_accident_route_links: STOP" >&2; exit 1 ;; esac
+```
+
+Add `[ -f ../data/review/gates_mpc2_prod/<D2's last gate>.ok ] || { echo "D2 is not on prod: STOP" >&2; exit 1; }` once D2's gate directory and last gate name exist; D2's plan names them.
+
+**C3-5. R6 (K6).** Delete `INGMOD app.pipelines.r6_verify` and the `test_r6_` filter from Step 3. The module and its cell are gone, and on the branch `ingest` cannot read `weather`. Step 3's verify becomes `VERIFY tests/verify/test_phase2a_conditions.py -q -s -k "test_no_visibility_"`; the `EXPLAIN` line stays. In 4g, delete `INGMOD app.pipelines.r6_verify || exit 1`. R6 runs once, after 4g, on prod, by the K6 path (Stage C3 step 5).
+
+**C3-6. Budget read on the rehearsal branch, 2026-11-24 (free, read-only).** `plan --window-start 2026-11-24 --initial-window` on `p2a-4-rehearsal` gives `total_units` 1,721,495 (fill 651,395, refresh 0, normals 1,070,100 on 4,100 buckets, 0 unregistered, 170 chunks). That equals the C1 prod plan, since C2 added no series. D2 adds area-point buckets. A read-only estimate from `mp_locations` points with routes found 11 buckets that are not registered yet, about 11 × 340 ≈ 3,700 units (3 years of fill plus 10 years of normals per bucket). The real number comes from the 4c plan after D2. The expected account total is about 1.72M (prod) + 20,000 (branch slice) ≈ 1.75M, against the 4.5M stop and the 5M month. The live Railway services share the same key, so their forecast calls count against the same month; the amount is unknown and small at this margin.
+
+**C3-7. Step 6 (end of window) no longer applies as written.** The owner already holds an ongoing subscription. Whether to keep Professional, downgrade or cancel is the owner's SPEND call (Stage C3 step 6 above).
+
 ### Stage D3: R10 accident route links (rule pass, optional review, LLM pass)
 
 Prerequisites: B and D1 on prod. Run it after C3, or between D2 and C3, but never during a window run. The LLM pass runs on prod only (plan ruling 2026-10-15).

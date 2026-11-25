@@ -12,6 +12,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Default ruling, owner to confirm: the cell becomes `test_every_point_without_a_timezone_is_quarantined_and_bounded`. Every NULL-tz point must be one the latest `points` run quarantined, and their scorable routes must stay at or below 0.1%. Those routes read missing daily conditions.
 - Runbook Stage D2 gains a "D corrections" list (plan expectations that drifted: area count, the `unknown` share, the quarantine count; the D2 rehearsal branch; normals).
 
+### Runbook Stage C3: corrections before the first paid window - 2026-11-24
+
+- Prep pass for Stage C3 (no paid call, no prod write). New "C3 corrections" list in the rollout runbook. The Open-Meteo key is read from Railway into each paid block's subshell, never a file (owner decision 2026-11-16). "Purchase" becomes the owner confirming the Professional plan and the billing-month window start. 4a's revision gate becomes `0010_accident_route_links` (K3/K19). The `r6_verify` lines are removed from Task 14 Steps 3 and 4g (K6).
+- Found: Open-Meteo has no usage dashboard yet (pricing page, read 2026-11-24), so the owner's dashboard checks cannot run as written. The proposed default for owner review is our own `cost_units` ledger plus Open-Meteo's 80/90/100% alert emails.
+- Budget re-read on `p2a-4-rehearsal`: 1,721,495 units, the same as C1. D2 is estimated to add about 11 buckets (about 3,700 units).
+
 ### Runbook 10b2: read only the `setval` line - 2026-11-24
 
 - Found on the Stage C2 prod run (2026-11-24): 10b2 captured psql's whole output, `SET` (the tag for `SET ROLE migrator`) and then the number, so the numeric check stopped the block although the reset had succeeded. Owner approved the fix. 10b2 now captures the output, then takes its last line (`tail -n 1`) as a separate step so a psql failure still stops the block. Step 3's branch reset has no capture; its expected output now lists the `SET` line.
