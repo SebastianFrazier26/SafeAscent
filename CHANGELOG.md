@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Stage D2 acceptance: points without a US timezone are bounded, not forbidden - 2026-11-25
+
+- Found on the Stage D1/D2 rehearsal (2026-11-25, branch `mpc-1-rehearsal`): `static_features points` stores a point with no US zone as NULL `tz` and quarantines it `no_timezone` (by design: missing, never a guessed zone, the same rule register follows since PR #38). The cell `test_every_point_has_a_timezone` required zero such points, so it could never pass once any existed. The rehearsal had 12 (offshore islands, coastal Maine/NH, the Minnesota border, Skagway), under 83 of 163,364 scorable routes.
+- Default ruling, owner to confirm: the cell becomes `test_every_point_without_a_timezone_is_quarantined_and_bounded`. Every NULL-tz point must be one the latest `points` run quarantined, and their scorable routes must stay at or below 0.1%. Those routes read missing daily conditions.
+- Runbook Stage D2 gains a "D corrections" list (plan expectations that drifted: area count, the `unknown` share, the quarantine count; the D2 rehearsal branch; normals).
+
 ### Runbook Stage C3: corrections before the first paid window - 2026-11-24
 
 - Prep pass for Stage C3 (no paid call, no prod write). New "C3 corrections" list in the rollout runbook. The Open-Meteo key is read from Railway into each paid block's subshell, never a file (owner decision 2026-11-16). "Purchase" becomes the owner confirming the Professional plan and the billing-month window start. 4a's revision gate becomes `0010_accident_route_links` (K3/K19). The `r6_verify` lines are removed from Task 14 Steps 3 and 4g (K6).

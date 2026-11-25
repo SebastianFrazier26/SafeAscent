@@ -469,6 +469,12 @@ Runtime: EPQS about 15 minutes per run. Elevation over tens of thousands of poin
 
 Rollback: `pre-mpc-2`.
 
+D corrections (found on the D1/D2 rehearsal, 2026-11-25; branch `mpc-1-rehearsal`):
+- **D-1 (expectation drift, D1 Step 2).** `areas` is 61,017, not "≈45K": `mp_locations` holds 61,017 rows, 27,877 with routes. `unknown` is 4,176, exactly prod's literal `type = 'unknown'` rows. The plan's "far smaller than 4,176" assumed toprope/aid routes were the unknowns. They have their own type strings (toprope 27,453, aid 479) and already map to `rock`. Neither is a STOP.
+- **D-2 (D2 Step 2 and Step 4, OWNER-REVIEW).** `points` quarantines 12 `no_timezone` points (plan: "single digits"), under 83 scorable routes. The old cell `test_every_point_has_a_timezone` (`== 0`) fails by construction. The default ruling is in the fix PR: the cell is bounded (each NULL-tz point quarantined by the latest run; at most 0.1% of scorable routes).
+- **D-3 (D2 rehearsal branch, OWNER-REVIEW).** The plan's D2 rehearsal branches `mpc-2-rehearsal` from prod after D1's prod run. D2 was pre-rehearsed on `mpc-1-rehearsal` (0010, refreshed catalog, the same data D1 puts on prod), with evidence named `mpc2pre_*_mpc1branch*`. Either (a) as written: after D1 prod, branch `mpc-2-rehearsal` and redo Steps 1–4 (about 45 minutes of runs), or (b) adopt the pre-rehearsal: after D1 prod, check that prod's refresh dry run equals `mpc1_dry_branch.json`, then copy `mpc2pre_points_mpc1branch.json` to `mpc2_points_branch.json` for gate 5c.
+- **D-4 (K19 note).** On the branch, `points` added 7 normals buckets (4,100 to 4,107), and all 7 belong to the 12 no-timezone points. They get no series, and `era5_window plan` is unchanged (1,721,495 units, 4,100 normals buckets). So D2 adds nothing for C3 to buy this year, and the order D2 before C3 costs nothing either way.
+
 ### Stage C3: the first ERA5 Professional window, then R6 evidence
 
 Prerequisites:

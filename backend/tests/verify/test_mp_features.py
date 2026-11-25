@@ -28,9 +28,27 @@ def test_no_point_is_pending_and_terminal_misses_are_bounded():
     assert row["terminal"] <= MAX_TERMINAL_SHARE * row["n"], "nodata + no_tile above 2% of scorable routes' points"
 
 
-def test_every_point_has_a_timezone():
+# Stage D2 rehearsal 2026-11-25: 12 points (83 of 163,364 scorable routes; offshore islands, the
+# Minnesota border, coastal Maine/NH, Skagway) have no US zone. The points step stores them with
+# NULL tz and quarantines them `no_timezone`, the same rule register applies (PR #38: missing,
+# never mapped to a guessed US zone), so the old `== 0` could never pass. Bounded instead: every
+# NULL-tz point is one the latest points run quarantined, and their routes stay a sliver.
+# Default ruling, owner to confirm.
+MAX_NO_TZ_ROUTE_SHARE = 0.001
+
+
+def test_every_point_without_a_timezone_is_quarantined_and_bounded():
     [row] = fetch("SELECT count(*) AS n FROM feature_points WHERE tz IS NULL")
-    assert row["n"] == 0
+    [run] = fetch("SELECT coalesce((validation_report->'quarantined'->>'no_timezone')::int, 0) AS q "
+                  "FROM source_ingest_log WHERE source = 'static_features:points' AND status = 'ok' "
+                  "ORDER BY finished_at DESC LIMIT 1")
+    [routes] = fetch("SELECT count(*) FILTER (WHERE p.tz IS NULL) AS no_tz, count(*) AS n FROM canonical_routes r "
+                     "JOIN canonical_areas a ON a.area_id = r.area_id JOIN feature_points p ON p.point_key = a.point_key "
+                     "WHERE r.scorable")
+    print({"no_tz_points": row["n"], "quarantined_no_timezone": run["q"], "no_tz_routes": routes["no_tz"],
+           "scorable_routes": routes["n"]})
+    assert row["n"] == run["q"], "a NULL-tz point the latest points run did not quarantine"
+    assert routes["no_tz"] <= MAX_NO_TZ_ROUTE_SHARE * routes["n"]
 
 
 def test_epqs_check_passed_on_enough_points():
