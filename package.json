@@ -1,0 +1,8 @@
+{
+  "name": "safeascent-railway-iac",
+  "private": true,
+  "description": "Railway IaC SDK for .railway/railway.ts. The app packages live in backend/ (uv) and frontend/ (npm).",
+  "devDependencies": {
+    "railway": "3.17.0"
+  }
+}

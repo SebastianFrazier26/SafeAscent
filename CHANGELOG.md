@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Railway: Config as Code to Infrastructure as Code (`.railway/railway.ts`) - 2026-11-25
+
+- Railway stops reading `railway*.toml` on 2026-12-01. `.railway/railway.ts` declares the whole production project (backend, celery-worker, frontend, catalog-cycle, both Redis services and their volumes), with the toml values that override the dashboard today. The owner applies it; runbook `docs/runbooks/2026-11-25-railway-iac-migration.md`, saved plan `…-iac-plan.txt`.
+- Fixes `catalog-cycle` building the API image: root `backend` made Railway auto-read `backend/railway.toml` (Dockerfile, `/health`). The cron now builds root-relative `Dockerfile.jobs` and its `RAILWAY_DOCKERFILE_PATH` variable is deleted. The build takes effect once Railway stops reading the toml (on or after 2026-12-01).
+- Found: the dashboard still runs the worker with embedded `--beat` (the toml hid it), and the `beat` service DEPLOYMENT.md calls for does not exist yet. The IaC file pins the worker's toml command.
+- Applied by the owner 2026-11-25 (CLI 5.75.0). The runbook records that `apply` starts deployments (`railway down` the app ones right after), that `migrate cutover` left celery-worker's config path set (clear it through the API with `""`), and the 5.75.0 plan differences.
+- `beat` is declared in `railway.ts` (owner request, 2026-11-25), a copy of `backend/railway-beat.toml`, with its broker, backend and database variables referencing celery-worker's. The owner applies it (plan `…-iac-plan-beat.txt`). `scripts/check_compose_matches_railway.py` now also holds each toml `startCommand` equal to `railway.ts`'s `start:`.
+- All five `railway*.toml` files are removed, so `.railway/railway.ts` is the only Railway definition. With no Config File path, Railway auto-read `backend/railway.toml` into every `/backend` service, and its `/health` check failed celery-worker at 16:48Z. Worker, beat and catalog-cycle now declare a null healthcheck. The guard compares the compose worker/beat commands with `railway.ts` and refuses any `railway.toml`/`railway.json`/`railway-*.toml`, and `test_celery_ops` reads `railway.ts`. The 2026-12-01 step is gone. Still open: the owner's proof deploy that Docker is picked without the file (runbook section 4).
+
 ### Stage D2 acceptance: points without a US timezone are bounded, not forbidden - 2026-11-25
 
 - Found on the Stage D1/D2 rehearsal (2026-11-25, branch `mpc-1-rehearsal`): `static_features points` stores a point with no US zone as NULL `tz` and quarantines it `no_timezone` (by design: missing, never a guessed zone, the same rule register follows since PR #38). The cell `test_every_point_has_a_timezone` required zero such points, so it could never pass once any existed. The rehearsal had 12 (offshore islands, coastal Maine/NH, the Minnesota border, Skagway), under 83 of 163,364 scorable routes.

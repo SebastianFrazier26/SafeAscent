@@ -8,15 +8,15 @@ Production is Railway only. `docker-compose.yml` is for local development and mi
 
 ## Services
 
-One repo; each Railway service builds from its own root directory and config file.
+One repo; each Railway service builds from its own root directory. Every setting below lives in `.railway/railway.ts` (IaC, since 2026-11-25); there are no `railway*.toml` files, and none may be added (Railway auto-reads them over IaC; the CI guard refuses them).
 
-| Role | Railway service | Config | Start command | Notes |
+| Role | Railway service | Dockerfile | Start command | Notes |
 |---|---|---|---|---|
-| API | `backend` | `backend/railway.toml` | `uvicorn app.main:app --host 0.0.0.0 --port 8000` (Dockerfile default) | Healthcheck `/health`. Worker liveness is `/health/worker`, deliberately not the Railway healthcheck, so a worker outage doesn't take the API down |
-| Worker | `celery-worker` | `backend/railway-worker.toml` | `celery -A app.celery_app worker --loglevel=info --concurrency=2 -E` | One replica. Runs the scores heartbeat and the beat heartbeat task |
-| Beat | `beat` (**owner creates it**) | `backend/railway-beat.toml` | `celery -A app.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule` | Exactly one replica; a second double-schedules every task |
-| Catalog cycle | `catalog-cycle` (**owner creates it**) | `backend/railway-catalog-cycle.toml` | `python -m app.pipelines.catalog_cycle run` | Cron `0 9 2 1 *` (UTC), built from `backend/Dockerfile.jobs`. Auto-deploy off; deployed by hand after merges that touch `app/pipelines`. See Scheduled jobs |
-| Frontend | `frontend` | `frontend/railway.toml` | nginx serving the Vite build | Healthcheck `/health`. `MAINTENANCE_MODE` build arg, see below |
+| API | `backend` | `backend/Dockerfile` | `uvicorn app.main:app --host 0.0.0.0 --port 8000` (Dockerfile default) | Healthcheck `/health`. Worker liveness is `/health/worker`, deliberately not the Railway healthcheck, so a worker outage doesn't take the API down |
+| Worker | `celery-worker` | `backend/Dockerfile` | `celery -A app.celery_app worker --loglevel=info --concurrency=2 -E` | One replica, no healthcheck. Runs the scores heartbeat and the beat heartbeat task |
+| Beat | `beat` | `backend/Dockerfile` | `celery -A app.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule` | Exactly one replica, no healthcheck; a second double-schedules every task. Broker, result backend and `DATABASE_URL` reference celery-worker's variables |
+| Catalog cycle | `catalog-cycle` | `backend/Dockerfile.jobs` | `python -m app.pipelines.catalog_cycle run` | Cron `0 9 2 1 *` (UTC), no healthcheck, restart never. Auto-deploy off; deployed by hand after merges that touch `app/pipelines`. See Scheduled jobs |
+| Frontend | `frontend` | `frontend/Dockerfile` | nginx serving the Vite build | Healthcheck `/health`. `MAINTENANCE_MODE` build arg, see below |
 | Redis | Railway Redis | — | — | Celery broker, result backend, and stored-score cache (keys carry the model version) |
 
 The API, worker, and beat all build from `backend/Dockerfile` (Python 3.12, uv, non-root). `catalog-cycle` builds from `backend/Dockerfile.jobs`: the same image plus the `pipelines` dependency group (h3, rasterio, timezonefinder), which the API image leaves out. The frontend builds from `frontend/Dockerfile` (Node 22 build, nginx serve).
@@ -184,7 +184,7 @@ To flip: set the variable on the `frontend` service and redeploy. Locally: `fron
 
 ## Deploy pipeline
 
-- CI (`.github/workflows/ci.yml`) runs on every PR and every push to `main`. Jobs: `backend` (uv sync, ruff, mypy, pip-audit, pytest including the migration and role tests against a PostGIS service, image build), `frontend` (npm ci, lint, typecheck, npm audit, vitest, build, image tests), `guards` (`scripts/check_no_scrapers.py`, a check that `docker compose config --services` matches the Railway topology, and `scripts/check_compose_matches_railway.py` for the worker/beat start commands) and `ci-ok`.
+- CI (`.github/workflows/ci.yml`) runs on every PR and every push to `main`. Jobs: `backend` (uv sync, ruff, mypy, pip-audit, pytest including the migration and role tests against a PostGIS service, image build), `frontend` (npm ci, lint, typecheck, npm audit, vitest, build, image tests), `guards` (`scripts/check_no_scrapers.py`, a check that `docker compose config --services` matches the Railway topology, and `scripts/check_compose_matches_railway.py` for the worker/beat start commands against `.railway/railway.ts`, and no Config as Code file) and `ci-ok`.
 - `ci-ok` is the one required check. It fails unless every other job succeeded. Keep its name stable, because Railway "Wait for CI" and branch protection both key on it.
 - Railway builds its own images from GitHub `main`. "Wait for CI" (after owner setup — not yet enabled) will make a red commit on `main` never deploy. No image registry and no deploy token are involved.
 - **Auto-deploy is OFF on every Railway service until the relaunch** (plan Task 26); until then every deploy is a manual owner action. Re-enable it only after all three hold: migration `0003` is applied to prod, the `beat` service exists, and "Wait for CI" is on.

@@ -1,0 +1,13 @@
+
+Railway configuration
+Using .railway/railway.ts
+Project safeascent
+Environment production
+variables: managed (default)
+Project ID 8350c50d-4233-45fd-adce-f970c935d404
+
+Plan: 1 to add, 0 to change, 0 to destroy
+  + Create service beat
+
+Next
+  • Run railway config apply to apply these changes.

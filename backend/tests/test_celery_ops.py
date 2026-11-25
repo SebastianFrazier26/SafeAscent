@@ -1,11 +1,17 @@
-import tomllib
+import importlib.util
 from pathlib import Path
 
 import app.tasks.ops as ops
 from app.celery_app import celery_app
 from app.celery_signals import HeartbeatStep
 
-BACKEND = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
+_spec = importlib.util.spec_from_file_location(
+    "railway_guard", REPO_ROOT / "scripts" / "check_compose_matches_railway.py"
+)
+assert _spec is not None and _spec.loader is not None
+railway_guard = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(railway_guard)
 
 
 def test_beat_schedule_has_fifteen_minute_heartbeat():
@@ -30,14 +36,13 @@ def test_beat_heartbeat_pings_beat_check(monkeypatch):
 
 
 def test_worker_service_does_not_embed_beat():
-    deploy = tomllib.loads((BACKEND / "railway-worker.toml").read_text())["deploy"]
-    command = deploy["startCommand"].split()
+    command = railway_guard.iac_start_command(railway_guard.iac_services(REPO_ROOT)["celery-worker"])
     assert command[:4] == ["celery", "-A", "app.celery_app", "worker"]
     assert "--beat" not in command and "-B" not in command
     assert "-E" in command and "--concurrency=2" in command
 
 
 def test_beat_service_is_single_replica():
-    deploy = tomllib.loads((BACKEND / "railway-beat.toml").read_text())["deploy"]
-    assert deploy["numReplicas"] == 1
-    assert deploy["startCommand"].split()[:4] == ["celery", "-A", "app.celery_app", "beat"]
+    block = railway_guard.iac_services(REPO_ROOT)["beat"]
+    assert railway_guard.iac_replicas(block) == 1
+    assert railway_guard.iac_start_command(block)[:4] == ["celery", "-A", "app.celery_app", "beat"]

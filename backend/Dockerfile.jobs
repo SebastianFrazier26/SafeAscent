@@ -1,4 +1,4 @@
-# Serves only the `catalog-cycle` Railway cron service (railway-catalog-cycle.toml). It is
+# Serves only the `catalog-cycle` Railway cron service (.railway/railway.ts). It is
 # Dockerfile plus the pipelines group; keep the base image, uv pin and non-root user in step with
 # Dockerfile. No EXPOSE/CMD: Railway always passes the start command.
 
